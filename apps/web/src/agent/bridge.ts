@@ -187,7 +187,13 @@ export function installAgentBridge() {
 		const project = editor.project.getActiveOrNull();
 		return project ? editor.media.retryMissingMedia({ projectId: project.metadata.id }) : Promise.resolve([]);
 	};
-	(window as any).agent = { editor, snapshot: agentSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
+	// A snapshot taken in the console is remembered like a synced one, so a draft can be basedOn it.
+	const consoleSnapshot = () => {
+		const snap = agentSnapshot();
+		if (snap) snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes());
+		return snap;
+	};
+	(window as any).agent = { editor, snapshot: consoleSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
 	push();
 	setInterval(pollDraft, 2000);
 	// Frames wait for media and saves too: otherwise a frame can miss content that is still loading.
@@ -328,6 +334,19 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ...body }),
 		}).catch(() => {});
 
+	// A draft based on a snapshot this editor no longer remembers cannot be checked against the user's edits:
+	// refused before anything is imported.
+	const base = typeof draft.basedOn === "string" ? snapshotHistory.get(draft.basedOn) : undefined;
+	if (draft.basedOn !== undefined && !base) {
+		const error = typeof draft.basedOn === "string"
+			? "basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend"
+			: "basedOn must be the syncedAt string of a snapshot";
+		const results = ops.map((op) => ({ op: op?.op, ...opLabel(op), ...(op && "match" in op && op.match !== undefined ? { match: op.match } : {}), ok: false, stale: true, error }));
+		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: "It was based on an old snapshot; the agent should re-read and resend" });
+		await report({ ok: false, applied: false, stale: true, error, results });
+		return;
+	}
+
 	// Load icons and assets first (async), then change the timeline at once.
 	const media = new Map<AgentElement, LoadedMedia>();
 	const byPath = new Map<string, Promise<LoadedMedia>>();
@@ -414,15 +433,6 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		return;
 	}
 
-	// A draft based on a snapshot this editor no longer remembers cannot be checked against the user's edits.
-	const base = typeof draft.basedOn === "string" ? snapshotHistory.get(draft.basedOn) : undefined;
-	if (typeof draft.basedOn === "string" && !base) {
-		const cleanup = await discard();
-		const results = ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, stale: true, error: "basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend" }));
-		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: "It was based on an old snapshot; the agent should re-read and resend" });
-		await report({ sceneId: root.id, ok: false, applied: false, error: "basedOn is unknown", ...(cleanup ? { cleanup } : {}), results });
-		return;
-	}
 
 	// Read the scenes after loading: the human may have edited meanwhile.
 	const before = editor.scenes.getScenes();

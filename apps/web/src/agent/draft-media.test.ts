@@ -490,3 +490,19 @@ describe("the draft poller", () => {
 		expect(editor.project.getActive().metadata.id).toBe("q");
 	});
 });
+
+describe("basedOn is checked before anything is imported", () => {
+	test("an unknown or malformed basedOn refuses the draft without importing", async () => {
+		setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("a.png", "a") }], { basedOn: "2000-01-01T00:00:00.000Z" }));
+		await applyDraft(draft([{ op: "set", match: { agentId: "old" }, params: { opacity: 0.5 } }], { basedOn: 42 }));
+		const [unknown, malformed] = backend.state.results;
+		expect(unknown).toMatchObject({ applied: false, stale: true });
+		expect(malformed).toMatchObject({ applied: false, stale: true });
+		expect(malformed.results[0]).toMatchObject({ match: { agentId: "old" }, stale: true });
+		expect(malformed.error).toContain("syncedAt");
+		expect(backend.state.saved).toEqual([]);
+	});
+});

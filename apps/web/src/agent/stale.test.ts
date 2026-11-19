@@ -5,7 +5,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { computeAgentDraft } = await import("./draft");
-const { SnapshotHistory, fieldsMapOf } = await import("./stale");
+const { SnapshotHistory, fieldsMapOf, stableJson } = await import("./stale");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
 const text = (id: string, agentId: string, params: Record<string, unknown>) =>
@@ -16,8 +16,8 @@ const scenesWith = (elements: TimelineElement[]): TScene[] => [
 		tracks: { main: { id: "t-main", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, overlay: [{ id: "t-text", name: "Captions", type: "text", hidden: false, elements: elements as TextElement[] }], audio: [] } as unknown as SceneTracks,
 	} as TScene,
 ];
-const run = (scenes: TScene[], ops: any[], base?: Map<string, any>) =>
-	computeAgentDraft({ scenes, rootSceneId: "main", ops, mediaFor: () => undefined, canvas: { width: 1080, height: 1920 }, fps: { numerator: 30, denominator: 1 }, ripple: false, base });
+const run = (scenes: TScene[], ops: any[], base?: Map<string, any>, ripple = false) =>
+	computeAgentDraft({ scenes, rootSceneId: "main", ops, mediaFor: () => undefined, canvas: { width: 1080, height: 1920 }, fps: { numerator: 30, denominator: 1 }, ripple, base });
 const paramOf = (scenes: TScene[], id: string, key: string) => (scenes[0].tracks.overlay[0].elements.find((e) => e.id === id) as TimelineElement).params[key];
 
 describe("editing on top of the user's edits (basedOn)", () => {
@@ -62,6 +62,72 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		history.record("t2", now);
 		history.record("t3", now);
 		expect(history.get("t1")).toBeUndefined();
-		expect(history.get("t3")?.get("main:a1")?.params.color).toBe(JSON.stringify("#ff0000"));
+		expect(history.get("t3")?.get("main:a1")?.fields.params.color).toBe(JSON.stringify("#ff0000"));
+	});
+
+	test("two ops of one draft on the same field do not trip over each other", () => {
+		const fresh = scenesWith([text("a1", "cap-1", { color: "#ffffff" })]);
+		const out = run(fresh, [
+			{ op: "set", match: { agentId: "cap-1" }, params: { color: "#00ff00" } },
+			{ op: "set", match: { agentId: "cap-1" }, params: { color: "#0000ff" } },
+		], fieldsMapOf(fresh));
+		expect(out.results.map((r) => r.ok)).toEqual([true, true]);
+		expect(paramOf(out.scenes, "a1", "color")).toBe("#0000ff");
+	});
+
+	test("an element added by an earlier op of the same draft can be set by a later one", () => {
+		const fresh = scenesWith([text("a1", "cap-1", {})]);
+		const out = run(fresh, [
+			{ op: "add", track: { name: "Captions" }, element: { agent_id: "new", name: "new", text: "new", start: 4, duration: 1 } },
+			{ op: "set", match: { agentId: "new" }, params: { color: "#ff00ff" } },
+		], fieldsMapOf(fresh));
+		expect(out.results.map((r) => r.ok)).toEqual([true, true]);
+	});
+
+	test("ripple never moves a clip the user moved after basedOn", () => {
+		const clip = (id: string, start: number, duration: number) => ({ ...text(id, id, {}), startTime: T(start), duration: T(duration) }) as TimelineElement;
+		const snapshot = scenesWith([clip("a", 0, 2), clip("b", 2, 2), clip("c", 4, 2)]);
+		const base = fieldsMapOf(snapshot);
+		// The user moved b to 2.5 s after the snapshot; then the agent shortens a, which ripples b and c.
+		const moved = scenesWith([clip("a", 0, 2), clip("b", 2.5, 2), clip("c", 4.5, 2)]);
+		const out = run(moved, [{ op: "set", match: { agentId: "a" }, duration: 1 }], base, true);
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true });
+		expect(out.results[0].fields[0]).toContain("moved by ripple");
+		expect(out.scenes[0].tracks.overlay[0].elements.map((e) => e.startTime)).toEqual([T(0), T(2.5), T(4.5)]);
+		// Nothing moved by the user: the same op ripples as usual.
+		const calm = run(snapshot, [{ op: "set", match: { agentId: "a" }, duration: 1 }], base, true);
+		expect(calm.results[0]).toMatchObject({ ok: true });
+	});
+
+	test("delete is refused when the user changed what is inside a compound clip, or moved it to another track", () => {
+		const content = (label: string): TScene => ({
+			id: "inner", name: "inner", isMain: false, bookmarks: [], createdAt: new Date(0), updatedAt: new Date(0),
+			tracks: { main: { id: "t-in", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, overlay: [{ id: "t-in-text", name: "Text", type: "text", hidden: false, elements: [text("label", "label", { content: label })] }], audio: [] } as unknown as SceneTracks,
+		}) as TScene;
+		const compound = { id: "box", agentId: "box", type: "compound", name: "box", sceneId: "inner", startTime: T(0), duration: T(3), trimStart: T(0), trimEnd: T(0), params: {} } as unknown as TimelineElement;
+		const withCompound = (label: string, trackId = "t-text"): TScene[] => {
+			const [root] = scenesWith([compound]);
+			root.tracks.overlay[0] = { ...root.tracks.overlay[0], id: trackId } as never;
+			return [root, content(label)];
+		};
+		const base = fieldsMapOf(withCompound("Helo"));
+		const fixed = run(withCompound("Hello"), [{ op: "delete", match: { agentId: "box" } }], base);
+		expect(fixed.results[0]).toMatchObject({ ok: false, stale: true, fields: ["content"] });
+		const otherTrack = run(withCompound("Helo", "t-other"), [{ op: "delete", match: { agentId: "box" } }], base);
+		expect(otherTrack.results[0]).toMatchObject({ ok: false, stale: true, fields: ["track"] });
+		const untouched = run(withCompound("Helo"), [{ op: "delete", match: { agentId: "box" } }], base);
+		expect(untouched.results[0]).toMatchObject({ ok: true });
+	});
+
+	test("key order does not make equal values differ", () => {
+		expect(stableJson({ b: 1, a: { d: [2, 1], c: 3 } })).toBe(stableJson({ a: { c: 3, d: [2, 1] }, b: 1 }));
+		expect(stableJson([2, 1])).not.toBe(stableJson([1, 2]));
+	});
+
+	test("unchanged elements share their record between snapshots", () => {
+		const scenes = scenesWith([text("a1", "cap-1", {})]);
+		const first = fieldsMapOf(scenes).get("main:a1")?.fields;
+		const second = fieldsMapOf(scenes).get("main:a1")?.fields;
+		expect(second).toBe(first);
 	});
 });

@@ -29,12 +29,14 @@ BOPENCUT_DATA can point outside the repository; do not commit private data. Use 
 
 **draft.json**: `{schema:"opencut-agent-draft-1", rev, label, projectId?, ops:[{op:"set", match:{agentId}|{id}, start?, duration?, trimStart?, params?}, {op:"delete", match:…}, {op:"add", track:{name, type?:"video"|"audio"|"effect", index?}, element:el}]}`. For `add`, `el.asset` is an object `{path,type,name}` (not a bundle key); an existing track with that name is reused, otherwise one is created (overlays are inserted at `index`). Exact names take precedence; `Main`, the legacy `Utama`, and the editor default `Main Track` are aliases of each other (so `Main` reaches the main track of a compound made in the editor). Existing saved track names are not renamed. The entire draft is one Undo; changed/added items are selected immediately. `match` can also reach inside compound clips, and `group`, `ungroup`, and `compound` ops exist: see *Compound clips for agents*. `replace`, `atomic`, `set` keyframes, and `mediaId`: see *Draft reliability*.
 
-**Editing on top of the user's edits (`basedOn`).** Put the `syncedAt` of the snapshot you read into the draft as `basedOn`.
-- If the user changed a field that an op touches after that snapshot, the op is refused: `ok:false`, `stale:true`, `fields`, and `current` holding the current values. Re-read the snapshot and apply your change on top. The other ops still apply.
+**Editing on top of the user's edits (`basedOn`).** Put the `syncedAt` of the snapshot you read into the draft as `basedOn` (a snapshot from `window.agent.snapshot()` in the console counts too).
+- If the user changed a field that an op touches after that snapshot, the op is refused: `ok:false`, `stale:true`, `fields`, and `current` holding the current values. Re-read the snapshot and apply your change on top.
 - For `set`, the touched fields are the given `start`/`duration`/`trimStart`, each `params` key, and the keyframes.
-- `delete` and `replace` are refused if the element changed at all, or appeared after the snapshot.
-- Fields the user did not touch apply as usual, and nothing is ever locked.
-- The editor remembers its last 64 snapshots. An unknown `basedOn` (after a reload, or a very old snapshot) refuses the whole draft as stale.
+- `delete` and `replace` are refused if the element changed at all (`element`), moved to another track (`track`), or, for a compound clip, if anything inside it changed (`content`). They are also refused if the element appeared after the snapshot.
+- With ripple editing on, an op that would move a clip the user moved after the snapshot is refused (`start of … (moved by ripple)`).
+- Checks compare the snapshot with the timeline as it was before the draft, so two ops of one draft never trip over each other, and an element added by an earlier op can be changed by a later one.
+- Fields the user did not touch apply as usual, and nothing is ever locked. Without `atomic`, the other ops still apply; with `atomic:true`, one stale op cancels the whole draft.
+- The editor remembers its last 64 snapshots. An unknown or malformed `basedOn` (after a reload, or a very old snapshot) refuses the whole draft as stale (`stale:true` on the draft) before anything is imported.
 - Use a snapshot taken after your previous draft applied.
 - Drafts without `basedOn` are not checked.
 
