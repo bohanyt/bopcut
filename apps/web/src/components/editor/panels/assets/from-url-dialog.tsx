@@ -1,0 +1,115 @@
+"use client";
+
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+	Dialog,
+	DialogBody,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { normalizeSectionRequest } from "@/retrieval/time";
+
+type Retrieved = { path: string; name: string; error?: string };
+
+/**
+ * Adds a section of an online video (or only its sound) to the project. The server fetches just that
+ * range with yt-dlp, so a few seconds of a long stream arrive without downloading the whole video.
+ */
+export function FromUrlDialog({
+	open,
+	onOpenChange,
+	onFiles,
+}: {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	onFiles: (files: File[]) => Promise<void> | void;
+}) {
+	const [url, setUrl] = useState("");
+	const [start, setStart] = useState("");
+	const [end, setEnd] = useState("");
+	const [audioOnly, setAudioOnly] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	const submit = async () => {
+		const request = normalizeSectionRequest({ url: url.trim(), start: start.trim(), end: end.trim(), audioOnly }, Number.POSITIVE_INFINITY);
+		if (!request.ok) {
+			setError(request.error);
+			return;
+		}
+		setBusy(true);
+		setError(null);
+		try {
+			const res = await fetch("/api/agent/retrieve", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ kind: "section", ...request.value }),
+			});
+			const body = (await res.json().catch(() => ({}))) as Retrieved;
+			if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
+			const file = await fetch(`/api/agent/file?p=${encodeURIComponent(body.path)}`);
+			if (!file.ok) throw new Error("the fetched file could not be read");
+			const blob = await file.blob();
+			const ext = body.path.split(".").pop() ?? "mp4";
+			await onFiles([new File([blob], `${body.name}.${ext}`, { type: blob.type })]);
+			onOpenChange(false);
+			setUrl("");
+			setStart("");
+			setEnd("");
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return (
+		<Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
+			<DialogContent>
+				<DialogHeader>
+					<DialogTitle>Add from a link</DialogTitle>
+					<DialogDescription>
+						Only the part between start and end is downloaded. Times can be seconds, 1:02:03 or 1h2m3s; a link with t= sets the start.
+					</DialogDescription>
+				</DialogHeader>
+				<DialogBody className="flex flex-col gap-3">
+					<div className="flex flex-col gap-1.5">
+						<Label htmlFor="from-url-link">Link</Label>
+						<Input id="from-url-link" placeholder="https://..." value={url} onChange={(e) => setUrl(e.target.value)} disabled={busy} />
+					</div>
+					<div className="flex gap-3">
+						<div className="flex flex-1 flex-col gap-1.5">
+							<Label htmlFor="from-url-start">Start</Label>
+							<Input id="from-url-start" placeholder="1:02:03" value={start} onChange={(e) => setStart(e.target.value)} disabled={busy} />
+						</div>
+						<div className="flex flex-1 flex-col gap-1.5">
+							<Label htmlFor="from-url-end">End</Label>
+							<Input id="from-url-end" placeholder="1:02:25" value={end} onChange={(e) => setEnd(e.target.value)} disabled={busy} />
+						</div>
+					</div>
+					<div className="flex items-center gap-2">
+						<Checkbox id="from-url-audio" checked={audioOnly} onCheckedChange={(v) => setAudioOnly(v === true)} disabled={busy} />
+						<Label htmlFor="from-url-audio">Sound only</Label>
+					</div>
+					{error && <p className="text-destructive text-sm">{error}</p>}
+					{busy && <p className="text-muted-foreground text-sm">Fetching the section… this takes about as long as the section itself.</p>}
+				</DialogBody>
+				<DialogFooter>
+					<Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+						Cancel
+					</Button>
+					<Button onClick={submit} disabled={busy || !url.trim()}>
+						{busy ? "Fetching…" : "Add"}
+					</Button>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
+	);
+}

@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useMemo, useState } from "react";
 import { PanelView } from "@/components/editor/panels/assets/views/base-panel";
 import { MediaDragOverlay } from "@/components/editor/panels/assets/drag-overlay";
+import { FromUrlDialog } from "@/components/editor/panels/assets/from-url-dialog";
 import { DraggableItem } from "@/components/editor/panels/assets/draggable-item";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -55,6 +56,7 @@ import {
 	LeftToRightListDashIcon,
 	SortingOneNineIcon,
 	Image02Icon,
+	Link01Icon,
 	MusicNote03Icon,
 	Video01Icon,
 } from "@hugeicons/core-free-icons";
@@ -77,6 +79,7 @@ export function MediaView() {
 
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [progress, setProgress] = useState(0);
+	const [fromUrlOpen, setFromUrlOpen] = useState(false);
 
 	const processFiles = async ({ files }: { files: File[] }) => {
 		if (!files || files.length === 0) return;
@@ -191,6 +194,11 @@ export function MediaView() {
 	return (
 		<>
 			<input {...fileInputProps} />
+			<FromUrlDialog
+				open={fromUrlOpen}
+				onOpenChange={setFromUrlOpen}
+				onFiles={(files) => processFiles({ files })}
+			/>
 
 			<PanelView
 				title="Assets"
@@ -203,6 +211,7 @@ export function MediaView() {
 						sortOrder={mediaSortOrder}
 						onSort={handleSort}
 						onImport={openFilePicker}
+						onFromUrl={() => setFromUrlOpen(true)}
 					/>
 				}
 				className={cn(isDragOver && "bg-accent/30")}
@@ -514,6 +523,7 @@ function MediaActions({
 	sortOrder,
 	onSort,
 	onImport,
+	onFromUrl,
 }: {
 	mediaViewMode: MediaViewMode;
 	setMediaViewMode: (mode: MediaViewMode) => void;
@@ -522,6 +532,7 @@ function MediaActions({
 	sortOrder: MediaSortOrder;
 	onSort: ({ key }: { key: MediaSortKey }) => void;
 	onImport: () => void;
+	onFromUrl: () => void;
 }) {
 	return (
 		<div className="flex gap-1.5">
@@ -602,6 +613,23 @@ function MediaActions({
 							Sort by {sortBy} (
 							{sortOrder === "asc" ? "ascending" : "descending"})
 						</p>
+					</TooltipContent>
+				</Tooltip>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							size="icon"
+							variant="ghost"
+							onClick={onFromUrl}
+							disabled={isProcessing}
+							className="items-center justify-center"
+							aria-label="Add from a link"
+						>
+							<HugeiconsIcon icon={Link01Icon} />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent>
+						<p>Add from a link (only the part you need)</p>
 					</TooltipContent>
 				</Tooltip>
 			</TooltipProvider>

@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { pollFrames } from "./frames";
 import { loadIcon } from "@/stickers/providers/iconify";
 import { createEditLogger, type EditSnapshot } from "./edit-log";
-import { type AgentElement, type LoadedMedia, loadAgentAsset } from "./elements";
+import { type AgentElement, type LoadedMedia, assetKey, loadAgentAsset } from "./elements";
 import { walkAgentElements } from "./compound-content";
 import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
@@ -125,13 +125,24 @@ export async function applyDraft(draft: Draft) {
 				if (e.icon) e.icon = { ...e.icon, svg: await loadIcon(e.icon.name) };
 				if (e.asset && typeof e.asset !== "string") {
 					const asset = e.asset;
-					if (!byPath.has(asset.path)) byPath.set(asset.path, loadAgentAsset({ projectId: project.metadata.id, asset }));
-					media.set(e, await byPath.get(asset.path)!);
+					const key = assetKey(asset);
+					if (!byPath.has(key)) byPath.set(key, loadAgentAsset({ projectId: project.metadata.id, asset }));
+					media.set(e, await byPath.get(key)!);
 				}
 			}
 		} catch (error) {
 			results[i] = { op: op.op, ...(op.op === "add" ? { name: op.element?.name } : { agentId: (op as { agent_id?: string }).agent_id }), ok: false, error: String(error) };
 		}
+	}
+
+	// Loading (for example a slow URL section) took a while: if another project is open now, stop here.
+	if (editor.project.getActiveOrNull()?.metadata.id !== project.metadata.id) {
+		fetch("/api/agent/applied", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId: project.metadata.id, ok: false, error: "another project was opened while the draft's assets were loading; nothing was applied", results: ops.map((op) => ({ op: op?.op, ok: false, skipped: true })) }),
+		}).catch(() => {});
+		return;
 	}
 
 	// Read the scenes after loading: the human may have edited meanwhile.
@@ -155,6 +166,11 @@ export async function applyDraft(draft: Draft) {
 		error = e instanceof Error ? e.message : String(e);
 	}
 
+	// Report where `url` assets were saved and their source links (for credits and reuse as `path`).
+	for (const [i, op] of ops.entries()) {
+		const retrieved = elementsOf(op).flatMap((e) => media.get(e)?.retrieved ?? []);
+		if (retrieved.length && outcome.results[i]) outcome.results[i] = { ...outcome.results[i], retrieved };
+	}
 	const failed = outcome.results.filter((r) => !r?.ok).length;
 	if (error) toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: error });
 	else toast(`Agent draft applied: ${draft.label ?? draft.rev}`, {

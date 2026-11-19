@@ -30,6 +30,28 @@ BOPENCUT_DATA can point outside the repository; do not commit private data. Use 
 
 Browser console: `window.agent.snapshot()`, `window.agent.applyDraft(draft)`.
 
+## Media from links (sections, not whole videos)
+
+A part of an online video (for example 20 seconds of a 3-hour stream) can be used without downloading the whole video. yt-dlp downloads only that range and re-encodes it with key frames at the cuts, so the file starts exactly at `start`. Running live streams are refused until their replay exists. Files land in `AGENT_FILES_ROOT/retrieved/`, cached by link + range. `<key>.json` next to each file keeps the source: `title`, `uploader`, `pageUrl`, and `link`, which opens at the start time where the site supports it. Use these for credits.
+
+- **In a draft or bundle:** use an asset with `url` instead of `path`: `{url, start, end | duration, type, name, height?, audioOnly?}`. Times are seconds, `1:02:03` or `1h2m3s`, and `start` defaults to the link's own `t=`. The editor fetches it before applying the draft. `draft-result.json` reports `retrieved: [{path, name, source}]` for that op, so later drafts can reuse the `path`. Element times (`trimStart`) are relative to the section: 0 is `start`.
+- **Without the editor:** `bun apps/web/scripts/retrieve.ts section <url> [--start T] (--end T | --duration T) [--height N] [--audio-only]` prints the same result as JSON. `bun apps/web/scripts/retrieve.ts frame <url> [--at T] [--width N]` saves one frame (JPEG) under `retrieved/frames/`, so you can look before fetching a section.
+- **HTTP:** `POST /api/agent/retrieve` with `{kind:"section", url, start, end|duration, height?, audioOnly?}` or `{kind:"frame", url, time, width?}`. Errors are `400` (bad request) or `502` (the tool failed), with `{error}`.
+- **In the UI:** the link button in the Assets panel ("Add from a link").
+
+Settings, in `apps/web/.env.local` or the environment:
+```
+BOPENCUT_YTDLP=yt-dlp                       # or a command, e.g. "python -m yt_dlp"
+BOPENCUT_FFMPEG=ffmpeg                      # or a full path to ffmpeg
+BOPENCUT_YTDLP_COOKIES_FROM_BROWSER=        # e.g. firefox, for sites that need a login
+BOPENCUT_VIDEO_ENCODER=libx264              # h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox use the GPU
+BOPENCUT_RETRIEVE_HEIGHT=1080               # maximum video height
+BOPENCUT_RETRIEVE_MAX_SECONDS=1800          # longest section allowed
+```
+Links must point at public addresses. Links to this machine or the local network are refused unless `BOPENCUT_ALLOW_PRIVATE_URLS=1` is set. Playlist pages are refused, and a video link that also has `list=` takes only that video. Browser requests to the agent API must come from the editor's own origin (same host and port); clients without an `Origin` header, such as CLIs, are allowed.
+
+Users are responsible for having the rights to the media they fetch.
+
 ## Other changes from upstream
 - Dropped GIFs are converted to silent MP4 (local ffmpeg) so they animate.
 - Fix: preview interruption on effect tracks (`effect_pass_groups`).

@@ -8,6 +8,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { handleRetrieve } from "@/retrieval/server";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -23,8 +24,22 @@ function inside(rel: string) {
 
 async function writeAtomic(file: string, text: string) {
 	await fs.mkdir(path.dirname(file), { recursive: true });
-	await fs.writeFile(file + ".tmp", text);
-	await fs.rename(file + ".tmp", file);
+	// A temp name unique to this write, so overlapping writes (two tabs) never share or steal it.
+	const tmp = `${file}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+	await fs.writeFile(tmp, text);
+	await fs.rename(tmp, file);
+}
+
+/**
+ * Browser requests must come from the editor's own origin (same host and port). A page on another site,
+ * or on another local port, cannot trigger agent actions. Clients that send no Origin (CLIs) are allowed.
+ */
+function foreignOrigin(req: Request): boolean {
+	const origin = req.headers.get("origin");
+	if (!origin) return false;
+	const host = req.headers.get("host");
+	const own = host ? `${new URL(req.url).protocol}//${host}` : new URL(req.url).origin;
+	return origin !== own;
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
@@ -33,7 +48,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 		if (slug[0] === "bundle") return json(await fs.readFile(path.join(WORKSPACE, "bundle", "bundle.json")));
 		if (slug[0] === "file") {
 			const full = inside(new URL(req.url).searchParams.get("p") ?? "");
-			return new Response(new Uint8Array(await fs.readFile(full)), { headers: { "Content-Type": TYPES[path.extname(full).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store" } });
+			return new Response(new Uint8Array(await fs.readFile(full)), { headers: { "Content-Type": TYPES[path.extname(full).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
 		}
 		if (slug[0] === "frames-request") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "frames-request.json"))); } catch { return Response.json(null); }
@@ -49,8 +64,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
 	const { slug } = await params;
-	const origin = req.headers.get("origin");
-	if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return Response.json({ error: "Origin ditolak" }, { status: 403 });
+	if (foreignOrigin(req)) return Response.json({ error: "Requests must come from the editor itself" }, { status: 403 });
 	if (slug[0] === "frame") {
 		const form = await req.formData();
 		const rev = form.get("rev"); const time = form.get("time"); const image = form.get("image");
@@ -83,6 +97,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	if (slug[0] === "applied") {
 		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
+	}
+	if (slug[0] === "retrieve") {
+		// A section of an online video (or one frame of it) into AGENT_FILES_ROOT/retrieved/; see AGENT.md.
+		const result = await handleRetrieve(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
+		return Response.json(result.body, { status: result.status });
 	}
 	if (slug[0] === "gif") {
 		// GIF -> silent MP4 (looped 3x) for timeline animation; OpenCut renders GIFs as still images.
