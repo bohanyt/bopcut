@@ -1,5 +1,5 @@
 import path from "node:path";
-import { promises as fs, createReadStream, createWriteStream } from "node:fs";
+import { promises as fs, createWriteStream } from "node:fs";
 import { randomUUID, createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -167,48 +167,55 @@ export async function mediaResponse(
 	if (!meta || !new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(meta.diskFile))
 		return new Response(null, { status: 404 });
 	const file = path.join(dir, meta.diskFile);
-	const stat = await fs.stat(file);
-	let start = 0,
-		end = stat.size - 1,
-		status = 200;
-	const headers: Record<string, string> = {
-		"Accept-Ranges": "bytes",
-		"Content-Type": meta.fileType || "application/octet-stream",
-		"Cache-Control": "no-store",
-	};
-	if (range) {
-		const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-		if (!match || (!match[1] && !match[2]) || !stat.size)
-			return new Response(null, {
-				status: 416,
-				headers: { "Content-Range": `bytes */${stat.size}` },
-			});
-		if (!match[1]) start = Math.max(0, stat.size - Number(match[2]));
-		else {
-			start = Number(match[1]);
-			if (match[2]) end = Math.min(end, Number(match[2]));
+	// Opened (with retries on transient Windows locks) before the response starts, then streamed from
+	// that handle: a lock can no longer turn into a failed body read halfway through a response.
+	const handle = await retryTransient(() => fs.open(file, "r"));
+	let streaming = false;
+	try {
+		const stat = await handle.stat();
+		let start = 0,
+			end = stat.size - 1,
+			status = 200;
+		const headers: Record<string, string> = {
+			"Accept-Ranges": "bytes",
+			"Content-Type": meta.fileType || "application/octet-stream",
+			"Cache-Control": "no-store",
+		};
+		if (range) {
+			const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+			if (!match || (!match[1] && !match[2]) || !stat.size)
+				return new Response(null, {
+					status: 416,
+					headers: { "Content-Range": `bytes */${stat.size}` },
+				});
+			if (!match[1]) start = Math.max(0, stat.size - Number(match[2]));
+			else {
+				start = Number(match[1]);
+				if (match[2]) end = Math.min(end, Number(match[2]));
+			}
+			if (
+				!Number.isSafeInteger(start) ||
+				!Number.isSafeInteger(end) ||
+				start > end ||
+				start >= stat.size
+			)
+				return new Response(null, {
+					status: 416,
+					headers: { "Content-Range": `bytes */${stat.size}` },
+				});
+			status = 206;
+			headers["Content-Range"] = `bytes ${start}-${end}/${stat.size}`;
 		}
-		if (
-			!Number.isSafeInteger(start) ||
-			!Number.isSafeInteger(end) ||
-			start > end ||
-			start >= stat.size
-		)
-			return new Response(null, {
-				status: 416,
-				headers: { "Content-Range": `bytes */${stat.size}` },
-			});
-		status = 206;
-		headers["Content-Range"] = `bytes ${start}-${end}/${stat.size}`;
+		headers["Content-Length"] = String(stat.size ? end - start + 1 : 0);
+		if (!stat.size) return new Response(null, { status, headers });
+		const body = Readable.toWeb(
+			handle.createReadStream({ start, end, autoClose: true }),
+		) as unknown as ReadableStream;
+		streaming = true;
+		return new Response(body, { status, headers });
+	} finally {
+		if (!streaming) await handle.close().catch(() => {});
 	}
-	headers["Content-Length"] = String(stat.size ? end - start + 1 : 0);
-	if (!stat.size) return new Response(null, { status, headers });
-	return new Response(
-		Readable.toWeb(
-			createReadStream(file, { start, end }),
-		) as unknown as ReadableStream,
-		{ status, headers },
-	);
 }
 
 /**
