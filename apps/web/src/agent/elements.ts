@@ -6,14 +6,17 @@ import { mediaTimeFromSeconds } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
 import type { ParamValues } from "@/params";
 import { generateUUID } from "@/utils/id";
+import type { SfxFile, SfxSource } from "@/sounds/sfx-types";
 
 /**
- * A file under AGENT_FILES_ROOT (`path`), or a section of an online video (`url` + `start`/`end` or `duration`,
- * fetched with POST /api/agent/retrieve into `retrieved/`; `audioOnly` keeps only the sound).
+ * A file under AGENT_FILES_ROOT (`path`), a section of an online video (`url` + `start`/`end` or `duration`,
+ * fetched with POST /api/agent/retrieve into `retrieved/`; `audioOnly` keeps only the sound), or a sound
+ * effect found by name (`sfx`, best match in the library folders and myinstants, or only `sfxSources`).
  */
 export type AgentAsset = {
 	path?: string; url?: string; start?: number | string; end?: number | string; duration?: number | string;
-	height?: number; audioOnly?: boolean; type: "image" | "video" | "audio" | "model"; name: string;
+	height?: number; audioOnly?: boolean; sfx?: string; sfxSources?: SfxSource[];
+	type: "image" | "video" | "audio" | "model"; name: string;
 };
 export type AgentElement = {
 	agent_id?: string; name: string; start: number; duration: number; trimStart?: number;
@@ -37,13 +40,27 @@ export type AgentCompoundContent = {
 	audio?: AgentElement[];
 	elements?: (AgentElement & { track: AgentTrackRef })[];
 };
-export type LoadedMedia = { id: string; type: AgentAsset["type"]; width?: number; height?: number; duration?: number; retrieved?: RetrievedAsset };
+export type LoadedMedia = { id: string; type: AgentAsset["type"]; width?: number; height?: number; duration?: number; retrieved?: RetrievedAsset; sfx?: SfxFile };
 /** What the retrieve endpoint fetched for a `url` asset: its file under AGENT_FILES_ROOT and its source. */
 export type RetrievedAsset = { path: string; name: string; source: { link: string; title?: string; uploader?: string; start: number; end: number } };
 
 /** Identity of an asset within one draft or bundle, so the same file or section is loaded once. */
 export function assetKey(asset: AgentAsset): string {
-	return asset.path ?? JSON.stringify([asset.url, asset.start, asset.end, asset.duration, asset.height, asset.audioOnly]);
+	if (asset.path) return asset.path;
+	if (asset.sfx !== undefined && !asset.url) return JSON.stringify(["sfx", asset.sfx, asset.sfxSources]);
+	return JSON.stringify([asset.url, asset.start, asset.end, asset.duration, asset.height, asset.audioOnly]);
+}
+
+/** Find a sound effect by name (best match) and save it under AGENT_FILES_ROOT. */
+export async function findAgentSfx(asset: AgentAsset): Promise<SfxFile> {
+	const res = await fetch("/api/agent/sfx", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ kind: "find", query: asset.sfx, ...(asset.sfxSources ? { sources: asset.sfxSources } : {}) }),
+	});
+	const body = await res.json().catch(() => ({}));
+	if (!res.ok) throw new Error(`Cannot find sound "${asset.sfx}": ${body.error ?? res.status}`);
+	return body as SfxFile;
 }
 
 /** Fetch a `url` asset's section through the retrieve endpoint; returns where it was saved. */
@@ -64,24 +81,26 @@ export const secs = (seconds: number) => mediaTimeFromSeconds({ seconds });
 
 /**
  * Register an asset as media in the active project: a file from AGENT_FILES_ROOT, or, for a `url` asset,
- * the section the retrieve endpoint fetched first.
+ * the section the retrieve endpoint fetched first, or, for an `sfx` asset, the best matching sound.
  */
 export async function loadAgentAsset({ projectId, asset }: { projectId: string; asset: AgentAsset }): Promise<LoadedMedia> {
 	const editor = EditorCore.getInstance();
-	if (!asset.path && !asset.url) throw new Error(`Asset "${asset.name}" needs a path or a url`);
-	const retrieved = asset.path ? undefined : await retrieveAgentAsset(asset);
-	const filePath = asset.path ?? (retrieved as RetrievedAsset).path;
+	if (!asset.path && !asset.url && !asset.sfx?.trim()) throw new Error(`Asset "${asset.name}" needs a path, a url or an sfx name`);
+	const retrieved = asset.path || !asset.url ? undefined : await retrieveAgentAsset(asset);
+	const sfx = asset.path || asset.url ? undefined : await findAgentSfx(asset);
+	const filePath = asset.path ?? retrieved?.path ?? (sfx as SfxFile).path;
 	const res = await fetch(`/api/agent/file?p=${encodeURIComponent(filePath)}`);
 	if (!res.ok) throw new Error("Cannot read asset: " + filePath);
 	const blob = await res.blob();
 	const fileName = filePath.split("/").pop() ?? asset.name;
 	const [processed] = await processMediaAssets({ files: [new File([blob], fileName, { type: blob.type })] });
 	if (!processed) throw new Error("Failed to process asset: " + filePath);
-	const saved = await editor.media.addMediaAsset({ projectId, asset: { ...processed, name: asset.name || retrieved?.name || fileName } });
+	const saved = await editor.media.addMediaAsset({ projectId, asset: { ...processed, name: asset.name || retrieved?.name || sfx?.name || fileName } });
 	if (!saved) throw new Error("Failed to save asset: " + filePath);
 	return {
 		id: saved.id, type: asset.type === "model" ? "model" : processed.type as AgentAsset["type"], width: processed.width, height: processed.height, duration: processed.duration,
 		...(retrieved ? { retrieved } : {}),
+		...(sfx ? { sfx } : {}),
 	};
 }
 
@@ -142,13 +161,15 @@ export function buildAgentElement({ e, media, trackId, sceneId, canvas, keyframe
 	}
 	if (e.model3d && media?.type !== "model") throw new Error("Model asset missing for " + e.name);
 	if (!media) throw new Error("Asset missing for " + e.name);
-	const el: any = { ...buildElementFromMedia({ mediaId: media.id, mediaType: media.type === "model" ? "image" : media.type, name: e.name, duration: secs(e.duration), startTime: secs(e.start) }), id: generateUUID(), agentId: e.agent_id, groupId: e.group };
-	if (e.model3d) Object.assign(el.params, e.model3d.params ?? {});
 	const trimStart = e.trimStart ?? 0;
+	// Without a duration, audio and video play to the end of the media (e.g. a sound effect found by name).
+	const duration = typeof e.duration === "number" && e.duration > 0 ? e.duration : Math.max(0.1, (media.duration ?? 5) - trimStart);
+	const el: any = { ...buildElementFromMedia({ mediaId: media.id, mediaType: media.type === "model" ? "image" : media.type, name: e.name, duration: secs(duration), startTime: secs(e.start) }), id: generateUUID(), agentId: e.agent_id, groupId: e.group };
+	if (e.model3d) Object.assign(el.params, e.model3d.params ?? {});
 	if (media.type !== "image" && media.duration) {
 		el.sourceDuration = secs(media.duration);
 		el.trimStart = secs(trimStart);
-		el.trimEnd = secs(Math.max(0, media.duration - trimStart - e.duration));
+		el.trimEnd = secs(Math.max(0, media.duration - trimStart - duration));
 	}
 	if (media.type === "video") el.isSourceAudioEnabled = false;
 	let base = 1;

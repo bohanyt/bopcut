@@ -12,6 +12,7 @@
 - **Catatan dua arah:** tandai rentang waktu atau item dengan catatan; AI bisa membaca, membalas, dan menandai selesai.
 - **AI melihat frame:** AI bisa meminta gambar frame pada detik mana pun.
 - **Ambil potongan video dari link:** cukup link + waktu mulai/selesai (misalnya 20 detik dari live 3 jam). Yang diunduh hanya bagian itu, lewat yt-dlp, dengan potongan yang pas di frame. Bisa dari draf AI, dari CLI, atau dari tombol link di panel Assets.
+- **Sound effect tinggal sebut nama:** cari di folder SFX-mu sendiri dan di Myinstants (tanpa akun). Bisa dari tab Library di panel Sounds, atau AI cukup menulis `sfx: "vine boom"` di draf. Suara yang pernah diambil tersimpan dan ikut jadi library.
 - **AI belajar seleramu:** editanmu pada item buatan AI dicatat dan diringkas menjadi kandidat aturan selera.
 
 **Editor**

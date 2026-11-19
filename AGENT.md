@@ -52,6 +52,28 @@ Links must point at public addresses. Links to this machine or the local network
 
 Users are responsible for having the rights to the media they fetch.
 
+## Sound effects
+
+Sounds come from two sources:
+- **`library`:** the user's own sound folders, in this order:
+  - `AGENT_FILES_ROOT/sfx/`, where fetched sounds are saved
+  - every folder in `BOPENCUT_SFX_DIRS`, separated by `;` on Windows and `:` elsewhere
+  Matching uses the file name and its folder names. Every word of the query must match.
+- **`myinstants`:** myinstants.com, with no account or key. A downloaded sound is peak-normalized to -1 dBFS into `AGENT_FILES_ROOT/sfx/myinstants/` (`BOPENCUT_SFX_NORMALIZE=off` keeps it as downloaded). From then on it is part of the library.
+
+How to use them:
+- **In a draft or bundle:** an asset `{sfx:"vine boom", type:"audio", name, sfxSources?:["library"|"myinstants"]}` uses the best match. The library is searched before myinstants. Leave out the element `duration` to play the whole sound. `draft-result.json` reports `sfx: [{path, name, source, pageUrl?}]`, so later drafts can reuse the `path`.
+- **Without the editor:**
+  - `bun apps/web/scripts/sfx.ts search <query> [--source library|myinstants] [--limit N]` lists matches.
+  - `find <query>` saves the best match.
+  - `get <source> <ref>` saves one result.
+  All print JSON with the asset `path`.
+- **HTTP:** `POST /api/agent/sfx` with:
+  - `{kind:"search", query, sources?, limit?}`, which returns `{results:[{source, ref, name, tags, previewUrl, pageUrl?}], errors}`. A failing source is listed in `errors`, and the others still answer.
+  - `{kind:"get", source, ref}` or `{kind:"find", query, sources?}`, which return `{path, name, source, pageUrl?, cached}`.
+  `GET /api/agent/sfx-file?ref=` streams a library sound for previews.
+- **In the UI:** the Library tab of the Sounds panel. The plus button adds the sound at the playhead.
+
 ## Other changes from upstream
 - Dropped GIFs are converted to silent MP4 (local ffmpeg) so they animate.
 - Fix: preview interruption on effect tracks (`effect_pass_groups`).

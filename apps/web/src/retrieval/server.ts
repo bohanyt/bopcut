@@ -85,9 +85,14 @@ export const defaultRunner: Runner = (command, args) =>
 	});
 
 
-async function runTool(runner: Runner, tool: string[], args: string[], label: string): Promise<string> {
+export async function runTool(runner: Runner, tool: string[], args: string[], label: string): Promise<string> {
+	return (await runToolOutput(runner, tool, args, label)).stdout;
+}
+
+/** Runs a configured tool; missing tools and failures become a RetrievalError with a short message. */
+export async function runToolOutput(runner: Runner, tool: string[], args: string[], label: string): Promise<{ stdout: string; stderr: string }> {
 	try {
-		return (await runner(tool[0], [...tool.slice(1), ...args])).stdout;
+		return await runner(tool[0], [...tool.slice(1), ...args]);
 	} catch (error) {
 		const e = error as NodeJS.ErrnoException & { stderr?: string };
 		if (e.code === "ENOENT") {
