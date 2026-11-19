@@ -12,6 +12,7 @@ import { handleRetrieve } from "@/retrieval/server";
 import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
 import { MUSIC_LIBRARY, handleMusic } from "@/sounds/music-server";
 import { handleDuck } from "@/sounds/duck-server";
+import { parseSelectionPayload } from "@/agent/selection-payload";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -106,9 +107,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	}
 	if (slug[0] === "selection") {
 		// What the user points at right now (selected elements + playhead); see AGENT.md.
-		const body = await req.json().catch(() => null);
-		if (!body || typeof body !== "object" || typeof body.projectId !== "string" || !Array.isArray(body.selected)) return Response.json({ error: "Invalid selection" }, { status: 400 });
-		await writeAtomic(path.join(WORKSPACE, "selection.json"), JSON.stringify(body, null, 1));
+		const text = await req.text();
+		if (text.length > 4 * 1024 * 1024) return Response.json({ error: "Selection too large" }, { status: 413 });
+		let body: unknown = null;
+		try {
+			body = JSON.parse(text);
+		} catch {
+			// handled below
+		}
+		const selection = parseSelectionPayload(body);
+		if (!selection) return Response.json({ error: "Invalid selection" }, { status: 400 });
+		await writeAtomic(path.join(WORKSPACE, "selection.json"), JSON.stringify(selection, null, 1));
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "applied") {

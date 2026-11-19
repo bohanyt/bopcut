@@ -11,6 +11,7 @@ import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
 import { getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildEditItems, buildSceneSnapshot } from "./snapshot";
+import { NO_SELECTION } from "./selection-payload";
 
 export type { Draft, DraftOp } from "./draft";
 
@@ -96,17 +97,21 @@ export function installAgentBridge() {
 	const pushSelection = () => {
 		clearTimeout(selectionTimer);
 		selectionTimer = setTimeout(() => {
-			const selection = agentSelection();
-			if (!selection) return;
-			const body = JSON.stringify(selection);
+			// No open project: an empty selection, so an agent never acts on a closed project's selection.
+			const body = JSON.stringify(agentSelection() ?? NO_SELECTION);
 			if (body === lastSelection) return;
 			lastSelection = body;
-			fetch("/api/agent/selection", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, updatedAt: new Date().toISOString() }) }).catch(() => {});
+			fetch("/api/agent/selection", { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {
+				lastSelection = "";
+			});
 		}, 250);
 	};
 	editor.selection.subscribe(pushSelection);
 	editor.playback.subscribe(pushSelection);
 	editor.timeline.subscribe(pushSelection);
+	editor.scenes.subscribe(pushSelection);
+	editor.project.subscribe(pushSelection);
+	pushSelection();
 	(window as any).agent = { editor, snapshot: agentSnapshot, selection: agentSelection, push, applyDraft };
 	push();
 	setInterval(pollDraft, 2000);
