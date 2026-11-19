@@ -120,6 +120,7 @@ export class RendererManager {
 				width: canvasSize.width,
 				height: canvasSize.height,
 				fps,
+				exactFrames: true,
 			});
 
 			const tempCanvas = document.createElement("canvas");

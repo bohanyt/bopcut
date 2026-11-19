@@ -206,6 +206,7 @@ const loadCanvasThumbnailRenderer: LoadThumbnailRenderer = async ({
 		height: canvasSize.height,
 		fps,
 		renderScale: Math.min(1, THUMBNAIL_HEIGHT_PX / canvasSize.height),
+		exactFrames: true,
 	});
 	const canvas = document.createElement("canvas");
 	canvas.width = renderer.outputWidth;

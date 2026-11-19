@@ -16,6 +16,11 @@ export type CanvasRendererParams = {
 	fps: FrameRate;
 	/** Preview target scale; project coordinates remain unchanged. */
 	renderScale?: number;
+	/**
+	 * Video frames are decoded for exactly the rendered time, even while the preview asks for other
+	 * frames of the same video (snapshots, agent frames, export, thumbnails). The preview leaves it off.
+	 */
+	exactFrames?: boolean;
 };
 
 // The WASM compositor and its textures are shared by all renderers.
@@ -30,7 +35,10 @@ export class CanvasRenderer {
 	outputHeight: number;
 	private outputCanvas: HTMLCanvasElement;
 
-	constructor({ width, height, fps, renderScale = 1 }: CanvasRendererParams) {
+	readonly exactFrames: boolean;
+
+	constructor({ width, height, fps, renderScale = 1, exactFrames = false }: CanvasRendererParams) {
+		this.exactFrames = exactFrames;
 		this.width = width;
 		this.height = height;
 		this.fps = fps;
