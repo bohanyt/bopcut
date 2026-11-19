@@ -38,6 +38,7 @@ const PROPERTY_LABELS: Partial<Record<string, string>> = {
 	"background.offsetX": "BG Offset X",
 	"background.offsetY": "BG Offset Y",
 	"background.cornerRadius": "Corner Radius",
+	"shake.intensity": "Shake",
 };
 
 export function getPropertyLabel(path: AnimationPath): string {

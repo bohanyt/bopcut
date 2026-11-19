@@ -1,4 +1,4 @@
-import { mediaTimeToSeconds, roundMediaTime } from "@/wasm";
+import { TICKS_PER_SECOND, mediaTimeToSeconds, roundMediaTime } from "@/wasm";
 import { getElementLocalTime } from "@/animation";
 import { resolveEffectParamsAtTime } from "@/animation/effect-param-channel";
 import {
@@ -19,6 +19,7 @@ import {
 } from "@/text/measure-element";
 import { resolveColorAtTime, resolveOpacityAtTime } from "@/animation/values";
 import { resolveTransformAtTime } from "@/rendering/animation-values";
+import { applyShake, readShakeSettings } from "@/rendering/shake";
 import { videoCache } from "@/services/video-cache/service";
 import type { CanvasRenderer } from "./canvas-renderer";
 import type { AnyBaseNode } from "./nodes/base-node";
@@ -161,10 +162,16 @@ function resolveVisualState({
 		elementStartTime: params.timeOffset,
 		elementDuration: params.duration,
 	});
-	const transform = resolveTransformAtTime({
-		baseTransform: params.transform,
+	const transform = applyShake({
+		transform: resolveTransformAtTime({
+			baseTransform: params.transform,
+			animations: params.animations,
+			localTime,
+		}),
+		settings: params.shake,
 		animations: params.animations,
 		localTime,
+		ticksPerSecond: TICKS_PER_SECOND,
 	});
 	const opacity = resolveOpacityAtTime({
 		baseOpacity: params.opacity,
@@ -386,10 +393,16 @@ function resolveTextNode({
 	const background = buildTextBackgroundFromElement({ element: node.params });
 
 	return {
-		transform: resolveTransformAtTime({
-			baseTransform: node.params.transform,
+		transform: applyShake({
+			transform: resolveTransformAtTime({
+				baseTransform: node.params.transform,
+				animations: node.params.animations,
+				localTime,
+			}),
+			settings: readShakeSettings(node.params.params),
 			animations: node.params.animations,
 			localTime,
+			ticksPerSecond: TICKS_PER_SECOND,
 		}),
 		opacity: resolveOpacityAtTime({
 			baseOpacity: node.params.opacity,

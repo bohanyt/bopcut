@@ -40,6 +40,10 @@ const TRANSFORM_PARAM_KEYS = [
 	"transform.scaleX",
 	"transform.scaleY",
 	"transform.rotate",
+	"shake.intensity",
+	"shake.frequency",
+	"shake.rotation",
+	"shake.seed",
 ] as const;
 
 const BLENDING_PARAM_KEYS = ["opacity", "blendMode"] as const;
