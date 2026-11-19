@@ -38,15 +38,58 @@ export function isElementMuted({
 	return element.params.muted === true;
 }
 
+/** Fade-in and fade-out lengths (seconds) of an audio-capable clip; 0 when unset. */
+export function getElementFades({
+	element,
+}: {
+	element: AudioCapableElement;
+}): { fadeIn: number; fadeOut: number } {
+	const read = (value: unknown) =>
+		typeof value === "number" && Number.isFinite(value) && value > 0
+			? value
+			: 0;
+	return {
+		fadeIn: read(element.params.fadeIn),
+		fadeOut: read(element.params.fadeOut),
+	};
+}
+
+/**
+ * Linear gain of the clip's fades at `localTime` (seconds from the clip start): rises from 0 over
+ * `fadeIn`, falls to 0 over the last `fadeOut` seconds of the clip, 1 in between.
+ */
+export function fadeGainAt({
+	element,
+	localTime,
+}: {
+	element: AudioCapableElement;
+	localTime: number;
+}): number {
+	const { fadeIn, fadeOut } = getElementFades({ element });
+	if (!fadeIn && !fadeOut) return 1;
+	const duration = element.duration / TICKS_PER_SECOND;
+	let gain = 1;
+	if (fadeIn > 0) gain *= Math.min(1, Math.max(0, localTime / fadeIn));
+	if (fadeOut > 0)
+		gain *= Math.min(1, Math.max(0, (duration - localTime) / fadeOut));
+	return gain;
+}
+
+/** True when the clip's gain changes over time: volume keyframes or fades. */
 export function hasAnimatedVolume({
 	element,
 }: {
 	element: AudioCapableElement;
 }): boolean {
-	return hasKeyframesForPath({
-		animations: element.animations,
-		propertyPath: "volume",
-	});
+	const { fadeIn, fadeOut } = getElementFades({ element });
+	return (
+		fadeIn > 0 ||
+		fadeOut > 0 ||
+		hasKeyframesForPath({
+			animations: element.animations,
+			propertyPath: "volume",
+		})
+	);
 }
 
 import { TICKS_PER_SECOND } from "@/wasm";
@@ -71,7 +114,7 @@ export function resolveEffectiveAudioGain({
 		localTime: Math.round(localTime * TICKS_PER_SECOND),
 	});
 
-	return dBToLinear(resolvedDb);
+	return dBToLinear(resolvedDb) * fadeGainAt({ element, localTime });
 }
 
 export function buildWaveformGainSamples({
