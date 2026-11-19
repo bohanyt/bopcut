@@ -16,7 +16,7 @@ import { checkAgentCaption, resolveCaptionPreset } from "./captions";
 
 export type Bundle = {
 	name: string; width: number; height: number;
-	/** Project frame rate (frames per second); the editor default when omitted. */
+	/** Project frame rate (frames per second); the editor default when omitted. Imported media never change it. */
 	fps?: number;
 	assets: (AgentAsset & { key: string })[];
 	main: AgentElement[]; audio: AgentElement[];

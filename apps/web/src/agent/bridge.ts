@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { pollFrames } from "./frames";
 import { loadIcon } from "@/stickers/providers/iconify";
 import { createEditLogger, type EditSnapshot } from "./edit-log";
-import { type AgentElement, type LoadedMedia, assetKey, loadAgentAsset } from "./elements";
+import { type AgentElement, type LoadedMedia, assetKey, existingAgentMedia, stageAgentAsset } from "./elements";
 import { walkAgentElements } from "./compound-content";
 import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
@@ -27,6 +27,35 @@ export function agentRootScene() {
 	return getRootScene(editor.scenes.getScenes(), editor.scenes.getActiveSceneOrNull()?.id ?? null);
 }
 
+/**
+ * Whether the editor is safe for the agent: the project is loaded, loading its stored media has
+ * finished, and every change is saved to disk. Drafts and frame requests wait for it; the sync
+ * snapshot reports it. Stored media that could not be read do not block readiness: they are listed
+ * in `missingMedia` so the agent can decide (frames refuse them unless the request allows it).
+ */
+export function agentReadiness() {
+	const editor = EditorCore.getInstance();
+	const project = editor.project.getActiveOrNull();
+	const projectId = project?.metadata.id ?? null;
+	const mediaLoaded = !!projectId && editor.media.isProjectMediaLoaded({ projectId });
+	const missingMedia = mediaLoaded ? editor.media.getMissingMedia() : [];
+	const pendingSave = editor.save.getIsDirty();
+	const saveError = projectId ? editor.save.getLastError(projectId) : null;
+	const savedAt = (projectId && editor.save.getLastSavedAt(projectId)?.toISOString()) || null;
+	const ready = !!project && !editor.project.getIsLoading() && mediaLoaded && !pendingSave && !saveError;
+	return { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt };
+}
+
+/** Resolves true once agentReadiness().ready, false after `timeoutMs`. */
+export async function whenAgentReady({ timeoutMs = 120000 }: { timeoutMs?: number } = {}): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (!agentReadiness().ready) {
+		if (Date.now() > deadline) return false;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	return true;
+}
+
 export function agentSnapshot() {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
@@ -34,8 +63,11 @@ export function agentSnapshot() {
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
 	const view = buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() });
+	const { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt } = agentReadiness();
 	return {
-		schema: "opencut-agent-sync-1", projectId: project.metadata.id, projectName: project.metadata.name, savedAt: new Date().toISOString(),
+		schema: "opencut-agent-sync-1", projectId: project.metadata.id, projectName: project.metadata.name,
+		// ready = media loaded and nothing left to save; savedAt = last write of project.json; syncedAt = this snapshot.
+		ready, mediaLoaded, mediaCount: editor.media.getAssets().length, missingMedia, pendingSave, saveError, savedAt, syncedAt: new Date().toISOString(),
 		canvas: project.settings.canvasSize, fps: project.settings.fps,
 		note: "Times are in seconds. transform.positionX/Y = pixels from the canvas center. Overlay index 0 = topmost. Inside compounds, start/end are relative to the compound's content; visible = intervals in the root timeline.",
 		sceneId: scene.id, activeSceneId: active.id,
@@ -83,13 +115,16 @@ export function installAgentBridge() {
 	editLogger = createEditLogger(editSnapshot, () => editor.timeline.isPreviewActive(), (lines) => {
 		fetch("/api/agent/edits", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lines) }).catch(() => {});
 	});
-	const push = () => {
-		editLogger?.changed();
+	const sync = () => {
 		clearTimeout(timer);
 		timer = setTimeout(() => {
 			const snap = agentSnapshot();
 			if (snap) fetch("/api/agent/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snap) }).catch(() => {});
 		}, 800);
+	};
+	const push = () => {
+		editLogger?.changed();
+		sync();
 	};
 	editor.timeline.subscribe(push);
 	editor.scenes.subscribe(push);
@@ -114,10 +149,56 @@ export function installAgentBridge() {
 	editor.scenes.subscribe(pushSelection);
 	editor.project.subscribe(pushSelection);
 	pushSelection();
-	(window as any).agent = { editor, snapshot: agentSnapshot, selection: agentSelection, push, applyDraft };
+	// Re-sync when readiness changes (media finished loading, a save landed) so the snapshot tells the truth.
+	let readiness = "";
+	const readinessChanged = () => {
+		const { ready, mediaLoaded, missingMedia, pendingSave, saveError } = agentReadiness();
+		const key = JSON.stringify([ready, mediaLoaded, missingMedia.length, pendingSave, saveError]);
+		if (key !== readiness) {
+			readiness = key;
+			sync();
+		}
+	};
+	editor.save.subscribe(readinessChanged);
+	editor.media.subscribe(readinessChanged);
+	editor.project.subscribe(readinessChanged);
+	const retryMissingMedia = () => {
+		const project = editor.project.getActiveOrNull();
+		return project ? editor.media.retryMissingMedia({ projectId: project.metadata.id }) : Promise.resolve([]);
+	};
+	(window as any).agent = { editor, snapshot: agentSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
 	push();
 	setInterval(pollDraft, 2000);
-	setInterval(pollFrames, 2000);
+	// Frames wait for media and saves too: otherwise a frame can miss content that is still loading.
+	setInterval(() => {
+		void framesGate().then((go) => (go ? pollFrames() : undefined));
+	}, 2000);
+}
+
+// A frame request is refused (once per rev, with an error result) while stored media are
+// missing, unless it says `allowMissing: true`: frames would silently lack that content.
+let refusedFramesRev: string | null = null;
+async function framesGate(): Promise<boolean> {
+	const { ready, missingMedia } = agentReadiness();
+	if (!ready) return false;
+	if (missingMedia.length === 0) return true;
+	let request: { rev?: unknown; allowMissing?: unknown } | null = null;
+	try {
+		request = await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json();
+	} catch {
+		return false;
+	}
+	if (!request || typeof request.rev !== "string") return false;
+	if (request.allowMissing === true) return true;
+	if (refusedFramesRev !== request.rev) {
+		refusedFramesRev = request.rev;
+		const projectId = EditorCore.getInstance().project.getActiveOrNull()?.metadata.id;
+		await fetch("/api/agent/frames-result", {
+			method: "POST", headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ rev: request.rev, projectId, files: [], error: `${missingMedia.length} stored media could not be loaded; retry them (window.agent.retryMissingMedia()) or send allowMissing:true`, missingMedia }),
+		}).catch(() => {});
+	}
+	return false;
 }
 
 // An agent draft is a list of per-item operations, protecting human edits (see AGENT.md and draft.ts).
@@ -128,6 +209,7 @@ async function pollDraft() {
 	const project = editor.project.getActiveOrNull();
 	if (!project || applying) return;
 	if (editor.timeline.isPreviewActive()) return; // a human is dragging: wait until release
+	if (!agentReadiness().ready) return; // media still loading or a save pending: the draft waits
 	let draft: Draft | null = null;
 	try {
 		draft = await (await fetch("/api/agent/draft", { cache: "no-store" })).json();
@@ -146,73 +228,162 @@ async function pollDraft() {
 	}
 }
 
+// Drafts run one at a time, whoever calls applyDraft (the poller or the console).
+let draftQueue: Promise<void> = Promise.resolve();
+
 /** Elements an op builds (with compound content), whose icons and assets load before the timeline changes. */
 function elementsOf(op: DraftOp): AgentElement[] {
 	if (op?.op === "add") return op.element ? [...walkAgentElements([op.element])] : [];
+	if (op?.op === "replace") return op.element && typeof op.element === "object" ? [...walkAgentElements([op.element as AgentElement])] : [];
 	if (op?.op === "compound") return [...walkAgentElements([...(op.main ?? []), ...(op.overlay ?? []).flatMap((t) => t.elements ?? []), ...(op.audio ?? []), ...(op.elements ?? [])])];
 	return [];
 }
 
-export async function applyDraft(draft: Draft) {
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const opLabel = (op: DraftOp) => (op?.op === "add" ? { name: op.element?.name } : { agentId: (op as { agent_id?: string })?.agent_id });
+
+/**
+ * Applies a draft as one Undo step; drafts run one after another. Every icon and asset (and every
+ * `mediaId`) is loaded before the timeline changes, and imported assets stay private (staged) until
+ * the draft commits: if anything fails, nothing is applied, the staged imports are deleted (nothing
+ * can be using them), and every failure is reported, including files that could not be removed.
+ * Once applied, the project is saved before the result is written, so `draft-result.json` with
+ * `saved: true` means the change is in project.json on disk.
+ */
+export function applyDraft(draft: Draft): Promise<void> {
+	const run = draftQueue.then(() => applyDraftNow(draft));
+	draftQueue = run.catch(() => {});
+	return run;
+}
+
+/** Media ids used by elements anywhere in these scenes. */
+function usedMediaIds(scenes: { tracks: { main: { elements: unknown[] }; overlay: { elements: unknown[] }[]; audio: { elements: unknown[] }[] } }[]): Set<string> {
+	const ids = new Set<string>();
+	for (const scene of scenes) {
+		for (const track of [scene.tracks.main, ...scene.tracks.overlay, ...scene.tracks.audio]) {
+			for (const element of track.elements as { mediaId?: unknown }[]) if (typeof element.mediaId === "string") ids.add(element.mediaId);
+		}
+	}
+	return ids;
+}
+
+async function applyDraftNow(draft: Draft) {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const active = editor.scenes.getActiveSceneOrNull();
 	if (!project || !active || !agentRootScene()) return;
-	const ops: DraftOp[] = Array.isArray(draft.ops) ? structuredClone(draft.ops) : [];
-	const results: any[] = [];
+	const projectId = project.metadata.id;
+	const ops: DraftOp[] = Array.isArray(draft?.ops) ? structuredClone(draft.ops) : [];
+	const report = (body: Record<string, unknown>) =>
+		fetch("/api/agent/applied", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ...body }),
+		}).catch(() => {});
 
 	// Load icons and assets first (async), then change the timeline at once.
 	const media = new Map<AgentElement, LoadedMedia>();
 	const byPath = new Map<string, Promise<LoadedMedia>>();
 	let presets: ReturnType<typeof loadTextPresets> | undefined;
+	// Every import attempted, recorded before anything is written (also those whose save failed).
+	const staged: string[] = [];
+	const failures: (string | undefined)[] = [];
 	for (const [i, op] of ops.entries()) {
-		try {
-			if (op.op === "set" && op.caption?.preset) op.caption = resolveCaptionPreset(op.caption, await (presets ??= loadTextPresets()));
-			for (const e of elementsOf(op)) {
+		const errors: string[] = [];
+		if (op.op === "set" && op.caption?.preset) {
+			try {
+				op.caption = resolveCaptionPreset(op.caption, await (presets ??= loadTextPresets()));
+			} catch (error) {
+				errors.push(`caption: ${errorText(error)}`);
+			}
+		}
+		for (const e of elementsOf(op)) {
+			try {
 				if (e.caption?.preset) e.caption = resolveCaptionPreset(e.caption, await (presets ??= loadTextPresets()));
 				if (e.icon) e.icon = { ...e.icon, svg: await loadIcon(e.icon.name) };
-				if (e.asset && typeof e.asset !== "string") {
+				if (e.mediaId !== undefined) {
+					if (typeof e.mediaId !== "string") throw new Error("mediaId must be a string");
+					media.set(e, existingAgentMedia(e));
+				} else if (e.asset && typeof e.asset !== "string") {
 					const asset = e.asset;
 					const key = assetKey(asset);
-					if (!byPath.has(key)) byPath.set(key, loadAgentAsset({ projectId: project.metadata.id, asset }));
+					if (!byPath.has(key)) byPath.set(key, stageAgentAsset({ projectId, asset, onId: (id) => staged.push(id) }));
 					media.set(e, await byPath.get(key)!);
 				}
+			} catch (error) {
+				errors.push(`${e.agent_id ?? e.name}: ${errorText(error)}`);
 			}
-		} catch (error) {
-			results[i] = { op: op.op, ...(op.op === "add" ? { name: op.element?.name } : { agentId: (op as { agent_id?: string }).agent_id }), ok: false, error: String(error) };
 		}
+		if (errors.length) failures[i] = errors.join("; ");
 	}
-
-	// Loading (for example a slow URL section) took a while: if another project is open now, stop here.
-	if (editor.project.getActiveOrNull()?.metadata.id !== project.metadata.id) {
-		fetch("/api/agent/applied", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId: project.metadata.id, ok: false, error: "another project was opened while the draft's assets were loading; nothing was applied", results: ops.map((op) => ({ op: op?.op, ok: false, skipped: true })) }),
-		}).catch(() => {});
+	/** Removes staged imports (all, or those `keep` does not need) and reports what could not be removed. */
+	const discard = async (keep: Set<string> = new Set()) => {
+		const drop = staged.filter((id) => !keep.has(id));
+		if (drop.length === 0) return null;
+		const cleanup = await editor.media.discardStagedMediaAssets({ ids: drop });
+		return cleanup;
+	};
+	const cleanupNote = (cleanup: Awaited<ReturnType<typeof discard>>) =>
+		cleanup?.failed.length ? `; ${cleanup.failed.length} imported ${cleanup.failed.length === 1 ? "file" : "files"} could not be removed from storage` : "";
+	// Loading (for example a slow URL section) took a while. If another project is open now, its timeline
+	// is not the one this draft was made for, and the staged imports belong to the first project: stop here.
+	if (editor.project.getActiveOrNull() !== project) {
+		const cleanup = await discard();
+		await report({ ok: false, applied: false, error: "another project was opened while the draft's assets were loading; nothing was applied" + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
 	}
+	const root = agentRootScene();
+	if (failures.some(Boolean) || !root) {
+		const cleanup = await discard();
+		const count = failures.filter(Boolean).length;
+		const results = ops.map((op, i) => ({ op: op?.op, ...opLabel(op), ok: false, ...(failures[i] ? { error: failures[i] } : { skipped: true, error: "not applied: assets of another op failed to load" }) }));
+		const error = (root ? "assets failed to load; nothing was applied" : "no scene") + cleanupNote(cleanup);
+		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, {
+			description: (root ? `${count} ${count === 1 ? "op" : "ops"} could not load assets; nothing changed (see draft-result.json)` : "No scene is open") + cleanupNote(cleanup),
+		});
+		await report({ ...(root ? { sceneId: root.id } : {}), ok: false, applied: false, error, rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results });
+		return;
+	}
+
 
 	// Read the scenes after loading: the human may have edited meanwhile.
 	const before = editor.scenes.getScenes();
 	const openScene = editor.scenes.getActiveScene();
-	const root = agentRootScene();
-	if (!root) return;
 	const outcome = computeAgentDraft({
-		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), results,
+		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true,
 		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled,
 	});
 	// The open scene stays open unless the draft removed it (ungrouping the compound being edited): then the root opens.
 	const openAfter = outcome.scenes.some((scene) => scene.id === openScene.id) ? openScene.id : root.id;
 	// Select changed or added items so they are visible on the timeline (inside history, so redo selects them again).
 	const selection = selectionInScene(outcome.scenes, openAfter, outcome.touched);
-	let error: string | null = null;
-	try {
-		const command = new AgentDraftCommand({ before, after: outcome.scenes, selection, openBefore: openScene.id, openAfter, wrap: (action) => (editLogger ? editLogger.agent(action) : action()) });
-		if (command.getChangedSceneIds().length) editor.command.execute({ command });
-	} catch (e) {
-		error = e instanceof Error ? e.message : String(e);
+	let error: string | null = outcome.applied ? null : "an op of this atomic draft failed; nothing was applied";
+	// Staged imports the result uses; the others (only used by failed ops) are removed.
+	const used = usedMediaIds(outcome.scenes);
+	const publish = staged.filter((id) => used.has(id));
+	if (outcome.applied) {
+		try {
+			const command = new AgentDraftCommand({ before, after: outcome.scenes, selection, openBefore: openScene.id, openAfter, wrap: (action) => (editLogger ? editLogger.agent(action) : action()) });
+			// Published in the same task as the commit (no await in between), so nothing else can
+			// pick them up first, and the timeline never shows clips without their media.
+			editor.media.publishStagedMediaAssets({ ids: publish });
+			try {
+				if (command.getChangedSceneIds().length) editor.command.execute({ command });
+			} catch (e) {
+				editor.media.unpublishMediaAssets({ projectId, ids: publish });
+				throw e;
+			}
+		} catch (e) {
+			error = errorText(e);
+		}
 	}
+	if (error) {
+		const cleanup = await discard();
+		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: error + cleanupNote(cleanup) });
+		await report({ sceneId: root.id, ok: false, applied: false, error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
+		return;
+	}
+	const cleanup = await discard(new Set(publish));
 
 	// Report where `url` and `sfx` assets were saved and their sources (for credits and reuse as `path`).
 	for (const [i, op] of ops.entries()) {
@@ -223,14 +394,13 @@ export async function applyDraft(draft: Draft) {
 			outcome.results[i] = { ...outcome.results[i], ...(retrieved.length ? { retrieved } : {}), ...(sfx.length ? { sfx } : {}), ...(music.length ? { music } : {}) };
 		}
 	}
+
+	// The result is written once the change is on disk.
+	const saved = await editor.save.settle();
 	const failed = outcome.results.filter((r) => !r?.ok).length;
-	if (error) toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: error });
-	else toast(`Agent draft applied: ${draft.label ?? draft.rev}`, {
-		description: `${outcome.results.length - failed} changes${failed ? `, ${failed} skipped` : ""} · changed items selected · Ctrl+Z to undo`,
-	});
-	fetch("/api/agent/applied", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId: project.metadata.id, sceneId: root.id, ...(error ? { ok: false, error } : {}), results: outcome.results }),
-	}).catch(() => {});
+	const description = `${outcome.results.length - failed} changes${failed ? `, ${failed} failed` : ""} · changed items selected · Ctrl+Z to undo`;
+	if (!saved) toast.error(`Agent draft applied but not saved: ${draft.label ?? draft.rev}`, { description: editor.save.getLastError() ?? "Save did not finish" });
+	else if (failed) toast.warning(`Agent draft partly applied: ${draft.label ?? draft.rev}`, { description });
+	else toast(`Agent draft applied: ${draft.label ?? draft.rev}`, { description });
+	await report({ sceneId: root.id, applied: true, saved, savedAt: agentReadiness().savedAt, ...(saved ? {} : { saveError: editor.save.getLastError() }), ...(cleanup ? { cleanup } : {}), results: outcome.results });
 }
