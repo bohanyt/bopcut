@@ -14,6 +14,7 @@ import { MUSIC_LIBRARY, handleMusic } from "@/sounds/music-server";
 import { handleDuck } from "@/sounds/duck-server";
 import { parseSelectionPayload } from "@/agent/selection-payload";
 import { consumeAppliedDraft } from "@/agent/draft-store";
+import { isForeignOrigin } from "@/agent/origin";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -39,13 +40,7 @@ async function writeAtomic(file: string, text: string) {
  * Browser requests must come from the editor's own origin (same host and port). A page on another site,
  * or on another local port, cannot trigger agent actions. Clients that send no Origin (CLIs) are allowed.
  */
-function foreignOrigin(req: Request): boolean {
-	const origin = req.headers.get("origin");
-	if (!origin) return false;
-	const host = req.headers.get("host");
-	const own = host ? `${new URL(req.url).protocol}//${host}` : new URL(req.url).origin;
-	return origin !== own;
-}
+const foreignOrigin = isForeignOrigin;
 
 export async function GET(req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
 	const { slug } = await params;

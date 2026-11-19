@@ -11,6 +11,8 @@ import { floatToFrameRate } from "@/fps/utils";
 import type { TProjectSettings } from "@/project/types";
 import { type AgentAsset, type AgentElement, type LoadedMedia, buildAgentElement, createAgentTrack, loadAgentAsset } from "./elements";
 import { type BuildContext, applyAgentKeyframes, buildAgentCompound, walkAgentElements } from "./compound-content";
+import { loadTextPresets } from "@/text/presets";
+import { checkAgentCaption, resolveCaptionPreset } from "./captions";
 
 export type Bundle = {
 	name: string; width: number; height: number;
@@ -68,6 +70,12 @@ export function buildBundleScenes({ bundle, media, sceneId }: { bundle: Bundle; 
 export async function importAgentBundle({ onStatus }: { onStatus: (text: string) => void }): Promise<string> {
 	const editor = EditorCore.getInstance();
 	const bundle: Bundle = await (await fetch("/api/agent/bundle", { cache: "no-store" })).json();
+	// Caption presets are resolved and captions checked first: a bad caption fails before a project is created.
+	let presets: ReturnType<typeof loadTextPresets> | undefined;
+	for (const e of walkAgentElements([...(bundle.main ?? []), ...(bundle.audio ?? []), ...(bundle.overlay ?? []).flatMap((t) => t.elements ?? [])])) {
+		if (e.caption?.preset) e.caption = resolveCaptionPreset(e.caption, await (presets ??= loadTextPresets()));
+		checkAgentCaption(e);
+	}
 	const projectId = await editor.project.createNewProject({ name: bundle.name });
 	// The bundle's canvas becomes the project's before anything is placed on it. Its frame rate is applied
 	// after the media load, because importing a video raises the project frame rate to the video's.
