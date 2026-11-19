@@ -8,6 +8,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { handleRetrieve } from "@/retrieval/server";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -83,6 +84,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	if (slug[0] === "applied") {
 		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
+	}
+	if (slug[0] === "retrieve") {
+		// A section of an online video (or one frame of it) into AGENT_FILES_ROOT/retrieved/; see AGENT.md.
+		const result = await handleRetrieve(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
+		return Response.json(result.body, { status: result.status });
 	}
 	if (slug[0] === "gif") {
 		// GIF -> silent MP4 (looped 3x) for timeline animation; OpenCut renders GIFs as still images.

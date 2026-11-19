@@ -7,7 +7,14 @@ import { getGraphicDefinition } from "@/graphics";
 import type { ParamValues } from "@/params";
 import { generateUUID } from "@/utils/id";
 
-export type AgentAsset = { path: string; type: "image" | "video" | "audio" | "model"; name: string };
+/**
+ * A file under AGENT_FILES_ROOT (`path`), or a section of an online video (`url` + `start`/`end` or `duration`,
+ * fetched with POST /api/agent/retrieve into `retrieved/`; `audioOnly` keeps only the sound).
+ */
+export type AgentAsset = {
+	path?: string; url?: string; start?: number | string; end?: number | string; duration?: number | string;
+	height?: number; audioOnly?: boolean; type: "image" | "video" | "audio" | "model"; name: string;
+};
 export type AgentElement = {
 	agent_id?: string; name: string; start: number; duration: number; trimStart?: number;
 	asset?: string | AgentAsset; model3d?: { params?: Record<string, number> }; effect?: string; effectParams?: Record<string, number>;
@@ -30,24 +37,52 @@ export type AgentCompoundContent = {
 	audio?: AgentElement[];
 	elements?: (AgentElement & { track: AgentTrackRef })[];
 };
-export type LoadedMedia = { id: string; type: AgentAsset["type"]; width?: number; height?: number; duration?: number };
+export type LoadedMedia = { id: string; type: AgentAsset["type"]; width?: number; height?: number; duration?: number; retrieved?: RetrievedAsset };
+/** What the retrieve endpoint fetched for a `url` asset: its file under AGENT_FILES_ROOT and its source. */
+export type RetrievedAsset = { path: string; name: string; source: { link: string; title?: string; uploader?: string; start: number; end: number } };
+
+/** Identity of an asset within one draft or bundle, so the same file or section is loaded once. */
+export function assetKey(asset: AgentAsset): string {
+	return asset.path ?? JSON.stringify([asset.url, asset.start, asset.end, asset.duration, asset.height, asset.audioOnly]);
+}
+
+/** Fetch a `url` asset's section through the retrieve endpoint; returns where it was saved. */
+export async function retrieveAgentAsset(asset: AgentAsset): Promise<RetrievedAsset> {
+	const res = await fetch("/api/agent/retrieve", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ kind: "section", url: asset.url, start: asset.start, end: asset.end, duration: asset.duration, height: asset.height, audioOnly: asset.audioOnly }),
+	});
+	const body = await res.json().catch(() => ({}));
+	if (!res.ok) throw new Error(`Cannot retrieve ${asset.url}: ${body.error ?? res.status}`);
+	return body as RetrievedAsset;
+}
 /** Keyframe to add once the element is placed; time in seconds, relative to the element. */
 export type PendingKeyframe = { sceneId?: string; trackId: string; elementId: string; propertyPath: string; time: number; value: number };
 
 export const secs = (seconds: number) => mediaTimeFromSeconds({ seconds });
 
-/** Fetch a file from AGENT_FILES_ROOT and register it as media in the active project. */
+/**
+ * Register an asset as media in the active project: a file from AGENT_FILES_ROOT, or, for a `url` asset,
+ * the section the retrieve endpoint fetched first.
+ */
 export async function loadAgentAsset({ projectId, asset }: { projectId: string; asset: AgentAsset }): Promise<LoadedMedia> {
 	const editor = EditorCore.getInstance();
-	const res = await fetch(`/api/agent/file?p=${encodeURIComponent(asset.path)}`);
-	if (!res.ok) throw new Error("Cannot read asset: " + asset.path);
+	if (!asset.path && !asset.url) throw new Error(`Asset "${asset.name}" needs a path or a url`);
+	const retrieved = asset.path ? undefined : await retrieveAgentAsset(asset);
+	const filePath = asset.path ?? (retrieved as RetrievedAsset).path;
+	const res = await fetch(`/api/agent/file?p=${encodeURIComponent(filePath)}`);
+	if (!res.ok) throw new Error("Cannot read asset: " + filePath);
 	const blob = await res.blob();
-	const fileName = asset.path.split("/").pop() ?? asset.name;
+	const fileName = filePath.split("/").pop() ?? asset.name;
 	const [processed] = await processMediaAssets({ files: [new File([blob], fileName, { type: blob.type })] });
-	if (!processed) throw new Error("Failed to process asset: " + asset.path);
-	const saved = await editor.media.addMediaAsset({ projectId, asset: { ...processed, name: asset.name } });
-	if (!saved) throw new Error("Failed to save asset: " + asset.path);
-	return { id: saved.id, type: asset.type === "model" ? "model" : processed.type as AgentAsset["type"], width: processed.width, height: processed.height, duration: processed.duration };
+	if (!processed) throw new Error("Failed to process asset: " + filePath);
+	const saved = await editor.media.addMediaAsset({ projectId, asset: { ...processed, name: asset.name || retrieved?.name || fileName } });
+	if (!saved) throw new Error("Failed to save asset: " + filePath);
+	return {
+		id: saved.id, type: asset.type === "model" ? "model" : processed.type as AgentAsset["type"], width: processed.width, height: processed.height, duration: processed.duration,
+		...(retrieved ? { retrieved } : {}),
+	};
 }
 
 /** Track type an element goes on when the draft or bundle does not say. */

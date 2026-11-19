@@ -11,6 +11,7 @@
 - **AI ikut mengedit:** AI mengirim draf per item (tambah, ubah, hapus). Editor menerapkannya dalam ±2 detik sebagai **satu langkah Undo**, dan item yang diubah langsung terpilih.
 - **Catatan dua arah:** tandai rentang waktu atau item dengan catatan; AI bisa membaca, membalas, dan menandai selesai.
 - **AI melihat frame:** AI bisa meminta gambar frame pada detik mana pun.
+- **Ambil potongan video dari link:** cukup link + waktu mulai/selesai (misalnya 20 detik dari live 3 jam). Yang diunduh hanya bagian itu, lewat yt-dlp, dengan potongan yang pas di frame. Bisa dari draf AI, dari CLI, atau dari tombol link di panel Assets.
 - **AI belajar seleramu:** editanmu pada item buatan AI dicatat dan diringkas menjadi kandidat aturan selera.
 
 **Editor**
@@ -22,7 +23,7 @@
 
 ## Menjalankan
 
-Butuh [Bun](https://bun.sh); `ffmpeg` di PATH dipakai untuk mengubah GIF menjadi video. Tidak perlu akun, database, atau Docker.
+Butuh [Bun](https://bun.sh); `ffmpeg` di PATH dipakai untuk mengubah GIF menjadi video. Untuk mengambil potongan video dari link, pasang juga [yt-dlp](https://github.com/yt-dlp/yt-dlp) (pengaturannya ada di `AGENT.md`). Tidak perlu akun, database, atau Docker.
 
 ```
 bun install
