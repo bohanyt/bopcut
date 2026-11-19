@@ -93,6 +93,8 @@ export function buildSeparatedAudioElement({
 					? sourceElement.params.volume
 					: DEFAULTS.element.volume,
 			muted: sourceElement.params.muted === true,
+			...(typeof sourceElement.params.fadeIn === "number" ? { fadeIn: sourceElement.params.fadeIn } : {}),
+			...(typeof sourceElement.params.fadeOut === "number" ? { fadeOut: sourceElement.params.fadeOut } : {}),
 		},
 		retime: sourceElement.retime
 			? {

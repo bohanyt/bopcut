@@ -118,6 +118,12 @@ export class SplitElementsCommand extends Command {
 					shouldIncludeSplitBoundary: true,
 				});
 				let splitResult: TimelineElement[];
+				// A fade-in belongs to the start of the clip and a fade-out to its end: after a split, the
+				// left part keeps only the fade-in and the right part only the fade-out.
+				const withoutFade = (key: "fadeIn" | "fadeOut") =>
+					typeof element.params?.[key] === "number" && element.params[key] > 0
+						? { params: { ...element.params, [key]: 0 } }
+						: {};
 
 				const leftTrimEnd = addMediaTime({
 					a: element.trimEnd,
@@ -166,6 +172,7 @@ export class SplitElementsCommand extends Command {
 					splitResult = [
 						{
 							...element,
+							...withoutFade("fadeOut"),
 							duration: leftVisibleDuration,
 							trimEnd: leftTrimEnd,
 							name: `${element.name} (left)`,
@@ -174,6 +181,7 @@ export class SplitElementsCommand extends Command {
 						},
 						{
 							...element,
+							...withoutFade("fadeIn"),
 							id: secondElementId,
 							startTime: this.splitTime,
 							duration: rightVisibleDuration,

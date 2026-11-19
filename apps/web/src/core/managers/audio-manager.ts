@@ -6,6 +6,8 @@ import { createAudioContext, collectAudioClips } from "@/media/audio";
 import {
 	buildAudioGainAutomation,
 	hasAnimatedVolume,
+	hasVolumeKeyframes,
+	resolveEffectiveAudioGain,
 } from "@/timeline/audio-state";
 import { createAudioMasteringChain } from "@/media/audio-mastering";
 import {
@@ -299,6 +301,14 @@ export class AudioManager {
 				this.playbackStartContextTime +
 				this.playbackLatencyCompensationSeconds +
 				(timelineTime - this.playbackStartTime);
+			// Fades are linear in gain, so a ramp across each streamed chunk follows them exactly enough.
+			if (hasAnimatedVolume({ element: clip.timelineElement })) {
+				const local = timelineTime - clip.startTime;
+				const chunk = buffer.duration / (clip.retime ? clampRetimeRate({ rate: clip.retime.rate }) : 1);
+				const at = Math.max(startTimestamp, audioContext.currentTime);
+				clipGain.gain.setValueAtTime(resolveEffectiveAudioGain({ element: clip.timelineElement, localTime: local + (at - startTimestamp) }), at);
+				clipGain.gain.linearRampToValueAtTime(resolveEffectiveAudioGain({ element: clip.timelineElement, localTime: local + chunk }), startTimestamp + chunk);
+			}
 
 			if (startTimestamp >= audioContext.currentTime) {
 				node.start(startTimestamp);
@@ -465,7 +475,7 @@ export class AudioManager {
 	}): boolean {
 		return (
 			this.hasCurveRetime({ clip }) ||
-			hasAnimatedVolume({ element: clip.timelineElement }) ||
+			hasVolumeKeyframes({ element: clip.timelineElement }) ||
 			shouldMaintainPitch({
 				rate: clip.retime?.rate ?? 1,
 				maintainPitch: clip.retime?.maintainPitch,

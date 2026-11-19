@@ -1,7 +1,9 @@
 import { hasKeyframesForPath } from "@/animation/keyframe-query";
 import { resolveNumberAtTime } from "@/animation/values";
+import { TICKS_PER_SECOND } from "@/wasm";
 import { VOLUME_DB_MAX, VOLUME_DB_MIN } from "./audio-constants";
 import type { TimelineElement } from "./types";
+
 const DEFAULT_STEP_SECONDS = 1 / 60;
 
 export type AudioCapableElement = Extract<
@@ -75,6 +77,18 @@ export function fadeGainAt({
 	return gain;
 }
 
+/** True when the clip's volume has keyframes (fades alone do not count). */
+export function hasVolumeKeyframes({
+	element,
+}: {
+	element: AudioCapableElement;
+}): boolean {
+	return hasKeyframesForPath({
+		animations: element.animations,
+		propertyPath: "volume",
+	});
+}
+
 /** True when the clip's gain changes over time: volume keyframes or fades. */
 export function hasAnimatedVolume({
 	element,
@@ -91,8 +105,6 @@ export function hasAnimatedVolume({
 		})
 	);
 }
-
-import { TICKS_PER_SECOND } from "@/wasm";
 
 export function resolveEffectiveAudioGain({
 	element,
@@ -162,6 +174,15 @@ export function buildAudioGainAutomation({
 			}),
 		});
 	}
+	// Exact points where fades start and end, so a fade shorter than a step still lands on time.
+	const { fadeIn, fadeOut } = getElementFades({ element });
+	const clipDuration = element.duration / TICKS_PER_SECOND;
+	for (const edge of [fadeIn, clipDuration - fadeOut]) {
+		if ((edge === fadeIn ? fadeIn > 0 : fadeOut > 0) && edge > startTime && edge < endTime && !points.some((p) => Math.abs(p.localTime - edge) < 1e-6)) {
+			points.push({ localTime: edge, gain: resolveEffectiveAudioGain({ element, trackMuted, localTime: edge }) });
+		}
+	}
+	points.sort((a, b) => a.localTime - b.localTime);
 
 	points.push({
 		localTime: endTime,
