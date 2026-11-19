@@ -7,6 +7,17 @@ import { videoCache } from "@/services/video-cache/service";
 import { waveformCache } from "@/services/waveform-cache/service";
 import { BatchCommand, RemoveMediaAssetCommand } from "@/commands";
 
+/** Media ids used by elements anywhere in these scenes. */
+export function mediaIdsInScenes(scenes: readonly { tracks: { main: { elements: readonly unknown[] }; overlay: readonly { elements: readonly unknown[] }[]; audio: readonly { elements: readonly unknown[] }[] } }[]): Set<string> {
+	const ids = new Set<string>();
+	for (const scene of scenes) {
+		for (const track of [scene.tracks.main, ...scene.tracks.overlay, ...scene.tracks.audio]) {
+			for (const element of track.elements as { mediaId?: unknown }[]) if (typeof element.mediaId === "string") ids.add(element.mediaId);
+		}
+	}
+	return ids;
+}
+
 /** A stored media file that could not be read when the project loaded. */
 export type MediaLoadFailure = { id: string; name: string; error: string };
 /** Outcome of discarding staged imports: ids removed from storage, and those that could not be. */
@@ -133,6 +144,7 @@ export class MediaManager {
 			const mediaAssets = await storageService.loadAllMediaAssets({
 				projectId,
 				signal: controller.signal,
+				usedIds: mediaIdsInScenes(this.editor.scenes.getScenes()),
 				onProgress: ({ loaded, total }) => {
 					// At most ~4 updates a second: re-rendering the toast for every file slows the load itself.
 					const now = Date.now();
@@ -226,7 +238,7 @@ export class MediaManager {
 		this.staged.set(staged.id, { projectId, asset: staged });
 		onId?.(staged.id);
 		try {
-			await storageService.saveMediaAsset({ projectId, mediaAsset: staged });
+			await storageService.saveMediaAsset({ projectId, mediaAsset: staged, staged: true });
 			return staged;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -251,6 +263,19 @@ export class MediaManager {
 		const incoming = new Set(assets.map((asset) => asset.id));
 		this.assets = [...this.assets.filter((asset) => !incoming.has(asset.id)), ...assets];
 		this.notify();
+	}
+
+	/**
+	 * Clears the staged mark on disk of published imports. Until it lands, a load still includes them
+	 * when the saved timeline uses them, so a failure here loses nothing.
+	 */
+	async promotePublishedMediaAssets({ projectId, ids }: { projectId: string; ids: string[] }): Promise<string | null> {
+		try {
+			await storageService.promoteMediaAssets({ projectId, ids });
+			return null;
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
 	}
 
 	/**

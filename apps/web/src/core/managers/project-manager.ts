@@ -36,6 +36,11 @@ export class ProjectManager {
 	private active: TProject | null = null;
 	private savedProjects: TProjectMetadata[] = [];
 	private isLoading = true;
+	/**
+	 * Changes whenever another project is opened, created or closed (not when the open project's
+	 * settings change), so async work can tell it still runs in the project session it started in.
+	 */
+	private session = 0;
 	private isInitialized = false;
 	private invalidProjectIds = new Set<string>();
 	private storageMigrationPromise: Promise<void> | null = null;
@@ -67,6 +72,7 @@ export class ProjectManager {
 	}
 
 	async createNewProject({ name }: { name: string }): Promise<string> {
+		this.session++;
 		const mainScene = buildDefaultScene({ name: "Main scene", isMain: true });
 		const newProject: TProject = {
 			metadata: {
@@ -120,6 +126,12 @@ export class ProjectManager {
 			this.notify();
 		}
 
+		// Unsaved edits of the project being left are written while its timeline is still in memory.
+		if (this.active && this.active.metadata.id !== id && this.editor.save.getIsDirty() && !this.editor.save.getIsPaused()) {
+			await this.editor.save.settle({ timeoutMs: 3000 }).catch(() => false);
+		}
+		this.session++;
+		// No save may run from here until the new project is in place (see SaveManager.pause).
 		this.editor.save.pause();
 		await this.ensureStorageMigrations();
 		this.editor.media.clearAllAssets();
@@ -306,6 +318,7 @@ export class ProjectManager {
 				this.active && idSet.has(this.active.metadata.id);
 
 			if (shouldClearActive) {
+				this.session++;
 				this.active = null;
 				this.editor.media.clearAllAssets();
 				this.editor.scenes.clearScenes();
@@ -318,6 +331,7 @@ export class ProjectManager {
 	}
 
 	closeProject(): void {
+		this.session++;
 		if (this.active) storageService.forgetMediaManifest({ projectId: this.active.metadata.id });
 		this.active = null;
 		this.notify();
@@ -655,7 +669,13 @@ export class ProjectManager {
 		return this.migrationState;
 	}
 
+	/** The current project session (see `session`). */
+	getSession(): number {
+		return this.session;
+	}
+
 	setActiveProject({ project }: { project: TProject }): void {
+		if (this.active?.metadata.id !== project.metadata.id) this.session++;
 		this.active = project;
 		this.notify();
 	}

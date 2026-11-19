@@ -12,6 +12,7 @@ import { AgentDraftCommand } from "./draft-command";
 import { getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { NO_SELECTION } from "./selection-payload";
+import { mediaIdsInScenes } from "@/core/managers/media-manager";
 import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
 
@@ -251,26 +252,51 @@ const opLabel = (op: DraftOp) => (op?.op === "add" ? { name: op.element?.name } 
  * `saved: true` means the change is in project.json on disk.
  */
 export function applyDraft(draft: Draft): Promise<void> {
-	const run = draftQueue.then(() => applyDraftNow(draft));
+	// Bound now: a draft waiting behind another one never runs against a project opened meanwhile.
+	const editor = EditorCore.getInstance();
+	const projectId = editor.project.getActiveOrNull()?.metadata.id;
+	const session: DraftSession | null = projectId ? { projectId, session: editor.project.getSession() } : null;
+	const run = draftQueue.then(() => applyDraftNow(draft, session));
 	draftQueue = run.catch(() => {});
 	return run;
 }
 
-/** Media ids used by elements anywhere in these scenes. */
-function usedMediaIds(scenes: { tracks: { main: { elements: unknown[] }; overlay: { elements: unknown[] }[]; audio: { elements: unknown[] }[] } }[]): Set<string> {
-	const ids = new Set<string>();
-	for (const scene of scenes) {
-		for (const track of [scene.tracks.main, ...scene.tracks.overlay, ...scene.tracks.audio]) {
-			for (const element of track.elements as { mediaId?: unknown }[]) if (typeof element.mediaId === "string") ids.add(element.mediaId);
-		}
-	}
-	return ids;
+const usedMediaIds = mediaIdsInScenes;
+
+/** The project session a draft was queued in: its project id and the project manager's session. */
+export type DraftSession = { projectId: string; session: number };
+
+/** The project session open now, or null. */
+function currentSession(): DraftSession | null {
+	const editor = EditorCore.getInstance();
+	const projectId = editor.project.getActiveOrNull()?.metadata.id;
+	return projectId ? { projectId, session: editor.project.getSession() } : null;
 }
 
-async function applyDraftNow(draft: Draft) {
+/** Why a draft cannot run in the session open now, or null when it can. */
+export function draftSessionError({ draft, queued, now }: { draft: Pick<Draft, "projectId">; queued: DraftSession | null; now: DraftSession | null }): string | null {
+	if (!queued) return "no project was open when the draft was queued";
+	if (!now || now.projectId !== queued.projectId || now.session !== queued.session) return "another project was opened before the draft ran; nothing was applied";
+	if (draft.projectId !== undefined && draft.projectId !== null && draft.projectId !== queued.projectId) return `the draft is for project ${String(draft.projectId)}, not the open one; nothing was applied`;
+	return null;
+}
+
+async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const active = editor.scenes.getActiveSceneOrNull();
+	const refused = draftSessionError({ draft, queued: session, now: currentSession() });
+	if (refused) {
+		const projectId = session?.projectId ?? project?.metadata.id;
+		const ops: DraftOp[] = Array.isArray(draft?.ops) ? draft.ops : [];
+		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: refused });
+		await fetch("/api/agent/applied", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ok: false, applied: false, error: refused, results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) }),
+		}).catch(() => {});
+		return;
+	}
 	if (!project || !active || !agentRootScene()) return;
 	const projectId = project.metadata.id;
 	const ops: DraftOp[] = Array.isArray(draft?.ops) ? structuredClone(draft.ops) : [];
@@ -327,7 +353,7 @@ async function applyDraftNow(draft: Draft) {
 		cleanup?.failed.length ? `; ${cleanup.failed.length} imported ${cleanup.failed.length === 1 ? "file" : "files"} could not be removed from storage` : "";
 	// Loading (for example a slow URL section) took a while. If another project is open now, its timeline
 	// is not the one this draft was made for, and the staged imports belong to the first project: stop here.
-	if (editor.project.getActiveOrNull() !== project) {
+	if (draftSessionError({ draft, queued: session, now: currentSession() })) {
 		const cleanup = await discard();
 		await report({ ok: false, applied: false, error: "another project was opened while the draft's assets were loading; nothing was applied" + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
@@ -358,10 +384,14 @@ async function applyDraftNow(draft: Draft) {
 	// Select changed or added items so they are visible on the timeline (inside history, so redo selects them again).
 	const selection = selectionInScene(outcome.scenes, openAfter, outcome.touched);
 	let error: string | null = outcome.applied ? null : "an op of this atomic draft failed; nothing was applied";
+	// Media reused by `mediaId` must still be in the project (the human may have deleted it while assets loaded).
+	const present = new Set(editor.media.getAssets().map((asset) => asset.id));
+	const gone = [...media.entries()].filter(([e, loaded]) => e.mediaId !== undefined && !present.has(loaded.id)).map(([e]) => e.mediaId);
+	if (!error && gone.length) error = `media no longer in the project: ${gone.join(", ")}; nothing was applied`;
 	// Staged imports the result uses; the others (only used by failed ops) are removed.
 	const used = usedMediaIds(outcome.scenes);
 	const publish = staged.filter((id) => used.has(id));
-	if (outcome.applied) {
+	if (!error) {
 		try {
 			const command = new AgentDraftCommand({ before, after: outcome.scenes, selection, openBefore: openScene.id, openAfter, wrap: (action) => (editLogger ? editLogger.agent(action) : action()) });
 			// Published in the same task as the commit (no await in between), so nothing else can
@@ -394,6 +424,10 @@ async function applyDraftNow(draft: Draft) {
 			outcome.results[i] = { ...outcome.results[i], ...(retrieved.length ? { retrieved } : {}), ...(sfx.length ? { sfx } : {}), ...(music.length ? { music } : {}) };
 		}
 	}
+
+	// The imports are part of the project now: later loads include them (also in other tabs).
+	const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids: publish });
+	if (promoteError) console.warn("Staged media not promoted (they still load because the timeline uses them):", promoteError);
 
 	// The result is written once the change is on disk.
 	const saved = await editor.save.settle();

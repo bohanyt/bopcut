@@ -53,7 +53,7 @@ const gate = () => {
  * Storage records saved and deleted media ids; `failSave`/`failDelete` make those calls throw.
  */
 function fakeBackend({ slow = new Map<string, Promise<void>>(), missing = new Set<string>(), failSave = new Set<string>(), failDelete = false } = {}) {
-	const state = { saved: [] as string[], deleted: [] as string[], results: [] as any[], fileNames: new Map<string, string>() };
+	const state = { saved: [] as string[], deleted: [] as string[], promoted: [] as string[], results: [] as any[], fileNames: new Map<string, string>() };
 	const realFetch = globalThis.fetch;
 	globalThis.fetch = (async (url: string, init?: { body?: string }) => {
 		const u = String(url);
@@ -66,6 +66,9 @@ function fakeBackend({ slow = new Map<string, Promise<void>>(), missing = new Se
 		return new Response("{}");
 	}) as typeof fetch;
 	const stubs = {
+		promoteMediaAssets: async ({ ids }: { ids: string[] }) => {
+			state.promoted.push(...ids);
+		},
 		saveMediaAsset: async ({ mediaAsset }: { mediaAsset: MediaAsset }) => {
 			state.saved.push(mediaAsset.id);
 			state.fileNames.set(mediaAsset.id, mediaAsset.file.name);
@@ -232,5 +235,75 @@ describe("keyframe values", () => {
 			expect(result.results[0].error).toContain("invalid value for opacity");
 			expect(keys(editor)).toBe(2);
 		}
+	});
+});
+
+describe("drafts belong to the project session they were queued in", () => {
+	const otherProject = (editor: ReturnType<typeof setup>) => {
+		const scenes = [scene("main-q", { overlay: [], main: { id: "t-q", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, audio: [] })];
+		editor.project.setActiveProject({
+			project: { metadata: { id: "q", name: "q", createdAt: new Date(0), updatedAt: new Date(0) }, scenes, currentSceneId: "main-q", settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1920, height: 1080 } } } as unknown as TProject,
+		});
+		editor.scenes.setScenes({ scenes, activeSceneId: "main-q" });
+	};
+
+	test("opening another project while a draft loads or waits: nothing applies there, imports are removed", async () => {
+		const editor = setup();
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		restore = backend.restore;
+		const first = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "first") }]));
+		const second = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("fast.png", "second") }]));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		otherProject(editor);
+		slow.open();
+		await Promise.all([first, second]);
+		expect(elements(editor).map((e) => e.agentId).filter(Boolean)).toEqual([]);
+		const [a, b] = backend.state.results;
+		expect(a).toMatchObject({ projectId: "p", applied: false, rolledBack: true });
+		expect(a.error).toContain("another project");
+		expect(backend.state.deleted).toEqual(backend.state.saved);
+		expect(b).toMatchObject({ projectId: "p", applied: false });
+		expect(b.error).toContain("another project");
+		// The waiting draft never imported anything.
+		expect(backend.state.saved.length).toBe(1);
+	});
+
+	test("a draft for another projectId is refused", async () => {
+		setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("a.png", "a") }], { projectId: "zzz" }));
+		expect(backend.state.results[0]).toMatchObject({ applied: false });
+		expect(backend.state.results[0].error).toContain("not the open one");
+		expect(backend.state.saved).toEqual([]);
+	});
+
+	test("reused media deleted while assets load stop the draft", async () => {
+		const editor = setup();
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		restore = backend.restore;
+		const run = applyDraft(draft([
+			{ op: "add", track: { name: "Logos" }, element: { agent_id: "reuse", name: "reuse", mediaId: "m-new", start: 0, duration: 1 } },
+			{ op: "add", track: { name: "Logos" }, element: image("slow.png", "slow") },
+		]));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		editor.media.setAssets({ assets: [asset("m-old")] });
+		slow.open();
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: false });
+		expect(backend.state.results[0].error).toContain("m-new");
+		expect(elements(editor).some((e) => e.agentId === "reuse" || e.agentId === "slow")).toBe(false);
+		expect(backend.state.deleted).toEqual(backend.state.saved);
+	});
+
+	test("committed imports are promoted on disk", async () => {
+		setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("logo.png", "logo") }]));
+		expect(backend.state.results[0]).toMatchObject({ applied: true });
+		expect(backend.state.promoted).toEqual(backend.state.saved);
 	});
 });

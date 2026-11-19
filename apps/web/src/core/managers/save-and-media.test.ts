@@ -183,3 +183,108 @@ describe("media manifest cache", () => {
 		}
 	});
 });
+
+describe("saving while projects switch", () => {
+	test("a retry due while another project loads never writes the half-loaded timeline over the first one", async () => {
+		const editor = await load(project("a", new Date(0)));
+		(editor.save as any).retryDelaysMs = [20];
+		const written: { id: string; elements: number }[] = [];
+		let fail = true;
+		editor.project.persistCurrentProject = async () => {
+			const active = editor.project.getActive();
+			written.push({ id: active.metadata.id, elements: editor.scenes.getScenes().length });
+			const error = fail ? "EBUSY: resource busy" : null;
+			editor.save.recordPersisted({ projectId: active.metadata.id, error });
+			return error;
+		};
+		editor.save.markDirty();
+		await editor.save.flush();
+		expect(written).toEqual([{ id: "a", elements: 1 }]);
+		// The retry is due in 20 ms, but project b takes longer to load.
+		let release!: () => void;
+		const slow = new Promise<void>((resolve) => { release = resolve; });
+		stub({ loadProject: async () => { await slow; return { project: structuredClone(project("b", new Date(0))) }; } });
+		fail = false;
+		const loading = editor.project.loadProject({ id: "b" });
+		await wait(60);
+		// a's scenes are cleared and b is not in place yet: nothing may be written now.
+		expect(written.filter((w) => w.elements === 0)).toEqual([]);
+		release();
+		await loading;
+		expect(editor.project.getActive().metadata.id).toBe("b");
+		expect(written.every((w) => w.elements > 0)).toBe(true);
+	});
+
+	test("a pause stops a pending timer; resume saves what is pending", async () => {
+		const editor = await load(project("p", new Date(0)));
+		let calls = 0;
+		editor.project.persistCurrentProject = async () => {
+			calls++;
+			editor.save.recordPersisted({ projectId: "p", error: null });
+			return null;
+		};
+		(editor.save as any).debounceMs = 10;
+		editor.save.markDirty();
+		editor.save.pause();
+		await wait(40);
+		expect(calls).toBe(0);
+		editor.save.resume();
+		await wait(40);
+		expect(calls).toBe(1);
+	});
+
+	test("a save that fails after stop() schedules no retry on the stopped manager", async () => {
+		const editor = await load(project("p", new Date(0)));
+		(editor.save as any).retryDelaysMs = [10];
+		let calls = 0;
+		let finish!: (error: string | null) => void;
+		editor.project.persistCurrentProject = () => {
+			calls++;
+			return new Promise((resolve) => { finish = (error) => { editor.save.recordPersisted({ projectId: "p", error }); resolve(error); }; });
+		};
+		editor.save.markDirty();
+		const saving = editor.save.flush();
+		await wait(5);
+		editor.save.stop();
+		finish("EPERM: operation not permitted");
+		await saving;
+		await wait(40);
+		expect(calls).toBe(1);
+	});
+});
+
+describe("staged media on disk", () => {
+	test("staged media are saved marked, skipped by loads unless the timeline uses them, and promoted on commit", async () => {
+		const realFetch = globalThis.fetch;
+		const posted: Record<string, unknown>[] = [];
+		const listed = [
+			{ id: "kept", name: "kept", type: "image" },
+			{ id: "draft", name: "draft", type: "image", staged: true },
+			{ id: "used", name: "used", type: "image", staged: true },
+		];
+		globalThis.fetch = (async (url: string, init?: { method?: string; body?: string }) => {
+			const u = String(url);
+			if (/\/media$/.test(u)) return new Response(JSON.stringify(listed));
+			if (init?.method === "POST") {
+				posted.push(JSON.parse(init.body ?? "{}"));
+				return new Response("{}");
+			}
+			if (init?.method === "PUT") return new Response("{}");
+			return new Response(new Blob(["x"]));
+		}) as typeof fetch;
+		try {
+			const storage = new StorageService();
+			await storage.saveMediaAsset({ projectId: "p", mediaAsset: asset("new"), staged: true });
+			expect(posted.at(-1)).toMatchObject({ id: "new", staged: true });
+			const loaded = await storage.loadAllMediaAssets({ projectId: "p", usedIds: new Set(["used"]) });
+			expect(loaded.map((a) => a.id).sort()).toEqual(["kept", "used"]);
+			await storage.promoteMediaAssets({ projectId: "p", ids: ["draft", "kept"] });
+			const promoted = posted.at(-1) as Record<string, unknown>;
+			expect(promoted.id).toBe("draft");
+			expect("staged" in promoted).toBe(false);
+			expect(posted.filter((m) => m.id === "kept")).toEqual([]);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+});

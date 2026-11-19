@@ -140,6 +140,16 @@ export class DiskAdapter {
 			}),
 		);
 	}
+	/** Replaces the metadata of stored media (its file stays). */
+	async updateMediaMetadata(id: string, metadata: MediaAssetData): Promise<void> {
+		await checked(
+			await fetch(this.mediaUrl(id, metadata.id), {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(metadata),
+			}),
+		);
+	}
 	async removeMedia(id: string, mediaId: string): Promise<void> {
 		await checked(
 			await fetch(this.mediaUrl(id, mediaId), { method: "DELETE" }),

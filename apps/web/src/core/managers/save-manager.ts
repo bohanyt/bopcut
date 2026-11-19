@@ -25,6 +25,8 @@ export class SaveManager {
 	private failures = 0;
 	private projects = new Map<string, ProjectSaveState>();
 	private listeners = new Set<() => void>();
+	/** Bumped by stop(): completions and timers of an older generation do nothing. */
+	private generation = 0;
 
 	constructor({
 		editor,
@@ -58,11 +60,22 @@ export class SaveManager {
 			unsubscribe();
 		}
 		this.unsubscribeHandlers = [];
+		this.generation++;
 		this.clearTimer();
 	}
 
+	/**
+	 * Suspends saving (a project is being opened or closed): no save starts and no timer or retry
+	 * fires until resume(). While the editor switches projects, the scenes in memory do not belong to
+	 * the active project, so a save then could write an empty timeline over it.
+	 */
 	pause(): void {
 		this.isPaused = true;
+		this.clearTimer();
+	}
+
+	getIsPaused(): boolean {
+		return this.isPaused;
 	}
 
 	resume(): void {
@@ -165,19 +178,21 @@ export class SaveManager {
 	}
 
 	private queueSave(delayMs = this.debounceMs): void {
-		if (this.isSaving) return;
+		if (this.isSaving || this.isPaused) return;
 		if (this.saveTimer) {
 			clearTimeout(this.saveTimer);
 		}
+		const generation = this.generation;
 		this.saveTimer = setTimeout(() => {
 			this.saveTimer = null;
-			void this.saveNow();
+			if (generation === this.generation) void this.saveNow();
 		}, delayMs);
 	}
 
 	private async saveNow(): Promise<void> {
 		if (this.isSaving) return;
 		if (!this.hasPendingSave) return;
+		if (this.isPaused) return;
 
 		const activeProject = this.editor.project.getActiveOrNull();
 		if (!activeProject) return;
@@ -188,6 +203,7 @@ export class SaveManager {
 		this.isSaving = true;
 		this.hasPendingSave = false;
 		this.clearTimer();
+		const generation = this.generation;
 
 		const run = (async () => {
 			let retryIn: number | null = null;
@@ -212,7 +228,8 @@ export class SaveManager {
 			} finally {
 				this.isSaving = false;
 				this.savePromise = null;
-				if (this.hasPendingSave) {
+				// A stopped manager (editor reset) schedules nothing more; a paused one resumes later.
+				if (this.hasPendingSave && generation === this.generation && !this.isPaused) {
 					if (!this.getLastError(projectId)) this.queueSave();
 					else if (retryIn !== null) this.queueSave(retryIn);
 				}

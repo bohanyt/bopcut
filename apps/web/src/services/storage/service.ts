@@ -340,9 +340,12 @@ class StorageService {
 	async saveMediaAsset({
 		projectId,
 		mediaAsset,
+		staged = false,
 	}: {
 		projectId: string;
 		mediaAsset: MediaAsset;
+		/** Saved for a draft that has not committed: hidden from loads until promoteMediaAssets. */
+		staged?: boolean;
 	}): Promise<void> {
 
 		const metadata: MediaAssetData = {
@@ -360,10 +363,24 @@ class StorageService {
 			hasAudio: mediaAsset.hasAudio,
 			thumbnailUrl: mediaAsset.thumbnailUrl,
 			ephemeral: mediaAsset.ephemeral,
+			...(staged ? { staged: true } : {}),
 		};
 
 		await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
 		this.manifests.get(projectId)?.set(metadata.id, metadata);
+	}
+
+	/** Clears the staged mark of media whose draft committed, so every later load includes them. */
+	async promoteMediaAssets({ projectId, ids }: { projectId: string; ids: string[] }): Promise<void> {
+		if (ids.length === 0) return;
+		const manifest = this.manifests.get(projectId) ?? (await this.fetchManifest({ projectId }));
+		for (const id of ids) {
+			const metadata = manifest.get(id);
+			if (!metadata?.staged) continue;
+			const { staged: _staged, ...promoted } = metadata;
+			await this.projectsAdapter.updateMediaMetadata(projectId, promoted);
+			manifest.set(id, promoted);
+		}
 	}
 
 	async loadMediaAsset({
@@ -437,14 +454,19 @@ class StorageService {
 		onProgress,
 		onFailed,
 		signal,
+		usedIds,
 	}: {
 		projectId: string;
 		concurrency?: number;
 		onProgress?: (progress: { loaded: number; total: number }) => void;
 		onFailed?: (failure: { id: string; name: string; error: string }) => void;
 		signal?: AbortSignal;
+		/** Media the project's timeline uses: staged media are loaded only when listed here. */
+		usedIds?: ReadonlySet<string>;
 	}): Promise<MediaAsset[]> {
-		const list = [...(await this.fetchManifest({ projectId })).values()];
+		// Staged media belong to a draft still loading (maybe in another tab): skipped unless the
+		// saved timeline already uses them (the draft committed but its promotion did not finish).
+		const list = [...(await this.fetchManifest({ projectId })).values()].filter((metadata) => !metadata.staged || usedIds?.has(metadata.id));
 		const items: (MediaAsset | null)[] = new Array(list.length).fill(null);
 		let next = 0;
 		let loaded = 0;
