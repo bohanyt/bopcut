@@ -1,18 +1,7 @@
-﻿import { describe, expect, test, mock } from "bun:test";
-mock.module("opencut-wasm", () => ({
-	TICKS_PER_SECOND: () => 600000,
-	mediaTimeToSeconds: (time: number) => time / 600000,
-	mediaTimeFromSeconds: (seconds: number) => seconds * 600000,
-	lastFrameTime: () => 0,
-	parseTimecode: () => 0,
-	roundToFrame: (time: number) => time,
-	snappedSeekTime: (time: number) => time,
-	formatTimecode: () => "",
-}));
-const { PreviewInteractionController } =
-	await import("./controllers/preview-interaction-controller");
-const { TransformHandleController } =
-	await import("./controllers/transform-handle-controller");
+import { describe, expect, test } from "bun:test";
+import { PreviewInteractionController } from "./controllers/preview-interaction-controller";
+import { TransformHandleController } from "./controllers/transform-handle-controller";
+
 function fixture() {
 	const el = (id: string, x: number) => ({
 		id,
