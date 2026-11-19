@@ -170,8 +170,9 @@ export async function applyDraft(draft: Draft) {
 	for (const [i, op] of ops.entries()) {
 		const retrieved = elementsOf(op).flatMap((e) => media.get(e)?.retrieved ?? []);
 		const sfx = elementsOf(op).flatMap((e) => media.get(e)?.sfx ?? []);
-		if (outcome.results[i] && (retrieved.length || sfx.length)) {
-			outcome.results[i] = { ...outcome.results[i], ...(retrieved.length ? { retrieved } : {}), ...(sfx.length ? { sfx } : {}) };
+		const music = elementsOf(op).flatMap((e) => media.get(e)?.music ?? []);
+		if (outcome.results[i] && (retrieved.length || sfx.length || music.length)) {
+			outcome.results[i] = { ...outcome.results[i], ...(retrieved.length ? { retrieved } : {}), ...(sfx.length ? { sfx } : {}), ...(music.length ? { music } : {}) };
 		}
 	}
 	const failed = outcome.results.filter((r) => !r?.ok).length;

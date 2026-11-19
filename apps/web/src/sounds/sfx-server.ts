@@ -21,13 +21,17 @@ export type SfxDeps = {
 	tools?: RetrievalTools;
 };
 
+/** A kind of sound library: its folder under AGENT_FILES_ROOT, the variable with more folders, and its preview route. */
+export type LibraryKind = { folder: string; envVar: string; previewRoute: string };
+export const SFX_LIBRARY: LibraryKind = { folder: "sfx", envVar: "BOPENCUT_SFX_DIRS", previewRoute: "/api/agent/sfx-file" };
+
 /**
- * Library folders: `<filesRoot>/sfx` (where fetched sounds are saved) first, then BOPENCUT_SFX_DIRS
- * (separated by the platform path delimiter: `;` on Windows, `:` elsewhere).
+ * Library folders: `<filesRoot>/<folder>` (where fetched sounds are saved) first, then the kind's variable
+ * (BOPENCUT_SFX_DIRS for sound effects), separated by the platform path delimiter: `;` on Windows, `:` elsewhere.
  */
-export function libraryRoots(filesRoot: string, env: Record<string, string | undefined> = process.env): string[] {
-	const extra = (env.BOPENCUT_SFX_DIRS ?? "").split(path.delimiter).map((d) => d.trim()).filter(Boolean);
-	const roots = [path.join(filesRoot, "sfx"), ...extra].map((d) => path.resolve(d));
+export function libraryRoots(filesRoot: string, env: Record<string, string | undefined> = process.env, kind: LibraryKind = SFX_LIBRARY): string[] {
+	const extra = (env[kind.envVar] ?? "").split(path.delimiter).map((d) => d.trim()).filter(Boolean);
+	const roots = [path.join(filesRoot, kind.folder), ...extra].map((d) => path.resolve(d));
 	return roots.filter((d, i) => roots.indexOf(d) === i);
 }
 
@@ -42,6 +46,11 @@ export function words(text: string): string[] {
 }
 
 type Entry = { root: number; rel: string; name: string; nameWords: string[]; tags: string[] };
+
+/** "vine-boom_48k.wav" -> "vine boom 48k", "Dexter - Blood Theme.mp3" -> "Dexter Blood Theme". */
+export function titleFromFile(fileName: string): string {
+	return fileName.replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
 
 async function scan(rootIndex: number, root: string): Promise<Entry[]> {
 	const entries: Entry[] = [];
@@ -62,7 +71,7 @@ async function scan(rootIndex: number, root: string): Promise<Entry[]> {
 				const rel = path.relative(root, full).split(path.sep).join("/");
 				// A saved sound's sidecar (`<name>.json`) keeps its real title; otherwise the file name is the title.
 				const sidecar = item.name.replace(AUDIO_EXT, ".json");
-				let name = item.name.replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").trim();
+				let name = titleFromFile(item.name);
 				if (present.has(sidecar)) {
 					try {
 						const saved = JSON.parse(await fs.readFile(path.join(dir, sidecar), "utf8")) as { name?: unknown };
@@ -155,10 +164,10 @@ export async function libraryTitle(file: string): Promise<string> {
 	return path.basename(file).replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-export async function searchLibrary(query: string, { filesRoot, env = process.env }: SfxDeps, limit = 20): Promise<SfxResult[]> {
+export async function searchLibrary(query: string, { filesRoot, env = process.env }: SfxDeps, limit = 20, kind: LibraryKind = SFX_LIBRARY): Promise<SfxResult[]> {
 	const q = words(query);
 	if (!q.length) return [];
-	const roots = libraryRoots(filesRoot, env);
+	const roots = libraryRoots(filesRoot, env, kind);
 	const scored = (await libraryIndex(roots))
 		.map((entry) => ({ entry, score: scoreEntry(q, entry) }))
 		.filter((s) => s.score > 0)
@@ -168,7 +177,7 @@ export async function searchLibrary(query: string, { filesRoot, env = process.en
 		ref: libraryRef(entry),
 		name: entry.name,
 		tags: entry.tags,
-		previewUrl: `/api/agent/sfx-file?ref=${encodeURIComponent(libraryRef(entry))}`,
+		previewUrl: `${kind.previewRoute}?ref=${encodeURIComponent(libraryRef(entry))}`,
 	}));
 }
 
@@ -319,7 +328,7 @@ async function getMyinstants(ref: string, deps: SfxDeps, label: SfxLabel = {}): 
 		await fs.rm(`${normalized}.${attempt}.part.m4a`, { force: true });
 	}
 	const given = cleanLabel(label);
-	const name = given.name ?? decodeURIComponent(path.posix.basename(ref)).replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").trim();
+	const name = given.name ?? titleFromFile(decodeURIComponent(path.posix.basename(ref)));
 	const pageUrl = given.pageUrl ?? `${MYINSTANTS}/en/search/?name=${encodeURIComponent(name)}`;
 	const metaTmp = `${meta}.${attempt}.tmp`;
 	await fs.writeFile(metaTmp, JSON.stringify({ name, pageUrl, soundUrl: MYINSTANTS + ref, fetchedAt: new Date().toISOString() }, null, 1));
@@ -329,8 +338,8 @@ async function getMyinstants(ref: string, deps: SfxDeps, label: SfxLabel = {}): 
 }
 
 /** A library sound: used in place when it is under AGENT_FILES_ROOT, otherwise copied into `sfx/library/` once. */
-async function getLibrary(ref: string, deps: SfxDeps): Promise<SfxFile> {
-	const roots = libraryRoots(deps.filesRoot, deps.env);
+export async function getLibrary(ref: string, deps: SfxDeps, kind: LibraryKind = SFX_LIBRARY): Promise<SfxFile> {
+	const roots = libraryRoots(deps.filesRoot, deps.env, kind);
 	const file = await resolveLibraryFile(ref, roots);
 	const stat = await fs.stat(file).catch(() => null);
 	if (!stat?.isFile()) throw new RetrievalError("library sound not found");
@@ -338,7 +347,7 @@ async function getLibrary(ref: string, deps: SfxDeps): Promise<SfxFile> {
 	const filesRoot = await fs.realpath(deps.filesRoot).catch(() => path.resolve(deps.filesRoot));
 	if (file.startsWith(filesRoot + path.sep)) return { path: toPosix(path.relative(filesRoot, file)), name, source: "library", cached: true };
 	const hash = createHash("sha1").update(`${file}|${stat.size}|${stat.mtimeMs}`).digest("hex").slice(0, 8);
-	const copy = path.join(filesRoot, "sfx", "library", `${hash}-${safeFileName(path.basename(file))}`);
+	const copy = path.join(filesRoot, kind.folder, "library", `${hash}-${safeFileName(path.basename(file))}`);
 	if (await exists(copy)) return { path: toPosix(path.relative(filesRoot, copy)), name, source: "library", cached: true };
 	await fs.mkdir(path.dirname(copy), { recursive: true });
 	const part = `${copy}.${unique()}.part`;
@@ -352,9 +361,9 @@ export function getSfx(source: SfxSource, ref: string, deps: SfxDeps, label?: Sf
 }
 
 /** A library file to stream for a preview, or null when the reference is not valid. */
-export async function libraryPreviewFile(ref: string, deps: SfxDeps): Promise<string | null> {
+export async function libraryPreviewFile(ref: string, deps: SfxDeps, kind: LibraryKind = SFX_LIBRARY): Promise<string | null> {
 	try {
-		const file = await resolveLibraryFile(ref, libraryRoots(deps.filesRoot, deps.env));
+		const file = await resolveLibraryFile(ref, libraryRoots(deps.filesRoot, deps.env, kind));
 		return (await fs.stat(file)).isFile() ? file : null;
 	} catch {
 		return null;

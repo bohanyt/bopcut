@@ -10,6 +10,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { handleRetrieve } from "@/retrieval/server";
 import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
+import { MUSIC_LIBRARY, handleMusic } from "@/sounds/music-server";
+import { handleDuck } from "@/sounds/duck-server";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -51,9 +53,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 			const full = inside(new URL(req.url).searchParams.get("p") ?? "");
 			return new Response(new Uint8Array(await fs.readFile(full)), { headers: { "Content-Type": TYPES[path.extname(full).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
 		}
-		if (slug[0] === "sfx-file") {
-			// Preview of a sound in one of the library folders (BOPENCUT_SFX_DIRS may be outside AGENT_FILES_ROOT).
-			const file = await libraryPreviewFile(new URL(req.url).searchParams.get("ref") ?? "", { filesRoot: FILES_ROOT });
+		if (slug[0] === "sfx-file" || slug[0] === "music-file") {
+			// Preview of a sound or song in one of the library folders (BOPENCUT_SFX_DIRS / BOPENCUT_MUSIC_DIRS may be outside AGENT_FILES_ROOT).
+			const ref = new URL(req.url).searchParams.get("ref") ?? "";
+			const file = await libraryPreviewFile(ref, { filesRoot: FILES_ROOT }, slug[0] === "music-file" ? MUSIC_LIBRARY : undefined);
 			if (!file) return Response.json({ error: "Not found" }, { status: 404 });
 			return new Response(new Uint8Array(await fs.readFile(file)), { headers: { "Content-Type": TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
 		}
@@ -104,6 +107,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	if (slug[0] === "applied") {
 		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
+	}
+	if (slug[0] === "music") {
+		// Songs from the music folders, or found or linked online (sound only, via yt-dlp); see AGENT.md.
+		const result = await handleMusic(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
+		return Response.json(result.body, { status: result.status });
+	}
+	if (slug[0] === "duck") {
+		// Volume keyframes that lower a music element while voices speak; see AGENT.md.
+		const result = await handleDuck(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
+		return Response.json(result.body, { status: result.status });
 	}
 	if (slug[0] === "sfx") {
 		// Sound effects from the library folders and myinstants.com; see AGENT.md.

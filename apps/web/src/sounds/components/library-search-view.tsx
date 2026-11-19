@@ -14,21 +14,50 @@ import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { buildElementFromMedia } from "@/timeline/element-utils";
 import { mediaTimeFromSeconds } from "@/wasm";
 import { cn } from "@/utils/ui";
-import { PauseIcon, PlayIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { Link01Icon, PauseIcon, PlayIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { SFX_SOURCES, type SfxFile, type SfxResult, type SfxSource } from "../sfx-types";
+import { SFX_SOURCES } from "../sfx-types";
+import { MUSIC_SOURCES } from "../music-types";
 
-const SOURCE_LABELS: Record<SfxSource, string> = { library: "My folders", myinstants: "Myinstants" };
+type Result = { source: string; ref: string; name: string; tags: string[]; duration?: number; previewUrl?: string; pageUrl?: string };
+type Saved = { path: string; name: string; error?: string };
+
+type LibraryConfig = {
+	/** POST endpoint with `search` and `get` kinds. */
+	endpoint: string;
+	sources: readonly string[];
+	labels: Record<string, string>;
+	placeholder: string;
+	empty: string;
+};
+
+const SFX: LibraryConfig = {
+	endpoint: "/api/agent/sfx",
+	sources: SFX_SOURCES,
+	labels: { library: "My folders", myinstants: "Myinstants" },
+	placeholder: "Search sounds, e.g. vine boom",
+	empty: "Search your own sound folders and Myinstants. Added sounds are kept, so they show up under My folders next time.",
+};
+
+const MUSIC: LibraryConfig = {
+	endpoint: "/api/agent/music",
+	sources: MUSIC_SOURCES,
+	labels: { library: "My folders", online: "Online" },
+	placeholder: "Search songs, e.g. nocturne op 9",
+	empty: "Search your own music folders, or online (sound only, fetched with yt-dlp). Fetched songs are loudness-normalized and kept under My folders.",
+};
+
+const formatDuration = (s?: number) => (s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : "");
 
 /**
- * Sound effects from the user's own sound folders and myinstants.com, without an account or key.
- * Adding a sound saves it under the agent files root and imports it into the project at the playhead.
+ * Searches a sound library (the user's folders plus an online source) and adds a result at the playhead:
+ * the server saves it under the agent files root, then it is imported into the project.
  */
-export function SfxLibraryView() {
+function LibrarySearchView({ config }: { config: LibraryConfig }) {
 	const editor = useEditor();
 	const [query, setQuery] = useState("");
-	const [sources, setSources] = useState<SfxSource[]>([...SFX_SOURCES]);
-	const [results, setResults] = useState<SfxResult[]>([]);
+	const [sources, setSources] = useState<string[]>([...config.sources]);
+	const [results, setResults] = useState<Result[]>([]);
 	const [errors, setErrors] = useState<string[]>([]);
 	const [searching, setSearching] = useState(false);
 	const [adding, setAdding] = useState<string | null>(null);
@@ -37,19 +66,20 @@ export function SfxLibraryView() {
 
 	useEffect(() => () => audio.current?.pause(), []);
 
+	const post = async (body: unknown) => {
+		const res = await fetch(config.endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+		const data = await res.json().catch(() => ({}));
+		if (!res.ok) throw new Error(data.error ?? `request failed (${res.status})`);
+		return data;
+	};
+
 	const search = async () => {
 		if (!query.trim() || !sources.length) return;
 		setSearching(true);
 		try {
-			const res = await fetch("/api/agent/sfx", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ kind: "search", query: query.trim(), sources }),
-			});
-			const body = await res.json().catch(() => ({}));
-			if (!res.ok) throw new Error(body.error ?? `search failed (${res.status})`);
+			const body = await post({ kind: "search", query: query.trim(), sources });
 			setResults(body.results ?? []);
-			setErrors((body.errors ?? []).map((e: { source: SfxSource; error: string }) => `${SOURCE_LABELS[e.source]}: ${e.error}`));
+			setErrors((body.errors ?? []).map((e: { source: string; error: string }) => `${config.labels[e.source] ?? e.source}: ${e.error}`));
 		} catch (error) {
 			setResults([]);
 			setErrors([error instanceof Error ? error.message : String(error)]);
@@ -58,8 +88,12 @@ export function SfxLibraryView() {
 		}
 	};
 
-	const togglePlay = (result: SfxResult) => {
+	const togglePlay = (result: Result) => {
 		audio.current?.pause();
+		if (!result.previewUrl) {
+			if (result.pageUrl) window.open(result.pageUrl, "_blank", "noopener,noreferrer");
+			return;
+		}
 		if (playing === result.ref) {
 			setPlaying(null);
 			return;
@@ -74,22 +108,16 @@ export function SfxLibraryView() {
 		setPlaying(result.ref);
 	};
 
-	const add = async (result: SfxResult) => {
+	const add = async (result: Result) => {
 		const project = editor.project.getActive();
 		if (!project) return;
 		setAdding(result.ref);
 		try {
-			const res = await fetch("/api/agent/sfx", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ kind: "get", source: result.source, ref: result.ref, name: result.name, pageUrl: result.pageUrl }),
-			});
-			const saved = (await res.json().catch(() => ({}))) as SfxFile & { error?: string };
-			if (!res.ok) throw new Error(saved.error ?? `request failed (${res.status})`);
+			const saved = (await post({ kind: "get", source: result.source, ref: result.ref, name: result.name, pageUrl: result.pageUrl })) as Saved;
 			const file = await fetch(`/api/agent/file?p=${encodeURIComponent(saved.path)}`);
-			if (!file.ok) throw new Error("the saved sound could not be read");
+			if (!file.ok) throw new Error("the saved file could not be read");
 			const blob = await file.blob();
-			const ext = saved.path.split(".").pop() ?? "mp3";
+			const ext = saved.path.split(".").pop() ?? "m4a";
 			const [asset] = await processMediaAssets({ files: [new File([blob], `${saved.name}.${ext}`, { type: blob.type })] });
 			if (!asset) throw new Error("the sound could not be processed");
 			// The download may take a while: only insert into the project it was started for.
@@ -125,23 +153,17 @@ export function SfxLibraryView() {
 					search();
 				}}
 			>
-				<Input placeholder="Search sounds, e.g. vine boom" value={query} onChange={(e) => setQuery(e.target.value)} />
+				<Input placeholder={config.placeholder} value={query} onChange={(e) => setQuery(e.target.value)} />
 				<Button type="submit" variant="outline" disabled={searching || !query.trim() || !sources.length}>
 					{searching ? "…" : "Search"}
 				</Button>
 			</form>
 			<div className="flex gap-1.5">
-				{SFX_SOURCES.map((source) => {
+				{config.sources.map((source) => {
 					const on = sources.includes(source);
 					return (
-						<Button
-							key={source}
-							size="sm"
-							variant={on ? "secondary" : "ghost"}
-							aria-pressed={on}
-							onClick={() => setSources(on ? sources.filter((s) => s !== source) : [...sources, source])}
-						>
-							{SOURCE_LABELS[source]}
+						<Button key={source} size="sm" variant={on ? "secondary" : "ghost"} aria-pressed={on} onClick={() => setSources(on ? sources.filter((s) => s !== source) : [...sources, source])}>
+							{config.labels[source] ?? source}
 						</Button>
 					);
 				})}
@@ -155,15 +177,14 @@ export function SfxLibraryView() {
 				<div className="flex flex-col gap-3">
 					{results.map((result) => (
 						<div key={`${result.source}:${result.ref}`} className="group flex items-center gap-3">
-							<button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => togglePlay(result)}>
+							<button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => togglePlay(result)} title={result.previewUrl ? "Listen" : "Open its page"}>
 								<div className="bg-accent flex size-10 shrink-0 items-center justify-center rounded-md">
-									<HugeiconsIcon icon={playing === result.ref ? PauseIcon : PlayIcon} className="size-4" />
+									<HugeiconsIcon icon={!result.previewUrl ? Link01Icon : playing === result.ref ? PauseIcon : PlayIcon} className="size-4" />
 								</div>
 								<div className="min-w-0 flex-1">
 									<p className="truncate text-sm font-medium">{result.name}</p>
 									<span className="text-muted-foreground block truncate text-xs">
-										{SOURCE_LABELS[result.source]}
-										{result.tags.length ? ` · ${result.tags.join(" / ")}` : ""}
+										{[config.labels[result.source] ?? result.source, formatDuration(result.duration), result.tags.join(" / ")].filter(Boolean).join(" · ")}
 									</span>
 								</div>
 							</button>
@@ -180,11 +201,19 @@ export function SfxLibraryView() {
 							</Button>
 						</div>
 					))}
-					{!searching && !results.length && !errors.length && (
-						<p className="text-muted-foreground text-sm">Search your own sound folders and Myinstants. Added sounds are kept, so they show up under My folders next time.</p>
-					)}
+					{!searching && !results.length && !errors.length && <p className="text-muted-foreground text-sm">{config.empty}</p>}
 				</div>
 			</ScrollArea>
 		</div>
 	);
+}
+
+/** Sound effects from the user's own sound folders and myinstants.com, without an account or key. */
+export function SfxLibraryView() {
+	return <LibrarySearchView config={SFX} />;
+}
+
+/** Songs from the user's own music folders, or found online (sound only). */
+export function MusicLibraryView() {
+	return <LibrarySearchView config={MUSIC} />;
 }
