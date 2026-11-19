@@ -1,6 +1,7 @@
 // Camera shake: a deterministic offset added on top of an element's own transform (position, zoom and
 // rotation keyframes stay as the user set them). Intensity can be keyframed, so a hit can decay.
 import { resolveAnimationPathValueAtTime } from "@/animation";
+import { getElementKeyframes } from "@/animation/keyframe-query";
 import type { ElementAnimations } from "@/animation/types";
 import type { ParamValues } from "@/params";
 import type { Transform } from "./index";
@@ -10,7 +11,7 @@ export type ShakeSettings = {
 	intensity: number;
 	/** Shakes per second. */
 	frequency: number;
-	/** Maximum rotation in degrees, scaled by intensity / base intensity when keyframed. */
+	/** Maximum rotation in degrees, reached at the element's peak intensity; it follows a keyframed intensity down. */
 	rotation: number;
 	/** Changes the pattern; the same seed always shakes the same way. */
 	seed: number;
@@ -31,25 +32,58 @@ export function readShakeSettings(params: ParamValues): ShakeSettings | undefine
 	};
 }
 
-/** Deterministic phases per seed (a small hash, so seeds 1, 2, 3 look unrelated). */
+const phaseCache = new Map<number, number[]>();
+
+/** Deterministic phases per seed (a small hash, so seeds 1, 2, 3 look unrelated); computed once per seed. */
 function phases(seed: number): number[] {
+	const cached = phaseCache.get(seed);
+	if (cached) return cached;
 	let h = (seed * 2654435761) >>> 0;
-	return Array.from({ length: 6 }, () => {
+	const result = Array.from({ length: 6 }, () => {
 		h = (h ^ (h >>> 13)) >>> 0;
 		h = Math.imul(h, 0x5bd1e995) >>> 0;
 		return ((h >>> 0) / 0xffffffff) * Math.PI * 2;
 	});
+	if (phaseCache.size >= 256) phaseCache.clear();
+	phaseCache.set(seed, result);
+	return result;
 }
 
-/** Offset at `seconds`: two incommensurate sines per axis, so it does not read as a loop. */
-export function shakeOffset(settings: ShakeSettings, seconds: number, intensity = settings.intensity): { x: number; y: number; rotate: number } {
+const keyframePeakCache = new WeakMap<ElementAnimations, number>();
+
+/** The strongest intensity the element reaches: its base value or its highest intensity keyframe. */
+export function peakShakeIntensity(settings: ShakeSettings, animations: ElementAnimations | undefined): number {
+	if (!animations) return settings.intensity;
+	let keyframePeak = keyframePeakCache.get(animations);
+	if (keyframePeak === undefined) {
+		keyframePeak = 0;
+		for (const keyframe of getElementKeyframes({ animations })) {
+			if (keyframe.propertyPath === "shake.intensity" && typeof keyframe.value === "number" && Number.isFinite(keyframe.value)) {
+				keyframePeak = Math.max(keyframePeak, keyframe.value);
+			}
+		}
+		keyframePeakCache.set(animations, keyframePeak);
+	}
+	return Math.max(settings.intensity, keyframePeak);
+}
+
+/**
+ * Offset at `seconds`: two incommensurate sines per axis, so it does not read as a loop. Rotation scales with
+ * `intensity / peak` (at most 1), so the full rotation is reached only at the peak intensity.
+ */
+export function shakeOffset(
+	settings: ShakeSettings,
+	seconds: number,
+	intensity = settings.intensity,
+	peak = Math.max(settings.intensity, intensity),
+): { x: number; y: number; rotate: number } {
 	if (intensity <= 0) return { x: 0, y: 0, rotate: 0 };
 	const p = phases(settings.seed);
 	const w = 2 * Math.PI * settings.frequency * seconds;
 	const x = 0.62 * Math.sin(w + p[0]) + 0.38 * Math.sin(w * 1.73 + p[1]);
 	const y = 0.62 * Math.sin(w * 1.11 + p[2]) + 0.38 * Math.sin(w * 2.07 + p[3]);
 	const r = 0.6 * Math.sin(w * 0.93 + p[4]) + 0.4 * Math.sin(w * 1.61 + p[5]);
-	const rotationScale = settings.intensity > 0 ? intensity / settings.intensity : 1;
+	const rotationScale = peak > 0 ? Math.min(1, Math.max(0, intensity / peak)) : 0;
 	return { x: x * intensity, y: y * intensity, rotate: r * settings.rotation * rotationScale };
 }
 
@@ -78,7 +112,7 @@ export function applyShake({
 		}) as number,
 	);
 	if (intensity <= 0) return transform;
-	const offset = shakeOffset(settings, localTime / ticksPerSecond, intensity);
+	const offset = shakeOffset(settings, localTime / ticksPerSecond, intensity, peakShakeIntensity(settings, animations));
 	return {
 		...transform,
 		position: { x: transform.position.x + offset.x, y: transform.position.y + offset.y },

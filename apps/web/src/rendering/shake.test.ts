@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { ElementAnimations } from "@/animation/types";
-import { upsertPathKeyframe } from "@/animation";
+import { getElementKeyframes, upsertPathKeyframe } from "@/animation";
 import { resolveAnimationTarget } from "@/timeline/animation-targets";
 import type { TimelineElement } from "@/timeline";
 import { TICKS_PER_SECOND, type MediaTime } from "@/wasm";
-import { applyShake, readShakeSettings, shakeOffset } from "./shake";
+import { applyShake, peakShakeIntensity, readShakeSettings, shakeOffset } from "./shake";
 
 const base = { position: { x: 10, y: -20 }, scaleX: 1.2, scaleY: 1.2, rotate: 5 };
 const TPS = 1000;
@@ -59,6 +59,38 @@ describe("camera shake", () => {
 		expect(late).toEqual(base);
 		const early = applyShake({ transform: base, settings, animations, localTime: 0.037 * TICKS_PER_SECOND, ticksPerSecond: TICKS_PER_SECOND });
 		expect(early.position.x !== 10 || early.position.y !== -20).toBe(true);
+	});
+
+	test("rotation is scaled against the peak keyframe, never above the set maximum", () => {
+		// The base intensity is 0 and the keyframes rise to 40: rotation must still decay with them.
+		const settings = readShakeSettings({ "shake.intensity": 0, "shake.rotation": 4 })!;
+		const element = { id: "v", type: "video", name: "clip", mediaId: "m", startTime: 0, duration: 2 * TICKS_PER_SECOND, trimStart: 0, trimEnd: 0, params: {} } as unknown as TimelineElement;
+		const target = resolveAnimationTarget({ element, path: "shake.intensity" })!;
+		let animations: ElementAnimations | undefined;
+		for (const [seconds, value] of [[0, 40], [1, 10]] as const) {
+			animations = upsertPathKeyframe({
+				animations,
+				propertyPath: "shake.intensity",
+				time: Math.round(seconds * TICKS_PER_SECOND) as MediaTime,
+				value,
+				channelLayout: target.channelLayout,
+				coerceValue: target.coerceValue,
+			});
+		}
+		expect(peakShakeIntensity(settings, animations)).toBe(40);
+		// The timeline lists them like any other keyframe (markers, snapping).
+		expect(getElementKeyframes({ animations }).filter((k) => k.propertyPath === "shake.intensity")).toHaveLength(2);
+		let maxAtPeak = 0;
+		let maxLate = 0;
+		for (let t = 0; t < 3; t += 0.005) {
+			maxAtPeak = Math.max(maxAtPeak, Math.abs(shakeOffset(settings, t, 40, 40).rotate));
+			maxLate = Math.max(maxLate, Math.abs(shakeOffset(settings, t, 10, 40).rotate));
+		}
+		expect(maxAtPeak).toBeLessThanOrEqual(4 + 1e-9);
+		expect(maxAtPeak).toBeGreaterThan(3);
+		expect(maxLate).toBeLessThanOrEqual(1 + 1e-9);
+		// A keyframe above the base value never pushes rotation past the maximum.
+		expect(Math.abs(shakeOffset(readShakeSettings({ "shake.intensity": 5, "shake.rotation": 2 })!, 0.3, 50).rotate)).toBeLessThanOrEqual(2 + 1e-9);
 	});
 
 	test("settings are clamped", () => {
