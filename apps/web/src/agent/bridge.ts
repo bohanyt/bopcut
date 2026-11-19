@@ -11,6 +11,7 @@ import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
 import { getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildEditItems, buildSceneSnapshot } from "./snapshot";
+import { NO_SELECTION } from "./selection-payload";
 
 export type { Draft, DraftOp } from "./draft";
 
@@ -39,7 +40,28 @@ export function agentSnapshot() {
 		notes: scene.bookmarks.filter((b) => b.note?.trim()).map((b) => ({ id: b.id ?? `legacy-${b.time}`, text: b.note, start: s(b.time), ...(b.duration ? { end: s(b.time + b.duration) } : {}), elementIds: b.elementIds ?? [], replies: b.replies ?? [], author: b.author ?? "user", resolved: b.resolved ?? false, createdAt: b.createdAt ?? null })),
 		tracks: view.tracks,
 		compounds: view.compounds,
+		selection: agentSelection(view),
 	};
+}
+
+/**
+ * What the user is pointing at: the selected elements (as they appear in the snapshot, with their track) and
+ * the playhead (seconds, in the open scene). Agents resolve "this" from unresolved notes first, then this.
+ */
+export function agentSelection(view?: ReturnType<typeof buildSceneSnapshot>) {
+	const editor = EditorCore.getInstance();
+	const project = editor.project.getActiveOrNull();
+	const active = editor.scenes.getActiveSceneOrNull();
+	const scene = agentRootScene();
+	if (!project || !active || !scene) return null;
+	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() });
+	const lanes = active.id === scene.id ? snapshot.tracks : (snapshot.compounds.find((c) => c.sceneId === active.id)?.tracks ?? []);
+	const selected = editor.selection.getSelectedElements().flatMap(({ trackId, elementId }) => {
+		const lane = lanes.find((l) => l.id === trackId);
+		const element = lane?.elements.find((e) => e.id === elementId);
+		return element && lane ? [{ ...element, track: { id: lane.id, name: lane.name, type: lane.type } }] : [];
+	});
+	return { projectId: project.metadata.id, sceneId: scene.id, activeSceneId: active.id, playhead: s(editor.playback.getCurrentTime()), selected };
 }
 
 function editSnapshot(): EditSnapshot | null {
@@ -69,7 +91,28 @@ export function installAgentBridge() {
 	};
 	editor.timeline.subscribe(push);
 	editor.scenes.subscribe(push);
-	(window as any).agent = { editor, snapshot: agentSnapshot, push, applyDraft };
+	// selection.json: what the user points at, written shortly after the selection or the playhead settles.
+	let selectionTimer: ReturnType<typeof setTimeout> | undefined;
+	let lastSelection = "";
+	const pushSelection = () => {
+		clearTimeout(selectionTimer);
+		selectionTimer = setTimeout(() => {
+			// No open project: an empty selection, so an agent never acts on a closed project's selection.
+			const body = JSON.stringify(agentSelection() ?? NO_SELECTION);
+			if (body === lastSelection) return;
+			lastSelection = body;
+			fetch("/api/agent/selection", { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {
+				lastSelection = "";
+			});
+		}, 250);
+	};
+	editor.selection.subscribe(pushSelection);
+	editor.playback.subscribe(pushSelection);
+	editor.timeline.subscribe(pushSelection);
+	editor.scenes.subscribe(pushSelection);
+	editor.project.subscribe(pushSelection);
+	pushSelection();
+	(window as any).agent = { editor, snapshot: agentSnapshot, selection: agentSelection, push, applyDraft };
 	push();
 	setInterval(pollDraft, 2000);
 	setInterval(pollFrames, 2000);

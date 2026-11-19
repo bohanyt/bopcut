@@ -10,7 +10,7 @@ import { createEditLogger, diffEdits, type EditItem } from "./edit-log";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { EditorCore } = await import("@/core");
-const { applyDraft } = await import("./bridge");
+const { applyDraft, agentSelection } = await import("./bridge");
 const { computeAgentDraft } = await import("./draft");
 const { AgentDraftCommand } = await import("./draft-command");
 const { buildBundleScenes } = await import("./importer");
@@ -480,5 +480,34 @@ describe("compound naming", () => {
 		expect(out.results[0].ok).toBe(true);
 		const names = out.scenes.filter((s) => s.kind === "compound" && !["s1", "s2"].includes(s.id)).map((s) => s.name).sort();
 		expect(names).toEqual(["Compound clip 1", "Compound clip 2"]);
+	});
+});
+
+describe("selection context for agents", () => {
+	test("selected elements come with their address, timing and track; the playhead is in seconds", () => {
+		const editor = setup();
+		editor.selection.setSelectedElements({ elements: [{ trackId: "t-c1", elementId: "c1" }, { trackId: "t-main", elementId: "bg" }] });
+		editor.playback.seek({ time: T(12.5) });
+		const selection = agentSelection();
+		expect(selection?.projectId).toBe("p");
+		expect(selection?.playhead).toBe(12.5);
+		expect(selection?.selected.map((e) => [e.id, e.track.name, e.start, e.end])).toEqual([["c1", "Clips", 10, 15], ["bg", "Main", 0, 20]]);
+		expect(selection?.selected[0].compound?.sceneId).toBe("s1");
+	});
+
+	test("inside an open compound, the selection is read from that compound's content", () => {
+		const editor = setup();
+		editor.scenes.setScenes({ scenes: editor.scenes.getScenes(), activeSceneId: "s1" });
+		editor.selection.setSelectedElements({ elements: [{ trackId: "t-a1", elementId: "a1" }] });
+		const selection = agentSelection();
+		expect(selection?.activeSceneId).toBe("s1");
+		expect(selection?.sceneId).toBe("main");
+		expect(selection?.selected.map((e) => [e.id, e.agentId, e.track.name, e.path])).toEqual([["a1", "label", "Text", ["c1"]]]);
+	});
+
+	test("nothing selected is an empty list, and unknown refs are skipped", () => {
+		const editor = setup();
+		editor.selection.setSelectedElements({ elements: [{ trackId: "nope", elementId: "x" }] });
+		expect(agentSelection()?.selected).toEqual([]);
 	});
 });
