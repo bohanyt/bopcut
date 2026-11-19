@@ -204,12 +204,16 @@ async function framesGate(): Promise<unknown | null> {
 // An agent draft is a list of per-item operations, protecting human edits (see AGENT.md and draft.ts).
 // Times are in seconds; inside a compound clip they are relative to its content. The whole draft is one Undo step.
 let applying = false;
-async function pollDraft() {
+/** Picks up draft.json for the open project (every 2 s; exported for tests). */
+export async function pollDraft() {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	if (!project || applying) return;
 	if (editor.timeline.isPreviewActive()) return; // a human is dragging: wait until release
 	if (!agentReadiness().ready) return; // media still loading or a save pending: the draft waits
+	// The session is taken before the fetch: a project opened while draft.json is read is not the
+	// one this poll was for, and the draft is left for the next poll (not marked seen, not refused).
+	const session = currentSession();
 	let draft: Draft | null = null;
 	try {
 		draft = await (await fetch("/api/agent/draft", { cache: "no-store" })).json();
@@ -217,12 +221,13 @@ async function pollDraft() {
 		return;
 	}
 	if (!draft?.rev || (draft.projectId && draft.projectId !== project.metadata.id)) return;
+	if (draftSessionError({ draft, queued: session, now: currentSession() }) || !agentReadiness().ready) return;
 	const key = `agent-draft-${project.metadata.id}`;
 	if (localStorage.getItem(key) === draft.rev) return;
 	localStorage.setItem(key, draft.rev);
 	applying = true;
 	try {
-		await applyDraft(draft);
+		await applyDraft(draft, { session });
 	} finally {
 		applying = false;
 	}
@@ -250,11 +255,8 @@ const opLabel = (op: DraftOp) => (op?.op === "add" ? { name: op.element?.name } 
  * Once applied, the project is saved before the result is written, so `draft-result.json` with
  * `saved: true` means the change is in project.json on disk.
  */
-export function applyDraft(draft: Draft): Promise<void> {
+export function applyDraft(draft: Draft, { session = currentSession() }: { session?: DraftSession | null } = {}): Promise<void> {
 	// Bound now: a draft waiting behind another one never runs against a project opened meanwhile.
-	const editor = EditorCore.getInstance();
-	const projectId = editor.project.getActiveOrNull()?.metadata.id;
-	const session: DraftSession | null = projectId ? { projectId, session: editor.project.getSession() } : null;
 	const run = draftQueue.then(() => applyDraftNow(draft, session));
 	draftQueue = run.catch(() => {});
 	return run;
@@ -446,16 +448,22 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		}
 	}
 
-	// The imports are part of the project now: later loads include them (also in other tabs).
-	const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids: publish });
-	if (promoteError) console.warn("Staged media not promoted (they still load because the timeline uses them):", promoteError);
-
-	// The result is written once the change is on disk.
+	// The result is written once the change is on disk. The commit marks the project dirty even if
+	// saving is paused, so a paused save is reported as not saved instead of passing silently.
+	editor.save.markDirty({ force: true });
 	const saved = await editor.save.settle();
+	// Promoted only once the timeline that uses them is on disk: before that, another tab loading the
+	// project would see media its saved timeline does not use yet.
+	if (saved) {
+		const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids: publish });
+		if (promoteError) console.warn("Staged media not promoted (they still load because the timeline uses them):", promoteError);
+	}
 	const failed = outcome.results.filter((r) => !r?.ok).length;
 	const description = `${outcome.results.length - failed} changes${failed ? `, ${failed} failed` : ""} · changed items selected · Ctrl+Z to undo`;
-	if (!saved) toast.error(`Agent draft applied but not saved: ${draft.label ?? draft.rev}`, { description: editor.save.getLastError() ?? "Save did not finish" });
+	// Save state of this draft's project, not of whatever project is open by now.
+	const saveError = saved ? null : (editor.save.getLastError(projectId) ?? (editor.save.getIsPaused() ? "saving is paused (a project is opening)" : "save did not finish"));
+	if (!saved) toast.error(`Agent draft applied but not saved: ${draft.label ?? draft.rev}`, { description: saveError ?? undefined });
 	else if (failed) toast.warning(`Agent draft partly applied: ${draft.label ?? draft.rev}`, { description });
 	else toast(`Agent draft applied: ${draft.label ?? draft.rev}`, { description });
-	await report({ sceneId: root.id, applied: true, saved, savedAt: agentReadiness().savedAt, ...(saved ? {} : { saveError: editor.save.getLastError() }), ...(cleanup ? { cleanup } : {}), results: outcome.results });
+	await report({ sceneId: root.id, applied: true, saved, savedAt: editor.save.getLastSavedAt(projectId)?.toISOString() ?? null, ...(saved ? {} : { saveError }), ...(cleanup ? { cleanup } : {}), results: outcome.results });
 }

@@ -12,7 +12,7 @@ mock.module("@/media/processing", () => ({
 	processMediaAssets: async ({ files }: { files: File[] }) => Array.from(files).map((file) => ({ name: file.name, type: "image", file, width: 400, height: 200 })),
 }));
 const { EditorCore } = await import("@/core");
-const { applyDraft } = await import("./bridge");
+const { applyDraft, pollDraft } = await import("./bridge");
 const { storageService } = await import("@/services/storage/service");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
@@ -298,13 +298,24 @@ describe("drafts belong to the project session they were queued in", () => {
 		expect(backend.state.deleted).toEqual(backend.state.saved);
 	});
 
-	test("committed imports are promoted on disk", async () => {
-		setup();
+	test("committed imports are promoted on disk once the timeline is saved, not before", async () => {
+		const editor = setup();
 		const backend = fakeBackend();
 		restore = backend.restore;
-		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("logo.png", "logo") }]));
-		expect(backend.state.results[0]).toMatchObject({ applied: true });
-		expect(backend.state.promoted).toEqual(backend.state.saved);
+		// Saving paused (setup): the commit is not on disk, so nothing is promoted.
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("first.png", "first") }]));
+		expect(backend.state.results[0]).toMatchObject({ applied: true, saved: false });
+		expect(backend.state.promoted).toEqual([]);
+		// Saving works: promoted after the save.
+		editor.project.persistCurrentProject = async () => {
+			editor.save.recordPersisted({ projectId: "p", error: null });
+			return null;
+		};
+		(editor.project as any).isLoading = false;
+		editor.save.resume();
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("second.png", "second") }]));
+		expect(backend.state.results[1]).toMatchObject({ applied: true, saved: true });
+		expect(backend.state.promoted).toEqual([backend.state.saved[1]]);
 	});
 });
 
@@ -322,5 +333,42 @@ describe("malformed element trees", () => {
 		expect(result.results[1].error).toContain("not an object");
 		expect(backend.state.deleted).toEqual(backend.state.saved);
 		expect(elements(editor).some((e) => e.agentId === "ok")).toBe(false);
+	});
+});
+
+describe("the draft poller", () => {
+	test("a project opened while draft.json is read: the draft is left for the next poll, not applied or refused", async () => {
+		const editor = setup();
+		const store = new Map<string, string>();
+		const previousStorage = (globalThis as any).localStorage;
+		(globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
+		const backend = fakeBackend();
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (url: string, init?: unknown) => {
+			if (String(url) === "/api/agent/draft") {
+				// The human opens another project while the poll waits for the file.
+				const scenes = [scene("main-q", { overlay: [], main: { id: "t-q", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, audio: [] })];
+				editor.project.setActiveProject({ project: { metadata: { id: "q", name: "q", createdAt: new Date(0), updatedAt: new Date(0) }, scenes, currentSceneId: "main-q", settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1920, height: 1080 } } } as unknown as TProject });
+				editor.scenes.setScenes({ scenes, activeSceneId: "main-q" });
+				return new Response(JSON.stringify(draft([{ op: "delete", match: { agentId: "old" } }])));
+			}
+			return realFetch(url as never, init as never);
+		}) as typeof fetch;
+		// The open project is ready: loaded, its media loaded, nothing to save.
+		(editor.project as any).isLoading = false;
+		(editor.media as any).loadedProjectId = "p";
+		(editor.media as any).isLoading = false;
+		try {
+			const { agentReadiness } = await import("./bridge");
+			expect(agentReadiness().ready).toBe(true);
+			await pollDraft();
+		} finally {
+			globalThis.fetch = realFetch;
+			backend.restore();
+			(globalThis as any).localStorage = previousStorage;
+		}
+		expect(backend.state.results).toEqual([]);
+		expect([...store.keys()]).toEqual([]);
+		expect(editor.project.getActive().metadata.id).toBe("q");
 	});
 });

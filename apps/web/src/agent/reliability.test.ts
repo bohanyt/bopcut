@@ -120,6 +120,13 @@ describe("transactional drafts", () => {
 
 	test("without atomic, failed ops are skipped and the rest applies (unchanged contract)", async () => {
 		const editor = setup();
+		// Saving works in this test: the result reports the write.
+		editor.project.persistCurrentProject = async () => {
+			editor.save.recordPersisted({ projectId: editor.project.getActive().metadata.id, error: null });
+			return null;
+		};
+		(editor.project as any).isLoading = false;
+		editor.save.resume();
 		const result = await withAgentApi(() => applyDraft(draft([
 			{ op: "delete", match: { agentId: "clip-1" } },
 			{ op: "set", match: { agentId: "nope" }, start: 1 },
@@ -128,6 +135,14 @@ describe("transactional drafts", () => {
 		expect(result.applied).toBe(true);
 		expect(result.saved).toBe(true);
 		expect(result.results.map((r: any) => r.ok)).toEqual([true, false]);
+	});
+
+	test("a draft applied while saving is paused (a project opening) is reported as not saved", async () => {
+		setup();
+		const result = await withAgentApi(() => applyDraft(draft([{ op: "delete", match: { agentId: "clip-1" } }])));
+		expect(result.applied).toBe(true);
+		expect(result.saved).toBe(false);
+		expect(result.saveError).toContain("paused");
 	});
 });
 

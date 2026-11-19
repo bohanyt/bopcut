@@ -61,6 +61,9 @@ export class SaveManager {
 		}
 		this.unsubscribeHandlers = [];
 		this.generation++;
+		// A save still running is detached: its completion changes nothing here.
+		this.isSaving = false;
+		this.savePromise = null;
 		this.clearTimer();
 	}
 
@@ -76,6 +79,23 @@ export class SaveManager {
 
 	getIsPaused(): boolean {
 		return this.isPaused;
+	}
+
+	/**
+	 * Another project is about to replace the open one: saving pauses, and what was pending belongs to
+	 * the project being left, so it is dropped (callers settle it first). A save still running for that
+	 * project finishes, but its outcome schedules nothing for the next one.
+	 */
+	beginProjectSwitch(): void {
+		this.pause();
+		this.generation++;
+		this.hasPendingSave = false;
+		this.failures = 0;
+		// A save of the project being left may still be running (or hang): it is detached, so the next
+		// project can save as soon as it is in place.
+		this.isSaving = false;
+		this.savePromise = null;
+		this.notify();
 	}
 
 	resume(): void {
@@ -157,6 +177,8 @@ export class SaveManager {
 		const untilDeadline = () => new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now())));
 		while (this.getIsDirty()) {
 			if (Date.now() >= deadline) return false;
+			// Paused (a project is opening or closing): nothing can be saved now, so this is not saved.
+			if (this.isPaused && !this.isSaving) return false;
 			if (this.savePromise) await Promise.race([this.savePromise, untilDeadline()]);
 			else {
 				this.clearTimer();
@@ -210,7 +232,10 @@ export class SaveManager {
 			try {
 				// The project manager records the outcome (recordPersisted).
 				const error = await this.editor.project.persistCurrentProject();
-				if (error === null) {
+				if (generation !== this.generation) {
+					// The project was switched (or the manager stopped) while this save ran: its outcome
+					// belongs to the project that was left, and nothing is retried for it here.
+				} else if (error === null) {
 					this.failures = 0;
 				} else {
 					// Not on disk: stays pending (readiness reports it) and is retried with backoff,
@@ -226,10 +251,16 @@ export class SaveManager {
 					});
 				}
 			} finally {
-				this.isSaving = false;
-				this.savePromise = null;
-				// A stopped manager (editor reset) schedules nothing more; a paused one resumes later.
-				if (this.hasPendingSave && generation === this.generation && !this.isPaused) {
+				// A stopped manager (editor reset) schedules nothing more; a paused one resumes later. A save
+				// detached by a project switch leaves the state of the new project alone.
+				const stale = generation !== this.generation;
+				if (!stale) {
+					this.isSaving = false;
+					this.savePromise = null;
+				}
+				if (stale) {
+					if (this.hasPendingSave && !this.isPaused && !this.isSaving && this.unsubscribeHandlers.length > 0) this.queueSave();
+				} else if (this.hasPendingSave && !this.isPaused) {
 					if (!this.getLastError(projectId)) this.queueSave();
 					else if (retryIn !== null) this.queueSave(retryIn);
 				}

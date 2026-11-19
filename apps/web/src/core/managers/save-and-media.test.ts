@@ -288,3 +288,101 @@ describe("staged media on disk", () => {
 		}
 	});
 });
+
+describe("project switches that fail or overlap", () => {
+	const withScenes = (editor: ReturnType<typeof EditorCore.getInstance>) => {
+		const written: { id: string; scenes: number }[] = [];
+		editor.project.persistCurrentProject = async () => {
+			const active = editor.project.getActive();
+			written.push({ id: active.metadata.id, scenes: editor.scenes.getScenes().length });
+			editor.save.recordPersisted({ projectId: active.metadata.id, error: null });
+			return null;
+		};
+		return written;
+	};
+
+	test("a project that cannot be read leaves the open one intact, and saving it goes on", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const written = withScenes(editor);
+		stub({ loadProject: async () => { throw new Error("disk gone"); } });
+		await expect(editor.project.loadProject({ id: "b" })).rejects.toThrow("disk gone");
+		expect(editor.project.getActive().metadata.id).toBe("a");
+		expect(editor.scenes.getScenes().length).toBe(1);
+		editor.save.markDirty();
+		await editor.save.flush();
+		expect(written.at(-1)).toEqual({ id: "a", scenes: 1 });
+		expect(written.every((w) => w.scenes > 0)).toBe(true);
+	});
+
+	test("of two overlapping loads, the newest one wins and an older one finishing late changes nothing", async () => {
+		const editor = await load(project("a", new Date(0)));
+		withScenes(editor);
+		let releaseB!: () => void;
+		const slowB = new Promise<void>((resolve) => { releaseB = resolve; });
+		stub({ loadProject: async ({ id }: { id: string }) => {
+			if (id === "b") await slowB;
+			return { project: structuredClone(project(id, new Date(0))) };
+		} });
+		const b = editor.project.loadProject({ id: "b" });
+		await wait(5);
+		await editor.project.loadProject({ id: "c" });
+		releaseB();
+		await b;
+		expect(editor.project.getActive().metadata.id).toBe("c");
+		expect(editor.save.getIsPaused()).toBe(false);
+	});
+
+	test("a save of the old project that hangs does not block saving the new one", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const written: string[] = [];
+		let hang = true;
+		editor.project.persistCurrentProject = () => {
+			const id = editor.project.getActive().metadata.id;
+			if (hang) return new Promise(() => {});
+			written.push(id);
+			editor.save.recordPersisted({ projectId: id, error: null });
+			return Promise.resolve(null);
+		};
+		editor.save.markDirty();
+		void editor.save.flush();
+		await wait(5);
+		stub({ loadProject: async () => ({ project: structuredClone(project("b", new Date(0))) }) });
+		// The switch waits for a's save at most a few seconds, then goes on.
+		const started = Date.now();
+		await editor.project.loadProject({ id: "b" });
+		expect(Date.now() - started).toBeLessThan(4500);
+		hang = false;
+		editor.save.markDirty();
+		await editor.save.flush();
+		expect(written).toEqual(["b"]);
+	}, 10000);
+});
+
+describe("staged media through the storage route", () => {
+	test("PUT, POST staged metadata, GET listing, then promotion keeps the file and clears the mark", async () => {
+		const os = await import("node:os");
+		const fs = (await import("node:fs")).promises;
+		const path = await import("node:path");
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "staged-"));
+		const previous = process.env.BOPENCUT_DATA;
+		process.env.BOPENCUT_DATA = root;
+		try {
+			const route = await import("@/app/api/storage/[...slug]/route");
+			const call = (method: string, slug: string[], init: RequestInit = {}) =>
+				(route as any)[method](new Request(`http://localhost/api/storage/${slug.join("/")}`, { method, ...init }), { params: Promise.resolve({ slug }) }) as Promise<Response>;
+			const meta = { id: "m1", name: "logo", type: "image", fileName: "logo.png", fileType: "image/png", size: 3, lastModified: 0 };
+			expect((await call("PUT", ["projects", "p", "media", "m1"], { headers: { "x-media-metadata": encodeURIComponent(JSON.stringify({ id: "m1", fileName: "logo.png", fileType: "image/png" })) }, body: new Blob(["png"]) })).status).toBe(200);
+			expect((await call("POST", ["projects", "p", "media", "m1"], { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...meta, staged: true }) })).status).toBe(200);
+			const listed = await (await call("GET", ["projects", "p", "media"])).json();
+			expect(listed).toMatchObject([{ id: "m1", staged: true }]);
+			expect((await call("POST", ["projects", "p", "media", "m1"], { headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) })).status).toBe(200);
+			const after = await (await call("GET", ["projects", "p", "media"])).json();
+			expect(after[0].staged).toBeUndefined();
+			expect((await call("GET", ["projects", "p", "media", "m1"])).status).toBe(200);
+		} finally {
+			if (previous === undefined) delete process.env.BOPENCUT_DATA;
+			else process.env.BOPENCUT_DATA = previous;
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+});

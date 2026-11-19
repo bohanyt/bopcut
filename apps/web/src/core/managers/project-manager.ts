@@ -24,6 +24,7 @@ import { DEFAULTS } from "@/timeline/defaults";
 import { getElementFontFamilies } from "@/timeline/element-utils";
 import { frameRateToFloat, getRaisedProjectFpsForImportedMedia } from "@/fps/utils";
 import type { MediaAsset } from "@/media/types";
+import { mediaIdsInScenes } from "./media-manager";
 
 export interface MigrationState {
 	isMigrating: boolean;
@@ -41,6 +42,8 @@ export class ProjectManager {
 	 * settings change), so async work can tell it still runs in the project session it started in.
 	 */
 	private session = 0;
+	/** Bumped by every loadProject: only the newest load resumes saving. */
+	private loadSequence = 0;
 	private isInitialized = false;
 	private invalidProjectIds = new Set<string>();
 	private storageMigrationPromise: Promise<void> | null = null;
@@ -126,23 +129,39 @@ export class ProjectManager {
 			this.notify();
 		}
 
-		// Unsaved edits of the project being left are written while its timeline is still in memory.
-		if (this.active && this.active.metadata.id !== id && this.editor.save.getIsDirty() && !this.editor.save.getIsPaused()) {
+		const load = ++this.loadSequence;
+		// Unsaved edits of the open project (also when it is reopened) are written while its timeline is
+		// still in memory.
+		if (this.active && this.editor.save.getIsDirty() && !this.editor.save.getIsPaused()) {
 			await this.editor.save.settle({ timeoutMs: 3000 }).catch(() => false);
 		}
+		// The next project is read before anything of the open one is cleared: if reading fails, the open
+		// project stays as it was (timeline, media, saving).
+		let result: Awaited<ReturnType<typeof storageService.loadProject>>;
+		try {
+			await this.ensureStorageMigrations();
+			result = await storageService.loadProject({ id });
+			if (!result) {
+				throw new Error(`Project with id ${id} not found`);
+			}
+		} catch (error) {
+			console.error("Failed to load project:", error);
+			if (!this.isInitialized || !this.active) {
+				this.isLoading = false;
+				this.notify();
+			}
+			throw error;
+		}
+		if (load !== this.loadSequence) return; // a newer load started meanwhile and takes over
+
 		this.session++;
-		// No save may run from here until the new project is in place (see SaveManager.pause).
-		this.editor.save.pause();
-		await this.ensureStorageMigrations();
+		// No save may run from here until the new project is in place, and nothing pending of the open
+		// project carries over (see SaveManager.beginProjectSwitch).
+		this.editor.save.beginProjectSwitch();
 		this.editor.media.clearAllAssets();
 		this.editor.scenes.clearScenes();
 
 		try {
-			const result = await storageService.loadProject({ id });
-			if (!result) {
-				throw new Error(`Project with id ${id} not found`);
-			}
-
 			const project = result.project;
 
 			this.active = project;
@@ -183,9 +202,12 @@ export class ProjectManager {
 			console.error("Failed to load project:", error);
 			throw error;
 		} finally {
-			this.isLoading = false;
-			this.notify();
-			this.editor.save.resume();
+			// Only the newest load resumes saving: an older one finishing late must not save mid-switch.
+			if (load === this.loadSequence) {
+				this.isLoading = false;
+				this.notify();
+				this.editor.save.resume();
+			}
 		}
 	}
 
@@ -477,9 +499,11 @@ export class ProjectManager {
 			);
 
 			await Promise.all(
-				duplicationPlans.map(async ({ sourceProjectId, newProjectId }) => {
+				duplicationPlans.map(async ({ sourceProjectId, newProjectId, newProject }) => {
+					// Media the timeline uses are copied even if their draft's promotion never finished.
 					const sourceMediaAssets = await storageService.loadAllMediaAssets({
 						projectId: sourceProjectId,
+						usedIds: mediaIdsInScenes(newProject.scenes ?? []),
 					});
 
 					await Promise.all(
