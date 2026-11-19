@@ -76,6 +76,12 @@ export function createTextPreset(
 			],
 		),
 	);
+	// The renderer uses the em width when the pixel width is 0 and not animated. A preset has no animation,
+	// so a pixel width captured at an animated 0 would bring the em stroke back: zero the em width too.
+	for (const layer of ["outer", "inner"]) {
+		const px = `stroke.${layer}.widthPx`;
+		if (element.animations?.[px] && style[px] === 0) style[`stroke.${layer}.width`] = 0;
+	}
 	return validateTextPreset({ name, style });
 }
 

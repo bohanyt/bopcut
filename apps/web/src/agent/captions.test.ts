@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
-import { resolveCaptionPreset } from "./captions";
+import { checkAgentCaption, resolveCaptionPreset, updateAgentCaption } from "./captions";
+import { TICKS_PER_SECOND, type MediaTime } from "@/wasm";
 import { buildDefaultScene } from "@/timeline/scenes";
 import type { TextElement } from "@/timeline";
 import type { AgentElement } from "./elements";
@@ -155,5 +156,44 @@ describe("agent captions", () => {
 			"phrase",
 		]);
 		expect(next.caption?.words[2]).toEqual(el.caption?.words[2]);
+	});
+
+	test("a split half keeps its words: they are checked against the whole untrimmed caption", () => {
+		const built = buildBundleScenes({
+			bundle: { name: "t", width: 1280, height: 720, assets: [], audio: [], main: [], overlay: [{ type: "text", name: "Captions", elements: [phrase()] }] },
+			media: new Map(),
+			sceneId: "main",
+		});
+		const whole = built.tracks.overlay[0].elements[0] as TextElement;
+		const second = (n: number) => Math.round(n * TICKS_PER_SECOND) as MediaTime;
+		// The left half of a 3 s caption split at 1 s: 1 s visible, 2 s trimmed off the end.
+		const left = { ...whole, duration: second(1), trimEnd: second(2) };
+		const words = [
+			{ text: "A", start: 0, end: 0.8 },
+			{ text: "simple", start: 0.8, end: 1.9 },
+			{ text: "phrase", start: 1.9, end: 3 },
+		];
+		const updated = updateAgentCaption(left, { text: "A simple phrase", words });
+		expect(updated.caption?.words.map((w) => w.end)).toEqual([0.8, 1.9, 3]);
+		expect(() => updateAgentCaption(left, { text: "A simple phrase", words: [...words.slice(0, 2), { text: "phrase", start: 1.9, end: 3.5 }] })).toThrow();
+	});
+
+	test("trimStart of a new caption is kept, and words without timings spread over the visible part", () => {
+		const built = buildBundleScenes({
+			bundle: { name: "t", width: 1280, height: 720, assets: [], audio: [], main: [], overlay: [{ type: "text", name: "Captions", elements: [{ ...phrase(), trimStart: 1, duration: 2 }] }] },
+			media: new Map(),
+			sceneId: "main",
+		});
+		const element = built.tracks.overlay[0].elements[0] as TextElement;
+		expect(element.trimStart / TICKS_PER_SECOND).toBeCloseTo(1, 6);
+		expect(element.caption?.words[0].start).toBeCloseTo(1, 6);
+		expect(element.caption?.words.at(-1)?.end).toBeCloseTo(3, 6);
+	});
+
+	test("captions are checked without building them (the importer does this before creating a project)", () => {
+		expect(() => checkAgentCaption(phrase())).not.toThrow();
+		expect(() => checkAgentCaption({ ...phrase(), caption: { text: "x", preset: "Missing" } })).toThrow();
+		expect(() => checkAgentCaption({ ...phrase(), caption: { text: "two words", words: [{ text: "two", start: 0, end: 1 }] } })).toThrow();
+		expect(() => checkAgentCaption({ ...phrase(), caption: { text: "x", style: { fontSize: "big" } } })).toThrow();
 	});
 });

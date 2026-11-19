@@ -4,8 +4,10 @@ import { buildTextElement } from "@/timeline/element-utils";
 import { generateUUID } from "@/utils/id";
 import { mediaTimeFromSeconds, TICKS_PER_SECOND } from "@/wasm";
 import {
+	distributeWordTimings,
 	makeCaption,
 	reconcileCaptionEdit,
+	type CaptionData,
 	type CaptionWord,
 } from "@/text/caption";
 import { validateTextPreset, type TextStylePreset } from "@/text/presets";
@@ -77,15 +79,40 @@ export function updateAgentCaption(
 		params: { ...element.params, ...captionStyle(caption), content: text },
 	};
 	if (caption.words || !element.caption)
-		return {
-			...next,
-			caption: makeCaption(
-				text,
-				(element.duration + element.trimStart) / TICKS_PER_SECOND,
-				caption.words,
-			),
-		};
+		return { ...next, caption: captionWords(element, text, caption.words) };
 	return reconcileCaptionEdit(element, next);
+}
+
+/**
+ * Word timings for a caption element. Given words are in seconds of the untrimmed element, so they are
+ * checked against its whole extent (a split half keeps the words of the other half). Without words, the
+ * text is spread over the visible part.
+ */
+function captionWords(
+	element: Pick<TextElement, "duration" | "trimStart" | "trimEnd">,
+	text: string,
+	words?: CaptionWord[],
+): CaptionData {
+	const visible = element.duration / TICKS_PER_SECOND;
+	const trimStart = (element.trimStart ?? 0) / TICKS_PER_SECOND;
+	if (words) return makeCaption(text, trimStart + visible + (element.trimEnd ?? 0) / TICKS_PER_SECOND, words);
+	makeCaption(text, visible);
+	return distributeWordTimings(text, visible, trimStart);
+}
+
+/**
+ * Checks a caption element of a bundle or draft without building it: its preset must be resolved, its style
+ * valid and its words must fit. Throws the same errors the build would.
+ */
+export function checkAgentCaption(e: AgentElement): void {
+	if (!e.caption) return;
+	captionStyle(e.caption);
+	const seconds = (value: number | undefined) => mediaTimeFromSeconds({ seconds: value ?? 0 });
+	captionWords(
+		{ duration: seconds(e.duration), trimStart: seconds(e.trimStart), trimEnd: seconds(0) },
+		e.caption.text,
+		e.caption.words,
+	);
 }
 
 export function buildAgentCaption({
@@ -112,6 +139,7 @@ export function buildAgentCaption({
 		agentId: e.agent_id,
 		groupId: e.group,
 		duration: mediaTimeFromSeconds({ seconds: e.duration }),
+		trimStart: mediaTimeFromSeconds({ seconds: e.trimStart ?? 0 }),
 	};
 	const element = updateAgentCaption(
 		{
