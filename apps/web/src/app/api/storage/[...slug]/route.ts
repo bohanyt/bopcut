@@ -129,7 +129,12 @@ async function handle(
 						await Promise.all(
 							(await names(dir))
 								.filter((n) => /^[a-zA-Z0-9_-]{1,128}\.json$/.test(n))
-								.map((n) => readJson(path.join(dir, n))),
+								.map((n) =>
+									readJson(path.join(dir, n)).catch((error) => {
+										console.error(`Unreadable media metadata ${n}:`, error);
+										return null;
+									}),
+								),
 						)
 					).filter(
 						(meta) =>

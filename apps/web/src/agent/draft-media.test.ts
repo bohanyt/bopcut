@@ -307,3 +307,20 @@ describe("drafts belong to the project session they were queued in", () => {
 		expect(backend.state.promoted).toEqual(backend.state.saved);
 	});
 });
+
+describe("malformed element trees", () => {
+	test("a null element inside a compound fails its op before anything is imported, and a result is written", async () => {
+		const editor = setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		await applyDraft(draft([
+			{ op: "add", track: { name: "Logos" }, element: image("ok.png", "ok") },
+			{ op: "compound", name: "Broken", elements: [null] },
+		]));
+		const [result] = backend.state.results;
+		expect(result).toMatchObject({ applied: false, rolledBack: true });
+		expect(result.results[1].error).toContain("not an object");
+		expect(backend.state.deleted).toEqual(backend.state.saved);
+		expect(elements(editor).some((e) => e.agentId === "ok")).toBe(false);
+	});
+});

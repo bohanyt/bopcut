@@ -172,25 +172,24 @@ export function installAgentBridge() {
 	setInterval(pollDraft, 2000);
 	// Frames wait for media and saves too: otherwise a frame can miss content that is still loading.
 	setInterval(() => {
-		void framesGate().then((go) => (go ? pollFrames() : undefined));
+		void framesGate().then((request) => (request ? pollFrames(request) : undefined));
 	}, 2000);
 }
 
 // A frame request is refused (once per rev, with an error result) while stored media are
 // missing, unless it says `allowMissing: true`: frames would silently lack that content.
 let refusedFramesRev: string | null = null;
-async function framesGate(): Promise<boolean> {
+async function framesGate(): Promise<unknown | null> {
 	const { ready, missingMedia } = agentReadiness();
-	if (!ready) return false;
-	if (missingMedia.length === 0) return true;
+	if (!ready) return null;
 	let request: { rev?: unknown; allowMissing?: unknown } | null = null;
 	try {
 		request = await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json();
 	} catch {
-		return false;
+		return null;
 	}
-	if (!request || typeof request.rev !== "string") return false;
-	if (request.allowMissing === true) return true;
+	if (!request || typeof request.rev !== "string") return null;
+	if (missingMedia.length === 0 || request.allowMissing === true) return request;
 	if (refusedFramesRev !== request.rev) {
 		refusedFramesRev = request.rev;
 		const projectId = EditorCore.getInstance().project.getActiveOrNull()?.metadata.id;
@@ -199,7 +198,7 @@ async function framesGate(): Promise<boolean> {
 			body: JSON.stringify({ rev: request.rev, projectId, files: [], error: `${missingMedia.length} stored media could not be loaded; retry them (window.agent.retryMissingMedia()) or send allowMissing:true`, missingMedia }),
 		}).catch(() => {});
 	}
-	return false;
+	return null;
 }
 
 // An agent draft is a list of per-item operations, protecting human edits (see AGENT.md and draft.ts).
@@ -314,8 +313,26 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	// Every import attempted, recorded before anything is written (also those whose save failed).
 	const staged: string[] = [];
 	const failures: (string | undefined)[] = [];
+	// Element trees are walked once, before anything is imported: a malformed tree (e.g. a null element
+	// inside a compound) fails its op instead of throwing after assets were staged.
+	const opElements = ops.map((op): AgentElement[] | Error => {
+		try {
+			return elementsOf(op);
+		} catch (error) {
+			return error instanceof Error ? error : new Error(String(error));
+		}
+	});
+	const elementsOfOp = (i: number): AgentElement[] => {
+		const elements = opElements[i];
+		return elements instanceof Error ? [] : elements;
+	};
 	for (const [i, op] of ops.entries()) {
 		const errors: string[] = [];
+		const walked = opElements[i];
+		if (walked instanceof Error) {
+			failures[i] = `invalid elements: ${walked.message}`;
+			continue;
+		}
 		if (op.op === "set" && op.caption?.preset) {
 			try {
 				op.caption = resolveCaptionPreset(op.caption, await (presets ??= loadTextPresets()));
@@ -323,7 +340,11 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 				errors.push(`caption: ${errorText(error)}`);
 			}
 		}
-		for (const e of elementsOf(op)) {
+		for (const e of walked) {
+			if (!e || typeof e !== "object") {
+				errors.push("an element is not an object");
+				continue;
+			}
 			try {
 				if (e.caption?.preset) e.caption = resolveCaptionPreset(e.caption, await (presets ??= loadTextPresets()));
 				if (e.icon) e.icon = { ...e.icon, svg: await loadIcon(e.icon.name) };
@@ -417,9 +438,9 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 
 	// Report where `url` and `sfx` assets were saved and their sources (for credits and reuse as `path`).
 	for (const [i, op] of ops.entries()) {
-		const retrieved = elementsOf(op).flatMap((e) => media.get(e)?.retrieved ?? []);
-		const sfx = elementsOf(op).flatMap((e) => media.get(e)?.sfx ?? []);
-		const music = elementsOf(op).flatMap((e) => media.get(e)?.music ?? []);
+		const retrieved = elementsOfOp(i).flatMap((e) => media.get(e)?.retrieved ?? []);
+		const sfx = elementsOfOp(i).flatMap((e) => media.get(e)?.sfx ?? []);
+		const music = elementsOfOp(i).flatMap((e) => media.get(e)?.music ?? []);
 		if (outcome.results[i] && (retrieved.length || sfx.length || music.length)) {
 			outcome.results[i] = { ...outcome.results[i], ...(retrieved.length ? { retrieved } : {}), ...(sfx.length ? { sfx } : {}), ...(music.length ? { music } : {}) };
 		}
