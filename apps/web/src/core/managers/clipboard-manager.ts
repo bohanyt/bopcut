@@ -8,6 +8,12 @@ import {
 } from "@/clipboard";
 import type { MediaTime } from "@/wasm";
 
+/**
+ * Written to the system clipboard when clips are copied. Clips live in memory; without the marker, an image
+ * the user copied in the browser earlier would win over the clips on paste.
+ */
+export const CLIPS_CLIPBOARD_MARKER = "bopencut:copied-clips";
+
 export class ClipboardManager {
 	private entry: ClipboardEntry | null = null;
 	private listeners = new Set<() => void>();
@@ -32,6 +38,9 @@ export class ClipboardManager {
 
 		this.entry = entry;
 		this.notify();
+		if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+			navigator.clipboard.writeText(CLIPS_CLIPBOARD_MARKER).catch(() => {});
+		}
 		return true;
 	}
 

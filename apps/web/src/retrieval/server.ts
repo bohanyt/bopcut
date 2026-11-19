@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { RetrievalError } from "./server-errors";
-import { assertPublicUrl } from "./net";
+import { assertPublicUrl, fetchPublic, readCapped } from "./net";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -12,6 +12,7 @@ import {
 	type FrameRequest,
 	type SectionRequest,
 	formatTime,
+	isHttpUrl,
 	linkAt,
 	normalizeFrameRequest,
 	normalizeSectionRequest,
@@ -132,6 +133,8 @@ export type RetrievedFile = {
 	/** Relative to the files root, with forward slashes: use it as a draft/bundle asset `path`. */
 	path: string;
 	type: "video" | "audio" | "image";
+	/** The verified media type of a file fetched from a web link (its bytes, not the server's header). */
+	mime?: string;
 	name: string;
 	source: SourceInfo;
 	cached: boolean;
@@ -237,7 +240,7 @@ function once(key: string, work: () => Promise<RetrievedFile>): Promise<Retrieve
 	return promise;
 }
 
-export type RetrievalDeps = { filesRoot: string; tools?: RetrievalTools; runner?: Runner; env?: Record<string, string | undefined> };
+export type RetrievalDeps = { filesRoot: string; tools?: RetrievalTools; runner?: Runner; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch };
 
 /** Download a section with yt-dlp into `<dir>/<key>.part.<ext>`; returns the file and the info JSON. */
 async function download({ url, start, end, height, audioOnly, dir, key, tools, runner }: { url: string; start: number; end: number; height: number; audioOnly?: boolean; dir: string; key: string; tools: RetrievalTools; runner: Runner }): Promise<{ file: string; info: Probe }> {
@@ -334,7 +337,108 @@ export function isPlaylistOnly(url: string): boolean {
 	}
 }
 
-/** Body of POST /api/agent/retrieve: `{kind:"section", url, start, end|duration, height?, audioOnly?}` or `{kind:"frame", url, time, width?}`. */
+/** A supported media file recognized from its first bytes (the server's Content-Type is not trusted). */
+export type SniffedMedia = { ext: string; type: "image" | "video" | "audio"; mime: string };
+
+const ascii = (bytes: Uint8Array, from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
+
+/** The media format of a file from its first bytes, "svg" for SVG documents, or null when unsupported. */
+export function sniffMedia(bytes: Uint8Array): SniffedMedia | "svg" | null {
+	const b = bytes;
+	if (b.length < 4) return null;
+	if (b[0] === 0x89 && ascii(b, 1, 4) === "PNG") return { ext: ".png", type: "image", mime: "image/png" };
+	if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { ext: ".jpg", type: "image", mime: "image/jpeg" };
+	if (ascii(b, 0, 6) === "GIF87a" || ascii(b, 0, 6) === "GIF89a") return { ext: ".gif", type: "image", mime: "image/gif" };
+	if (ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WEBP") return { ext: ".webp", type: "image", mime: "image/webp" };
+	if (ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WAVE") return { ext: ".wav", type: "audio", mime: "audio/wav" };
+	if (ascii(b, 4, 8) === "ftyp") {
+		const brands = [ascii(b, 8, 12), ...Array.from({ length: 6 }, (_, i) => ascii(b, 16 + i * 4, 20 + i * 4))];
+		if (brands.some((brand) => brand === "avif" || brand === "avis")) return { ext: ".avif", type: "image", mime: "image/avif" };
+		if (brands[0] === "M4A " || brands[0] === "M4B ") return { ext: ".m4a", type: "audio", mime: "audio/mp4" };
+		if (brands[0] === "qt  ") return { ext: ".mov", type: "video", mime: "video/quicktime" };
+		return { ext: ".mp4", type: "video", mime: "video/mp4" };
+	}
+	if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return { ext: ".webm", type: "video", mime: "video/webm" };
+	if (ascii(b, 0, 4) === "OggS") return { ext: ".ogg", type: "audio", mime: "audio/ogg" };
+	if (ascii(b, 0, 4) === "fLaC") return { ext: ".flac", type: "audio", mime: "audio/flac" };
+	if (ascii(b, 0, 3) === "ID3" || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0 && (b[1] & 0x06) !== 0)) return { ext: ".mp3", type: "audio", mime: "audio/mpeg" };
+	const head = new TextDecoder().decode(b.subarray(0, 512)).replace(/^\uFEFF/, "").trimStart().toLowerCase();
+	if (head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) return "svg";
+	return null;
+}
+
+const MAX_WEB_FILE_BYTES = 100 * 1024 * 1024;
+const WEB_FETCH_TIMEOUT_MS = 120_000;
+
+/**
+ * A media file from a web link (an image dragged from a web page, a pasted image link) into
+ * `<filesRoot>/retrieved/web/`, cached by link. Only images, videos and sounds up to 100 MB are kept.
+ * Every redirect hop must point at a public address, the body is read with a size cap and a timeout, and
+ * the format comes from the file's own bytes. SVG documents are refused (they can carry scripts).
+ */
+export function fetchWebFile(url: string, deps: { filesRoot: string; fetchImpl?: typeof fetch; env?: Record<string, string | undefined> }): Promise<RetrievedFile> {
+	const key = cacheKey(["web", url]);
+	return once(`${deps.filesRoot}|${key}`, () => downloadWebFile(url, key, deps));
+}
+
+async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl = fetch, env }: { filesRoot: string; fetchImpl?: typeof fetch; env?: Record<string, string | undefined> }): Promise<RetrievedFile> {
+	const dir = path.join(filesRoot, "retrieved", "web");
+	const meta = path.join(dir, `${key}.json`);
+	if (await exists(meta)) {
+		try {
+			const cached = JSON.parse(await fs.readFile(meta, "utf8")) as Omit<RetrievedFile, "cached">;
+			if (await exists(path.join(filesRoot, cached.path))) return { ...cached, cached: true };
+		} catch {
+			// unreadable sidecar: fetch again
+		}
+	}
+	let res: Response;
+	let bytes: Buffer;
+	try {
+		res = await fetchPublic(url, {
+			fetchImpl,
+			env,
+			timeoutMs: WEB_FETCH_TIMEOUT_MS,
+			headers: { "User-Agent": "Mozilla/5.0 (compatible; bopencut)", Accept: "image/*,video/*,audio/*;q=0.9,*/*;q=0.1" },
+		});
+		if (!res.ok) throw new RetrievalError(`the link answered ${res.status}`);
+		bytes = await readCapped(res, MAX_WEB_FILE_BYTES);
+	} catch (error) {
+		if (error instanceof RetrievalError) throw error;
+		throw new RetrievalError(`could not download the link: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (bytes.length === 0) throw new RetrievalError("the link gave an empty file");
+	const kind = sniffMedia(bytes);
+	if (kind === "svg") throw new RetrievalError("SVG images are not supported; use a PNG or JPEG of it");
+	if (!kind) {
+		const declared = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+		throw new RetrievalError(`the link is not a supported image, video or sound (${declared || "unknown type"})`);
+	}
+	await fs.mkdir(dir, { recursive: true });
+	const file = path.join(dir, key + kind.ext);
+	// Names unique to this attempt: a parallel fetch in another process never shares a temporary file.
+	const unique = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	await fs.writeFile(`${file}.${unique}.part`, bytes);
+	await fs.rename(`${file}.${unique}.part`, file);
+	let name = "web media";
+	try {
+		name = decodeURIComponent(new URL(res.url || url).pathname.split("/").pop() || "").replace(/\.[a-z0-9]{2,5}$/i, "") || name;
+	} catch {
+		// keep the default name
+	}
+	const result: Omit<RetrievedFile, "cached"> = {
+		path: toPosix(path.relative(filesRoot, file)),
+		type: kind.type,
+		mime: kind.mime,
+		name,
+		source: { url, pageUrl: url, link: url, start: 0, end: 0, fetchedAt: new Date().toISOString() },
+	};
+	await fs.writeFile(`${meta}.${unique}.tmp`, JSON.stringify(result, null, 1));
+	await fs.rename(`${meta}.${unique}.tmp`, meta);
+	return { ...result, cached: false };
+}
+
+/** Body of POST /api/agent/retrieve: `{kind:"section", url, start, end|duration, height?, audioOnly?}`, `{kind:"frame", url, time, width?}` or `{kind:"file", url}`. */
 export async function handleRetrieve(body: unknown, deps: RetrievalDeps): Promise<{ status: number; body: unknown }> {
 	const tools = deps.tools ?? toolsFromEnv();
 	const input = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
@@ -353,7 +457,11 @@ export async function handleRetrieve(body: unknown, deps: RetrievalDeps): Promis
 			await assertPublicUrl(request.value.url, deps.env);
 			return { status: 200, body: await fetchFrame(request.value, { ...deps, tools }) };
 		}
-		return { status: 400, body: { error: 'kind must be "section" or "frame"' } };
+		if (input.kind === "file") {
+			if (!isHttpUrl(input.url)) return { status: 400, body: { error: "url must be an http(s) link" } };
+			return { status: 200, body: await fetchWebFile(input.url, { filesRoot: deps.filesRoot, fetchImpl: deps.fetchImpl, env: deps.env }) };
+		}
+		return { status: 400, body: { error: 'kind must be "section", "frame" or "file"' } };
 	} catch (error) {
 		if (error instanceof RetrievalError) return { status: 502, body: { error: error.message } };
 		throw error;

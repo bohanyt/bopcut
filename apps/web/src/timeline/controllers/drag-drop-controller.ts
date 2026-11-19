@@ -1,4 +1,6 @@
 import { loadIcon } from "@/stickers/providers/iconify";
+import { toast } from "sonner";
+import { fetchWebMedia, hasWebMedia, mediaGroupsOf } from "@/media/web-drop";
 import { parseStickerId } from "@/stickers/sticker-id";
 import type { DragEvent } from "react";
 import { processMediaAssets } from "@/media/processing";
@@ -179,7 +181,7 @@ export class DragDropController {
 	onDragEnter(event: DragEvent): void {
 		event.preventDefault();
 		const hasAsset = this.config.dragSource.isActive();
-		const hasFiles = event.dataTransfer.types.includes("Files");
+		const hasFiles = event.dataTransfer.types.includes("Files") || hasWebMedia([...event.dataTransfer.types]);
 		if (!hasAsset && !hasFiles) return;
 
 		this.enterCount += 1;
@@ -195,7 +197,7 @@ export class DragDropController {
 		if (!coords) return;
 
 		const dragData = this.config.dragSource.getActive();
-		const hasFiles = event.dataTransfer.types.includes("Files");
+		const hasFiles = event.dataTransfer.types.includes("Files") || hasWebMedia([...event.dataTransfer.types]);
 		const isExternal = hasFiles && !dragData;
 
 		if (!dragData) {
@@ -250,10 +252,12 @@ export class DragDropController {
 
 		const dragData = this.config.dragSource.getActive();
 		const hasFiles = event.dataTransfer.files?.length > 0;
-		if (!dragData && !hasFiles) return;
-
+		// Media dragged from another web page arrive as links: read them now (the data is gone after this
+		// event), fetch, then drop as files. Only drags that lit up the timeline count (not plain text).
+		const webGroups = !dragData && !hasFiles && hasWebMedia([...event.dataTransfer.types]) ? mediaGroupsOf(event.dataTransfer) : [];
 		const currentTarget = this.dropTarget;
 		this.setIdle();
+		if (!dragData && !hasFiles && webGroups.length === 0) return;
 
 		try {
 			if (dragData) {
@@ -264,6 +268,22 @@ export class DragDropController {
 
 			const coords = this.getMouseTimelineCoords({ event });
 			if (!coords) return;
+			if (!hasFiles) {
+				void (async () => {
+					const files: File[] = [];
+					let lastError: string | undefined;
+					for (const group of webGroups) {
+						const { file, error } = await fetchWebMedia(group);
+						if (file) files.push(file);
+						else lastError = error;
+					}
+					if (files.length < webGroups.length) {
+						toast.error(`Could not add ${webGroups.length - files.length === 1 && webGroups.length === 1 ? "the dropped media" : `${webGroups.length - files.length} of ${webGroups.length} dropped items`}${lastError ? `: ${lastError}` : ""}`);
+					}
+					if (files.length) await this.executeFileDrop({ files, mouseX: coords.mouseX, mouseY: coords.mouseY });
+				})().catch((error) => console.error("Failed to process web drop:", error));
+				return;
+			}
 			this.executeFileDrop({
 				files: Array.from(event.dataTransfer.files),
 				mouseX: coords.mouseX,

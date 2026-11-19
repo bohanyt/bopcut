@@ -1,5 +1,7 @@
 import { useState, useRef } from "react";
 import { useEditor } from "@/editor/use-editor";
+import { toast } from "sonner";
+import { fetchWebMedia, hasWebMedia, mediaLinksOf } from "@/media/web-drop";
 
 interface UseFileUploadOptions {
 	accept?: string;
@@ -20,7 +22,8 @@ export function useFileUpload({
 	function containsFiles(dataTransfer: DataTransfer): boolean {
 		return (
 			!editor.timeline.dragSource.isActive() &&
-			dataTransfer.types.includes("Files")
+			(dataTransfer.types.includes("Files") ||
+				hasWebMedia([...dataTransfer.types]))
 		);
 	}
 
@@ -76,6 +79,16 @@ export function useFileUpload({
 
 		if (onFilesSelected && containsFiles(e.dataTransfer)) {
 			const files = Array.from(e.dataTransfer.files);
+			if (files.length === 0) {
+				// An image (or video/sound) dragged from another web page: read the links now, fetch after.
+				const links = mediaLinksOf(e.dataTransfer);
+				if (links.length === 0) return;
+				void fetchWebMedia(links).then(({ file, error }) => {
+					if (file) onFilesSelected([file]);
+					else toast.error(`Could not add the dropped media${error ? `: ${error}` : ""}`);
+				});
+				return;
+			}
 			const shouldUseMultiple = multiple ?? false;
 
 			if (shouldUseMultiple) {
