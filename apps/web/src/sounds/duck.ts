@@ -41,9 +41,12 @@ export type SpeechOptions = {
 export function speechSegments(levels: number[], { frameSeconds = 0.02, thresholdDb, mergeGap = 0.3, minDuration = 0.12 }: SpeechOptions = {}): Segment[] {
 	const sorted = [...levels].sort((a, b) => a - b);
 	const floor = percentile(sorted, 0.1);
-	const peak = percentile(sorted, 0.95);
+	// The loud level comes from frames clearly above the floor, so a short line in a long silence still
+	// counts (the 95th percentile of all frames would be silence there).
+	const loud = sorted.filter((level) => level > floor + 12);
+	if (thresholdDb === undefined && loud.length * frameSeconds < minDuration) return [];
+	const peak = loud.length ? percentile(loud, 0.9) : floor;
 	const threshold = thresholdDb ?? Math.max(floor + 12, peak - 30, -60);
-	if (thresholdDb === undefined && peak - floor < 12) return [];
 	const raw: Segment[] = [];
 	let open: number | null = null;
 	for (const [i, level] of levels.entries()) {
@@ -94,12 +97,14 @@ export function duckKeyframes(segments: Segment[], { duration, baseDb = 0, amoun
 	);
 	if (!inside.length) return [];
 	const points: { time: number; value: number }[] = [{ time: 0, value: inside[0].start - attack <= 0 ? low : baseDb }];
+	// A zero attack or release is a step: the base value holds until 1 ms before the change.
+	const STEP = 0.001;
 	for (const s of inside) {
-		const downAt = Math.max(0, s.start - attack);
+		const downAt = Math.max(0, s.start - Math.max(attack, STEP));
 		if (downAt > 0) points.push({ time: downAt, value: baseDb });
 		points.push({ time: s.start, value: low });
 		points.push({ time: s.end, value: low });
-		const upAt = Math.min(duration, s.end + release);
+		const upAt = Math.min(duration, s.end + Math.max(release, STEP));
 		if (upAt > s.end) points.push({ time: upAt, value: baseDb });
 	}
 	const rounded = points.map((p) => ({ time: Math.round(p.time * 1000) / 1000, value: Math.round(p.value * 100) / 100 }));

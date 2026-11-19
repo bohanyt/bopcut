@@ -64,11 +64,11 @@ describe("duck requests", () => {
 
 	test("voice timing maps into music time", async () => {
 		const calls: [string, number, number][] = [];
-		// 16 kHz samples: 1 s of silence, 1 s of speech, 1 s of silence
 		const reader = async (file: string, start: number, duration: number) => {
 			calls.push([path.basename(file), start, duration]);
-			const s = new Float32Array(48000);
-			for (let i = 16000; i < 32000; i++) s[i] = 0.3 * Math.sin(i / 3);
+			// 8 kHz samples: 1 s of silence, 1 s of speech, 1 s of silence
+			const s = new Float32Array(24000);
+			for (let i = 8000; i < 16000; i++) s[i] = 0.3 * Math.sin(i / 3);
 			return s;
 		};
 		const r = await computeDuck({ music: { duration: 20, start: 10 }, voices: [{ path: "voice.wav", start: 15, trimStart: 4, duration: 3 }], amountDb: -12 }, { filesRoot: root, reader });
@@ -119,7 +119,7 @@ describe("music", () => {
 	});
 
 	test("library first, then online songs without long videos or live streams", async () => {
-		const env = { BOPENCUT_MUSIC_DIRS: extra };
+		const env = { BOPENCUT_MUSIC_DIRS: extra, BOPENCUT_ALLOW_PRIVATE_URLS: "1" };
 		const r = await handleMusic({ kind: "search", query: "dexter" }, { filesRoot: root, env, runner });
 		const body = r.body as { results: { source: string; name: string; previewUrl?: string }[] };
 		expect(body.results[0]).toMatchObject({ source: "library", name: "Dexter Blood Theme" });
@@ -129,7 +129,7 @@ describe("music", () => {
 	});
 
 	test("an online song is fetched once, sound only, loudness-normalized, and joins the library", async () => {
-		const env = {};
+		const env = { BOPENCUT_ALLOW_PRIVATE_URLS: "1" };
 		const first = (await handleMusic({ kind: "find", query: "nocturne", sources: ["online"] }, { filesRoot: root, env, runner })).body as { path: string; name: string; uploader: string; cached: boolean };
 		expect(first).toMatchObject({ name: "Nocturne Op. 9 No. 2", uploader: "Pianist", cached: false });
 		expect(first.path).toMatch(/^music\/online\/[0-9a-f]{12}\.m4a$/);
@@ -147,5 +147,17 @@ describe("music", () => {
 		expect((await handleMusic({ kind: "search", query: "!!" }, { filesRoot: root, runner })).status).toBe(400);
 		expect((await handleMusic({ kind: "get", source: "online", ref: "file:///x" }, { filesRoot: root, runner })).status).toBe(502);
 		expect((await handleMusic({ kind: "search", query: "x", sources: ["spotify"] }, { filesRoot: root, runner })).status).toBe(400);
+	});
+});
+
+describe("review fixes", () => {
+	test("a short line in a long silence still ducks", () => {
+		// 60 s at 20 ms frames, 2 s of speech in the middle: under 5% of frames are loud.
+		const s = speechSegments(levels(3000, [[1500, 1600]]));
+		expect(s).toEqual([{ start: 30, end: 32 }]);
+	});
+	test("zero attack and release are steps, not fades into the speech", () => {
+		const k = duckKeyframes([{ start: 2, end: 3 }], { duration: 5, amountDb: -12, attack: 0, release: 0 });
+		expect(k.map((p) => [p.time, p.value])).toEqual([[0, 0], [1.999, 0], [2, -12], [3, -12], [3.001, 0]]);
 	});
 });

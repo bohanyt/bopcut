@@ -1,11 +1,14 @@
 // Server part of ducking: read the voice audio (ffmpeg, mono 16 kHz) and turn it into volume keyframes
 // for the music element. Node only: used by the agent API route and the duck CLI.
 import { execFile } from "node:child_process";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { RetrievalError, toolsFromEnv } from "@/retrieval/server";
 import { type Segment, type VolumeKeyframe, duckKeyframes, frameLevels, mergeSegments, speechSegments } from "./duck";
 
-const SAMPLE_RATE = 16000;
+// 8 kHz is plenty to tell speech from silence and keeps an hour of voice near 115 MB of samples.
+const SAMPLE_RATE = 8000;
+const MAX_VOICE_SECONDS = 3600;
 
 /** Mono samples of `file` from `start` for `duration` seconds. */
 export type PcmReader = (file: string, start: number, duration: number) => Promise<Float32Array>;
@@ -15,7 +18,7 @@ export function ffmpegPcmReader(env: Record<string, string | undefined> = proces
 	return (file, start, duration) =>
 		new Promise((resolve, reject) => {
 			const args = [...tools.ffmpeg.slice(1), "-hide_banner", "-loglevel", "error", "-ss", start.toFixed(3), "-t", duration.toFixed(3), "-i", file, "-vn", "-ac", "1", "-ar", String(SAMPLE_RATE), "-f", "f32le", "-"];
-			execFile(tools.ffmpeg[0], args, { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+			execFile(tools.ffmpeg[0], args, { encoding: "buffer", maxBuffer: (MAX_VOICE_SECONDS + 5) * SAMPLE_RATE * 4, windowsHide: true }, (error, stdout, stderr) => {
 				if (error) {
 					const code = (error as NodeJS.ErrnoException).code;
 					reject(new RetrievalError(code === "ENOENT" ? "ffmpeg was not found. Install it or set BOPENCUT_FFMPEG." : `ffmpeg failed: ${String(stderr).trim().split(/\r?\n/).slice(-2).join(" ")}`));
@@ -48,8 +51,8 @@ export function validateDuck(input: unknown): { ok: true; value: DuckRequest } |
 	if (music.baseDb !== undefined && !finite(music.baseDb, -60, 20)) return { ok: false, error: "music.baseDb must be dB" };
 	if (!Array.isArray(body.voices) || !body.voices.length || body.voices.length > 50) return { ok: false, error: "voices: 1 to 50 items" };
 	for (const v of body.voices as Record<string, unknown>[]) {
-		if (!v || typeof v.path !== "string" || !finite(v.start, 0) || !finite(v.duration, 0.01, 6 * 3600) || (v.trimStart !== undefined && !finite(v.trimStart, 0))) {
-			return { ok: false, error: "each voice needs path, start and duration (seconds)" };
+		if (!v || typeof v.path !== "string" || !finite(v.start, 0) || !finite(v.duration, 0.01, MAX_VOICE_SECONDS) || (v.trimStart !== undefined && !finite(v.trimStart, 0))) {
+			return { ok: false, error: `each voice needs path, start and duration (seconds, up to ${MAX_VOICE_SECONDS})` };
 		}
 	}
 	if (body.amountDb !== undefined && !finite(body.amountDb, -60, 0)) return { ok: false, error: "amountDb must be from -60 to 0" };
@@ -61,12 +64,19 @@ export function validateDuck(input: unknown): { ok: true; value: DuckRequest } |
 
 /** Speech segments of every voice, in music-element time, and the volume keyframes for the music. */
 export async function computeDuck(request: DuckRequest, { filesRoot, reader }: { filesRoot: string; reader: PcmReader }): Promise<{ segments: Segment[]; keyframes: VolumeKeyframe[] }> {
-	const root = path.resolve(filesRoot);
+	const root = await fs.realpath(filesRoot).catch(() => path.resolve(filesRoot));
 	const musicStart = request.music.start ?? 0;
 	const all: Segment[] = [];
 	for (const voice of request.voices) {
-		const file = path.resolve(root, voice.path);
-		if (!file.startsWith(root + path.sep)) throw new RetrievalError(`voice path outside AGENT_FILES_ROOT: ${voice.path}`);
+		// A voice entirely outside the music cannot duck it.
+		if (voice.start + voice.duration <= musicStart || voice.start >= musicStart + request.music.duration) continue;
+		const lexical = path.resolve(root, voice.path);
+		if (!lexical.startsWith(root + path.sep)) throw new RetrievalError(`voice path outside AGENT_FILES_ROOT: ${voice.path}`);
+		// Follow symlinks and junctions, then check again: the real file must still be inside the root.
+		const file = await fs.realpath(lexical).catch(() => {
+			throw new RetrievalError(`voice file not found: ${voice.path}`);
+		});
+		if (!file.startsWith(root + path.sep) || !(await fs.stat(file)).isFile()) throw new RetrievalError(`voice path outside AGENT_FILES_ROOT: ${voice.path}`);
 		const samples = await reader(file, voice.trimStart ?? 0, voice.duration);
 		const local = speechSegments(frameLevels(samples, SAMPLE_RATE), request.thresholdDb === undefined ? {} : { thresholdDb: request.thresholdDb });
 		for (const s of local) all.push({ start: s.start + voice.start - musicStart, end: Math.min(s.end, voice.duration) + voice.start - musicStart });

@@ -6,6 +6,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { RetrievalError, defaultRunner, runTool, runToolOutput, toolsFromEnv } from "@/retrieval/server";
 import { isHttpUrl } from "@/retrieval/time";
+import { assertPublicUrl } from "@/retrieval/net";
 import { MUSIC_SOURCES, type MusicFile, type MusicResult, type MusicSource } from "./music-types";
 import { type LibraryKind, type SfxDeps, clearLibraryIndex, getLibrary, searchLibrary, words } from "./sfx-server";
 
@@ -76,12 +77,25 @@ function loudnessTarget(env: Record<string, string | undefined>): number | null 
 	const raw = (env.BOPENCUT_MUSIC_LOUDNESS ?? "-16").trim().toLowerCase();
 	if (raw === "off") return null;
 	const n = Number(raw);
-	return Number.isFinite(n) && n < 0 && n > -40 ? n : -16;
+	// ffmpeg's loudnorm accepts integrated targets from -70 to -5 LUFS.
+	return Number.isFinite(n) && n >= -70 && n <= -5 ? n : -16;
 }
 
-/** An online song, sound only, into `<filesRoot>/music/online/`; cached by link. */
-async function getOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
+const onlineInFlight = new Map<string, Promise<MusicFile>>();
+
+/** An online song, sound only, into `<filesRoot>/music/online/`; cached by link; one fetch per link at a time. */
+function getOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
+	const key = `${deps.filesRoot}|${url}`;
+	const running = onlineInFlight.get(key);
+	if (running) return running;
+	const promise = fetchOnline(url, deps).finally(() => onlineInFlight.delete(key));
+	onlineInFlight.set(key, promise);
+	return promise;
+}
+
+async function fetchOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
 	if (!isHttpUrl(url)) throw new RetrievalError("an online song needs an http(s) link");
+	await assertPublicUrl(url, deps.env);
 	const env = deps.env ?? process.env;
 	const tools = deps.tools ?? toolsFromEnv(env);
 	const runner = deps.runner ?? defaultRunner;
@@ -90,11 +104,16 @@ async function getOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
 	const media = path.join(dir, `${key}.m4a`);
 	const meta = path.join(dir, `${key}.json`);
 	if ((await exists(media)) && (await exists(meta))) {
-		const saved = JSON.parse(await fs.readFile(meta, "utf8")) as { name: string; pageUrl?: string; uploader?: string };
-		return { path: toPosix(path.relative(deps.filesRoot, media)), name: saved.name, source: "online", pageUrl: saved.pageUrl, uploader: saved.uploader, cached: true };
+		try {
+			const saved = JSON.parse(await fs.readFile(meta, "utf8")) as { name: string; pageUrl?: string; uploader?: string };
+			return { path: toPosix(path.relative(deps.filesRoot, media)), name: saved.name, source: "online", pageUrl: saved.pageUrl, uploader: saved.uploader, cached: true };
+		} catch {
+			// unreadable sidecar: fetch again
+		}
 	}
 	await fs.mkdir(dir, { recursive: true });
-	const stem = `${key}.part`;
+	// A stem unique to this attempt: another process fetching the same song never touches these files.
+	const stem = `${key}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.part`;
 	const clean = async () => {
 		for (const f of await fs.readdir(dir)) if (f.startsWith(stem)) await fs.rm(path.join(dir, f), { force: true });
 	};
@@ -118,7 +137,9 @@ async function getOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
 			await fs.rename(normalized, media);
 		}
 		const result = { name: info.title ?? "song", uploader: info.uploader || info.channel, pageUrl: info.webpage_url || url, duration: info.duration, fetchedAt: new Date().toISOString() };
-		await fs.writeFile(meta, JSON.stringify(result, null, 1));
+		const metaTmp = path.join(dir, `${stem}.json.tmp`);
+		await fs.writeFile(metaTmp, JSON.stringify(result, null, 1));
+		await fs.rename(metaTmp, meta);
 		clearLibraryIndex();
 		return { path: toPosix(path.relative(deps.filesRoot, media)), name: result.name, source: "online", pageUrl: result.pageUrl, uploader: result.uploader, cached: false };
 	} finally {
