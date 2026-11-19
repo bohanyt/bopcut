@@ -63,7 +63,11 @@ export function placeAgentElement({ tracks, sceneId, e, ref, ctx }: {
 	let type: AgentTrackType;
 	if (e.compound) {
 		element = buildAgentCompound({ e, hostSceneId: sceneId, ctx });
-		type = trackTypeForCompound(ctx, element, ref.type);
+		// A replacement (ref.id, no type asked for) stays on its own track when that track takes it: a video
+		// track holds any compound, also an audio-only one, unless the track is muted (it would go silent).
+		const own = ref.id && !ref.type ? orderedTracks(tracks).find((t) => t.id === ref.id) : undefined;
+		const visual = sceneHasVisualContent({ scenes: [...ctx.existing, ...ctx.created], sceneId: element.sceneId });
+		type = own?.type === "video" && (visual || !(own as { muted?: boolean }).muted) ? "video" : trackTypeForCompound(ctx, element, ref.type);
 	} else {
 		type = ref.type ?? inferTrackType(e, ctx.mediaFor(e));
 	}

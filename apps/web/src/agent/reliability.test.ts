@@ -41,7 +41,7 @@ function setup() {
 		} as unknown as TProject,
 	});
 	editor.scenes.setScenes({ scenes, activeSceneId: "main" });
-	editor.media.setAssets({ assets: [asset("m-1"), asset("logo-a"), asset("clip-b", { type: "video", duration: 6, width: 1920, height: 1080 })] });
+	editor.media.setAssets({ assets: [asset("m-1"), asset("logo-a"), asset("clip-b", { type: "video", duration: 6, width: 1920, height: 1080 }), asset("song", { type: "audio", duration: 6 })] });
 	return editor;
 }
 const mainScene = (editor: ReturnType<typeof setup>) => editor.scenes.getScenes().find((s) => s.id === "main") as TScene;
@@ -151,6 +151,17 @@ describe("replace", () => {
 		expect((all(content)[0] as any).mediaId).toBe("logo-a");
 		editor.command.undo();
 		expect(state(editor)).toBe(before);
+	});
+
+	test("an audio-only compound replacing a clip on the main track stays on that track", async () => {
+		const editor = setup();
+		const result = await withAgentApi(() => applyDraft(draft([
+			{ op: "replace", match: { agentId: "clip-3" }, element: { name: "Sound", compound: { audio: [{ agent_id: "song", name: "Song", mediaId: "song", start: 0, duration: 2 }] } } },
+		])));
+		expect(result.results[0].ok).toBe(true);
+		const main = mainScene(editor).tracks.main.elements;
+		expect(main.find((e) => e.agentId === "clip-3")?.type).toBe("compound");
+		expect(mainScene(editor).tracks.audio.flatMap((t) => t.elements).some((e) => e.agentId === "clip-3")).toBe(false);
 	});
 
 	test("a replacement that cannot be built leaves the original in place", async () => {
