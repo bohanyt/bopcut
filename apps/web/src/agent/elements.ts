@@ -7,6 +7,7 @@ import { getGraphicDefinition } from "@/graphics";
 import type { ParamValues } from "@/params";
 import { generateUUID } from "@/utils/id";
 import type { SfxFile, SfxSource } from "@/sounds/sfx-types";
+import type { MusicFile, MusicSource } from "@/sounds/music-types";
 
 /**
  * A file under AGENT_FILES_ROOT (`path`), a section of an online video (`url` + `start`/`end` or `duration`,
@@ -16,6 +17,8 @@ import type { SfxFile, SfxSource } from "@/sounds/sfx-types";
 export type AgentAsset = {
 	path?: string; url?: string; start?: number | string; end?: number | string; duration?: number | string;
 	height?: number; audioOnly?: boolean; sfx?: string; sfxSources?: SfxSource[];
+	/** A song by name (best match in the music folders, then online), or only `musicSources`. */
+	music?: string; musicSources?: MusicSource[];
 	type: "image" | "video" | "audio" | "model"; name: string;
 };
 export type AgentElement = {
@@ -40,7 +43,7 @@ export type AgentCompoundContent = {
 	audio?: AgentElement[];
 	elements?: (AgentElement & { track: AgentTrackRef })[];
 };
-export type LoadedMedia = { id: string; type: AgentAsset["type"]; width?: number; height?: number; duration?: number; retrieved?: RetrievedAsset; sfx?: SfxFile };
+export type LoadedMedia = { id: string; type: AgentAsset["type"]; width?: number; height?: number; duration?: number; retrieved?: RetrievedAsset; sfx?: SfxFile; music?: MusicFile };
 /** What the retrieve endpoint fetched for a `url` asset: its file under AGENT_FILES_ROOT and its source. */
 export type RetrievedAsset = { path: string; name: string; source: { link: string; title?: string; uploader?: string; start: number; end: number } };
 
@@ -48,7 +51,20 @@ export type RetrievedAsset = { path: string; name: string; source: { link: strin
 export function assetKey(asset: AgentAsset): string {
 	if (asset.path) return asset.path;
 	if (asset.sfx !== undefined && !asset.url) return JSON.stringify(["sfx", asset.sfx, asset.sfxSources]);
+	if (asset.music !== undefined && !asset.url) return JSON.stringify(["music", asset.music, asset.musicSources]);
 	return JSON.stringify([asset.url, asset.start, asset.end, asset.duration, asset.height, asset.audioOnly]);
+}
+
+/** Find a song by name (best match) and save it under AGENT_FILES_ROOT. */
+export async function findAgentMusic(asset: AgentAsset): Promise<MusicFile> {
+	const res = await fetch("/api/agent/music", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ kind: "find", query: asset.music, ...(asset.musicSources ? { sources: asset.musicSources } : {}) }),
+	});
+	const body = await res.json().catch(() => ({}));
+	if (!res.ok) throw new Error(`Cannot find song "${asset.music}": ${body.error ?? res.status}`);
+	return body as MusicFile;
 }
 
 /** Find a sound effect by name (best match) and save it under AGENT_FILES_ROOT. */
@@ -85,22 +101,24 @@ export const secs = (seconds: number) => mediaTimeFromSeconds({ seconds });
  */
 export async function loadAgentAsset({ projectId, asset }: { projectId: string; asset: AgentAsset }): Promise<LoadedMedia> {
 	const editor = EditorCore.getInstance();
-	if (!asset.path && !asset.url && !asset.sfx?.trim()) throw new Error(`Asset "${asset.name}" needs a path, a url or an sfx name`);
+	if (!asset.path && !asset.url && !asset.sfx?.trim() && !asset.music?.trim()) throw new Error(`Asset "${asset.name}" needs a path, a url, an sfx name or a music name`);
 	const retrieved = asset.path || !asset.url ? undefined : await retrieveAgentAsset(asset);
-	const sfx = asset.path || asset.url ? undefined : await findAgentSfx(asset);
-	const filePath = asset.path ?? retrieved?.path ?? (sfx as SfxFile).path;
+	const sfx = asset.path || asset.url || !asset.sfx?.trim() ? undefined : await findAgentSfx(asset);
+	const music = asset.path || asset.url || sfx || !asset.music?.trim() ? undefined : await findAgentMusic(asset);
+	const filePath = asset.path ?? retrieved?.path ?? sfx?.path ?? (music as MusicFile).path;
 	const res = await fetch(`/api/agent/file?p=${encodeURIComponent(filePath)}`);
 	if (!res.ok) throw new Error("Cannot read asset: " + filePath);
 	const blob = await res.blob();
 	const fileName = filePath.split("/").pop() ?? asset.name;
 	const [processed] = await processMediaAssets({ files: [new File([blob], fileName, { type: blob.type })] });
 	if (!processed) throw new Error("Failed to process asset: " + filePath);
-	const saved = await editor.media.addMediaAsset({ projectId, asset: { ...processed, name: asset.name || retrieved?.name || sfx?.name || fileName } });
+	const saved = await editor.media.addMediaAsset({ projectId, asset: { ...processed, name: asset.name || retrieved?.name || sfx?.name || music?.name || fileName } });
 	if (!saved) throw new Error("Failed to save asset: " + filePath);
 	return {
 		id: saved.id, type: asset.type === "model" ? "model" : processed.type as AgentAsset["type"], width: processed.width, height: processed.height, duration: processed.duration,
 		...(retrieved ? { retrieved } : {}),
 		...(sfx ? { sfx } : {}),
+		...(music ? { music } : {}),
 	};
 }
 

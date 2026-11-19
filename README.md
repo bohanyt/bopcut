@@ -13,6 +13,7 @@
 - **AI melihat frame:** AI bisa meminta gambar frame pada detik mana pun.
 - **Ambil potongan video dari link:** cukup link + waktu mulai/selesai (misalnya 20 detik dari live 3 jam). Yang diunduh hanya bagian itu, lewat yt-dlp, dengan potongan yang pas di frame. Bisa dari draf AI, dari CLI, atau dari tombol link di panel Assets.
 - **Sound effect tinggal sebut nama:** cari di folder SFX-mu sendiri dan di Myinstants (tanpa akun). Bisa dari tab Library di panel Sounds, atau AI cukup menulis `sfx: "vine boom"` di draf. Suara yang pernah diambil tersimpan dan ikut jadi library.
+- **Lagu tinggal sebut judul:** dari folder musikmu atau dicari online (hanya suaranya, lewat yt-dlp), langsung dinormalisasi kerasnya. AI juga bisa membuat musik otomatis mengecil saat ada suara bicara (*ducking*), sebagai keyframe volume yang tetap bisa kamu geser.
 - **AI belajar seleramu:** editanmu pada item buatan AI dicatat dan diringkas menjadi kandidat aturan selera.
 
 **Editor**

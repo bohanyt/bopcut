@@ -74,6 +74,36 @@ How to use them:
   `GET /api/agent/sfx-file?ref=` streams a library sound for previews.
 - **In the UI:** the Library tab of the Sounds panel. The plus button adds the sound at the playhead.
 
+## Music
+
+Songs come from two sources:
+- **`library`:** the user's music folders. These are `AGENT_FILES_ROOT/music/` plus `BOPENCUT_MUSIC_DIRS`, and matching works the same way as for sound effects.
+- **`online`:** a yt-dlp search, or any song link as the `ref`. Only the sound is fetched. Live streams and anything longer than `BOPENCUT_MUSIC_MAX_SECONDS` (default 900) are left out.
+
+A fetched song is loudness-normalized (`BOPENCUT_MUSIC_LOUDNESS`, default -16 LUFS; `off` keeps it as fetched). It is saved with its title, uploader and page under `music/online/`, and from then on it is part of the library.
+
+- **In a draft or bundle:** use an asset `{music:"nocturne op 9", type:"audio", name, musicSources?:["library"|"online"]}`. The library is searched before online. `draft-result.json` reports `music: [{path, name, source, pageUrl, uploader}]`.
+- **Without the editor:** `bun apps/web/scripts/music.ts search|find <query> [--source library|online]`, or `music.ts get <source> <ref or link>`.
+- **HTTP:** `POST /api/agent/music` with `search`, `get` or `find`, shaped like the sfx kinds. `GET /api/agent/music-file?ref=` streams a library song.
+- **In the UI:** the Music tab of the Sounds panel.
+
+Users are responsible for having the rights to the music they use.
+
+## Ducking (music under voices)
+
+Ducking is written as `volume` keyframes (dB) on the music element, so each step can be moved or deleted in the editor.
+
+1. **Ask for the keyframes:** `POST /api/agent/duck` with `{music:{duration, start?, baseDb?}, voices:[{path, start, trimStart?, duration}], amountDb?: -12, attack?: 0.15, release?: 0.5, thresholdDb?}`.
+   - `voices[].path` is relative to `AGENT_FILES_ROOT`, for example a `retrieved/` section or a library file.
+   - `start` values are timeline seconds.
+   - The speech threshold is automatic unless `thresholdDb` is given.
+2. **Read the result:** `{segments, keyframes:[{path:"volume", time, value}]}`. Times are relative to the music element.
+3. **Apply them:** put the keyframes on the music element's `add` (or bundle element) as its `keyframes`.
+
+Close sentences are joined, so the music stays down between them.
+
+Without the editor: `bun apps/web/scripts/duck.ts --music-duration 30 [--music-start S] [--base dB] [--amount dB] --voice <path>[@start[+trimStart]][:duration] ...`.
+
 ## Other changes from upstream
 - Dropped GIFs are converted to silent MP4 (local ffmpeg) so they animate.
 - Fix: preview interruption on effect tracks (`effect_pass_groups`).
