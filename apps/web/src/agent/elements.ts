@@ -24,6 +24,8 @@ export type AgentAsset = {
 };
 export type AgentElement = {
 	agent_id?: string; name: string; start: number; duration: number; trimStart?: number;
+	/** Video only: play the video's own sound (off by default). */
+	sourceAudio?: boolean;
 	asset?: string | AgentAsset; model3d?: { params?: Record<string, number> }; effect?: string; effectParams?: Record<string, number>;
 	graphic?: { definitionId: string; params?: ParamValues }; icon?: { name: string; color?: string; svg?: string }; text?: string; group?: string;
 	params?: ParamValues; size?: [number, number];
@@ -193,7 +195,8 @@ export function buildAgentElement({ e, media, trackId, sceneId, canvas, keyframe
 		el.trimStart = secs(trimStart);
 		el.trimEnd = secs(Math.max(0, media.duration - trimStart - duration));
 	}
-	if (media.type === "video") el.isSourceAudioEnabled = false;
+	// A video's own sound is off unless asked for: clips usually bring their sound as separate audio elements.
+	if (media.type === "video") el.isSourceAudioEnabled = e.sourceAudio === true;
 	let base = 1;
 	if (e.size && media.width && media.height) {
 		const contain = Math.min(canvas.width / media.width, canvas.height / media.height);
