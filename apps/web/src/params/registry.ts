@@ -178,6 +178,26 @@ const audioElementParams: ElementParamDefinition[] = [
 		step: 0.01,
 	},
 	{
+		key: "fadeIn",
+		label: "Fade in (s)",
+		type: "number",
+		default: 0,
+		min: 0,
+		max: 30,
+		step: 0.01,
+		keyframable: false,
+	},
+	{
+		key: "fadeOut",
+		label: "Fade out (s)",
+		type: "number",
+		default: 0,
+		min: 0,
+		max: 30,
+		step: 0.01,
+		keyframable: false,
+	},
+	{
 		key: "muted",
 		label: "Muted",
 		type: "boolean",
@@ -363,14 +383,16 @@ elementParamRegistry.register({
 });
 elementParamRegistry.register({ key: "audio", definition: audioElementParams });
 elementParamRegistry.register({ key: "effect", definition: [] });
-// Compound volume is a single gain for now: keyframes would not reach the nested audio mix yet.
+// Compound volume is a single gain for now: keyframes and fades would not reach the nested audio mix yet.
 elementParamRegistry.register({
 	key: "compound",
 	definition: [
 		...visualElementParams,
-		...audioElementParams.map((param) =>
-			param.key === "volume" ? { ...param, keyframable: false } : param,
-		),
+		...audioElementParams
+			.filter((param) => param.key !== "fadeIn" && param.key !== "fadeOut")
+			.map((param) =>
+				param.key === "volume" ? { ...param, keyframable: false } : param,
+			),
 	],
 });
 

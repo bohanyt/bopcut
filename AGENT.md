@@ -73,6 +73,9 @@ How to use them:
   - `{kind:"get", source, ref}` or `{kind:"find", query, sources?}`, which return `{path, name, source, pageUrl?, cached}`.
   `GET /api/agent/sfx-file?ref=` streams a library sound for previews.
 - **In the UI:** the Library tab of the Sounds panel. The plus button adds the sound at the playhead.
+## Audio fades
+
+Audio clips and the sound of video clips accept `params.fadeIn` and `params.fadeOut` (seconds). The fade-in rises from silence and the fade-out falls to silence at the end of the clip. Both combine with `volume` and its keyframes, and they apply in playback, export and the waveform. They are edited in the Audio tab of the properties panel. Compound clips do not have fades yet.
 
 ## Other changes from upstream
 - Dropped GIFs are converted to silent MP4 (local ffmpeg) so they animate.
