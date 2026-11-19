@@ -3,6 +3,7 @@ import type { Effect, EffectPass } from "@/effects/types";
 import type { Mask } from "@/masks/types";
 import type { BlendMode, Transform } from "@/rendering";
 import type { RetimeConfig, VisualElement } from "@/timeline";
+import type { ShakeSettings } from "@/rendering/shake";
 
 export interface VisualNodeParams {
 	duration: number;
@@ -16,6 +17,8 @@ export interface VisualNodeParams {
 	blendMode?: BlendMode;
 	effects?: Effect[];
 	masks?: Mask[];
+	/** Camera shake added on top of the transform (see rendering/shake.ts). */
+	shake?: ShakeSettings;
 }
 
 export interface ResolvedVisualNodeState {

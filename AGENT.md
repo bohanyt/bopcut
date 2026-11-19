@@ -90,6 +90,7 @@ How to use them:
   - `{kind:"get", source, ref}` or `{kind:"find", query, sources?}`, which return `{path, name, source, pageUrl?, cached}`.
   `GET /api/agent/sfx-file?ref=` streams a library sound for previews.
 - **In the UI:** the Library tab of the Sounds panel. The plus button adds the sound at the playhead.
+
 ## Audio fades
 
 Audio clips and the sound of video clips accept `params.fadeIn` and `params.fadeOut` (seconds). The fade-in rises from silence and the fade-out falls to silence at the end of the clip. Both combine with `volume` and its keyframes, and they apply in playback, export and the waveform. They are edited in the Audio tab of the properties panel. Compound clips do not have fades yet.
@@ -123,6 +124,21 @@ Ducking is written as `volume` keyframes (dB) on the music element, so each step
 Close sentences are joined, so the music stays down between them.
 
 Without the editor: `bun apps/web/scripts/duck.ts --music-duration 30 [--music-start S] [--base dB] [--amount dB] --voice <path>[@start[+trimStart]][:duration] ...`.
+
+## Camera shake
+
+Visual elements (video, image, text, sticker, graphic and compound clips) take a shake that is added on top of their own transform. Position, zoom and rotation keyframes stay as they are.
+
+- `shake.intensity`: maximum offset in project pixels (0 = off). It is keyframable, so a hit can decay.
+- `shake.frequency`: shakes per second, default 8.
+- `shake.rotation`: maximum rotation in degrees, reached at the strongest intensity (the base value or the highest keyframe). When intensity is keyframed, rotation scales down with it.
+- `shake.seed`: picks the pattern. The same seed always shakes the same way.
+
+Typical settings:
+- **Hit:** intensity 30, frequency 12, rotation 2, with intensity keyframes from 30 to 0 over 0.4 s (`keyframes:[{path:"shake.intensity",time:0,value:30},{path:"shake.intensity",time:0.4,value:0}]`).
+- **Hand-held:** intensity 3, frequency 1.5, rotation 0.3 over a whole shot.
+
+The settings are in the Transform tab of the properties panel. Preview and export render the shake the same way.
 
 ## Other changes from upstream
 - Dropped GIFs are converted to silent MP4 (local ffmpeg) so they animate.
