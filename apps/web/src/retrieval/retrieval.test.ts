@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { type Probe, type Runner, downloadArgs, encoderArgs, fetchFrame, fetchSection, formatSelector, handleRetrieve, splitCommand, toolsFromEnv } from "./server";
 import { formatTime, linkAt, normalizeFrameRequest, normalizeSectionRequest, parseTime, timeFromUrl } from "./time";
+import { assertPublicUrl, isPrivateAddress } from "./net";
+import { commandFromSetting, isPlaylistOnly } from "./server";
+
+/** Tests below fetch nothing real; skip the DNS check for their example links. */
+const LAN = { BOPENCUT_ALLOW_PRIVATE_URLS: "1" };
 
 describe("time parsing", () => {
 	test("accepts seconds, clock and unit forms", () => {
@@ -196,10 +201,10 @@ describe("fetching", () => {
 	});
 
 	test("live streams that are still running are refused", async () => {
-		const live = await handleRetrieve({ kind: "section", url: "https://example.com/live", start: 0, end: 5 }, { filesRoot: root, tools, runner: fake({ ...info, is_live: true }, false) });
+		const live = await handleRetrieve({ kind: "section", url: "https://example.com/live", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: fake({ ...info, is_live: true }, false) });
 		expect(live.status).toBe(502);
 		expect(JSON.stringify(live.body)).toContain("live stream");
-		const skipped = await handleRetrieve({ kind: "section", url: "https://example.com/live2", start: 0, end: 5 }, { filesRoot: root, tools, runner: fake(null, false) });
+		const skipped = await handleRetrieve({ kind: "section", url: "https://example.com/live2", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: fake(null, false) });
 		expect(skipped.status).toBe(502);
 		expect(JSON.stringify(skipped.body)).toContain("nothing was downloaded");
 	});
@@ -208,7 +213,7 @@ describe("fetching", () => {
 		const missing: Runner = async () => {
 			throw Object.assign(new Error("spawn yt-dlp ENOENT"), { code: "ENOENT" });
 		};
-		const r1 = await handleRetrieve({ kind: "section", url: "https://example.com/v", start: 0, end: 5 }, { filesRoot: root, tools, runner: missing });
+		const r1 = await handleRetrieve({ kind: "section", url: "https://example.com/v", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: missing });
 		expect(r1.status).toBe(502);
 		expect(JSON.stringify(r1.body)).toContain("BOPENCUT_YTDLP");
 
@@ -217,7 +222,7 @@ describe("fetching", () => {
 			await fs.writeFile((args[o + 1] as string).replace("%(ext)s", "f399.mp4.part"), "half");
 			throw Object.assign(new Error("exit 1"), { stderr: "size=  1KiB time=00:00:01\nERROR: Server returned 403 Forbidden" });
 		};
-		const r2 = await handleRetrieve({ kind: "section", url: "https://example.com/v", start: 0, end: 5 }, { filesRoot: root, tools, runner: failing });
+		const r2 = await handleRetrieve({ kind: "section", url: "https://example.com/v", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: failing });
 		expect(r2.status).toBe(502);
 		expect(JSON.stringify(r2.body)).toContain("403");
 		expect(JSON.stringify(r2.body)).not.toContain("size=");
@@ -229,5 +234,31 @@ describe("fetching", () => {
 		expect((await handleRetrieve({ kind: "other" }, { filesRoot: root, tools, runner })).status).toBe(400);
 		expect((await handleRetrieve(null, { filesRoot: root, tools, runner })).status).toBe(400);
 		expect(calls).toHaveLength(0);
+	});
+});
+
+describe("network policy and settings", () => {
+	test("private, loopback and link-local addresses are recognised", () => {
+		for (const ip of ["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.10", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:192.168.0.1"]) expect(isPrivateAddress(ip)).toBe(true);
+		for (const ip of ["8.8.8.8", "142.250.1.1", "2606:4700::1111"]) expect(isPrivateAddress(ip)).toBe(false);
+	});
+	test("links resolving to this machine or the LAN are refused unless allowed", async () => {
+		const resolve = (async (host: string) => (host === "evil.example" ? [{ address: "127.0.0.1", family: 4 }] : [{ address: "93.184.216.34", family: 4 }])) as never;
+		await expect(assertPublicUrl("https://evil.example/x", {}, resolve)).rejects.toThrow("local network");
+		await expect(assertPublicUrl("http://localhost:8080/x", {}, resolve)).rejects.toThrow("local network");
+		await expect(assertPublicUrl("http://192.168.0.5/x", {}, resolve)).rejects.toThrow("local network");
+		await expect(assertPublicUrl("https://www.example.com/x", {}, resolve)).resolves.toBeUndefined();
+		await expect(assertPublicUrl("http://192.168.0.5/x", { BOPENCUT_ALLOW_PRIVATE_URLS: "1" }, resolve)).resolves.toBeUndefined();
+	});
+	test("an existing executable path with spaces stays one argument", () => {
+		const exists = (p: string) => p === "C:/Program Files/ffmpeg/bin/ffmpeg.exe";
+		expect(commandFromSetting("C:/Program Files/ffmpeg/bin/ffmpeg.exe", "ffmpeg", exists)).toEqual(["C:/Program Files/ffmpeg/bin/ffmpeg.exe"]);
+		expect(commandFromSetting('"C:/Program Files/ffmpeg/bin/ffmpeg.exe"', "ffmpeg", exists)).toEqual(["C:/Program Files/ffmpeg/bin/ffmpeg.exe"]);
+		expect(commandFromSetting("python -m yt_dlp", "yt-dlp", exists)).toEqual(["python", "-m", "yt_dlp"]);
+		expect(commandFromSetting(undefined, "yt-dlp", exists)).toEqual(["yt-dlp"]);
+	});
+	test("playlist pages are refused; a video link with list= is one entry", () => {
+		expect(isPlaylistOnly("https://www.youtube.com/playlist?list=PL123")).toBe(true);
+		expect(isPlaylistOnly("https://www.youtube.com/watch?v=abc&list=PL123")).toBe(false);
 	});
 });

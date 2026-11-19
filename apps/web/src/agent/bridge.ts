@@ -135,6 +135,16 @@ export async function applyDraft(draft: Draft) {
 		}
 	}
 
+	// Loading (for example a slow URL section) took a while: if another project is open now, stop here.
+	if (editor.project.getActiveOrNull()?.metadata.id !== project.metadata.id) {
+		fetch("/api/agent/applied", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId: project.metadata.id, ok: false, error: "another project was opened while the draft's assets were loading; nothing was applied", results: ops.map((op) => ({ op: op?.op, ok: false, skipped: true })) }),
+		}).catch(() => {});
+		return;
+	}
+
 	// Read the scenes after loading: the human may have edited meanwhile.
 	const before = editor.scenes.getScenes();
 	const openScene = editor.scenes.getActiveScene();

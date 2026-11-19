@@ -2,6 +2,9 @@
 // and re-encodes it with key frames at the cuts), or one frame of it. Never downloads a whole video.
 // Node only: used by the agent API route and the retrieve CLI.
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { RetrievalError } from "./server-errors";
+import { assertPublicUrl } from "./net";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -13,6 +16,8 @@ import {
 	normalizeFrameRequest,
 	normalizeSectionRequest,
 } from "./time";
+
+export { RetrievalError };
 
 export type RetrievalTools = {
 	ytdlp: string[];
@@ -43,10 +48,18 @@ function positiveInt(value: string | undefined, fallback: number): number {
  * e.g. `h264_nvenc`, `h264_qsv`, `h264_amf`, `h264_videotoolbox`), BOPENCUT_RETRIEVE_HEIGHT (default 1080),
  * BOPENCUT_RETRIEVE_MAX_SECONDS (default 1800).
  */
-export function toolsFromEnv(env: Record<string, string | undefined> = process.env): RetrievalTools {
+/** A setting that names an existing file is one executable path, even with spaces; otherwise a command line. */
+export function commandFromSetting(value: string | undefined, fallback: string, fileExists: (p: string) => boolean = existsSync): string[] {
+	const raw = value?.trim();
+	if (!raw) return [fallback];
+	const unquoted = raw.replace(/^(['"])(.*)\1$/, "$2");
+	return fileExists(unquoted) ? [unquoted] : splitCommand(raw);
+}
+
+export function toolsFromEnv(env: Record<string, string | undefined> = process.env, fileExists: (p: string) => boolean = existsSync): RetrievalTools {
 	return {
-		ytdlp: splitCommand(env.BOPENCUT_YTDLP?.trim() || "yt-dlp"),
-		ffmpeg: splitCommand(env.BOPENCUT_FFMPEG?.trim() || "ffmpeg"),
+		ytdlp: commandFromSetting(env.BOPENCUT_YTDLP, "yt-dlp", fileExists),
+		ffmpeg: commandFromSetting(env.BOPENCUT_FFMPEG, "ffmpeg", fileExists),
 		cookiesFromBrowser: env.BOPENCUT_YTDLP_COOKIES_FROM_BROWSER?.trim() || undefined,
 		videoEncoder: env.BOPENCUT_VIDEO_ENCODER?.trim() || "libx264",
 		defaultHeight: positiveInt(env.BOPENCUT_RETRIEVE_HEIGHT, 1080),
@@ -71,7 +84,6 @@ export const defaultRunner: Runner = (command, args) =>
 		});
 	});
 
-export class RetrievalError extends Error {}
 
 async function runTool(runner: Runner, tool: string[], args: string[], label: string): Promise<string> {
 	try {
@@ -137,13 +149,14 @@ function ffmpegLocation(tools: RetrievalTools): string[] {
  * frames at the cuts, so the section starts exactly at `start`. Running live streams are skipped.
  */
 export function downloadArgs({ url, start, end, height, audioOnly, tools, output }: { url: string; start: number; end: number; height: number; audioOnly?: boolean; tools: RetrievalTools; output: string }): string[] {
-	const args = ["--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", "!is_live"];
+	const args = ["--no-playlist", "--playlist-items", "1", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", "!is_live"];
 	if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
 	args.push(...ffmpegLocation(tools), "-f", formatSelector(height, audioOnly), "--download-sections", `*${start.toFixed(3)}-${end.toFixed(3)}`);
 	if (audioOnly) {
 		args.push("-x", "--audio-format", "m4a");
 	} else {
-		const encode = [...encoderArgs(tools.videoEncoder), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"].join(" ");
+		// -f mp4: H.264 + AAC always land in an MP4 container, also when the source was a single WebM stream.
+		const encode = [...encoderArgs(tools.videoEncoder), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-f", "mp4"].join(" ");
 		args.push("--force-keyframes-at-cuts", "--downloader-args", `ffmpeg_o:${encode}`, "--merge-output-format", "mp4");
 	}
 	args.push("-o", output, "--", url);
@@ -192,6 +205,22 @@ async function exists(file: string) {
 	}
 }
 
+/** A cached result, or undefined when the media or its sidecar is missing or unreadable (a cache miss). */
+async function readCached(media: string, meta: string): Promise<RetrievedFile | undefined> {
+	if (!(await exists(media))) return undefined;
+	try {
+		return { ...(JSON.parse(await fs.readFile(meta, "utf8")) as Omit<RetrievedFile, "cached">), cached: true };
+	} catch {
+		return undefined;
+	}
+}
+
+async function writeSidecar(meta: string, value: unknown) {
+	const tmp = `${meta}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+	await fs.writeFile(tmp, JSON.stringify(value, null, 1));
+	await fs.rename(tmp, meta);
+}
+
 const inFlight = new Map<string, Promise<RetrievedFile>>();
 
 /** One fetch per cache key at a time: concurrent identical requests share the same result. */
@@ -203,12 +232,13 @@ function once(key: string, work: () => Promise<RetrievedFile>): Promise<Retrieve
 	return promise;
 }
 
-export type RetrievalDeps = { filesRoot: string; tools?: RetrievalTools; runner?: Runner };
+export type RetrievalDeps = { filesRoot: string; tools?: RetrievalTools; runner?: Runner; env?: Record<string, string | undefined> };
 
 /** Download a section with yt-dlp into `<dir>/<key>.part.<ext>`; returns the file and the info JSON. */
 async function download({ url, start, end, height, audioOnly, dir, key, tools, runner }: { url: string; start: number; end: number; height: number; audioOnly?: boolean; dir: string; key: string; tools: RetrievalTools; runner: Runner }): Promise<{ file: string; info: Probe }> {
 	await fs.mkdir(dir, { recursive: true });
-	const stem = `${key}.part`;
+	// A stem unique to this attempt, so another process fetching the same section never touches these files.
+	const stem = `${key}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.part`;
 	const clean = async () => {
 		for (const f of await fs.readdir(dir)) if (f.startsWith(stem)) await fs.rm(path.join(dir, f), { force: true });
 	};
@@ -220,7 +250,7 @@ async function download({ url, start, end, height, audioOnly, dir, key, tools, r
 		if (info?.is_live) throw new RetrievalError("this link is a live stream that is still running; use it once the replay is available");
 		const files = await fs.readdir(dir);
 		const expected = `${stem}.${audioOnly ? "m4a" : "mp4"}`;
-		const produced = files.includes(expected) ? expected : files.find((f) => f.startsWith(`${stem}.`) && !/\.f\d+\.|\.(part|ytdl)$|\.temp/.test(f));
+		const produced = files.includes(expected) ? expected : files.find((f) => f.startsWith(`${stem}.`) && !/\.f\d+\.|\.(part|ytdl)$|\.temp/.test(f.slice(stem.length)));
 		if (!info || !produced) throw new RetrievalError("nothing was downloaded (a live stream that is still running, or an unsupported link)");
 		return { file: path.join(dir, produced), info };
 	} catch (error) {
@@ -241,9 +271,8 @@ export async function fetchSection(request: SectionRequest, { filesRoot, tools =
 	const media = path.join(dir, key + (request.audioOnly ? ".m4a" : ".mp4"));
 	const meta = path.join(dir, `${key}.json`);
 	return once(key, async () => {
-		if ((await exists(media)) && (await exists(meta))) {
-			return { ...(JSON.parse(await fs.readFile(meta, "utf8")) as Omit<RetrievedFile, "cached">), cached: true };
-		}
+		const cached = await readCached(media, meta);
+		if (cached) return cached;
 		const { file, info } = await download({ url: request.url, start: request.start, end: request.end, height, audioOnly: request.audioOnly, dir, key, tools, runner });
 		await fs.rename(file, media);
 		const result: Omit<RetrievedFile, "cached"> = {
@@ -252,7 +281,7 @@ export async function fetchSection(request: SectionRequest, { filesRoot, tools =
 			name: `${info.title ?? "clip"} ${formatTime(request.start)}-${formatTime(request.end)}`,
 			source: sourceInfo(info, request.url, request.start, request.end),
 		};
-		await fs.writeFile(meta, JSON.stringify(result, null, 1));
+		await writeSidecar(meta, result);
 		return { ...result, cached: false };
 	});
 }
@@ -268,11 +297,10 @@ export async function fetchFrame(request: FrameRequest, { filesRoot, tools = too
 	const image = path.join(dir, `${key}.jpg`);
 	const meta = path.join(dir, `${key}.json`);
 	return once(key, async () => {
-		if ((await exists(image)) && (await exists(meta))) {
-			return { ...(JSON.parse(await fs.readFile(meta, "utf8")) as Omit<RetrievedFile, "cached">), cached: true };
-		}
+		const cached = await readCached(image, meta);
+		if (cached) return cached;
 		const { file, info } = await download({ url: request.url, start: request.time, end: request.time + 1, height: 720, dir, key, tools, runner });
-		const still = path.join(dir, `${key}.still.jpg`);
+		const still = path.join(dir, `${key}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.still.jpg`);
 		try {
 			await runTool(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", file, "-frames:v", "1", "-vf", `scale=${width}:-2`, "-q:v", "3", still], "ffmpeg");
 			await fs.rename(still, image);
@@ -286,9 +314,19 @@ export async function fetchFrame(request: FrameRequest, { filesRoot, tools = too
 			name: `${info.title ?? "frame"} ${formatTime(request.time)}`,
 			source: sourceInfo(info, request.url, request.time, request.time),
 		};
-		await fs.writeFile(meta, JSON.stringify(result, null, 1));
+		await writeSidecar(meta, result);
 		return { ...result, cached: false };
 	});
+}
+
+/** A link to a playlist page rather than one video (a video link with `list=` is fine: one entry is taken). */
+export function isPlaylistOnly(url: string): boolean {
+	try {
+		const u = new URL(url);
+		return /(^|\.)youtube\.com$/.test(u.hostname) && u.pathname === "/playlist";
+	} catch {
+		return false;
+	}
 }
 
 /** Body of POST /api/agent/retrieve: `{kind:"section", url, start, end|duration, height?, audioOnly?}` or `{kind:"frame", url, time, width?}`. */
@@ -299,11 +337,15 @@ export async function handleRetrieve(body: unknown, deps: RetrievalDeps): Promis
 		if (input.kind === "section") {
 			const request = normalizeSectionRequest(input, tools.maxSectionSeconds);
 			if (!request.ok) return { status: 400, body: { error: request.error } };
+			if (isPlaylistOnly(request.value.url)) return { status: 400, body: { error: "this is a playlist link; use the link of one video" } };
+			await assertPublicUrl(request.value.url, deps.env);
 			return { status: 200, body: await fetchSection(request.value, { ...deps, tools }) };
 		}
 		if (input.kind === "frame") {
 			const request = normalizeFrameRequest(input);
 			if (!request.ok) return { status: 400, body: { error: request.error } };
+			if (isPlaylistOnly(request.value.url)) return { status: 400, body: { error: "this is a playlist link; use the link of one video" } };
+			await assertPublicUrl(request.value.url, deps.env);
 			return { status: 200, body: await fetchFrame(request.value, { ...deps, tools }) };
 		}
 		return { status: 400, body: { error: 'kind must be "section" or "frame"' } };

@@ -48,6 +48,8 @@ BOPENCUT_VIDEO_ENCODER=libx264              # h264_nvenc, h264_qsv, h264_amf, h2
 BOPENCUT_RETRIEVE_HEIGHT=1080               # maximum video height
 BOPENCUT_RETRIEVE_MAX_SECONDS=1800          # longest section allowed
 ```
+Links must point at public addresses. Links to this machine or the local network are refused unless `BOPENCUT_ALLOW_PRIVATE_URLS=1` is set. Playlist pages are refused, and a video link that also has `list=` takes only that video. Browser requests to the agent API must come from the editor's own origin (same host and port); clients without an `Origin` header, such as CLIs, are allowed.
+
 Users are responsible for having the rights to the media they fetch.
 
 ## Other changes from upstream
