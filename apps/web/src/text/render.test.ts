@@ -1,11 +1,15 @@
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
-import { Canvas, createCanvas } from "@napi-rs/canvas";
+import { Canvas, createCanvas, GlobalFonts } from "@napi-rs/canvas";
 import { measureTextElement } from "./measure-element";
 import { drawStyledText } from "./draw-styled";
 import { makeCaption } from "./caption";
 import type { TextElement } from "@/timeline";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 import type { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+
+// A font that exists on this machine: CI runners have no Arial, and a missing family draws nothing.
+const installed = new Set(GlobalFonts.families.map((font) => font.family));
+const FONT = ["Arial", "Liberation Sans", "DejaVu Sans", "Noto Sans", "Helvetica"].find((family) => installed.has(family)) ?? GlobalFonts.families[0]?.family ?? "sans-serif";
 
 const previous = Object.getOwnPropertyDescriptor(globalThis, "OffscreenCanvas");
 beforeAll(() =>
@@ -35,7 +39,7 @@ const element: TextElement = {
 	]),
 	params: {
 		content: "Hello world",
-		fontFamily: "Arial",
+		fontFamily: FONT,
 		fontSize: 15,
 		"stroke.outer.color": "#ff0000",
 		"stroke.outer.width": 0.25,
