@@ -9,6 +9,9 @@ import { BatchCommand } from "@/commands";
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { mediaTimeFromSeconds } from "@/wasm";
 import { isTypableDOMElement } from "@/utils/browser";
+import { toast } from "sonner";
+import { fetchWebMedia, pastedMediaLinks } from "@/media/web-drop";
+import { CLIPS_CLIPBOARD_MARKER } from "@/core/managers/clipboard-manager";
 import type { MediaType } from "@/media/types";
 
 const MEDIA_MIME_PREFIXES: MediaType[] = ["image", "video", "audio"];
@@ -46,13 +49,30 @@ export function usePasteMedia() {
 				return;
 			}
 
-			const files = extractMediaFilesFromClipboard({
+			// Clips copied in the editor are newer than anything else on the clipboard.
+			if (event.clipboardData?.getData("text/plain") === CLIPS_CLIPBOARD_MARKER) {
+				event.preventDefault();
+				editor.clipboard.paste();
+				return;
+			}
+
+			let files = extractMediaFilesFromClipboard({
 				clipboardData: event.clipboardData,
 			});
 			if (files.length === 0) {
 				event.preventDefault();
-				editor.clipboard.paste();
-				return;
+				// A pasted image link (or HTML with an image) becomes media; anything else pastes copied clips.
+				const links = pastedMediaLinks(event.clipboardData);
+				if (links.length === 0) {
+					editor.clipboard.paste();
+					return;
+				}
+				const { file, error } = await fetchWebMedia(links);
+				if (!file) {
+					toast.error(`Could not add the pasted link${error ? `: ${error}` : ""}`);
+					return;
+				}
+				files = [file];
 			}
 
 			event.preventDefault();
