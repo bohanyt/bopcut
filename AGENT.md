@@ -23,6 +23,7 @@ BOPENCUT_DATA can point outside the repository; do not commit private data. Use 
 | `project.json`, `sync/<projectId>.json` | editor → agent | current timeline after each edit (0.8 s debounce), including the content of every compound clip (see *Compound clips for agents*) |
 | `draft.json` | agent → editor | per-item operations; applied in ~2 s as **one Undo step** |
 | `draft-result.json` | editor → agent | result per operation (items deleted by the human are skipped) |
+| `drafts-applied/` | editor → agent | each draft once applied (it is moved here from `draft.json`, so it never applies to another project opened later). Drafts that failed or were skipped move here too: read `draft-result.json` and write a new `rev` to retry. A newer draft written at the same moment is never moved; one replaced by an even newer draft before it applied is kept here as `superseded-*.json` |
 
 **bundle.json** (any `schema`): `name,width,height` (the project canvas, in pixels), `fps?` (project frame rate), `assets:[{key,path(relative to AGENT_FILES_ROOT),type:image|video|audio,name}]`, `main:[el]`, `audio:[el]`, `overlay:[{name,type:"video"|"effect",elements:[el]}]` (index 0 = topmost). `el`: `agent_id,name,start,duration,trimStart` (seconds), `asset` or `effect`+`effectParams`, `params` (e.g. `transform.positionX/Y` = pixels from canvas center, `opacity`, `volume`), `size:[w,h]` (display size in pixels), `keyframes:[{path:"opacity"|"scale"|param,time,value}]`.
 

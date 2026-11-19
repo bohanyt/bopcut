@@ -13,6 +13,7 @@ import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
 import { MUSIC_LIBRARY, handleMusic } from "@/sounds/music-server";
 import { handleDuck } from "@/sounds/duck-server";
 import { parseSelectionPayload } from "@/agent/selection-payload";
+import { consumeAppliedDraft } from "@/agent/draft-store";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -121,7 +122,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "applied") {
-		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(await req.json(), null, 1));
+		const result = await req.json();
+		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(result, null, 1));
+		// A draft is applied once: move it aside so a project opened later does not apply it again.
+		await consumeAppliedDraft(WORKSPACE, result?.rev);
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "music") {
