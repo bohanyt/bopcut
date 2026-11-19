@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
 import { useSoundSearch } from "@/sounds/use-sound-search";
 import { useSoundsStore } from "@/sounds/sounds-store";
+import { SfxLibraryView } from "@/sounds/components/sfx-library-view";
 import type { SavedSound, SoundEffect } from "@/sounds/types";
 import { cn } from "@/utils/ui";
 import {
@@ -38,14 +39,21 @@ import { HugeiconsIcon } from "@hugeicons/react";
 export function SoundsView() {
 	return (
 		<div className="flex h-full flex-col">
-			<Tabs defaultValue="sound-effects" className="flex h-full flex-col">
+			<Tabs defaultValue="library" className="flex h-full flex-col">
 				<div className="px-3 pt-4 pb-0">
 					<TabsList>
+						<TabsTrigger value="library">Library</TabsTrigger>
 						<TabsTrigger value="sound-effects">Sound effects</TabsTrigger>
 						<TabsTrigger value="saved">Saved</TabsTrigger>
 					</TabsList>
 				</div>
 				<Separator className="my-4" />
+				<TabsContent
+					value="library"
+					className="mt-0 flex min-h-0 flex-1 flex-col p-5 pt-0"
+				>
+					<SfxLibraryView />
+				</TabsContent>
 				<TabsContent
 					value="sound-effects"
 					className="mt-0 flex min-h-0 flex-1 flex-col p-5 pt-0"

@@ -9,11 +9,12 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { handleRetrieve } from "@/retrieval/server";
+import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 const FILES_ROOT = path.resolve(process.env.AGENT_FILES_ROOT ?? WORKSPACE);
-const TYPES: Record<string, string> = { ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".json": "application/json" };
+const TYPES: Record<string, string> = { ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac", ".aac": "audio/aac", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".json": "application/json" };
 const json = (data: Buffer | string) => new Response(typeof data === "string" ? data : new Uint8Array(data), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
 
 function inside(rel: string) {
@@ -49,6 +50,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 		if (slug[0] === "file") {
 			const full = inside(new URL(req.url).searchParams.get("p") ?? "");
 			return new Response(new Uint8Array(await fs.readFile(full)), { headers: { "Content-Type": TYPES[path.extname(full).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
+		}
+		if (slug[0] === "sfx-file") {
+			// Preview of a sound in one of the library folders (BOPENCUT_SFX_DIRS may be outside AGENT_FILES_ROOT).
+			const file = await libraryPreviewFile(new URL(req.url).searchParams.get("ref") ?? "", { filesRoot: FILES_ROOT });
+			if (!file) return Response.json({ error: "Not found" }, { status: 404 });
+			return new Response(new Uint8Array(await fs.readFile(file)), { headers: { "Content-Type": TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
 		}
 		if (slug[0] === "frames-request") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "frames-request.json"))); } catch { return Response.json(null); }
@@ -97,6 +104,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	if (slug[0] === "applied") {
 		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
+	}
+	if (slug[0] === "sfx") {
+		// Sound effects from the library folders and myinstants.com; see AGENT.md.
+		const result = await handleSfx(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
+		return Response.json(result.body, { status: result.status });
 	}
 	if (slug[0] === "retrieve") {
 		// A section of an online video (or one frame of it) into AGENT_FILES_ROOT/retrieved/; see AGENT.md.

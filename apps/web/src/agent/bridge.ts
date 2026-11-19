@@ -166,10 +166,13 @@ export async function applyDraft(draft: Draft) {
 		error = e instanceof Error ? e.message : String(e);
 	}
 
-	// Report where `url` assets were saved and their source links (for credits and reuse as `path`).
+	// Report where `url` and `sfx` assets were saved and their sources (for credits and reuse as `path`).
 	for (const [i, op] of ops.entries()) {
 		const retrieved = elementsOf(op).flatMap((e) => media.get(e)?.retrieved ?? []);
-		if (retrieved.length && outcome.results[i]) outcome.results[i] = { ...outcome.results[i], retrieved };
+		const sfx = elementsOf(op).flatMap((e) => media.get(e)?.sfx ?? []);
+		if (outcome.results[i] && (retrieved.length || sfx.length)) {
+			outcome.results[i] = { ...outcome.results[i], ...(retrieved.length ? { retrieved } : {}), ...(sfx.length ? { sfx } : {}) };
+		}
 	}
 	const failed = outcome.results.filter((r) => !r?.ok).length;
 	if (error) toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: error });
