@@ -1,5 +1,6 @@
 // Every timeline change is written to AGENT_WORKSPACE/project.json (seconds, pixels),
 // so the agent can see each item's location, time, and position without opening the browser.
+import { SnapshotHistory } from "./stale";
 import { EditorCore } from "@/core";
 import { toast } from "sonner";
 import { pollFrames } from "./frames";
@@ -121,6 +122,8 @@ function editSnapshot(): EditSnapshot | null {
 	return { projectId: project.metadata.id, items: buildEditItems({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() }) };
 }
 let editLogger: ReturnType<typeof createEditLogger> | undefined;
+/** Recent snapshots sent to the agent (by syncedAt), for drafts that say what they were based on. */
+export const snapshotHistory = new SnapshotHistory();
 let installed = false;
 export function installAgentBridge() {
 	if (installed || typeof window === "undefined") return;
@@ -134,7 +137,10 @@ export function installAgentBridge() {
 		clearTimeout(timer);
 		timer = setTimeout(() => {
 			const snap = agentSnapshot();
-			if (snap) fetch("/api/agent/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snap) }).catch(() => {});
+			if (!snap) return;
+			// Remember what this snapshot showed, so a draft `basedOn` it can tell the user's later edits apart.
+			snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes());
+			fetch("/api/agent/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snap) }).catch(() => {});
 		}, 800);
 	};
 	const push = () => {
@@ -408,13 +414,22 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		return;
 	}
 
+	// A draft based on a snapshot this editor no longer remembers cannot be checked against the user's edits.
+	const base = typeof draft.basedOn === "string" ? snapshotHistory.get(draft.basedOn) : undefined;
+	if (typeof draft.basedOn === "string" && !base) {
+		const cleanup = await discard();
+		const results = ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, stale: true, error: "basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend" }));
+		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: "It was based on an old snapshot; the agent should re-read and resend" });
+		await report({ sceneId: root.id, ok: false, applied: false, error: "basedOn is unknown", ...(cleanup ? { cleanup } : {}), results });
+		return;
+	}
 
 	// Read the scenes after loading: the human may have edited meanwhile.
 	const before = editor.scenes.getScenes();
 	const openScene = editor.scenes.getActiveScene();
 	const outcome = computeAgentDraft({
 		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true,
-		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled,
+		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled, base,
 	});
 	// The open scene stays open unless the draft removed it (ungrouping the compound being edited): then the root opens.
 	const openAfter = outcome.scenes.some((scene) => scene.id === openScene.id) ? openScene.id : root.id;

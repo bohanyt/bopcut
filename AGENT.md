@@ -29,6 +29,15 @@ BOPENCUT_DATA can point outside the repository; do not commit private data. Use 
 
 **draft.json**: `{schema:"opencut-agent-draft-1", rev, label, projectId?, ops:[{op:"set", match:{agentId}|{id}, start?, duration?, trimStart?, params?}, {op:"delete", match:…}, {op:"add", track:{name, type?:"video"|"audio"|"effect", index?}, element:el}]}`. For `add`, `el.asset` is an object `{path,type,name}` (not a bundle key); an existing track with that name is reused, otherwise one is created (overlays are inserted at `index`). Exact names take precedence; `Main`, the legacy `Utama`, and the editor default `Main Track` are aliases of each other (so `Main` reaches the main track of a compound made in the editor). Existing saved track names are not renamed. The entire draft is one Undo; changed/added items are selected immediately. `match` can also reach inside compound clips, and `group`, `ungroup`, and `compound` ops exist: see *Compound clips for agents*. `replace`, `atomic`, `set` keyframes, and `mediaId`: see *Draft reliability*.
 
+**Editing on top of the user's edits (`basedOn`).** Put the `syncedAt` of the snapshot you read into the draft as `basedOn`.
+- If the user changed a field that an op touches after that snapshot, the op is refused: `ok:false`, `stale:true`, `fields`, and `current` holding the current values. Re-read the snapshot and apply your change on top. The other ops still apply.
+- For `set`, the touched fields are the given `start`/`duration`/`trimStart`, each `params` key, and the keyframes.
+- `delete` and `replace` are refused if the element changed at all, or appeared after the snapshot.
+- Fields the user did not touch apply as usual, and nothing is ever locked.
+- The editor remembers its last 64 snapshots. An unknown `basedOn` (after a reload, or a very old snapshot) refuses the whole draft as stale.
+- Use a snapshot taken after your previous draft applied.
+- Drafts without `basedOn` are not checked.
+
 Browser console: `window.agent.snapshot()`, `window.agent.selection()`, `window.agent.applyDraft(draft)`, `window.agent.ready()` (readiness, see *Draft reliability*), `await window.agent.whenReady()` (true once ready; call it before `applyDraft` from the console).
 
 ## What the user points at ("fix this")

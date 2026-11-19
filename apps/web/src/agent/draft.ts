@@ -1,6 +1,7 @@
 // Agent draft ops applied to a copy of the project's scenes. Pure: the bridge loads assets first,
 // then wraps the resulting scene list in one command, so the whole draft is one Undo step even
 // when it touches several scenes (the root timeline and compound clip contents).
+import { type ElementFields, StaleError, assertNotStale, touchedFields } from "./stale";
 import type { Bookmark, SceneTracks, TScene } from "@/timeline";
 import { TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
@@ -36,7 +37,7 @@ export type DraftOp =
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
 		& Pick<AgentElement, "params" | "keyframes" | "group"> & NonNullable<AgentElement["compound"]>);
 /** `atomic: true`: if any op fails, the draft changes nothing. */
-export type Draft = { schema: string; rev: string; label?: string; projectId?: string; atomic?: boolean; ops: DraftOp[] };
+export type Draft = { schema: string; rev: string; label?: string; projectId?: string; atomic?: boolean; basedOn?: string; ops: DraftOp[] };
 export type Touched = { sceneId: string; elementId: string };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -59,9 +60,11 @@ function keyframeTargets(el: any, k: AgentKeyframe): { propertyPath: string; val
 	return [{ propertyPath: k.path, value: k.value }];
 }
 
-export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, fps, ripple, atomic = false, results: initial = [] }: {
+export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, fps, ripple, atomic = false, results: initial = [], base }: {
 	scenes: TScene[]; rootSceneId: string; ops: DraftOp[]; mediaFor: (e: AgentElement) => LoadedMedia | undefined;
 	canvas: { width: number; height: number }; fps: FrameRate; ripple: boolean; atomic?: boolean; results?: any[];
+	/** Element state at the draft's `basedOn` snapshot: set/replace/delete on fields changed since then are stale. */
+	base?: Map<string, ElementFields>;
 }): { scenes: TScene[]; results: any[]; touched: Touched[]; applied: boolean } {
 	let list = scenes;
 	const results: any[] = [...initial];
@@ -140,6 +143,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "set": {
 				const hit = find(op.match);
+				assertNotStale({ base, sceneId: hit.sceneId, element: hit.element, fields: touchedFields(op) });
 				editTracks(hit.sceneId, (tracks) => {
 					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
 					const el = track.elements[hit.index];
@@ -177,6 +181,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "replace": {
 				const hit = find(op.match);
+				assertNotStale({ base, sceneId: hit.sceneId, element: hit.element, fields: "all" });
 				const given = op.element;
 				if (!given || typeof given !== "object") throw new Error("replace needs an element");
 				if (op.track !== undefined && (typeof op.track?.name !== "string" || "compound" in op.track)) throw new Error("replace: track needs {name} and stays in the element's scene");
@@ -201,6 +206,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "delete": {
 				const hit = find(op.match);
+				assertNotStale({ base, sceneId: hit.sceneId, element: hit.element, fields: "all" });
 				editTracks(hit.sceneId, (tracks) => {
 					(orderedTracks(tracks).find((t) => t.id === hit.track.id) as any).elements.splice(hit.index, 1);
 				});
@@ -295,6 +301,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			if (op?.op === "add") result.name = op.element?.name;
 			result.ok = false;
 			result.error = message(error);
+			if (error instanceof StaleError) {
+				result.stale = true;
+				result.fields = error.fields;
+				result.current = error.current;
+			}
 		}
 		results[i] = result;
 	}
