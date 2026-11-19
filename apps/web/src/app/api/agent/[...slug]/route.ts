@@ -104,6 +104,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		await fs.appendFile(path.join(dir, `${lines[0].projectId}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
 		return Response.json({ ok: true });
 	}
+	if (slug[0] === "selection") {
+		// What the user points at right now (selected elements + playhead); see AGENT.md.
+		const body = await req.json().catch(() => null);
+		if (!body || typeof body !== "object" || typeof body.projectId !== "string" || !Array.isArray(body.selected)) return Response.json({ error: "Invalid selection" }, { status: 400 });
+		await writeAtomic(path.join(WORKSPACE, "selection.json"), JSON.stringify(body, null, 1));
+		return Response.json({ ok: true });
+	}
 	if (slug[0] === "applied") {
 		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });

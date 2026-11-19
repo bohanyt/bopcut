@@ -28,7 +28,22 @@ BOPENCUT_DATA can point outside the repository; do not commit private data. Use 
 
 **draft.json**: `{schema:"opencut-agent-draft-1", rev, label, projectId?, ops:[{op:"set", match:{agentId}|{id}, start?, duration?, trimStart?, params?}, {op:"delete", match:…}, {op:"add", track:{name, type?:"video"|"audio"|"effect", index?}, element:el}]}`. For `add`, `el.asset` is an object `{path,type,name}` (not a bundle key); an existing track with that name is reused, otherwise one is created (overlays are inserted at `index`). Exact names take precedence; `Main`, the legacy `Utama`, and the editor default `Main Track` are aliases of each other (so `Main` reaches the main track of a compound made in the editor). Existing saved track names are not renamed. The entire draft is one Undo; changed/added items are selected immediately. `match` can also reach inside compound clips, and `group`, `ungroup`, and `compound` ops exist: see *Compound clips for agents*.
 
-Browser console: `window.agent.snapshot()`, `window.agent.applyDraft(draft)`.
+Browser console: `window.agent.snapshot()`, `window.agent.selection()`, `window.agent.applyDraft(draft)`.
+
+## What the user points at ("fix this")
+
+The user selects what is wrong in the editor, switches to their agent and says "fix this". The editor writes `AGENT_WORKSPACE/selection.json` about 250 ms after the selection or the playhead settles. The same object is in the snapshot as `selection`:
+
+`{projectId, sceneId, activeSceneId, playhead, selected:[...], updatedAt}`
+- `selected` lists the selected elements in the same shape as the snapshot (address, timing, params), each with its `track: {id, name, type}`.
+- `playhead` is in seconds, in the open scene. Inside an open compound clip, times are relative to its content.
+
+Resolve "this" in this order:
+1. Unresolved notes the user just added (`notes`, newest first). A note with a duration marks a time range.
+2. The `selected` elements.
+3. The element or elements under the `playhead`.
+
+Change only those elements, in one draft with the `projectId`, then reply to or resolve the note.
 
 ## Media from links (sections, not whole videos)
 
