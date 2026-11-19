@@ -29,7 +29,10 @@ export function bundleProjectSettings(bundle: Pick<Bundle, "width" | "height" | 
 		settings.canvasSize = { width: bundle.width, height: bundle.height };
 		settings.canvasSizeMode = "custom";
 	}
-	if (typeof bundle.fps === "number" && Number.isFinite(bundle.fps) && bundle.fps > 0 && bundle.fps <= 240) settings.fps = floatToFrameRate(bundle.fps);
+	if (typeof bundle.fps === "number" && Number.isFinite(bundle.fps) && bundle.fps >= 1 && bundle.fps <= 240) {
+		const rate = floatToFrameRate(bundle.fps);
+		if (rate.numerator > 0 && rate.denominator > 0) settings.fps = rate;
+	}
 	return Object.keys(settings).length ? settings : null;
 }
 
@@ -66,9 +69,10 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 	const editor = EditorCore.getInstance();
 	const bundle: Bundle = await (await fetch("/api/agent/bundle", { cache: "no-store" })).json();
 	const projectId = await editor.project.createNewProject({ name: bundle.name });
-	// The bundle's canvas (and frame rate) become the project's, before anything is placed on it.
+	// The bundle's canvas becomes the project's before anything is placed on it. Its frame rate is applied
+	// after the media load, because importing a video raises the project frame rate to the video's.
 	const settings = bundleProjectSettings(bundle);
-	if (settings) await editor.project.updateSettings({ settings, pushHistory: false });
+	if (settings?.canvasSize) await editor.project.updateSettings({ settings: { canvasSize: settings.canvasSize, canvasSizeMode: settings.canvasSizeMode }, pushHistory: false });
 	const media = new Map<string, LoadedMedia>();
 
 	let done = 0;
@@ -81,9 +85,13 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 		if (e.icon) e.icon.svg = await loadIcon(e.icon.name);
 	}
 
+	if (settings?.fps) await editor.project.updateSettings({ settings: { fps: settings.fps }, pushHistory: false });
+
 	onStatus("Building timeline…");
 	const main = editor.scenes.getActiveScene();
-	const built = buildBundleScenes({ bundle, media, sceneId: main.id });
+	// Elements are sized for the canvas the project really has (an invalid bundle size keeps the default).
+	const canvas = editor.project.getActive().settings.canvasSize;
+	const built = buildBundleScenes({ bundle: { ...bundle, width: canvas.width, height: canvas.height }, media, sceneId: main.id });
 	const scenes = syncCompoundDurations(relocateVisualCompounds([
 		...editor.scenes.getScenes().map((scene) => (scene.id === main.id ? { ...scene, tracks: built.tracks } : scene)),
 		...built.scenes,

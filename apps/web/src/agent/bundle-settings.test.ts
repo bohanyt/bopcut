@@ -17,5 +17,7 @@ describe("bundle project settings", () => {
 		expect(bundleProjectSettings({ width: 0, height: 1920 })).toBeNull();
 		expect(bundleProjectSettings({ width: 1080.5, height: 1920 })).toBeNull();
 		expect(bundleProjectSettings({ width: 1080, height: 1920, fps: -5 })).toEqual({ canvasSize: { width: 1080, height: 1920 }, canvasSizeMode: "custom" });
+		expect(bundleProjectSettings({ width: 1080, height: 1920, fps: 0.0000001 })).toEqual({ canvasSize: { width: 1080, height: 1920 }, canvasSizeMode: "custom" });
+		expect(bundleProjectSettings({ width: 1080, height: 1920, fps: 59.94 })?.fps).toEqual({ numerator: 60000, denominator: 1001 });
 	});
 });
