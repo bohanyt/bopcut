@@ -262,6 +262,7 @@ async function resolveVideoNode({
 		mediaId: node.params.mediaId,
 		file: node.params.file,
 		time: mediaTimeToSeconds({ time: roundMediaTime({ time: sourceTimeTicks }) }),
+		exact: context.renderer.exactFrames,
 	});
 	if (!frame) {
 		return null;
@@ -282,6 +283,7 @@ async function resolveVideoNode({
 		source: frame.canvas,
 		sourceWidth: frame.canvas.width,
 		sourceHeight: frame.canvas.height,
+		sourceVersion: frame.timestamp,
 	};
 }
 
@@ -464,7 +466,7 @@ async function resolveBlurBackgroundNode({
 		return null;
 	}
 
-	const backdropSource = await resolveBackdropSource({ node, clipTime });
+	const backdropSource = await resolveBackdropSource({ node, clipTime, exact: context.renderer.exactFrames });
 	if (!backdropSource) {
 		return null;
 	}
@@ -489,9 +491,11 @@ async function resolveBlurBackgroundNode({
 async function resolveBackdropSource({
 	node,
 	clipTime,
+	exact,
 }: {
 	node: BlurBackgroundNode;
 	clipTime: number;
+	exact: boolean;
 }): Promise<BackdropSource | null> {
 	if (node.params.mediaType === "video") {
 		const sourceTimeTicks =
@@ -504,6 +508,7 @@ async function resolveBackdropSource({
 			mediaId: node.params.mediaId,
 			file: node.params.file,
 			time: mediaTimeToSeconds({ time: roundMediaTime({ time: sourceTimeTicks }) }),
+			exact,
 		});
 		if (!frame) {
 			return null;
@@ -513,6 +518,7 @@ async function resolveBackdropSource({
 			source: frame.canvas,
 			width: frame.canvas.width,
 			height: frame.canvas.height,
+			version: frame.timestamp,
 		};
 	}
 

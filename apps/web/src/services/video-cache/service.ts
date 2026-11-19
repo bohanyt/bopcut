@@ -23,26 +23,36 @@ export class VideoCache {
 	private frameChain = new Map<string, Promise<unknown>>();
 	private seekGenerations = new Map<string, number>();
 
+	/**
+	 * The frame shown at `time` (seconds in the file). Preview requests that a newer one overtakes
+	 * return the current frame instead of seeking (scrubbing stays fast). `exact` requests (snapshots,
+	 * agent frames, export, thumbnails) always get the frame of their own time: they are never skipped
+	 * and do not make pending preview requests skip either.
+	 */
 	async getFrameAt({
 		mediaId,
 		file,
 		time,
+		exact = false,
 	}: {
 		mediaId: string;
 		file: File;
 		time: number;
+		exact?: boolean;
 	}): Promise<WrappedCanvas | null> {
 		await this.ensureSink({ mediaId, file });
 
 		const sinkData = this.sinks.get(mediaId);
 		if (!sinkData) return null;
 
-		const generation = (this.seekGenerations.get(mediaId) ?? 0) + 1;
-		this.seekGenerations.set(mediaId, generation);
+		const generation = exact
+			? null
+			: (this.seekGenerations.get(mediaId) ?? 0) + 1;
+		if (generation !== null) this.seekGenerations.set(mediaId, generation);
 
 		const previous = this.frameChain.get(mediaId) ?? Promise.resolve();
 		const current = previous.then(() => {
-			if (this.seekGenerations.get(mediaId) !== generation) {
+			if (generation !== null && this.seekGenerations.get(mediaId) !== generation) {
 				return sinkData.currentFrame ?? null;
 			}
 			return this.resolveFrame({ sinkData, time });

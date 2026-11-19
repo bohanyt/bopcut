@@ -56,6 +56,8 @@ export type ExternalTextureDescriptor = {
 	source: CanvasImageSource;
 	width: number;
 	height: number;
+	/** Changes when the pixels change although `source` is the same object: video decoders reuse a small pool of canvases, so a new frame can arrive in the canvas of an earlier one. */
+	version?: number | string;
 };
 
 /**
