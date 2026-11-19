@@ -124,6 +124,31 @@ export const textStyleParams: ParamDefinition[] = [
 		max: 3,
 		step: 0.01,
 	},
+	{
+		key: "caption.reveal",
+		label: "Reveal words as they are spoken",
+		type: "boolean",
+		default: false,
+		keyframable: false,
+	},
+	{
+		key: "caption.revealFade",
+		label: "Reveal fade (s)",
+		type: "number",
+		default: 0.12,
+		min: 0,
+		max: 2,
+		step: 0.01,
+	},
+	{
+		key: "caption.revealPop",
+		label: "Reveal pop scale",
+		type: "number",
+		default: 1,
+		min: 0.2,
+		max: 3,
+		step: 0.01,
+	},
 ];
 
 export interface ResolvedTextStyle {
@@ -139,6 +164,10 @@ export interface ResolvedTextStyle {
 	activeColor: string;
 	activeEnabled: boolean;
 	activeScale: number;
+	/** Words stay hidden until spoken, then fade (and optionally pop) in over `revealFade` seconds and stay. */
+	reveal: boolean;
+	revealFade: number;
+	revealPop: number;
 }
 
 export function textNumber(
@@ -204,7 +233,27 @@ export function resolveTextStyle(
 		activeColor: color("caption.activeColor", "#ffff00"),
 		activeEnabled: element.params["caption.activeEnabled"] === true,
 		activeScale: Math.max(1, number("caption.activeScale", 1)),
+		reveal: element.params["caption.reveal"] === true,
+		revealFade: Math.max(0, number("caption.revealFade", 0.12)),
+		revealPop: Math.min(3, Math.max(0.2, number("caption.revealPop", 1))),
 	};
+}
+
+/**
+ * How far each word has appeared at `time` (0 hidden, 1 fully shown) when words reveal as they are spoken.
+ * A word starts appearing at its start and is complete `fade` seconds later; without reveal, all are 1.
+ */
+export function wordRevealProgress(
+	words: readonly { start: number }[],
+	time: number,
+	style: Pick<ResolvedTextStyle, "reveal" | "revealFade">,
+): number[] {
+	if (!style.reveal) return words.map(() => 1);
+	return words.map((word) => {
+		if (time < word.start) return 0;
+		if (style.revealFade <= 0) return 1;
+		return Math.min(1, (time - word.start) / style.revealFade);
+	});
 }
 
 export const TEXT_STYLE_KEYS = [

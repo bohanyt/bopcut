@@ -185,6 +185,7 @@ Editing text in the properties panel or through `set.params.content` preserves m
 - `caption.noOrphan`: move a word from the preceding line to avoid a final one-word line when the pair fits. Explicit paragraph breaks and the width limit take precedence.
 - `caption.wordSpacing`: additional space between words in em; `caption.highlightColor`: fill for words flagged `highlight:true`.
 - `caption.activeEnabled`, `caption.activeColor`, `caption.activeScale`: active-word fill and optional scale bump (1 = no bump). The bump is centered on the word and does not reflow lines. Active highlighting is off by default.
+- `caption.reveal`, `caption.revealFade`, `caption.revealPop`: words stay hidden until they are spoken, then appear over `revealFade` seconds (default 0.12) and stay. The phrase layout is fixed, so nothing moves as words appear. `revealPop` scales an appearing word from that size to 1 (1 = no pop, 1.3 = a pop from 130%). Reveal is off by default and combines with the active-word highlight.
 
 The `highlight` shorthand is `{color,emphasisColor?,scale?,enabled?}`. It enables active highlighting unless `enabled:false`, uses `color` for the active word, defaults emphasis to that color, and defaults scale to 1. Precedence is element `params`, then preset style, then inline `style`, then `highlight`. Existing `fontSize` units remain unchanged: pixel font size = `fontSize * canvasHeight / 90`.
 

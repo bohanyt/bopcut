@@ -3,7 +3,7 @@ import { DEFAULTS } from "@/timeline/defaults";
 import type { TextElement } from "@/timeline";
 import type { TextBackground } from "@/text/background";
 import { resolveNumberAtTime } from "@/animation/values";
-import { resolveTextStyle, textNumber, type ResolvedTextStyle } from "./style";
+import { resolveTextStyle, textNumber, wordRevealProgress, type ResolvedTextStyle } from "./style";
 import { activeWordIndex } from "./caption";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { getTextVisualRect, setCanvasLetterSpacing } from "./layout";
@@ -31,6 +31,8 @@ export interface MeasuredTextElement extends MeasuredTextLayout {
 	style: ResolvedTextStyle;
 	activeWord: number;
 	emphasisWords: number[];
+	/** Per caption word, how far it has appeared (1 = shown); all 1 unless the style reveals words. */
+	wordReveal: number[];
 }
 
 let textMeasurementContext:
@@ -244,6 +246,13 @@ export function measureTextElement({
 			element.caption?.words.flatMap((word, index) =>
 				word.highlight ? [index] : [],
 			) ?? [],
+		wordReveal: element.caption
+			? wordRevealProgress(
+					element.caption.words,
+					(localTime + element.trimStart) / TICKS_PER_SECOND,
+					style,
+				)
+			: [],
 	};
 }
 

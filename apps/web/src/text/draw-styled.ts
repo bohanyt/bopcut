@@ -46,11 +46,20 @@ function drawGlyphs(
 				layout.style.activeEnabled &&
 				run.index >= 0 &&
 				run.index === layout.activeWord;
+			// Words not yet spoken stay hidden; appearing words fade (and pop) in, ease-out.
+			const shown = run.index >= 0 ? (layout.wordReveal?.[run.index] ?? 1) : 1;
+			if (shown <= 0) continue;
 			ctx.save();
 			ctx.translate(run.x, run.y);
-			if (active && layout.style.activeScale !== 1) {
+			let scale = active ? layout.style.activeScale : 1;
+			if (shown < 1) {
+				const eased = 1 - (1 - shown) ** 3;
+				ctx.globalAlpha *= eased;
+				scale *= layout.style.revealPop + (1 - layout.style.revealPop) * eased;
+			}
+			if (scale !== 1) {
 				ctx.translate(run.width / 2, 0);
-				ctx.scale(layout.style.activeScale, layout.style.activeScale);
+				ctx.scale(scale, scale);
 				ctx.translate(-run.width / 2, 0);
 			}
 			if (stroke) {

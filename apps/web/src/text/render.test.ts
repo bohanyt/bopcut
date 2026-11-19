@@ -210,3 +210,36 @@ test("400 phrase traversal activates only visible captions and clears the previo
 	await resolveRenderTree({ node: root, renderer, time: time(1200) });
 	expect(nodes.every((node) => node.resolved === null)).toBe(true);
 });
+
+test("reveal: unspoken words are not drawn, appearing words fade in, spoken words stay", () => {
+	const reveal: TextElement = {
+		...element,
+		params: { ...element.params, "caption.activeEnabled": false, "caption.reveal": true, "caption.revealFade": 0.2, "shadow.opacity": 0 },
+	};
+	const inked = (localTime: number) => {
+		const { canvas, pixels, layout } = render(1, localTime, reveal);
+		let left = canvas.width;
+		let right = 0;
+		let count = 0;
+		for (let y = 0; y < canvas.height; y++)
+			for (let x = 0; x < canvas.width; x++)
+				if (pixels[(y * canvas.width + x) * 4 + 3] > 20) {
+					count++;
+					left = Math.min(left, x);
+					right = Math.max(right, x);
+				}
+		return { count, left, right, layout };
+	};
+	const firstOnly = inked(0.5);
+	const both = inked(1.5);
+	const appearing = inked(1.05);
+	expect(firstOnly.layout.wordReveal).toEqual([1, 0]);
+	expect(both.layout.wordReveal).toEqual([1, 1]);
+	expect(appearing.layout.wordReveal[1]).toBeCloseTo(0.25, 5);
+	// The second word only adds ink once it is spoken; the first word never moves.
+	expect(both.count).toBeGreaterThan(firstOnly.count * 1.5);
+	expect(both.right).toBeGreaterThan(firstOnly.right + 40);
+	expect(firstOnly.left).toBe(both.left);
+	expect(appearing.count).toBeGreaterThan(firstOnly.count);
+	expect(appearing.count).toBeLessThan(both.count);
+});

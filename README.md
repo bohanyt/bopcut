@@ -15,6 +15,7 @@
 - **Sound effect tinggal sebut nama:** cari di folder SFX-mu sendiri dan di Myinstants (tanpa akun). Bisa dari tab Library di panel Sounds, atau AI cukup menulis `sfx: "vine boom"` di draf. Suara yang pernah diambil tersimpan dan ikut jadi library.
 - **Lagu tinggal sebut judul:** dari folder musikmu atau dicari online (hanya suaranya, lewat yt-dlp), langsung dinormalisasi kerasnya. AI juga bisa membuat musik otomatis mengecil saat ada suara bicara (*ducking*), sebagai keyframe volume yang tetap bisa kamu geser.
 - **Camera shake:** getaran kamera di atas posisi/zoom milikmu sendiri, dari goyang tangan halus sampai hentakan yang meredam (intensitas bisa di-keyframe).
+- **Caption bergaya:** satu elemen per frasa dengan timing per kata, outline dua lapis, glow/bayangan, warna untuk kata penting, sorotan kata yang sedang diucapkan, dan mode kata muncul satu per satu (fade/pop). Gaya bisa disimpan sebagai preset milikmu sendiri.
 - **AI belajar seleramu:** editanmu pada item buatan AI dicatat dan diringkas menjadi kandidat aturan selera.
 
 **Editor**
