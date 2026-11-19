@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { type Runner, type RetrievalTools, RetrievalError, defaultRunner, runToolOutput, toolsFromEnv } from "@/retrieval/server";
+import { fetchPublic, readCapped } from "@/retrieval/net";
 import { SFX_SOURCES, type SfxFile, type SfxResult, type SfxSource } from "./sfx-types";
 
 const AUDIO_EXT = /\.(mp3|wav|m4a|ogg|oga|flac|aac|opus)$/i;
@@ -126,6 +127,34 @@ export function resolveLibraryRef(ref: string, roots: string[]): { root: string;
 	return { root, file, rel: m[2] };
 }
 
+/**
+ * The library file a reference names, after following symlinks and junctions: it must still be inside
+ * its library folder (also resolved), or the reference is refused.
+ */
+export async function resolveLibraryFile(ref: string, roots: string[]): Promise<string> {
+	const { root, file } = resolveLibraryRef(ref, roots);
+	let realRoot: string;
+	let realFile: string;
+	try {
+		[realRoot, realFile] = await Promise.all([fs.realpath(root), fs.realpath(file)]);
+	} catch {
+		throw new RetrievalError("library sound not found");
+	}
+	if (!realFile.startsWith(realRoot + path.sep) || !AUDIO_EXT.test(realFile)) throw new RetrievalError("invalid library reference");
+	return realFile;
+}
+
+/** Title of a library file: its sidecar's `name` when it has one, otherwise from the file name. */
+export async function libraryTitle(file: string): Promise<string> {
+	try {
+		const saved = JSON.parse(await fs.readFile(file.replace(AUDIO_EXT, ".json"), "utf8")) as { name?: unknown };
+		if (typeof saved.name === "string" && saved.name.trim()) return saved.name.trim();
+	} catch {
+		// no sidecar
+	}
+	return path.basename(file).replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export async function searchLibrary(query: string, { filesRoot, env = process.env }: SfxDeps, limit = 20): Promise<SfxResult[]> {
 	const q = words(query);
 	if (!q.length) return [];
@@ -176,13 +205,15 @@ export function parseMyinstants(html: string): SfxResult[] {
 	return results;
 }
 
-export async function searchMyinstants(query: string, { fetchImpl = fetch }: SfxDeps, limit = 20): Promise<SfxResult[]> {
+export async function searchMyinstants(query: string, deps: SfxDeps, limit = 20): Promise<SfxResult[]> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
 	if (!query.trim()) return [];
-	const res = await fetchImpl(`${MYINSTANTS}/en/search/?name=${encodeURIComponent(query.trim())}`, { headers: { "User-Agent": USER_AGENT } });
+	const res = await fetchPublic(`${MYINSTANTS}/en/search/?name=${encodeURIComponent(query.trim())}`, { headers: { "User-Agent": USER_AGENT }, fetchImpl, env: deps.env, timeoutMs: 20_000 });
 	if (!res.ok) throw new RetrievalError(`myinstants search failed (${res.status})`);
+	const html = (await readCapped(res, 5 * 1024 * 1024)).toString("utf8");
 	// Myinstants also matches tags; results whose title has the query words come first (stable otherwise).
 	const q = words(query);
-	return parseMyinstants(await res.text())
+	return parseMyinstants(html)
 		.map((result, i) => ({ result, i, score: scoreEntry(q, { nameWords: words(result.name), tags: [] }) }))
 		.sort((a, b) => b.score - a.score || a.i - b.i)
 		.slice(0, limit)
@@ -213,7 +244,13 @@ async function exists(file: string) {
 }
 
 const toPosix = (rel: string) => rel.split(path.sep).join("/");
-const safeName = (name: string) => name.replace(/[^a-zA-Z0-9._ -]+/g, "_").replace(/\s+/g, " ").trim().slice(0, 100) || "sound";
+const safeStem = (name: string) => name.replace(/[^a-zA-Z0-9._ -]+/g, "_").replace(/\s+/g, " ").trim().slice(0, 80) || "sound";
+/** A safe file name whose audio extension survives truncation. */
+const safeFileName = (fileName: string) => {
+	const ext = (AUDIO_EXT.exec(fileName)?.[0] ?? "").toLowerCase();
+	return safeStem(ext ? fileName.slice(0, -ext.length) : fileName) + ext;
+};
+const unique = () => `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** Peak-normalizes to -1 dBFS into an AAC m4a (BOPENCUT_SFX_NORMALIZE=off keeps the file as downloaded). */
 async function normalizeInto(input: string, output: string, deps: SfxDeps): Promise<boolean> {
@@ -245,27 +282,33 @@ function cleanLabel(label: SfxLabel = {}): SfxLabel {
 async function getMyinstants(ref: string, deps: SfxDeps, label: SfxLabel = {}): Promise<SfxFile> {
 	if (!SOUND_PATH.test(ref)) throw new RetrievalError("invalid myinstants reference");
 	const dir = path.join(deps.filesRoot, "sfx", "myinstants");
-	const base = safeName(decodeURIComponent(path.posix.basename(ref)).replace(AUDIO_EXT, ""));
+	// The file name plus a hash of the whole reference: two sounds with the same file name never share a cache entry.
+	const base = `${safeStem(decodeURIComponent(path.posix.basename(ref)).replace(AUDIO_EXT, ""))}-${createHash("sha1").update(ref).digest("hex").slice(0, 6)}`;
 	const meta = path.join(dir, `${base}.json`);
 	for (const ext of [".m4a", path.extname(ref).toLowerCase()]) {
 		const file = path.join(dir, base + ext);
 		if ((await exists(file)) && (await exists(meta))) {
-			const saved = JSON.parse(await fs.readFile(meta, "utf8")) as { name: string; pageUrl?: string };
-			return { path: toPosix(path.relative(deps.filesRoot, file)), name: saved.name, source: "myinstants", pageUrl: saved.pageUrl, cached: true };
+			try {
+				const saved = JSON.parse(await fs.readFile(meta, "utf8")) as { name: string; pageUrl?: string };
+				return { path: toPosix(path.relative(deps.filesRoot, file)), name: saved.name, source: "myinstants", pageUrl: saved.pageUrl, cached: true };
+			} catch {
+				// unreadable sidecar: fetch again
+			}
 		}
 	}
-	const res = await (deps.fetchImpl ?? fetch)(MYINSTANTS + ref, { headers: { "User-Agent": USER_AGENT } });
+	const res = await fetchPublic(MYINSTANTS + ref, { headers: { "User-Agent": USER_AGENT }, fetchImpl: deps.fetchImpl, env: deps.env, timeoutMs: 30_000 });
 	if (!res.ok) throw new RetrievalError(`myinstants download failed (${res.status})`);
-	const bytes = Buffer.from(await res.arrayBuffer());
-	if (bytes.length === 0 || bytes.length > MAX_DOWNLOAD_BYTES) throw new RetrievalError("myinstants returned an empty or oversized file");
+	const bytes = await readCapped(res, MAX_DOWNLOAD_BYTES);
+	if (bytes.length === 0) throw new RetrievalError("myinstants returned an empty file");
 	await fs.mkdir(dir, { recursive: true });
-	const raw = path.join(dir, `${base}.download${path.extname(ref).toLowerCase()}`);
+	const attempt = unique();
+	const raw = path.join(dir, `${base}.${attempt}.download${path.extname(ref).toLowerCase()}`);
 	const normalized = path.join(dir, `${base}.m4a`);
 	await fs.writeFile(raw, bytes);
 	let file: string;
 	try {
-		if (await normalizeInto(raw, `${normalized}.part.m4a`, deps)) {
-			await fs.rename(`${normalized}.part.m4a`, normalized);
+		if (await normalizeInto(raw, `${normalized}.${attempt}.part.m4a`, deps)) {
+			await fs.rename(`${normalized}.${attempt}.part.m4a`, normalized);
 			file = normalized;
 		} else {
 			file = path.join(dir, base + path.extname(ref).toLowerCase());
@@ -273,12 +316,14 @@ async function getMyinstants(ref: string, deps: SfxDeps, label: SfxLabel = {}): 
 		}
 	} finally {
 		await fs.rm(raw, { force: true });
-		await fs.rm(`${normalized}.part.m4a`, { force: true });
+		await fs.rm(`${normalized}.${attempt}.part.m4a`, { force: true });
 	}
 	const given = cleanLabel(label);
 	const name = given.name ?? decodeURIComponent(path.posix.basename(ref)).replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").trim();
 	const pageUrl = given.pageUrl ?? `${MYINSTANTS}/en/search/?name=${encodeURIComponent(name)}`;
-	await fs.writeFile(meta, JSON.stringify({ name, pageUrl, soundUrl: MYINSTANTS + ref, fetchedAt: new Date().toISOString() }, null, 1));
+	const metaTmp = `${meta}.${attempt}.tmp`;
+	await fs.writeFile(metaTmp, JSON.stringify({ name, pageUrl, soundUrl: MYINSTANTS + ref, fetchedAt: new Date().toISOString() }, null, 1));
+	await fs.rename(metaTmp, meta);
 	clearLibraryIndex();
 	return { path: toPosix(path.relative(deps.filesRoot, file)), name, source: "myinstants", pageUrl, cached: false };
 }
@@ -286,18 +331,19 @@ async function getMyinstants(ref: string, deps: SfxDeps, label: SfxLabel = {}): 
 /** A library sound: used in place when it is under AGENT_FILES_ROOT, otherwise copied into `sfx/library/` once. */
 async function getLibrary(ref: string, deps: SfxDeps): Promise<SfxFile> {
 	const roots = libraryRoots(deps.filesRoot, deps.env);
-	const { file } = resolveLibraryRef(ref, roots);
+	const file = await resolveLibraryFile(ref, roots);
 	const stat = await fs.stat(file).catch(() => null);
 	if (!stat?.isFile()) throw new RetrievalError("library sound not found");
-	const name = path.basename(file).replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").trim();
-	const filesRoot = path.resolve(deps.filesRoot);
+	const name = await libraryTitle(file);
+	const filesRoot = await fs.realpath(deps.filesRoot).catch(() => path.resolve(deps.filesRoot));
 	if (file.startsWith(filesRoot + path.sep)) return { path: toPosix(path.relative(filesRoot, file)), name, source: "library", cached: true };
 	const hash = createHash("sha1").update(`${file}|${stat.size}|${stat.mtimeMs}`).digest("hex").slice(0, 8);
-	const copy = path.join(filesRoot, "sfx", "library", `${hash}-${safeName(path.basename(file))}`);
+	const copy = path.join(filesRoot, "sfx", "library", `${hash}-${safeFileName(path.basename(file))}`);
 	if (await exists(copy)) return { path: toPosix(path.relative(filesRoot, copy)), name, source: "library", cached: true };
 	await fs.mkdir(path.dirname(copy), { recursive: true });
-	await fs.copyFile(file, `${copy}.part`);
-	await fs.rename(`${copy}.part`, copy);
+	const part = `${copy}.${unique()}.part`;
+	await fs.copyFile(file, part);
+	await fs.rename(part, copy);
 	return { path: toPosix(path.relative(filesRoot, copy)), name, source: "library", cached: false };
 }
 
@@ -308,7 +354,7 @@ export function getSfx(source: SfxSource, ref: string, deps: SfxDeps, label?: Sf
 /** A library file to stream for a preview, or null when the reference is not valid. */
 export async function libraryPreviewFile(ref: string, deps: SfxDeps): Promise<string | null> {
 	try {
-		const { file } = resolveLibraryRef(ref, libraryRoots(deps.filesRoot, deps.env));
+		const file = await resolveLibraryFile(ref, libraryRoots(deps.filesRoot, deps.env));
 		return (await fs.stat(file)).isFile() ? file : null;
 	} catch {
 		return null;
@@ -332,11 +378,16 @@ export async function handleSfx(body: unknown, deps: SfxDeps): Promise<{ status:
 	try {
 		if (input.kind === "search" || input.kind === "find") {
 			if (typeof input.query !== "string" || !input.query.trim() || input.query.length > 200) return { status: 400, body: { error: "query is required (up to 200 characters)" } };
-			const found = await searchSfx(input.query, sources, deps, input.kind === "find" ? 1 : limit);
-			if (input.kind === "search") return { status: 200, body: found };
-			const best = found.results[0];
-			if (!best) return { status: 404, body: { error: `no sound found for "${input.query}"`, errors: found.errors } };
-			return { status: 200, body: await getSfx(best.source, best.ref, deps, best) };
+			if (input.kind === "search") return { status: 200, body: await searchSfx(input.query, sources, deps, limit) };
+			// find asks the sources in order and stops at the first match, so a local hit never goes online.
+			const errors: { source: SfxSource; error: string }[] = [];
+			for (const source of sources) {
+				const found = await searchSfx(input.query, [source], deps, 1);
+				errors.push(...found.errors);
+				const best = found.results[0];
+				if (best) return { status: 200, body: await getSfx(best.source, best.ref, deps, best) };
+			}
+			return { status: 404, body: { error: `no sound found for "${input.query}"`, errors } };
 		}
 		if (input.kind === "get") {
 			if (!isSource(input.source) || typeof input.ref !== "string") return { status: 400, body: { error: "source and ref are required" } };

@@ -55,7 +55,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 			// Preview of a sound in one of the library folders (BOPENCUT_SFX_DIRS may be outside AGENT_FILES_ROOT).
 			const file = await libraryPreviewFile(new URL(req.url).searchParams.get("ref") ?? "", { filesRoot: FILES_ROOT });
 			if (!file) return Response.json({ error: "Not found" }, { status: 404 });
-			return new Response(new Uint8Array(await fs.readFile(file)), { headers: { "Content-Type": TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store" } });
+			return new Response(new Uint8Array(await fs.readFile(file)), { headers: { "Content-Type": TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
 		}
 		if (slug[0] === "frames-request") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "frames-request.json"))); } catch { return Response.json(null); }

@@ -92,6 +92,11 @@ export function SfxLibraryView() {
 			const ext = saved.path.split(".").pop() ?? "mp3";
 			const [asset] = await processMediaAssets({ files: [new File([blob], `${saved.name}.${ext}`, { type: blob.type })] });
 			if (!asset) throw new Error("the sound could not be processed");
+			// The download may take a while: only insert into the project it was started for.
+			if (editor.project.getActive()?.metadata.id !== project.metadata.id) {
+				toast.error(`${saved.name} was not added: another project is open now`);
+				return;
+			}
 			const addMedia = new AddMediaAssetCommand({ projectId: project.metadata.id, asset });
 			const element = buildElementFromMedia({
 				mediaId: addMedia.getAssetId(),

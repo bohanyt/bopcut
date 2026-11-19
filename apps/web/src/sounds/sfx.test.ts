@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Runner } from "@/retrieval/server";
-import { clearLibraryIndex, handleSfx, libraryPreviewFile, libraryRoots, parseMyinstants, resolveLibraryRef, scoreEntry, words } from "./sfx-server";
+import { clearLibraryIndex, handleSfx, libraryPreviewFile, libraryRoots, parseMyinstants, resolveLibraryFile, resolveLibraryRef, scoreEntry, words } from "./sfx-server";
 
 const PAGE = `
 <div id="instants_container"><div class="instants result-page">
@@ -86,7 +86,7 @@ describe("library and downloads", () => {
 		await fs.writeFile(path.join(extra, "memes", "boom", "vine-boom_48k.wav"), "wav");
 		await fs.writeFile(path.join(extra, "memes", "huh-cat-meme.mp3"), "mp3");
 		await fs.writeFile(path.join(extra, "notes.txt"), "not audio");
-		env = { BOPENCUT_SFX_DIRS: extra };
+		env = { BOPENCUT_SFX_DIRS: extra, BOPENCUT_ALLOW_PRIVATE_URLS: "1" }; // fake fetch: no DNS check
 		calls = [];
 		fetched = [];
 		clearLibraryIndex();
@@ -140,9 +140,11 @@ describe("library and downloads", () => {
 		expect(fetched[0]).toBe("https://www.myinstants.com/en/search/?name=vine%20boom");
 
 		const got = (await handleSfx({ kind: "get", source: "myinstants", ref: "/media/sounds/vine-boom.mp3" }, deps)).body as { path: string; cached: boolean; name: string };
-		expect(got).toMatchObject({ path: "sfx/myinstants/vine-boom.m4a", cached: false, name: "vine boom" });
+		expect(got).toMatchObject({ cached: false, name: "vine boom" });
+		expect(got.path).toMatch(/^sfx\/myinstants\/vine-boom-[0-9a-f]{6}\.m4a$/);
 		expect(calls[1].join(" ")).toContain("volume=5.50dB");
-		expect((await fs.readdir(path.join(root, "sfx", "myinstants"))).sort()).toEqual(["vine-boom.json", "vine-boom.m4a"]);
+		const stem = path.basename(got.path, ".m4a");
+		expect((await fs.readdir(path.join(root, "sfx", "myinstants"))).sort()).toEqual([`${stem}.json`, `${stem}.m4a`]);
 
 		const again = (await handleSfx({ kind: "get", source: "myinstants", ref: "/media/sounds/vine-boom.mp3" }, deps)).body as { cached: boolean };
 		expect(again.cached).toBe(true);
@@ -158,7 +160,8 @@ describe("library and downloads", () => {
 		const search = (await handleSfx({ kind: "search", query: "bruh", sources: ["myinstants"] }, deps)).body as { results: { name: string }[] };
 		expect(search.results.map((r) => r.name)).toEqual(["Bruh & friends'", "VINE BOOM SOUND"]);
 		const found = (await handleSfx({ kind: "find", query: "bruh" }, deps)).body as { path: string; name: string; pageUrl: string };
-		expect(found).toMatchObject({ path: "sfx/myinstants/bruh-sound-effect_WstdzdM.m4a", name: "Bruh & friends'", pageUrl: "https://www.myinstants.com/en/instant/bruh-1/" });
+		expect(found).toMatchObject({ name: "Bruh & friends'", pageUrl: "https://www.myinstants.com/en/instant/bruh-1/" });
+		expect(found.path).toMatch(/^sfx\/myinstants\/bruh-sound-effect_WstdzdM-[0-9a-f]{6}\.m4a$/);
 		const later = (await handleSfx({ kind: "search", query: "friends", sources: ["library"] }, deps)).body as { results: { name: string }[] };
 		expect(later.results.map((r) => r.name)).toEqual(["Bruh & friends'"]);
 		const foreign = (await handleSfx({ kind: "get", source: "myinstants", ref: "/media/sounds/vine-boom.mp3", name: "Boom", pageUrl: "https://evil.example/" }, deps)).body as { pageUrl: string; name: string };
@@ -168,7 +171,7 @@ describe("library and downloads", () => {
 
 	test("normalization off keeps the file as downloaded", async () => {
 		const got = (await handleSfx({ kind: "get", source: "myinstants", ref: "/media/sounds/vine-boom.mp3" }, { filesRoot: root, env: { ...env, BOPENCUT_SFX_NORMALIZE: "off" }, fetchImpl, runner })).body as { path: string };
-		expect(got.path).toBe("sfx/myinstants/vine-boom.mp3");
+		expect(got.path).toMatch(/^sfx\/myinstants\/vine-boom-[0-9a-f]{6}\.mp3$/);
 		expect(calls).toHaveLength(0);
 	});
 
@@ -196,5 +199,40 @@ describe("library and downloads", () => {
 		expect((await handleSfx({ kind: "get", source: "library", ref: "lib:1:../x.mp3" }, deps)).status).toBe(502);
 		expect((await handleSfx({ kind: "other" }, deps)).status).toBe(400);
 		expect(fetched).toHaveLength(0);
+	});
+});
+
+describe("review hardening", () => {
+	test("a symlink inside a library folder cannot reach outside it", async () => {
+		const { mkdtemp, rm, symlink, writeFile } = fs;
+		const lib = await mkdtemp(path.join(os.tmpdir(), "sfx-lib-"));
+		const outside = await mkdtemp(path.join(os.tmpdir(), "sfx-out-"));
+		await writeFile(path.join(outside, "secret.mp3"), "x");
+		let linked = true;
+		try {
+			await symlink(path.join(outside, "secret.mp3"), path.join(lib, "trap.mp3"));
+		} catch {
+			linked = false; // no permission to create symlinks here
+		}
+		if (linked) {
+			const roots = [path.resolve(lib)];
+			await expect(resolveLibraryFile("lib:0:trap.mp3", roots)).rejects.toThrow();
+		}
+		await rm(lib, { recursive: true, force: true });
+		await rm(outside, { recursive: true, force: true });
+	});
+
+	test("find stops at the first source with a match, so a local hit never queries myinstants", async () => {
+		const lib = await fs.mkdtemp(path.join(os.tmpdir(), "sfx-find-"));
+		await fs.writeFile(path.join(lib, "private clip name.mp3"), "x");
+		const asked: string[] = [];
+		const fetchImpl = (async (u: string | URL | Request) => {
+			asked.push(String(u));
+			return new Response("", { status: 404 });
+		}) as typeof fetch;
+		const r = await handleSfx({ kind: "find", query: "private clip" }, { filesRoot: lib, env: { BOPENCUT_SFX_DIRS: lib, BOPENCUT_ALLOW_PRIVATE_URLS: "1" }, fetchImpl });
+		expect(r.status).toBe(200);
+		expect(asked).toEqual([]);
+		await fs.rm(lib, { recursive: true, force: true });
 	});
 });

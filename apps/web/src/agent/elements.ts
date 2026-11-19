@@ -163,7 +163,7 @@ export function buildAgentElement({ e, media, trackId, sceneId, canvas, keyframe
 	if (!media) throw new Error("Asset missing for " + e.name);
 	const trimStart = e.trimStart ?? 0;
 	// Without a duration, audio and video play to the end of the media (e.g. a sound effect found by name).
-	const duration = typeof e.duration === "number" && e.duration > 0 ? e.duration : Math.max(0.1, (media.duration ?? 5) - trimStart);
+	const duration = typeof e.duration === "number" && e.duration > 0 ? e.duration : media.duration ? Math.max(0.01, media.duration - trimStart) : 5;
 	const el: any = { ...buildElementFromMedia({ mediaId: media.id, mediaType: media.type === "model" ? "image" : media.type, name: e.name, duration: secs(duration), startTime: secs(e.start) }), id: generateUUID(), agentId: e.agent_id, groupId: e.group };
 	if (e.model3d) Object.assign(el.params, e.model3d.params ?? {});
 	if (media.type !== "image" && media.duration) {
