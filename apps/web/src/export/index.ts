@@ -18,6 +18,8 @@ export interface ExportOptions {
 	quality: ExportQuality;
 	fps?: FrameRate;
 	includeAudio?: boolean;
+	/** Export this scene (for example the root timeline) instead of the open one. */
+	sceneId?: string;
 }
 
 export interface ExportResult {

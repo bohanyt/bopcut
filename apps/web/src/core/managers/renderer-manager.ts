@@ -10,6 +10,7 @@ import { frameRateToFloat } from "@/fps/utils";
 import { downloadBlob } from "@/utils/browser";
 import { calculateTotalDuration } from "@/timeline";
 import { lastFrameMediaTime } from "@/wasm";
+import { holdMediaUrls } from "@/media/url-release";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
@@ -18,6 +19,7 @@ type SnapshotResult =
 export class RendererManager {
 	private renderTree: RootNode | null = null;
 	private _isDegraded = false;
+	private exportRunning = false;
 	private listeners = new Set<() => void>();
 
 	constructor(private editor: EditorCore) {}
@@ -159,7 +161,36 @@ export class RendererManager {
 		}
 	}
 
-	async exportProject({
+	/** Whether an export (the user's or an agent's) is running: one runs at a time. */
+	isExportRunning(): boolean {
+		return this.exportRunning;
+	}
+
+	/**
+	 * Exports the timeline as it is when this is called (read before the first wait, so later edits are
+	 * not mixed in). Refused while another export runs.
+	 */
+	async exportProject(job: {
+		options: ExportOptions;
+		onProgress?: ({ progress }: { progress: number }) => void;
+		onCancel?: () => boolean;
+	}): Promise<ExportResult> {
+		if (this.exportRunning) {
+			return { success: false, error: "Another export is running; try again when it finishes" };
+		}
+		this.exportRunning = true;
+		const releaseMedia = holdMediaUrls();
+		this.notify();
+		try {
+			return await this.runExport(job);
+		} finally {
+			releaseMedia();
+			this.exportRunning = false;
+			this.notify();
+		}
+	}
+
+	private async runExport({
 		options,
 		onProgress,
 		onCancel,
@@ -168,10 +199,16 @@ export class RendererManager {
 		onProgress?: ({ progress }: { progress: number }) => void;
 		onCancel?: () => boolean;
 	}): Promise<ExportResult> {
-		const { format, quality, fps, includeAudio } = options;
+		const { format, quality, fps, includeAudio, sceneId } = options;
 
 		try {
-			const tracks = this.editor.scenes.getActiveScene().tracks;
+			const scenes = this.editor.scenes.getScenes();
+			const active = this.editor.scenes.getActiveScene();
+			const exported = sceneId ? scenes.find((scene) => scene.id === sceneId) : active;
+			if (!exported) {
+				return { success: false, error: "Scene not found" };
+			}
+			const tracks = exported.tracks;
 			const mediaAssets = this.editor.media.getAssets();
 			const activeProject = this.editor.project.getActive();
 
@@ -179,7 +216,7 @@ export class RendererManager {
 				return { success: false, error: "No active project" };
 			}
 
-			const duration = this.editor.timeline.getTotalDuration();
+			const duration = exported.id === active.id ? this.editor.timeline.getTotalDuration() : calculateTotalDuration({ tracks });
 			if (duration === 0) {
 				return { success: false, error: "Project is empty" };
 			}
@@ -194,8 +231,13 @@ export class RendererManager {
 					tracks,
 					mediaAssets,
 					duration,
-					scenes: this.editor.scenes.getScenes(),
+					scenes,
 				});
+			}
+
+			// Checked again before encoding: preparing the sound can take a while.
+			if (onCancel?.()) {
+				return { success: false, cancelled: true };
 			}
 
 			const scene = buildScene({
@@ -204,7 +246,7 @@ export class RendererManager {
 				duration,
 				canvasSize,
 				background: activeProject.settings.background,
-				scenes: this.editor.scenes.getScenes(),
+				scenes,
 			});
 
 			const exporter = new SceneExporter({
@@ -238,7 +280,8 @@ export class RendererManager {
 				const buffer = await exporter.export({ rootNode: scene });
 				clearInterval(cancelInterval);
 
-				if (cancelled) {
+				// Also a cancel that came after the last check (a short export ends within 100 ms).
+				if (cancelled || onCancel?.()) {
 					return { success: false, cancelled: true };
 				}
 

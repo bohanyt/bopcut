@@ -1,3 +1,4 @@
+import { revokeMediaUrl } from "@/media/url-release";
 import {
 	Command,
 	createElementSelectionResult,
@@ -56,10 +57,10 @@ export class RemoveMediaAssetCommand extends Command {
 		}
 
 		if (this.removedAsset.url) {
-			URL.revokeObjectURL(this.removedAsset.url);
+			revokeMediaUrl(this.removedAsset.url);
 		}
 		if (this.removedAsset.thumbnailUrl) {
-			URL.revokeObjectURL(this.removedAsset.thumbnailUrl);
+			revokeMediaUrl(this.removedAsset.thumbnailUrl);
 		}
 
 		videoCache.clearVideo({ mediaId: this.assetId });

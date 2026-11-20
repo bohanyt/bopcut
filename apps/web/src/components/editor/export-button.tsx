@@ -101,6 +101,10 @@ function ExportPopover({
 	const activeProject = useEditor((e) => e.project.getActive());
 	const exportState = useEditor((e) => e.project.getExportState());
 	const { isExporting, progress, result: exportResult } = exportState;
+	// Another export (an agent's) is running: one runs at a time.
+	const otherExportRunning = useEditor(
+		(e) => e.renderer.isExportRunning() && !e.project.getExportState().isExporting,
+	);
 	const [format, setFormat] = useState<ExportFormat>(
 		DEFAULT_EXPORT_OPTIONS.format,
 	);
@@ -252,8 +256,17 @@ function ExportPopover({
 									</Section>
 								</div>
 
-								<div className="p-3 pt-0">
-									<Button onClick={handleExport} className="w-full gap-2">
+								<div className="flex flex-col gap-2 p-3 pt-0">
+									{otherExportRunning && (
+										<p className="text-muted-foreground text-xs">
+											A video for the agent is exporting. Export again when it is done.
+										</p>
+									)}
+									<Button
+										onClick={handleExport}
+										className="w-full gap-2"
+										disabled={otherExportRunning}
+									>
 										<Download className="size-4" />
 										Export
 									</Button>

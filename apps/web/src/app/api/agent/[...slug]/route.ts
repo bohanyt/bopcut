@@ -16,6 +16,7 @@ import { parseSelectionPayload } from "@/agent/selection-payload";
 import { consumeAppliedDraft } from "@/agent/draft-store";
 import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
+import { handleExportFile, handleExportResult } from "@/agent/export-server";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -56,6 +57,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 		if (slug[0] === "frames-request") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "frames-request.json"))); } catch { return Response.json(null); }
 		}
+		if (slug[0] === "export-request") {
+			try { return json(await fs.readFile(path.join(WORKSPACE, "export-request.json"))); } catch { return Response.json(null); }
+		}
 		if (slug[0] === "changes-request") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "changes-request.json"))); } catch { return Response.json(null); }
 		}
@@ -86,6 +90,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		await writeAtomic(path.join(WORKSPACE, "frames-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
 	}
+	// Agent exports (see AGENT.md): progress and errors, and the video with its final answer.
+	if (slug[0] === "export-result") return handleExportResult(req, WORKSPACE);
+	if (slug[0] === "export-file") return handleExportFile(req, WORKSPACE);
 	if (slug[0] === "changes-result") {
 		// What changed since a snapshot, or for a draft; see AGENT.md.
 		const text = await req.text();

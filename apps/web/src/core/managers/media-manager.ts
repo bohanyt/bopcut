@@ -1,3 +1,4 @@
+import { revokeMediaUrl } from "@/media/url-release";
 import type { EditorCore } from "@/core";
 import { toast } from "sonner";
 import type { MediaAsset } from "@/media/types";
@@ -319,10 +320,10 @@ export class MediaManager {
 
 		this.assets.forEach((asset) => {
 			if (asset.url) {
-				URL.revokeObjectURL(asset.url);
+				revokeMediaUrl(asset.url);
 			}
 			if (asset.thumbnailUrl) {
-				URL.revokeObjectURL(asset.thumbnailUrl);
+				revokeMediaUrl(asset.thumbnailUrl);
 			}
 		});
 
@@ -353,10 +354,10 @@ export class MediaManager {
 
 		this.assets.forEach((asset) => {
 			if (asset.url) {
-				URL.revokeObjectURL(asset.url);
+				revokeMediaUrl(asset.url);
 			}
 			if (asset.thumbnailUrl) {
-				URL.revokeObjectURL(asset.thumbnailUrl);
+				revokeMediaUrl(asset.thumbnailUrl);
 			}
 		});
 
