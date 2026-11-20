@@ -9,6 +9,7 @@ import { generateUUID } from "@/utils/id";
 import type { SfxFile, SfxSource } from "@/sounds/sfx-types";
 import type { MusicFile, MusicSource } from "@/sounds/music-types";
 import { buildAgentCaption, type AgentCaption } from "./captions";
+import { parseSourceWords, type SourceWord } from "@/media/words";
 
 /**
  * A file under AGENT_FILES_ROOT (`path`), a section of an online video (`url` + `start`/`end` or `duration`,
@@ -21,6 +22,8 @@ export type AgentAsset = {
 	/** A song by name (best match in the music folders, then online), or only `musicSources`. */
 	music?: string; musicSources?: MusicSource[];
 	type: "image" | "video" | "audio" | "model"; name: string;
+	/** Spoken words of the file (source seconds), kept with the media for cuts that never chop a word. */
+	words?: SourceWord[];
 };
 /** Time in seconds relative to the element; `interpolation` of the segment that starts at this key. */
 export type AgentKeyframe = { path: string; time: number; value: number | string; interpolation?: "linear" | "hold" | "bezier" };
@@ -31,6 +34,8 @@ export type AgentElement = {
 	asset?: string | AgentAsset;
 	/** An existing media id of the project, used instead of `asset` (nothing is imported). */
 	mediaId?: string;
+	/** `"words"`: a start or end inside a spoken word of the media moves out of it (see word-cuts). */
+	cut?: "words";
 	model3d?: { params?: Record<string, number> }; effect?: string; effectParams?: Record<string, number>;
 	graphic?: { definitionId: string; params?: ParamValues }; icon?: { name: string; color?: string; svg?: string }; text?: string; group?: string;
 	params?: ParamValues; size?: [number, number];
@@ -52,7 +57,7 @@ export type AgentCompoundContent = {
 	audio?: AgentElement[];
 	elements?: (AgentElement & { track: AgentTrackRef })[];
 };
-export type LoadedMedia = { id: string; type: AgentAsset["type"]; width?: number; height?: number; duration?: number; retrieved?: RetrievedAsset; sfx?: SfxFile; music?: MusicFile };
+export type LoadedMedia = { id: string; type: AgentAsset["type"]; width?: number; height?: number; duration?: number; words?: SourceWord[]; retrieved?: RetrievedAsset; sfx?: SfxFile; music?: MusicFile };
 /** What the retrieve endpoint fetched for a `url` asset: its file under AGENT_FILES_ROOT and its source. */
 export type RetrievedAsset = { path: string; name: string; source: { link: string; title?: string; uploader?: string; start: number; end: number } };
 
@@ -110,6 +115,8 @@ export const secs = (seconds: number) => mediaTimeFromSeconds({ seconds });
  */
 async function readAgentAsset(asset: AgentAsset) {
 	if (!asset.path && !asset.url && !asset.sfx?.trim() && !asset.music?.trim()) throw new Error(`Asset "${asset.name}" needs a path, a url, an sfx name or a music name`);
+	const words = asset.words === undefined ? undefined : parseSourceWords(asset.words);
+	if (words === null) throw new Error(`Asset "${asset.name}": words must be a list of {text, start, end} in seconds`);
 	const retrieved = asset.path || !asset.url ? undefined : await retrieveAgentAsset(asset);
 	const sfx = asset.path || asset.url || !asset.sfx?.trim() ? undefined : await findAgentSfx(asset);
 	const music = asset.path || asset.url || sfx || !asset.music?.trim() ? undefined : await findAgentMusic(asset);
@@ -120,11 +127,12 @@ async function readAgentAsset(asset: AgentAsset) {
 	const fileName = filePath.split("/").pop() ?? asset.name;
 	const [processed] = await processMediaAssets({ files: [new File([blob], fileName, { type: blob.type })] });
 	if (!processed) throw new Error("Failed to process asset: " + filePath);
-	return { processed, filePath, name: asset.name || retrieved?.name || sfx?.name || music?.name || fileName, retrieved, sfx, music };
+	return { processed, filePath, name: asset.name || retrieved?.name || sfx?.name || music?.name || fileName, retrieved, sfx, music, words };
 }
 
 const loadedMedia = (asset: AgentAsset, id: string, read: Awaited<ReturnType<typeof readAgentAsset>>): LoadedMedia => ({
 	id, type: asset.type === "model" ? "model" : read.processed.type as AgentAsset["type"], width: read.processed.width, height: read.processed.height, duration: read.processed.duration,
+	...(read.words ? { words: read.words } : {}),
 	...(read.retrieved ? { retrieved: read.retrieved } : {}),
 	...(read.sfx ? { sfx: read.sfx } : {}),
 	...(read.music ? { music: read.music } : {}),
@@ -134,7 +142,7 @@ const loadedMedia = (asset: AgentAsset, id: string, read: Awaited<ReturnType<typ
 export async function loadAgentAsset({ projectId, asset }: { projectId: string; asset: AgentAsset }): Promise<LoadedMedia> {
 	const read = await readAgentAsset(asset);
 	// Agent imports never raise the project frame rate: the bundle (or the open project) decides it.
-	const saved = await EditorCore.getInstance().media.addMediaAsset({ projectId, asset: { ...read.processed, name: read.name }, ratchetFps: false });
+	const saved = await EditorCore.getInstance().media.addMediaAsset({ projectId, asset: { ...read.processed, name: read.name, ...(read.words ? { words: read.words } : {}) }, ratchetFps: false });
 	if (!saved) throw new Error("Failed to save asset: " + read.filePath);
 	return loadedMedia(asset, saved.id, read);
 }
@@ -146,7 +154,7 @@ export async function loadAgentAsset({ projectId, asset }: { projectId: string; 
 export async function stageAgentAsset({ projectId, asset, onId }: { projectId: string; asset: AgentAsset; onId: (id: string) => void }): Promise<LoadedMedia> {
 	const read = await readAgentAsset(asset);
 	try {
-		const staged = await EditorCore.getInstance().media.stageMediaAsset({ projectId, asset: { ...read.processed, name: read.name }, onId });
+		const staged = await EditorCore.getInstance().media.stageMediaAsset({ projectId, asset: { ...read.processed, name: read.name, ...(read.words ? { words: read.words } : {}) }, onId });
 		return loadedMedia(asset, staged.id, read);
 	} catch (error) {
 		throw new Error(`Failed to save asset: ${read.filePath}: ${error instanceof Error ? error.message : String(error)}`);
@@ -157,7 +165,7 @@ export async function stageAgentAsset({ projectId, asset, onId }: { projectId: s
 export function existingAgentMedia(e: AgentElement): LoadedMedia {
 	const asset = EditorCore.getInstance().media.getAssets().find((m) => m.id === e.mediaId);
 	if (!asset) throw new Error(`Media not in project: ${e.mediaId}`);
-	return { id: asset.id, type: e.model3d ? "model" : asset.type, width: asset.width, height: asset.height, duration: asset.duration };
+	return { id: asset.id, type: e.model3d ? "model" : asset.type, width: asset.width, height: asset.height, duration: asset.duration, ...(asset.words ? { words: asset.words } : {}) };
 }
 
 /** Track type an element goes on when the draft or bundle does not say. */

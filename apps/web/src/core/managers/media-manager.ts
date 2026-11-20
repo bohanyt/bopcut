@@ -364,6 +364,19 @@ export class MediaManager {
 		this.notify();
 	}
 
+	/** Sets the spoken words of a project media file, in the editor and in storage; the error, or null. */
+	async setMediaWords({ projectId, id, words }: { projectId: string; id: string; words: import("@/media/words").SourceWord[] }): Promise<string | null> {
+		if (!this.assets.some((asset) => asset.id === id)) return `Media not in project: ${id}`;
+		this.assets = this.assets.map((asset) => (asset.id === id ? { ...asset, words } : asset));
+		this.notify();
+		try {
+			await storageService.setMediaWords({ projectId, id, words });
+			return null;
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+	}
+
 	getAssets(): MediaAsset[] {
 		return this.assets;
 	}

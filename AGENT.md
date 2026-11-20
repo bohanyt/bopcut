@@ -210,6 +210,15 @@ Write `frames-request.json`: `{rev:"capture-1", times:[0,1,2], width:960}`. `rev
 - At most 64 frames per request (times, doubled with `compare`). A time a state cannot show (outside its timeline, or an empty timeline) is listed in `errors:[{time, variant?, error}]`; the other frames are still rendered.
 - The editor remembers the states of its last 64 snapshots and the last 16 drafts of each project in this session (without decoded audio). An unknown or malformed state refuses the request: `frames-result.json` gets `{rev, files:[], error}`. Each rev is answered once, also if an older rev is written again.
 
+## Cuts that never chop a word
+
+A media file can carry its spoken words (from a transcript), in seconds of the file: `[{text, start, end}, ...]`.
+- Give them with the asset (`asset: {path, type, name, words:[...]}`) or attach them to project media with the draft op `{op:"words", mediaId, words}`. They are stored with the media; later ops of the same draft already use them. A `words` op for media that is not in the project fails the draft.
+- `cut:"words"` on an `add` element or a `set` op moves a start that falls inside a word back to the word's start, and an end inside a word on to its end, so the whole word plays. The duration is then rounded up to whole frames; the clip keeps its place on the timeline. It applies to video and audio clips whose media have words (otherwise the op fails and says why).
+- Every op result lists `cutWarnings:[{elementId, edge:"start"|"end", at, word}]` for a video or audio clip it touched whose cut still falls inside a word (`at` in source seconds). The sync snapshot lists the same `cutWarnings` on each such clip, also for cuts the user made.
+- A cut within 20 ms of a word's edge does not count (word timings are not that exact).
+- In the editor, resizing a clip whose media have words also snaps its edge to word edges (starts on the left, ends on the right).
+
 ## Changes for agents
 
 Write `changes-request.json` to learn what changed, as values:

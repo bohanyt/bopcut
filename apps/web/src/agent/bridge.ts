@@ -24,6 +24,11 @@ import { resolveCaptionPreset } from "./captions";
 
 export type { Draft, DraftOp } from "./draft";
 
+/** Spoken words of a project media file, if it has them. */
+function mediaWords(mediaId: string) {
+	return EditorCore.getInstance().media.getAssets().find((asset) => asset.id === mediaId)?.words;
+}
+
 function mediaNames() {
 	return new Map(EditorCore.getInstance().media.getAssets().map((m) => [m.id, m.name]));
 }
@@ -104,7 +109,7 @@ export function agentSnapshot() {
 	const active = editor.scenes.getActiveSceneOrNull();
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
-	const view = buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() });
+	const view = buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords });
 	const { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt } = agentReadiness();
 	return {
 		schema: "opencut-agent-sync-1", projectId: project.metadata.id, projectName: project.metadata.name,
@@ -130,7 +135,7 @@ export function agentSelection(view?: ReturnType<typeof buildSceneSnapshot>) {
 	const active = editor.scenes.getActiveSceneOrNull();
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
-	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() });
+	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords });
 	const lanes = active.id === scene.id ? snapshot.tracks : (snapshot.compounds.find((c) => c.sceneId === active.id)?.tracks ?? []);
 	const selected = editor.selection.getSelectedElements().flatMap(({ trackId, elementId }) => {
 		const lane = lanes.find((l) => l.id === trackId);
@@ -457,6 +462,10 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 			failures[i] = `invalid elements: ${walked.message}`;
 			continue;
 		}
+		if (op.op === "words" && !editor.media.getAssets().some((asset) => asset.id === op.mediaId)) {
+			failures[i] = `media not in project: ${String(op.mediaId)}`;
+			continue;
+		}
 		if (op.op === "set" && op.caption?.preset) {
 			try {
 				op.caption = resolveCaptionPreset(op.caption, await (presets ??= loadTextPresets()));
@@ -536,6 +545,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	const outcome = computeAgentDraft({
 		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true,
 		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled, base,
+		wordsOf: mediaWords,
 	});
 	// The open scene stays open unless the draft removed it (ungrouping the compound being edited): then the root opens.
 	const openAfter = outcome.scenes.some((scene) => scene.id === openScene.id) ? openScene.id : root.id;
@@ -589,6 +599,12 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		return;
 	}
 	const cleanup = await discard(new Set(publish));
+	// Words set by the draft are kept with their media (the timeline change is already committed).
+	const wordsErrors: { mediaId: string; error: string }[] = [];
+	for (const [mediaId, words] of outcome.words) {
+		const wordsError = await editor.media.setMediaWords({ projectId, id: mediaId, words });
+		if (wordsError) wordsErrors.push({ mediaId, error: wordsError });
+	}
 
 	// Report where `url` and `sfx` assets were saved and their sources (for credits and reuse as `path`).
 	for (const [i, op] of ops.entries()) {
@@ -627,5 +643,5 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	if (!saved) toast.error(`Agent draft applied but not saved: ${draft.label ?? draft.rev}`, { description: saveError ?? undefined });
 	else if (failed) toast.warning(`Agent draft partly applied: ${draft.label ?? draft.rev}`, { description });
 	else toast(`Agent draft applied: ${draft.label ?? draft.rev}`, { description });
-	await report({ sceneId: root.id, applied: true, saved, savedAt: ownSession.savedAt?.toISOString() ?? null, ...(saved ? {} : { saveError }), ...(cleanup ? { cleanup } : {}), results: outcome.results });
+	await report({ sceneId: root.id, applied: true, saved, savedAt: ownSession.savedAt?.toISOString() ?? null, ...(saved ? {} : { saveError }), ...(cleanup ? { cleanup } : {}), ...(wordsErrors.length ? { wordsErrors } : {}), results: outcome.results });
 }

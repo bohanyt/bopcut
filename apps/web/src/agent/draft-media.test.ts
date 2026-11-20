@@ -622,4 +622,23 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(answered[0].changes.map((c: any) => [c.agentId, c.field, c.from, c.to])).toEqual([["old", "trimStart", 0, 0.5]]);
 		expect(typeof answered[0].syncedAt).toBe("string");
 	});
+
+	test("a words op keeps the words with the media once the draft commits; unknown media fail the draft", async () => {
+		const editor = setup();
+		const backend = fakeBackend();
+		const stored: { id: string; words: unknown }[] = [];
+		(storageService as any).setMediaWords = async ({ id, words }: { id: string; words: unknown }) => { stored.push({ id, words }); };
+		restore = () => {
+			backend.restore();
+			delete (storageService as any).setMediaWords;
+		};
+		const words = [{ text: "hi", start: 0.2, end: 0.5 }];
+		await applyDraft(draft([{ op: "words", mediaId: "m-old", words }]));
+		expect(backend.state.results[0]).toMatchObject({ applied: true, results: [{ ok: true, mediaId: "m-old", words: 1 }] });
+		expect(stored).toEqual([{ id: "m-old", words }]);
+		expect(editor.media.getAssets().find((a) => a.id === "m-old")?.words).toEqual(words);
+		await applyDraft(draft([{ op: "words", mediaId: "nope", words }]));
+		expect(backend.state.results[1]).toMatchObject({ applied: false });
+		expect(stored.length).toBe(1);
+	});
 });

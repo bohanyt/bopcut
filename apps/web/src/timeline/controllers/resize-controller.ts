@@ -33,6 +33,7 @@ import {
 } from "@/timeline";
 import type { ElementRef } from "@/timeline/types";
 import type { FrameRate } from "opencut-wasm";
+import type { SourceWord } from "@/media/words";
 
 // --- Session ---
 
@@ -61,6 +62,8 @@ export interface ResizeConfig {
 	previewElements: (updates: GroupResizeUpdate[]) => void;
 	commitElements: (updates: GroupResizeUpdate[]) => void;
 	onSnapPointChange?: (snapPoint: SnapPoint | null) => void;
+	/** Spoken words of the media a clip plays (source seconds), so its edges also snap to word edges. */
+	getWords?: (ref: ElementRef) => SourceWord[] | undefined;
 }
 
 export interface ResizeConfigRef {
@@ -305,7 +308,7 @@ export class ResizeController {
 					: addMediaTime({ a: member.startTime, b: member.duration });
 			const snapResult = resolveTimelineSnap({
 				targetTime: addMediaTime({ a: baseEdgeTime, b: rawDeltaTime }),
-				snapPoints,
+				snapPoints: [...snapPoints, ...this.wordSnapPoints(member, session.side)],
 				maxSnapDistance,
 			});
 			if (
@@ -320,6 +323,22 @@ export class ResizeController {
 
 		this.config.onSnapPointChange?.(closestSnapPoint);
 		return deltaTime;
+	}
+
+	/**
+	 * Word edges of the member's media on the timeline: starts for its left edge, ends for its right edge
+	 * (the clip's own content does not move while one edge is resized).
+	 */
+	private wordSnapPoints(member: GroupResizeMember, side: ResizeSide): SnapPoint[] {
+		const words = this.config.getWords?.(member);
+		if (!words?.length) return [];
+		const offset = member.startTime - member.trimStart;
+		return words.map((word) => ({
+			time: Math.round(offset + (side === "left" ? word.start : word.end) * TICKS_PER_SECOND) as MediaTime,
+			type: "word" as const,
+			elementId: member.elementId,
+			trackId: member.trackId,
+		}));
 	}
 
 	private handleMouseMove({ clientX }: MouseEvent): void {
