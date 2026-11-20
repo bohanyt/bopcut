@@ -24,7 +24,7 @@ export function playedSpan(clip: Clip): { from: number; to: number } {
 }
 
 /** Where the clip's source ends, in source seconds (its source duration, else what its trims leave). */
-function sourceEnd(clip: Clip): number {
+export function sourceEnd(clip: Clip): number {
 	return clip.sourceDuration !== undefined ? sec(clip.sourceDuration) : playedSpan(clip).to + sec(clip.trimEnd);
 }
 
@@ -68,14 +68,16 @@ export function cutWarnings(clip: Clip, words: SourceWord[]): CutWarning[] {
  * the word still plays to within the tolerance, else left exact. The start stays where it is on the
  * timeline. Null when no cut is inside a word.
  */
-export function snapCutsToWords(clip: Clip, words: SourceWord[], fps: FrameRate): Pick<Clip, "trimStart" | "duration" | "trimEnd"> | null {
+export function snapCutsToWords(clip: Clip, words: SourceWord[], fps: FrameRate, { limit = sourceEnd(clip) }: { limit?: number } = {}): Pick<Clip, "trimStart" | "duration" | "trimEnd"> | null {
 	const { from, to } = playedSpan(clip);
-	const start = wordInside(words, from);
-	const end = wordInside(words, to);
-	if (!start && !end) return null;
-	const limit = sourceEnd(clip);
-	const newFrom = Math.max(0, start ? start.start : from);
-	const target = Math.min(limit, end ? end.end : to);
+	if (!wordInside(words, from) && !wordInside(words, to)) return null;
+	// Overlapping words: moving out of one can land inside another, so the cut moves until it is out of all.
+	let newFrom = from;
+	for (let i = 0, word = wordInside(words, newFrom); word && i < OVERLAP_LOOKBACK * 2; i++, word = wordInside(words, newFrom)) newFrom = word.start;
+	newFrom = Math.max(0, newFrom);
+	let target = to;
+	for (let i = 0, word = wordInside(words, target); word && i < OVERLAP_LOOKBACK * 2; i++, word = wordInside(words, target)) target = word.end;
+	target = Math.min(limit, target);
 	const frame = fps.denominator / fps.numerator;
 	// Timeline length of the source span, then whole frames of it.
 	const exact = getClipTimeAtSourceTime({ sourceTime: target - newFrom, retime: clip.retime });
@@ -86,8 +88,10 @@ export function snapCutsToWords(clip: Clip, words: SourceWord[], fps: FrameRate)
 	const fitsUp = upEnd <= limit + 1e-9 && !wordInside(words, upEnd);
 	const keepsWord = sourceAt(down) >= target - WORD_TOLERANCE;
 	const seconds = fitsUp ? up : keepsWord ? down : exact;
+	// At least one frame, unless even that runs past the end of the source.
+	const atLeastFrame = sourceAt(frame) <= limit + 1e-9 ? Math.max(frame, seconds) : seconds;
 	const trimStart = Math.round(newFrom * TICKS_PER_SECOND) as MediaTime;
-	const duration = Math.round(Math.max(frame, seconds) * TICKS_PER_SECOND) as MediaTime;
+	const duration = Math.round(atLeastFrame * TICKS_PER_SECOND) as MediaTime;
 	const played = Math.round(getSourceTimeAtClipTime({ clipTime: sec(duration), retime: clip.retime }) * TICKS_PER_SECOND);
 	const trimEnd = Math.max(0, Math.round(limit * TICKS_PER_SECOND) - trimStart - played) as MediaTime;
 	return { trimStart, duration, trimEnd };
@@ -95,22 +99,29 @@ export function snapCutsToWords(clip: Clip, words: SourceWord[], fps: FrameRate)
 
 /**
  * Where word edges of a clip's media fall on the timeline, for snapping one of its edges while it is
- * resized: word starts for the left edge, word ends for the right edge, rounded outwards to whole frames
- * (a frame-rounded edge never lands inside the word). Only words within `window` seconds of the edge.
+ * resized: word starts for the left edge, word ends for the right edge. A resize moves an edge by whole
+ * frames from where it is, so each mark is that edge plus whole frames, rounded outwards from the word
+ * (the cut never lands inside it), and a mark that would land inside another word is left out. Only
+ * words within `window` seconds of the edge.
  */
 export function wordEdgeTimes({ clip, startTime, words, side, fps, window = 60 }: {
 	clip: Clip; startTime: MediaTime; words: SourceWord[]; side: "left" | "right"; fps: FrameRate; window?: number;
 }): MediaTime[] {
 	const frameTicks = (TICKS_PER_SECOND * fps.denominator) / fps.numerator;
 	const { from, to } = playedSpan(clip);
-	const edge = side === "left" ? from : to;
+	const edgeTicks = side === "left" ? startTime : startTime + clip.duration;
+	const sourceAtTicks = (ticks: number) => from + getSourceTimeAtClipTime({ clipTime: (ticks - startTime) / TICKS_PER_SECOND, retime: clip.retime });
+	const edgeSource = side === "left" ? from : to;
 	const times: MediaTime[] = [];
 	for (const word of words) {
 		const at = side === "left" ? word.start : word.end;
-		if (Math.abs(at - edge) > window * Math.max(1, clip.retime?.rate ?? 1)) continue;
+		if (Math.abs(at - edgeSource) > window * Math.max(1, clip.retime?.rate ?? 1)) continue;
 		const ticks = startTime + getClipTimeAtSourceTime({ sourceTime: at - from, retime: clip.retime }) * TICKS_PER_SECOND;
-		const frames = side === "left" ? Math.floor(ticks / frameTicks + 1e-9) : Math.ceil(ticks / frameTicks - 1e-9);
-		times.push(Math.round(frames * frameTicks) as MediaTime);
+		const steps = (ticks - edgeTicks) / frameTicks;
+		const frames = side === "left" ? Math.floor(steps + 1e-9) : Math.ceil(steps - 1e-9);
+		const mark = Math.round(edgeTicks + frames * frameTicks);
+		if (wordInside(words, sourceAtTicks(mark))) continue;
+		times.push(mark as MediaTime);
 	}
 	return times;
 }

@@ -200,3 +200,31 @@ describe("review fixes", () => {
 		expect(replaced.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("top-level") });
 	});
 });
+
+describe("review round 2", () => {
+	test("a start moved out of one word that lands inside an overlapping word moves on until it is out of all", () => {
+		const overlapping = [{ text: "a", start: 0.8, end: 1.3 }, { text: "b", start: 1.0, end: 1.6 }];
+		const patch = snapCutsToWords(clip(1.2, 0.6), overlapping, fps)!;
+		expect(sec(patch.trimStart)).toBe(0.8);
+	});
+
+	test("shortening a legacy clip (no sourceDuration) does not shorten what its file can play", () => {
+		const legacy = { ...clip(0, 2), sourceDuration: undefined, trimEnd: T(0) } as unknown as VideoElement;
+		const out = run(scenesWith([legacy]), [{ op: "set", match: { agentId: "clip" }, duration: 1.2, cut: "words" }], () => [{ text: "w", start: 0.5, end: 1.5 }]);
+		expect(out.results[0]).toMatchObject({ ok: true });
+		const after = main(out.scenes);
+		expect((after.trimStart + after.duration) / TICKS_PER_SECOND).toBeGreaterThanOrEqual(1.5 - 0.02);
+	});
+
+	test("resize marks are the edge plus whole frames (off the frame grid too) and never inside a word", () => {
+		const film = { numerator: 24, denominator: 1 };
+		const offGrid = { ...clip(0, 3), startTime: T(0.01) } as unknown as VideoElement;
+		const frameTicks = TICKS_PER_SECOND / 24;
+		const close = [{ text: "w", start: 1, end: 2.0205 }, { text: "next", start: 2.03, end: 2.5 }];
+		for (const mark of wordEdgeTimes({ clip: offGrid, startTime: offGrid.startTime, words: close, side: "right", fps: film })) {
+			const steps = (mark - (offGrid.startTime + offGrid.duration)) / frameTicks;
+			expect(Math.abs(steps - Math.round(steps))).toBeLessThan(1e-6);
+			expect(wordInside(close, (mark - offGrid.startTime) / TICKS_PER_SECOND)).toBeNull();
+		}
+	});
+});

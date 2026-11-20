@@ -17,7 +17,7 @@ import { type AgentMatch, type ElementHit, addressOf, getScenePaths, orderedTrac
 import { updateAgentCaption, type AgentCaption } from "./captions";
 import { reconcileCaptionEdit } from "@/text/caption";
 import { parseSourceWords, type SourceWord } from "@/media/words";
-import { cutWarnings, snapCutsToWords } from "@/timeline/word-cuts";
+import { cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
@@ -88,6 +88,30 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		if (!words) throw new Error('cut: "words" needs the media\'s words (asset.words or a words op)');
 		return words;
 	};
+	/**
+	 * Moves the cuts of an element just placed out of spoken words; fails if its end would then run into
+	 * the next clip on its track. Returns the element as it is now.
+	 */
+	const snapPlaced = (sceneId: string, elementId: string, words: SourceWord[]) =>
+		editTracks(sceneId, (tracks) => {
+			for (const track of orderedTracks(tracks) as any[]) {
+				const index = track.elements.findIndex((e: TimelineElement) => e.id === elementId);
+				if (index < 0) continue;
+				const el = track.elements[index];
+				const snapped = snapCutsToWords(el, words, fps);
+				if (!snapped) return el;
+				const next = { ...el, ...snapped };
+				assertRoomForEnd(track.elements, index, el.startTime + el.duration, next.startTime + next.duration);
+				track.elements[index] = next;
+				return next;
+			}
+			throw new Error(`element not found: ${elementId}`);
+		});
+	/** A clip snapped longer must not run into the next clip on its track (ripple only closes gaps). */
+	const assertRoomForEnd = (elements: TimelineElement[], index: number, requestedEnd: number, end: number) => {
+		const blocked = elements.find((other, j) => j !== index && other.startTime >= requestedEnd && other.startTime < end);
+		if (blocked) throw new Error(`snapping to the word's end would overlap ${blocked.name || blocked.id}; make room for the whole word first`);
+	};
 	/** `cut` only on a top-level add or set (inside a compound it would not be applied). */
 	const refuseNestedCut = (elements: unknown[]) => {
 		for (const e of elements as AgentElement[]) {
@@ -148,17 +172,16 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		const cutWords = checkCut(element.cut);
 		const content = element.compound;
 		if (content) refuseNestedCut([...(content.main ?? []), ...(content.overlay ?? []).flatMap((t) => t.elements ?? []), ...(content.audio ?? []), ...(content.elements ?? [])]);
-		let placing = element;
+		let words: SourceWord[] | undefined;
 		if (cutWords) {
 			const loaded = mediaFor(element);
 			if (!loaded || (loaded.type !== "video" && loaded.type !== "audio")) throw new Error('cut: "words" is for video and audio clips');
-			const words = needWords(draftWords.get(loaded.id) ?? loaded.words ?? wordsOf?.(loaded.id));
-			const clip = { trimStart: secs(element.trimStart ?? 0), duration: secs(element.duration), trimEnd: 0 as MediaTime, ...(loaded.duration !== undefined ? { sourceDuration: secs(loaded.duration) } : {}) };
-			const patch = snapCutsToWords(clip, words, fps);
-			if (patch) placing = { ...element, trimStart: patch.trimStart / TICKS_PER_SECOND, duration: patch.duration / TICKS_PER_SECOND };
+			words = needWords(draftWords.get(loaded.id) ?? loaded.words ?? wordsOf?.(loaded.id));
 		}
 		const ctx: BuildContext = { canvas, keyframes: [], mediaFor, existing: list, created: [] };
-		const placed = editTracks(sceneId, (tracks) => placeAgentElement({ tracks, sceneId, e: placing, ref: track, ctx }));
+		// Placed as usual first (defaults, track, place), then its cuts move out of words.
+		const placed = editTracks(sceneId, (tracks) => placeAgentElement({ tracks, sceneId, e: element, ref: track, ctx }));
+		if (words) placed.element = snapPlaced(sceneId, placed.element.id, words);
 		placedElement(sceneId, track.name, placed, ctx, result);
 	};
 	/** Keyframes, nested scenes, selection, and result addresses of an element just placed. */
@@ -224,15 +247,12 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						}
 					}
 					if (setWords) {
-						const snapped = snapCutsToWords(next, setWords, fps);
+						// The source ends where it did before this op (a shorter clip does not shorten its file).
+						const snapped = snapCutsToWords(next, setWords, fps, { limit: sourceEnd(el) });
 						if (snapped) {
 							const requestedEnd = next.startTime + next.duration;
 							next = { ...next, ...snapped };
-							const end = next.startTime + next.duration;
-							// A later clip on the track does not move for a longer clip (ripple only closes gaps): the
-							// snapped clip must not run into it.
-							const blocked = track.elements.find((other: TimelineElement, j: number) => j !== hit.index && other.startTime >= requestedEnd && other.startTime < end);
-							if (blocked) throw new Error(`snapping to the word's end would overlap ${blocked.name || blocked.id}; make room for the whole word first`);
+							assertRoomForEnd(track.elements, hit.index, requestedEnd, next.startTime + next.duration);
 						}
 					}
 					track.elements[hit.index] = el.type === "text" && next.type === "text"

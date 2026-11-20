@@ -470,8 +470,17 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	// `words` ops are stored before the timeline changes (then a draft never reports words it could not
 	// store); a draft that does not apply puts the previous words back.
 	const previousWords = new Map<string, SourceWord[] | undefined>();
+	/** Puts back the words of every media whose words this draft stored; what could not be put back. */
 	const restoreWords = async () => {
-		for (const [id, words] of previousWords) await storageService.setMediaWords({ projectId, id, words }).catch((error) => console.error(`Words of ${id} not restored:`, error));
+		const failed: { id: string; error: string }[] = [];
+		for (const [id, words] of previousWords) {
+			try {
+				await storageService.setMediaWords({ projectId, id, words });
+			} catch (error) {
+				failed.push({ id: `words:${id}`, error: errorText(error) });
+			}
+		}
+		return failed;
 	};
 	for (const [i, op] of ops.entries()) {
 		const errors: string[] = [];
@@ -486,9 +495,11 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 			if (!target) failures[i] = `media not in project: ${String(op.mediaId)}`;
 			else if (!words) failures[i] = "words must be a list of {text, start, end} in seconds";
 			else {
-				if (!previousWords.has(target.id)) previousWords.set(target.id, target.words);
+				const before = previousWords.has(target.id) ? previousWords.get(target.id) : target.words;
 				try {
 					await storageService.setMediaWords({ projectId, id: target.id, words });
+					// Only words that were stored are put back.
+					if (!previousWords.has(target.id)) previousWords.set(target.id, before);
 				} catch (error) {
 					failures[i] = `words not stored: ${errorText(error)}`;
 				}
@@ -531,11 +542,12 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	 * Without `keep` the draft does not apply: stored words are put back too.
 	 */
 	const discard = async (keep?: Set<string>) => {
-		if (!keep) await restoreWords();
+		const wordsFailed = keep ? [] : await restoreWords();
 		const drop = staged.filter((id) => !keep?.has(id));
-		if (drop.length === 0) return null;
-		const cleanup = await editor.media.discardStagedMediaAssets({ ids: drop });
-		return cleanup;
+		if (drop.length === 0 && wordsFailed.length === 0) return null;
+		const cleanup = drop.length ? await editor.media.discardStagedMediaAssets({ ids: drop }) : { removed: [], failed: [] };
+		// Words that could not be put back count as not rolled back, like files that could not be removed.
+		return { ...cleanup, failed: [...cleanup.failed, ...wordsFailed] };
 	};
 	const cleanupNote = (cleanup: Awaited<ReturnType<typeof discard>>) =>
 		cleanup?.failed.length ? `; ${cleanup.failed.length} imported ${cleanup.failed.length === 1 ? "file" : "files"} could not be removed from storage` : "";
@@ -573,13 +585,16 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	}
 
 
+	const loadedWords = new Map<string, SourceWord[]>();
+	for (const loaded of media.values()) if (loaded.words) loadedWords.set(loaded.id, loaded.words);
 	// Read the scenes after loading: the human may have edited meanwhile.
 	const before = editor.scenes.getScenes();
 	const openScene = editor.scenes.getActiveScene();
 	const outcome = computeAgentDraft({
 		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true,
 		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled, base,
-		wordsOf: mediaWords(),
+		// Also the words of media this draft imports (a later set can cut by them).
+		wordsOf: ((project) => (id: string) => loadedWords.get(id) ?? project(id))(mediaWords()),
 	});
 	// The open scene stays open unless the draft removed it (ungrouping the compound being edited): then the root opens.
 	const openAfter = outcome.scenes.some((scene) => scene.id === openScene.id) ? openScene.id : root.id;

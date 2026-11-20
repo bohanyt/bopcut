@@ -310,11 +310,11 @@ export class ResizeController {
 				session.side === "left"
 					? member.startTime
 					: addMediaTime({ a: member.startTime, b: member.duration });
-			const snapResult = resolveTimelineSnap({
-				targetTime: addMediaTime({ a: baseEdgeTime, b: rawDeltaTime }),
-				snapPoints: [...snapPoints, ...(session.wordPoints.get(member.elementId) ?? [])],
-				maxSnapDistance,
-			});
+			const targetTime = addMediaTime({ a: baseEdgeTime, b: rawDeltaTime });
+			const onPoints = resolveTimelineSnap({ targetTime, snapPoints, maxSnapDistance });
+			const wordPoints = session.wordPoints.get(member.elementId);
+			const onWords = wordPoints?.length ? resolveTimelineSnap({ targetTime, snapPoints: wordPoints, maxSnapDistance }) : null;
+			const snapResult = onWords?.snapPoint && (!onPoints.snapPoint || onWords.snapDistance < onPoints.snapDistance) ? onWords : onPoints;
 			if (
 				snapResult.snapPoint &&
 				snapResult.snapDistance < closestSnapDistance

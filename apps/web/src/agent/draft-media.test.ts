@@ -9,7 +9,7 @@ mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompo
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 // Asset processing needs browser media APIs: an image is 400×200 whatever its bytes.
 mock.module("@/media/processing", () => ({
-	processMediaAssets: async ({ files }: { files: File[] }) => Array.from(files).map((file) => ({ name: file.name, type: "image", file, width: 400, height: 200 })),
+	processMediaAssets: async ({ files }: { files: File[] }) => Array.from(files).map((file) => (file.name.endsWith(".mp4") ? { name: file.name, type: "video", file, width: 400, height: 200, duration: 10 } : { name: file.name, type: "image", file, width: 400, height: 200 })),
 }));
 const { EditorCore } = await import("@/core");
 const { applyDraft, pollDraft, pollChanges } = await import("./bridge");
@@ -656,5 +656,39 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(backend.state.results[0]).toMatchObject({ applied: false });
 		expect(calls).toEqual([{ id: "m-old", words }, { id: "m-old", words: undefined }]);
 		expect(editor.media.getAssets().find((a) => a.id === "m-old")?.words).toBeUndefined();
+	});
+
+	test("cut: words on an add with real media lookups; a later set uses the words its import brought", async () => {
+		const editor = setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const words = [{ text: "x", start: 0.5, end: 1.1 }];
+		editor.media.setAssets({ assets: [...editor.media.getAssets(), asset("vid", { type: "video", duration: 10, words } as never)] });
+		await applyDraft(draft([{ op: "add", track: { name: "Clips", type: "video" }, element: { agent_id: "near", name: "near", mediaId: "vid", start: 20, duration: 0.3, trimStart: 0.6, cut: "words" } }]));
+		expect(backend.state.results[0]).toMatchObject({ applied: true, results: [{ ok: true }] });
+		const near = elements(editor).find((e) => e.agentId === "near")!;
+		expect((near.trimStart + near.duration) / TICKS_PER_SECOND).toBeGreaterThanOrEqual(1.1 - 0.02);
+		await applyDraft(draft([
+			{ op: "add", track: { name: "Talk", type: "video" }, element: { agent_id: "talk", name: "talk", asset: { path: "talk.mp4", type: "video", name: "talk", words }, start: 40, duration: 1, trimStart: 0.6, cut: "words" } },
+			{ op: "set", match: { agentId: "talk" }, trimStart: 0.65, duration: 0.2, cut: "words" },
+		]));
+		expect(backend.state.results[1]).toMatchObject({ applied: true, results: [{ ok: true }, { ok: true }] });
+	});
+
+	test("words that cannot be put back are reported: the draft is not rolled back", async () => {
+		setup();
+		const backend = fakeBackend();
+		let calls = 0;
+		(storageService as any).setMediaWords = async () => {
+			calls++;
+			if (calls > 1) throw new Error("EIO");
+		};
+		restore = () => {
+			backend.restore();
+			delete (storageService as any).setMediaWords;
+		};
+		await applyDraft(draft([{ op: "words", mediaId: "m-old", words: [{ text: "hi", start: 0, end: 1 }] }, { op: "set", match: { agentId: "missing" }, start: 1 }], { atomic: true }));
+		expect(backend.state.results[0]).toMatchObject({ applied: false, rolledBack: false });
+		expect(backend.state.results[0].cleanup.failed).toEqual([{ id: "words:m-old", error: "EIO" }]);
 	});
 });
