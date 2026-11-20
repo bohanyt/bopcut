@@ -5,7 +5,9 @@ export function summarizeEdits(lines: EditLine[]) {
 	for (const line of lines) {
 		const field = line.kind === "set" ? line.field : line.kind;
 		const key = JSON.stringify([line.track, line.elementType, field]);
-		groups.set(key, [...(groups.get(key) ?? []), line]);
+		const group = groups.get(key);
+		if (group) group.push(line);
+		else groups.set(key, [line]);
 	}
 	return [...groups.entries()].map(([key, entries]) => {
 		const [track, elementType, field] = JSON.parse(key) as string[];
@@ -14,6 +16,9 @@ export function summarizeEdits(lines: EditLine[]) {
 		const pairs = new Map<string, number>();
 		for (const e of entries) { const pair = JSON.stringify([e.from, e.to]); pairs.set(pair, (pairs.get(pair) ?? 0) + 1); }
 		const typical = JSON.parse([...pairs.entries()].sort((a, b) => b[1] - a[1])[0][0]);
-		return { track, elementType, field, count: entries.length, projects: new Set(entries.map((e) => e.projectId)).size, medianDelta: median(deltas), typical, ruleCandidate: entries.length >= 3 };
+		// A rule is about how the user fixes the agent's work: only edits of agent-made items count (older
+		// lines have no agentMade), and one action (one timestamp, such as a bulk delete) counts once.
+		const agentEdits = new Set(entries.filter((e) => e.agentMade !== false).map((e) => e.t)).size;
+		return { track, elementType, field, count: entries.length, projects: new Set(entries.map((e) => e.projectId)).size, medianDelta: median(deltas), typical, ruleCandidate: agentEdits >= 3 };
 	}).sort((a, b) => a.track.localeCompare(b.track) || a.elementType.localeCompare(b.elementType) || a.field.localeCompare(b.field));
 }

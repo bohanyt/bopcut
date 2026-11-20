@@ -3,6 +3,10 @@ import { calculateTotalDuration } from "@/timeline";
 import { lastFrameMediaTime, mediaTimeFromSeconds } from "@/wasm";
 import { getRootScene } from "./scene-graph";
 import { parseStateRef, resolveState, type TimelineState } from "./history";
+import { markAnswered, wasAnswered } from "./answered";
+
+/** At most this many frames per request (times, doubled with `compare`). */
+export const MAX_FRAMES = 64;
 
 /**
  * The timeline states a frames request renders: `state` (default: the timeline now) and, with `compare`,
@@ -33,28 +37,55 @@ export async function pollFrames(checked?: unknown) {
 		const request = (checked ?? (await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json())) as any;
 		if (!request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev) || !Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0) || (request.width !== undefined && (!Number.isInteger(request.width) || request.width < 1 || request.width > 4096))) return;
 		const key = `agent-frames-${project.metadata.id}`;
-		if (localStorage.getItem(key) === request.rev) return;
+		if (wasAnswered(key, request.rev)) return;
+		const result = (body: Record<string, unknown>) =>
+			fetch("/api/agent/frames-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev: request.rev, projectId: project.metadata.id, ...body }) });
+		// A request that cannot be rendered is answered once with the reason, not retried every poll.
+		const refuse = async (error: string) => {
+			if ((await result({ files: [], error })).ok) markAnswered(key, request.rev);
+		};
 		const states = framesStates(request, project.metadata.id);
-		if (typeof states === "string") {
-			// Refused once per rev, with the reason.
-			const response = await fetch("/api/agent/frames-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev: request.rev, files: [], error: states, projectId: project.metadata.id }) });
-			if (response.ok) localStorage.setItem(key, request.rev);
-			return;
+		if (typeof states === "string") return await refuse(states);
+		const passes = [[states.state, undefined], ...(states.compare ? [[states.compare, "compare"]] : [])] as [TimelineState | null, string | undefined][];
+		if (request.times.length * passes.length > MAX_FRAMES) return await refuse(`at most ${MAX_FRAMES} frames per request (times x states)`);
+		for (const [state] of passes) {
+			const removed = state ? removedMedia(state) : [];
+			if (removed.length) return await refuse(`media used by that state were removed since, so its frames would not show them: ${removed.join(", ")}`);
 		}
 		const files: string[] = [];
 		const compared: string[] = [];
+		// A time a state cannot show (outside its timeline, or an empty one) is reported; the others go on.
+		const errors: { time: number; variant?: string; error: string }[] = [];
 		for (const time of request.times as number[]) {
-			for (const [state, variant] of [[states.state, undefined], ...(states.compare ? [[states.compare, "compare"]] : [])] as [TimelineState | null, string | undefined][]) {
+			for (const [state, variant] of passes) {
 				if (editor.timeline.isPreviewActive() || editor.project.getActiveOrNull()?.metadata.id !== project.metadata.id) return;
-				const file = await renderFrame({ request, time, state, variant });
-				(variant ? compared : files).push(file);
+				try {
+					(variant ? compared : files).push(await renderFrame({ request, time, state, variant }));
+				} catch (error) {
+					errors.push({ time, ...(variant ? { variant } : {}), error: error instanceof Error ? error.message : String(error) });
+				}
 			}
 		}
-		const response = await fetch("/api/agent/frames-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev: request.rev, files, ...(states.compare ? { compare: compared } : {}), projectId: project.metadata.id }) });
+		const response = await result({ files, ...(states.compare ? { compare: compared } : {}), ...(errors.length ? { errors } : {}) });
 		if (!response.ok) throw new Error(await response.text());
-		localStorage.setItem(key, request.rev);
+		markAnswered(key, request.rev);
 	} catch (error) { console.error("Agent frame failed:", error); }
 	finally { busy = false; }
+}
+
+/** Media a past state uses that are no longer in the project (their names). */
+export function removedMedia(state: TimelineState): string[] {
+	const present = new Set(EditorCore.getInstance().media.getAssets().map((asset) => asset.id));
+	const names = new Set<string>();
+	for (const scene of state.scenes) {
+		for (const track of [...scene.tracks.overlay, scene.tracks.main, ...scene.tracks.audio]) {
+			for (const element of track.elements) {
+				const mediaId = (element as { mediaId?: unknown }).mediaId;
+				if (typeof mediaId === "string" && !present.has(mediaId)) names.add(state.media?.get(mediaId) ?? mediaId);
+			}
+		}
+	}
+	return [...names];
 }
 
 /** Renders one frame of a state (null: the timeline now) and saves it; returns the saved file. */
@@ -67,8 +98,11 @@ async function renderFrame({ request, time, state, variant }: { request: { rev: 
 	if (!root) throw new Error("No scene");
 	const ticks = mediaTimeFromSeconds({ seconds: time });
 	const duration = calculateTotalDuration({ tracks: root.tracks });
-	if (ticks > lastFrameMediaTime({ duration, fps: project.settings.fps })) throw new Error(`Time outside timeline: ${time}`);
-	const snapshot = await editor.renderer.createSnapshot({ time: ticks, sceneId: root.id, ...(state ? { scenes } : {}) });
+	const fps = state?.settings?.fps ?? project.settings.fps;
+	if (duration === 0) throw new Error("The timeline of that state is empty");
+	if (ticks > lastFrameMediaTime({ duration, fps })) throw new Error(`Time outside timeline: ${time}`);
+	// A past state renders with the canvas, background and frame rate it had.
+	const snapshot = await editor.renderer.createSnapshot({ time: ticks, sceneId: root.id, ...(state ? { scenes, settings: state.settings } : {}) });
 	if (!snapshot.success) throw new Error(snapshot.error);
 	const image = await createImageBitmap(snapshot.blob);
 	const canvas = document.createElement("canvas");

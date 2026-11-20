@@ -82,7 +82,7 @@ export class RendererManager {
 
 	/** Renders the open scene at `time` (default: playhead), or another scene's timeline when `sceneId` is given. */
 	/** `scenes`: render that timeline state instead of the editor's (for example a past one). */
-	async createSnapshot({ time, sceneId, scenes: given }: { time?: import("@/wasm").MediaTime; sceneId?: string; scenes?: import("@/timeline").TScene[] } = {}): Promise<SnapshotResult> {
+	async createSnapshot({ time, sceneId, scenes: given, settings }: { time?: import("@/wasm").MediaTime; sceneId?: string; scenes?: import("@/timeline").TScene[]; settings?: Pick<import("@/project/types").TProjectSettings, "canvasSize" | "background" | "fps"> } = {}): Promise<SnapshotResult> {
 		try {
 			const activeProject = this.editor.project.getActive();
 
@@ -104,13 +104,13 @@ export class RendererManager {
 				return { success: false, error: "Project is empty" };
 			}
 
-			const { canvasSize, fps } = activeProject.settings;
+			const { canvasSize, fps, background } = settings ?? activeProject.settings;
 			const renderTree = buildScene({
 				tracks: isOpen ? (this.editor.timeline.getPreviewTracks() ?? active.tracks) : scene.tracks,
 				mediaAssets: this.editor.media.getAssets(),
 				duration,
 				canvasSize,
-				background: activeProject.settings.background,
+				background,
 				scenes,
 			});
 			const renderTime = Math.min(

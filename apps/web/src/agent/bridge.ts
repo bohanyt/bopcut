@@ -2,6 +2,7 @@
 // so the agent can see each item's location, time, and position without opening the browser.
 import { draftHistory, snapshotHistory } from "./history";
 import { changesResult } from "./changes";
+import { markAnswered, wasAnswered } from "./answered";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { EditorCore } from "@/core";
 import { toast } from "sonner";
@@ -144,7 +145,7 @@ function editSnapshot(): EditSnapshot | null {
 	const project = editor.project.getActiveOrNull();
 	const scene = agentRootScene();
 	if (!project || !scene) return null;
-	return { projectId: project.metadata.id, items: buildEditItems({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() }) };
+	return { projectId: project.metadata.id, rootSceneId: scene.id, items: buildEditItems({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() }) };
 }
 let editLogger: ReturnType<typeof createEditLogger> | undefined;
 /** Recent snapshots sent to the agent (by syncedAt), for drafts that say what they were based on. */
@@ -164,7 +165,7 @@ export function installAgentBridge() {
 			const snap = agentSnapshot();
 			if (!snap) return;
 			// Remember what this snapshot showed, so a draft `basedOn` it can tell the user's later edits apart.
-			snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), { projectId: snap.projectId, rootSceneId: snap.sceneId });
+			snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), stateMeta(snap.sceneId));
 			fetch("/api/agent/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snap) }).catch(() => {});
 		}, 800);
 	};
@@ -215,7 +216,7 @@ export function installAgentBridge() {
 	// A snapshot taken in the console is remembered like a synced one, so a draft can be basedOn it.
 	const consoleSnapshot = () => {
 		const snap = agentSnapshot();
-		if (snap) snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), { projectId: snap.projectId, rootSceneId: snap.sceneId });
+		if (snap) snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), stateMeta(snap.sceneId));
 		return snap;
 	};
 	(window as any).agent = { editor, snapshot: consoleSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
@@ -227,6 +228,13 @@ export function installAgentBridge() {
 		void framesGate().then((request) => (request ? pollFrames(request) : undefined));
 		void pollChanges();
 	}, 2000);
+}
+
+/** What a kept timeline state carries besides its scenes: project, root, render settings, media names. */
+function stateMeta(rootSceneId: string) {
+	const project = EditorCore.getInstance().project.getActive();
+	const { canvasSize, background, fps } = project.settings;
+	return { projectId: project.metadata.id, rootSceneId, settings: { canvasSize, background, fps }, media: mediaNames() };
 }
 
 /**
@@ -249,14 +257,18 @@ export async function pollChanges() {
 		}
 		if (!request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev)) return;
 		const key = `agent-changes-${project.metadata.id}`;
-		if (localStorage.getItem(key) === request.rev) return;
+		if (wasAnswered(key, request.rev)) return;
 		// The project read before the request may have been replaced meanwhile: answer for the open one.
 		const open = editor.project.getActiveOrNull();
 		const openRoot = agentRootScene();
 		if (!open || open.metadata.id !== project.metadata.id || !openRoot) return;
-		const result = changesResult({ ...request, rev: request.rev }, { now: { projectId: open.metadata.id, scenes: editor.scenes.getScenes(), rootSceneId: openRoot.id }, mediaName: mediaNames() });
-		const response = await fetch("/api/agent/changes-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) });
-		if (response.ok) localStorage.setItem(key, request.rev);
+		const result = changesResult({ ...request, rev: request.rev }, { now: { ...stateMeta(openRoot.id), scenes: editor.scenes.getScenes() }, mediaName: mediaNames() });
+		if (!result) return; // for another project: left for it
+		const post = (body: unknown) => fetch("/api/agent/changes-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+		let response = await post(result);
+		// Not stored (too large): answered with the reason instead of being worked out again every poll.
+		if (!response.ok) response = await post({ rev: request.rev, projectId: open.metadata.id, error: `the answer could not be stored (${response.status}); ask with a newer since` });
+		if (response.ok) markAnswered(key, request.rev);
 	} catch (error) {
 		console.error("Agent changes failed:", error);
 	} finally {
@@ -547,7 +559,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 			try {
 				if (command.getChangedSceneIds().length) editor.command.execute({ command });
 				// What the draft changed, for changes and before/after frames (`{draft: rev}`).
-				draftHistory.record(draft.rev, { projectId, scenes: before, rootSceneId: root.id }, { projectId, scenes: editor.scenes.getScenes(), rootSceneId: root.id });
+				draftHistory.record(draft.rev, { ...stateMeta(root.id), scenes: before }, { ...stateMeta(root.id), scenes: editor.scenes.getScenes() });
 			} catch (e) {
 				editor.media.unpublishMediaAssets({ projectId, ids: publish });
 				throw e;

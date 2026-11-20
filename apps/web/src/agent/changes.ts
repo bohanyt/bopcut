@@ -1,44 +1,74 @@
 // What changed between two timeline states, as values: every element added, deleted or changed (timing,
-// trims, track, params, keyframes, text), inside compound clips too. Used for `changes-request.json`.
-import { type EditLine, diffEdits } from "./edit-log";
-import { draftHistory, resolveState, snapshotHistory, type TimelineState } from "./history";
+// trims, track, params, keyframes, caption data), inside compound clips too. Used for `changes-request.json`.
+import { isCompoundScene } from "@/timeline/compound";
+import { type EditItem, type EditLine, type EditSnapshot, diffEdits } from "./edit-log";
+import { draftHistory, isOtherProjects, resolveState, snapshotHistory, type TimelineState } from "./history";
 import { buildEditItems } from "./snapshot";
 
 /** One change: like an edit log line, without who made it (`agentMade` says whether the item is the agent's). */
 export type Change = Omit<EditLine, "t" | "actor">;
 
-export function changesBetween({ before, after, mediaName }: { before: TimelineState; after: TimelineState; mediaName: Map<string, string> }): Change[] {
-	const items = (state: TimelineState) => ({ projectId: state.projectId, items: buildEditItems({ scenes: state.scenes, rootSceneId: state.rootSceneId, mediaName }) });
-	return diffEdits(items(before), items(after)).map(({ t: _t, actor: _actor, ...change }) => change);
+/** At most this many changes in one answer (the rest is cut, with `truncated: true`). */
+export const MAX_CHANGES = 5000;
+
+/** Every element under every root scene of a state (switching the open scene is not a change). */
+function itemsOf(state: TimelineState, mediaName: Map<string, string>): EditSnapshot {
+	const seen = new Map<string, EditItem>();
+	for (const root of state.scenes.filter((scene) => !isCompoundScene(scene))) {
+		for (const item of buildEditItems({ scenes: state.scenes, rootSceneId: root.id, mediaName })) {
+			const key = `${item.sceneId}\u0000${item.id}`;
+			if (!seen.has(key)) seen.set(key, item);
+		}
+	}
+	return { projectId: state.projectId, items: [...seen.values()] };
 }
 
-export type ChangesRequest = { rev: string; since?: unknown; draft?: unknown };
+function between(before: EditSnapshot, after: EditSnapshot): Change[] {
+	// Structural: the compound clip a group creates (or an ungroup removes) is reported too.
+	return diffEdits(before, after, undefined, { structural: true }).map(({ t: _t, actor: _actor, ...change }) => change);
+}
+
+export function changesBetween({ before, after, mediaName }: { before: TimelineState; after: TimelineState; mediaName: Map<string, string> }): Change[] {
+	return between(itemsOf(before, mediaName), itemsOf(after, mediaName));
+}
+
+const capped = (changes: Change[]) => (changes.length > MAX_CHANGES ? { changes: changes.slice(0, MAX_CHANGES), truncated: true } : { changes });
+
+export type ChangesRequest = { rev: string; projectId?: unknown; since?: unknown; draft?: unknown };
 
 /**
  * Answers a changes request against the timeline as it is now (`now`): since a snapshot (`since`, its
- * `syncedAt`), or for a draft (`draft`, its rev): what the draft changed and what changed after it. The
- * answer records the current state as a snapshot too, so its `syncedAt` can be the next `since` or
- * `basedOn`.
+ * `syncedAt`), or for a draft (`draft`, its rev): what the draft changed and what changed after it. A
+ * successful answer records the current state as a snapshot, so its `syncedAt` can be the next `since`
+ * or `basedOn`. Null when the request is for another project (it is left for that one).
  */
 export function changesResult(request: ChangesRequest, { now, mediaName, at = new Date().toISOString() }: { now: TimelineState; mediaName: Map<string, string>; at?: string }) {
-	const head = { rev: request.rev, projectId: now.projectId, syncedAt: at };
-	snapshotHistory.record(at, now.scenes, { projectId: now.projectId, rootSceneId: now.rootSceneId });
+	if (typeof request.projectId === "string" && request.projectId !== now.projectId) return null;
+	const head = { rev: request.rev, projectId: now.projectId };
+	// Recorded after the lookup (so the base is not pushed out of the history by its own answer), and only
+	// for an answer.
+	const answered = <T extends object>(body: T) => {
+		snapshotHistory.record(at, now.scenes, { projectId: now.projectId, rootSceneId: now.rootSceneId, settings: now.settings, media: now.media });
+		return { ...head, syncedAt: at, ...body };
+	};
 	if (typeof request.draft === "string") {
-		const draft = draftHistory.get(request.draft);
-		if (!draft || draft.before.projectId !== now.projectId) {
-			return { ...head, draft: request.draft, error: resolveState({ draft: request.draft, side: "after" }, now.projectId) as string };
-		}
-		return {
-			...head,
+		if (isOtherProjects({ draft: request.draft, side: "after" }, now.projectId)) return null;
+		const draft = draftHistory.get(now.projectId, request.draft);
+		if (!draft) return { ...head, draft: request.draft, error: resolveState({ draft: request.draft, side: "after" }, now.projectId) as string };
+		const after = itemsOf(draft.after, mediaName);
+		const drafted = capped(between(itemsOf(draft.before, mediaName), after));
+		const later = capped(between(after, itemsOf(now, mediaName)));
+		return answered({
 			draft: request.draft,
-			draftChanges: changesBetween({ before: draft.before, after: draft.after, mediaName }),
-			changes: changesBetween({ before: draft.after, after: now, mediaName }),
-		};
+			draftChanges: drafted.changes, ...(drafted.truncated ? { draftTruncated: true } : {}),
+			changes: later.changes, ...(later.truncated ? { truncated: true } : {}),
+		});
 	}
 	if (typeof request.since === "string") {
+		if (isOtherProjects({ syncedAt: request.since }, now.projectId)) return null;
 		const then = resolveState({ syncedAt: request.since }, now.projectId);
 		if (typeof then === "string") return { ...head, since: request.since, error: then };
-		return { ...head, since: request.since, changes: changesBetween({ before: then, after: now, mediaName }) };
+		return answered({ since: request.since, ...capped(changesBetween({ before: then, after: now, mediaName })) });
 	}
 	return { ...head, error: "a changes request needs since (a snapshot's syncedAt) or draft (a draft rev)" };
 }

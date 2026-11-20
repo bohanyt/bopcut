@@ -84,7 +84,9 @@ export function buildEditItems({ scenes, rootSceneId, mediaName }: { scenes: TSc
 				const end = e.startTime + e.duration;
 				const visible = toRootInterval(e.startTime, end, first.chain);
 				items.push({
-					id: e.id, agentId: e.agentId ?? null, name: e.name, media: mediaName.get((e as any).mediaId) ?? null, type: e.type, track: track.name,
+					id: e.id, agentId: e.agentId ?? null, name: e.name, media: mediaName.get((e as any).mediaId) ?? null, type: e.type, track: track.name, trackId: track.id,
+					// Caption words, timings and highlights (by reference: elements are never mutated).
+					...((e as { caption?: unknown }).caption !== undefined ? { caption: (e as { caption?: unknown }).caption } : {}),
 					sceneId, path: first.path, ...(isCompoundElement(e) ? { contentSceneId: e.sceneId } : {}),
 					startTime: sec(e.startTime), duration: sec(e.duration), trimStart: sec(e.trimStart), trimEnd: sec(e.trimEnd),
 					rootStart: sec(visible ? visible[0] : e.startTime + offset), rootEnd: sec(visible ? visible[1] : end + offset),
