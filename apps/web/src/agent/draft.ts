@@ -1,7 +1,7 @@
 // Agent draft ops applied to a copy of the project's scenes. Pure: the bridge loads assets first,
 // then wraps the resulting scene list in one command, so the whole draft is one Undo step even
 // when it touches several scenes (the root timeline and compound clip contents).
-import { type ElementRecord, StaleError, assertNotStale, assertRippleNotStale, fieldsMapOf, touchedFields } from "./stale";
+import { type ElementRecord, StaleError, assertNoteNotStale, assertNotStale, assertRippleNotStale, fieldsMapOf, touchedFields } from "./stale";
 import type { Bookmark, SceneTracks, TScene } from "@/timeline";
 import { TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
@@ -147,7 +147,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "set": {
 				const hit = find(op.match);
-				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: touchedFields(op) });
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: touchedFields(op), scenes: list });
 				editTracks(hit.sceneId, (tracks) => {
 					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
 					const el = track.elements[hit.index];
@@ -185,7 +185,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "replace": {
 				const hit = find(op.match);
-				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all" });
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all", scenes: list });
 				const given = op.element;
 				if (!given || typeof given !== "object") throw new Error("replace needs an element");
 				if (op.track !== undefined && (typeof op.track?.name !== "string" || "compound" in op.track)) throw new Error("replace: track needs {name} and stays in the element's scene");
@@ -210,7 +210,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "delete": {
 				const hit = find(op.match);
-				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all" });
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all", scenes: list });
 				editTracks(hit.sceneId, (tracks) => {
 					(orderedTracks(tracks).find((t) => t.id === hit.track.id) as any).elements.splice(hit.index, 1);
 				});
@@ -222,6 +222,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const hits = op.match.map(find);
 				const hostSceneId = hits[0].sceneId;
 				if (hits.some((hit) => hit.sceneId !== hostSceneId)) throw new Error("group: all elements must be in the same scene");
+				// Grouping moves clips off their tracks: not ones the user moved to another track (or whose track
+				// they changed) since basedOn.
+				for (const hit of hits) assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: ["track"], scenes: list });
 				const built = buildCompoundFromElements({
 					scenes: list, hostSceneId, name: op.name,
 					elements: hits.map((hit) => ({ trackId: hit.track.id, elementId: hit.element.id })),
@@ -246,7 +249,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				if (!isCompoundElement(hit.element)) throw new Error("ungroup: not a compound clip");
 				// Ungrouping can give the content new ids (later ops would see it as new) and drops the content
 				// scene with its notes: refused if the user changed the compound or anything in it since basedOn.
-				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all" });
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all", scenes: list });
 				const restored = ungroupCompoundElement({ scenes: list, hostSceneId: hit.sceneId, ref: { trackId: hit.track.id, elementId: hit.element.id } });
 				list = restored.scenes;
 				const refs = restored.elements.map((ref) => ({ sceneId: hit.sceneId, elementId: ref.elementId }));
@@ -282,6 +285,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const index = bookmarks.findIndex((b) => (b.id ?? `legacy-${b.time}`) === op.id && b.note?.trim());
 				result.id = op.id;
 				if (index < 0) throw new Error("note not found");
+				// Not a note the user reopened (or changed) since basedOn.
+				assertNoteNotStale({ base, now, noteId: op.id });
 				bookmarks[index] = { ...bookmarks[index], resolved: true };
 				setRootBookmarks(bookmarks);
 				return;

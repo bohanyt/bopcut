@@ -12,8 +12,11 @@ import { orderedTracks } from "./scene-graph";
 /** The comparable state of one element: timing in seconds, each param and the keyframes as JSON. */
 export type ElementFields = { start: number; duration: number; trimStart: number; params: Record<string, string>; animations: string; caption: string; whole: string };
 
-/** One element in a snapshot: its fields, the track it is on, and (compound clips) a digest of their content. */
-export type ElementRecord = { fields: ElementFields; trackId: string; content: string | null };
+/**
+ * One element in a snapshot: its fields, the track it is on and that track's own settings (name, mute,
+ * hidden), and (compound clips) a digest of their content. Notes are kept the same way (`note:<id>`).
+ */
+export type ElementRecord = { fields: ElementFields; trackId: string; trackState: string; content: string | null };
 
 const sec = (t: number) => Math.round((t / TICKS_PER_SECOND) * 1e6) / 1e6;
 
@@ -121,11 +124,16 @@ export function fieldsMapOf(scenes: TScene[]): Map<string, ElementRecord> {
 	const map = new Map<string, ElementRecord>();
 	const seen = new Map<string, number>();
 	for (const scene of scenes) {
+		for (const bookmark of scene.bookmarks ?? []) {
+			const id = bookmark.id ?? `legacy-${bookmark.time}`;
+			map.set(`note:${id}`, { fields: { ...NO_FIELDS, whole: digest(stableJson(bookmark)) }, trackId: "", trackState: "", content: null });
+		}
 		for (const track of orderedTracks(scene.tracks)) {
+			const trackState = digest(stableJson({ ...track, elements: undefined }));
 			for (const element of track.elements) {
 				const nested = (element as { sceneId?: unknown }).sceneId;
 				const content = element.type === "compound" && typeof nested === "string" ? contentOf(nested, byId) : null;
-				const record = { fields: fieldsOf(element), trackId: track.id, content };
+				const record = { fields: fieldsOf(element), trackId: track.id, trackState, content };
 				map.set(`${scene.id}:${element.id}`, record);
 				seen.set(element.id, (seen.get(element.id) ?? 0) + 1);
 				map.set(`#${element.id}`, record);
@@ -135,6 +143,8 @@ export function fieldsMapOf(scenes: TScene[]): Map<string, ElementRecord> {
 	for (const [id, count] of seen) if (count > 1) map.delete(`#${id}`);
 	return map;
 }
+
+const NO_FIELDS: ElementFields = { start: 0, duration: 0, trimStart: 0, params: {}, animations: "", caption: "", whole: "" };
 
 /** The record of an element in its scene, else by its id alone (it was moved to another scene). */
 function recordOf(map: Map<string, ElementRecord>, sceneId: string, elementId: string): ElementRecord | undefined {
@@ -180,7 +190,7 @@ function differs(field: string, then: ElementRecord, now: ElementRecord): boolea
 	if (field === "keyframes") return then.fields.animations !== now.fields.animations;
 	if (field === "caption") return then.fields.caption !== now.fields.caption;
 	if (field === "element") return then.fields.whole !== now.fields.whole;
-	if (field === "track") return then.trackId !== now.trackId;
+	if (field === "track") return then.trackId !== now.trackId || then.trackState !== now.trackState;
 	if (field === "content") return then.content !== now.content;
 	if (field.startsWith("params.")) return then.fields.params[field.slice(7)] !== now.fields.params[field.slice(7)];
 	return then.fields[field as "start" | "duration" | "trimStart"] !== now.fields[field as "start" | "duration" | "trimStart"];
@@ -192,7 +202,7 @@ function currentValues(fields: string[], element: TimelineElement, record: Eleme
 		if (field === "keyframes") out.keyframes = (element as { animations?: unknown }).animations ?? null;
 		else if (field === "caption") out.caption = (element as { caption?: unknown }).caption ?? null;
 		else if (field === "element") out.element = element;
-		else if (field === "track") out.trackId = record.trackId;
+		else if (field === "track") out.trackId = record.trackId; // or its settings (mute, hidden, name) changed
 		else if (field === "content") out.content = "changed";
 		else if (field.startsWith("params.")) out[field] = element.params?.[field.slice(7)];
 		else out[field] = record.fields[field as "start" | "duration" | "trimStart"];
@@ -206,10 +216,24 @@ function currentValues(fields: string[], element: TimelineElement, record: Eleme
  * compound clip, everything inside it. An element in `now` but not in `base` appeared after the snapshot,
  * which is stale too; one in neither was added by this draft and is not checked.
  */
-export function assertNotStale({ base, now, sceneId, element, fields }: { base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; sceneId: string; element: TimelineElement; fields: string[] | "all" }) {
+export function assertNotStale({ base, now, sceneId, element, fields, scenes }: {
+	base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; sceneId: string; element: TimelineElement; fields: string[] | "all";
+	/** The draft's scenes so far: what a compound this draft made (a `group` wrapper) holds is checked too. */
+	scenes?: TScene[];
+}) {
 	if (!base || !now) return;
 	const current = recordOf(now, sceneId, element.id);
-	if (!current) return;
+	if (!current) {
+		// Made by this draft. A compound it made can hold the user's clips (group): those are checked whole.
+		const nested = (element as { sceneId?: unknown }).sceneId;
+		const content = element.type === "compound" && typeof nested === "string" ? scenes?.find((scene) => scene.id === nested) : undefined;
+		if (content) {
+			for (const track of orderedTracks(content.tracks)) {
+				for (const child of track.elements) assertNotStale({ base, now, sceneId: content.id, element: child, fields: "all", scenes });
+			}
+		}
+		return;
+	}
 	const then = recordOf(base, sceneId, element.id);
 	if (!then) throw new StaleError(["the element (added after basedOn)"], { id: element.id });
 	// New text on a caption also rewrites its words and highlights: those count as touched too.
@@ -219,6 +243,16 @@ export function assertNotStale({ base, now, sceneId, element, fields }: { base: 
 		: hasCaption && fields.includes("params.content") ? [...fields, "caption"] : fields;
 	const changed = list.filter((field) => differs(field, then, current));
 	if (changed.length) throw new StaleError(changed, currentValues(changed, element, current));
+}
+
+/** Throws StaleError when a note changed (resolved, reopened, edited) between the snapshot and now. */
+export function assertNoteNotStale({ base, now, noteId }: { base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; noteId: string }) {
+	if (!base || !now) return;
+	const current = now.get(`note:${noteId}`);
+	if (!current) return;
+	const then = base.get(`note:${noteId}`);
+	if (!then) throw new StaleError(["the note (added after basedOn)"], { id: noteId });
+	if (then.fields.whole !== current.fields.whole) throw new StaleError(["note"], { id: noteId });
 }
 
 /**

@@ -531,4 +531,23 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(disk.writes.length).toBe(writes);
 		expect(editor.save.getIsDirty()).toBe(false);
 	});
+
+	test("a drag started while the draft's assets load is not cancelled: the draft waits for the release", async () => {
+		const editor = setup();
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		restore = backend.restore;
+		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") }]));
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		// The user starts dragging a clip.
+		(editor.timeline as any).previewOverlay.set("t-main:old", { startTime: T(1) });
+		slow.open();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(backend.state.results).toEqual([]);
+		expect(editor.timeline.isPreviewActive()).toBe(true);
+		editor.timeline.discardPreview();
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: true });
+		expect(elements(editor).some((e) => e.agentId === "late")).toBe(true);
+	});
 });

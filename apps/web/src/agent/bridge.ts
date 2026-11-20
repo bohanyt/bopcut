@@ -54,6 +54,23 @@ export function agentReadiness() {
 	return { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt };
 }
 
+/** Resolves true once no timeline drag is in progress, false after `timeoutMs` (on changes, not polled). */
+function whenPreviewEnds({ timeoutMs }: { timeoutMs: number }): Promise<boolean> {
+	const timeline = EditorCore.getInstance().timeline;
+	if (!timeline.isPreviewActive()) return Promise.resolve(true);
+	return new Promise((resolve) => {
+		const finish = (ended: boolean) => {
+			clearTimeout(timer);
+			unsubscribe();
+			resolve(ended);
+		};
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		const unsubscribe = timeline.subscribe(() => {
+			if (!timeline.isPreviewActive()) finish(true);
+		});
+	});
+}
+
 /** Resolves true once agentReadiness().ready, false after `timeoutMs` (checked on changes, not polled). */
 export function whenAgentReady({ timeoutMs = 120000 }: { timeoutMs?: number } = {}): Promise<boolean> {
 	if (agentReadiness().ready) return Promise.resolve(true);
@@ -413,6 +430,13 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	};
 	const cleanupNote = (cleanup: Awaited<ReturnType<typeof discard>>) =>
 		cleanup?.failed.length ? `; ${cleanup.failed.length} imported ${cleanup.failed.length === 1 ? "file" : "files"} could not be removed from storage` : "";
+	// The user started dragging while assets loaded: committing now would cancel the drag, so the draft
+	// waits for the release (at most a minute).
+	if (editor.timeline.isPreviewActive() && !(await whenPreviewEnds({ timeoutMs: 60000 }))) {
+		const cleanup = await discard();
+		await report({ ok: false, applied: false, error: "the user kept dragging on the timeline; nothing was applied, resend" + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
+		return;
+	}
 	// Loading (for example a slow URL section) took a while. If another project is open now, its timeline
 	// is not the one this draft was made for, and the staged imports belong to the first project: stop here.
 	if (draftSessionError({ draft, queued: session, now: currentSession() })) {

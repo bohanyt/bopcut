@@ -197,4 +197,32 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		const moved = scenesWith([{ ...text("t1", "t-1", { content: "a" }), startTime: T(1) } as TimelineElement]);
 		expect(run(moved, [{ op: "set", match: { agentId: "t-1" }, params: { content: "b" } }], fieldsMapOf(plain)).results[0]).toMatchObject({ ok: true });
 	});
+
+	test("a compound this draft makes is checked by what it holds: group, then delete, cannot drop a correction", () => {
+		const snapshot = scenesWith([text("c1", "cap-1", { content: "Helo" })]);
+		const corrected = scenesWith([text("c1", "cap-1", { content: "Hello" })]);
+		const ops = [{ op: "group", agent_id: "box", match: [{ agentId: "cap-1" }] }, { op: "delete", match: { agentId: "box" } }];
+		const out = run(corrected, ops, fieldsMapOf(snapshot));
+		expect(out.results[0]).toMatchObject({ ok: true });
+		expect(out.results[1]).toMatchObject({ ok: false, stale: true, fields: ["element"] });
+		// Nothing changed since the snapshot: the same draft applies.
+		expect(run(snapshot, ops, fieldsMapOf(snapshot)).results.map((r) => r.ok)).toEqual([true, true]);
+	});
+
+	test("a track the user muted (or hid) since the snapshot protects its clips from delete, ungroup and group", () => {
+		const muted = (scenes: TScene[]) => [{ ...scenes[0], tracks: { ...scenes[0].tracks, overlay: [{ ...scenes[0].tracks.overlay[0], muted: true }] } } as TScene];
+		const snapshot = scenesWith([text("c1", "cap-1", {})]);
+		const out = run(muted(snapshot), [{ op: "delete", match: { agentId: "cap-1" } }], fieldsMapOf(snapshot));
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true, fields: ["track"] });
+		const grouped = run(muted(snapshot), [{ op: "group", match: [{ agentId: "cap-1" }] }], fieldsMapOf(snapshot));
+		expect(grouped.results[0]).toMatchObject({ ok: false, stale: true, fields: ["track"] });
+	});
+
+	test("resolve-note does not close a note the user reopened since the snapshot", () => {
+		const withNote = (resolved: boolean) => [{ ...scenesWith([])[0], bookmarks: [{ id: "n1", time: 0, note: "fix the logo", resolved }] } as unknown as TScene];
+		const out = run(withNote(false), [{ op: "resolve-note", id: "n1" }], fieldsMapOf(withNote(true)));
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true, fields: ["note"] });
+		expect((out.scenes[0].bookmarks[0] as { resolved?: boolean }).resolved).toBe(false);
+		expect(run(withNote(false), [{ op: "resolve-note", id: "n1" }], fieldsMapOf(withNote(false))).results[0]).toMatchObject({ ok: true });
+	});
 });
