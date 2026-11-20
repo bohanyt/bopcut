@@ -490,3 +490,99 @@ describe("the draft poller", () => {
 		expect(editor.project.getActive().metadata.id).toBe("q");
 	});
 });
+
+describe("basedOn is checked before anything is imported", () => {
+	test("an unknown or malformed basedOn refuses the draft without importing", async () => {
+		setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("a.png", "a") }], { basedOn: "2000-01-01T00:00:00.000Z" }));
+		await applyDraft(draft([{ op: "set", match: { agentId: "old" }, params: { opacity: 0.5 } }], { basedOn: 42 }));
+		const [unknown, malformed] = backend.state.results;
+		expect(unknown).toMatchObject({ applied: false, stale: true });
+		expect(malformed).toMatchObject({ applied: false, stale: true });
+		expect(malformed.results[0]).toMatchObject({ match: { agentId: "old" }, stale: true });
+		expect(malformed.error).toContain("syncedAt");
+		expect(backend.state.saved).toEqual([]);
+	});
+
+	test("a draft whose every op is stale is not applied and not saved", async () => {
+		const editor = setup();
+		const backend = fakeBackend();
+		const disk = projectWrites();
+		restore = () => {
+			backend.restore();
+			disk.restore();
+		};
+		editor.save.start();
+		const { snapshotHistory } = await import("./bridge");
+		snapshotHistory.record("before-the-user-edit", editor.scenes.getScenes());
+		// The user moves "old" after the agent read the snapshot.
+		const scenes = editor.scenes.getScenes().map((scene) => ({
+			...scene,
+			tracks: { ...scene.tracks, main: { ...scene.tracks.main, elements: scene.tracks.main.elements.map((e) => ({ ...e, startTime: T(1) })) } },
+		})) as TScene[];
+		editor.scenes.setScenes({ scenes, activeSceneId: "main" });
+		await editor.save.settle();
+		const writes = disk.writes.length;
+		await applyDraft(draft([{ op: "set", match: { agentId: "old" }, start: 3 }], { basedOn: "before-the-user-edit" }));
+		expect(backend.state.results[0]).toMatchObject({ applied: false, stale: true });
+		expect(backend.state.results[0].results[0]).toMatchObject({ ok: false, stale: true, fields: ["start"] });
+		expect(disk.writes.length).toBe(writes);
+		expect(editor.save.getIsDirty()).toBe(false);
+	});
+
+	test("a drag started while the draft's assets load is not cancelled: the draft waits for the release", async () => {
+		const editor = setup();
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		restore = backend.restore;
+		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") }]));
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		// The user starts dragging a clip.
+		(editor.timeline as any).previewOverlay.set("t-main:old", { startTime: T(1) });
+		slow.open();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(backend.state.results).toEqual([]);
+		expect(editor.timeline.isPreviewActive()).toBe(true);
+		editor.timeline.discardPreview();
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: true });
+		expect(elements(editor).some((e) => e.agentId === "late")).toBe(true);
+	});
+
+	test("a clip move started while the draft's assets load is not cut off: the draft waits for the release", async () => {
+		const editor = setup();
+		const { beginTimelineGesture } = await import("@/timeline/gesture-state");
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		restore = backend.restore;
+		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") }]));
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		const release = beginTimelineGesture(); // the user grabs a clip
+		slow.open();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(backend.state.results).toEqual([]);
+		release();
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: true });
+	});
+
+	test("another root scene opened while the draft loads: nothing applies to it", async () => {
+		const editor = setup();
+		const other = scene("other", { overlay: [], main: { id: "t-other", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, audio: [] });
+		editor.scenes.setScenes({ scenes: [...editor.scenes.getScenes(), { ...other, isMain: false }], activeSceneId: "main" });
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		restore = backend.restore;
+		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") }]));
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		await editor.scenes.switchToScene({ sceneId: "other" });
+		slow.open();
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: false });
+		expect(backend.state.results[0].error).toContain("another scene");
+		expect(elements(editor).some((e) => e.agentId === "late")).toBe(false);
+		expect(backend.state.deleted).toEqual(backend.state.saved);
+	});
+});

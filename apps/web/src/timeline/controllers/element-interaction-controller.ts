@@ -21,6 +21,7 @@ import type { FrameRate } from "opencut-wasm";
 import { computeDropTarget } from "@/timeline/components/drop-target";
 import { getMouseTimeFromClientX } from "@/timeline/drag-utils";
 import { generateUUID } from "@/utils/id";
+import { beginTimelineGesture } from "@/timeline/gesture-state";
 import type { SnapPoint } from "@/timeline/snapping";
 import type {
 	DropTarget,
@@ -295,6 +296,8 @@ export class ElementInteractionController {
 	// has already returned to idle, so the "was this a drag?" answer must
 	// outlive the session. Reset on the next mousedown.
 	private lastGestureWasDrag = false;
+	// Set while a move drag runs (agent drafts wait for its release, see gesture-state).
+	private endGesture: (() => void) | null = null;
 
 	private readonly subscribers = new Set<() => void>();
 	private readonly depsRef: ElementInteractionDepsRef;
@@ -445,6 +448,8 @@ export class ElementInteractionController {
 
 	private finishSession(): void {
 		this.session = { kind: "idle" };
+		this.endGesture?.();
+		this.endGesture = null;
 		this.deactivate();
 		this.deps.snap.onChange?.(null);
 		this.notify();
@@ -620,6 +625,7 @@ export class ElementInteractionController {
 
 		this.session = { kind: "dragging", mousedown, drag };
 		this.lastGestureWasDrag = true;
+		this.endGesture ??= beginTimelineGesture();
 
 		this.updateDropTarget({
 			clientX,
