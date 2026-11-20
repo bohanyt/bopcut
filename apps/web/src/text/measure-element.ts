@@ -1,3 +1,4 @@
+import { presetLayerAt, readPresetSettings } from "@/animation/presets";
 import { CORNER_RADIUS_MIN } from "@/text/background";
 import { DEFAULTS } from "@/timeline/defaults";
 import type { TextElement } from "@/timeline";
@@ -33,6 +34,8 @@ export interface MeasuredTextElement extends MeasuredTextLayout {
 	emphasisWords: number[];
 	/** Per caption word, how far it has appeared (1 = shown); all 1 unless the style reveals words. */
 	wordReveal: number[];
+	/** Share of the characters shown, in reading order (1 = all; the typewriter animation). */
+	typed: number;
 }
 
 let textMeasurementContext:
@@ -73,11 +76,14 @@ export function measureTextElement({
 	canvasHeight,
 	localTime,
 	ctx,
+	presetTyped,
 }: {
 	element: TextElement;
 	canvasHeight: number;
 	localTime: number;
 	ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+	/** The typewriter preset's share at this moment, when the caller has it (else read from the element). */
+	presetTyped?: number;
 }): MeasuredTextElement {
 	const text = buildTextLayoutParamsFromElement({ element });
 	text.fontSize = Math.max(
@@ -253,6 +259,12 @@ export function measureTextElement({
 					style,
 				)
 			: [],
+		// The typewriter param (keyframable) and the typewriter animation preset, whichever shows less.
+		typed: Math.min(
+			1,
+			Math.max(0, textNumber(element, "typewriter", 1, localTime)),
+			presetTyped ?? presetLayerAt(readPresetSettings(element.params), localTime, element.duration, canvasHeight).typed,
+		),
 	};
 }
 

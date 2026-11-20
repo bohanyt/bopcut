@@ -1,4 +1,6 @@
 // Agent elements (bundle/draft) -> native OpenCut timeline elements.
+import { checkPresetParams } from "@/animation/presets";
+import { animateAgentElement } from "./animate";
 import { EditorCore } from "@/core";
 import { processMediaAssets } from "@/media/processing";
 import { buildElementFromMedia, buildEffectElement, buildGraphicElement, buildTextElement } from "@/timeline/element-utils";
@@ -43,6 +45,8 @@ export type AgentElement = {
 	params?: ParamValues; size?: [number, number];
 	caption?: AgentCaption;
 	keyframes?: AgentKeyframe[];
+	/** In and out animation presets (see agent/animate). */
+	animate?: import("./animate").AgentAnimate;
 	/** Makes this element a compound clip holding these nested tracks (times relative to the clip's content). */
 	compound?: AgentCompoundContent;
 };
@@ -188,7 +192,16 @@ export function createAgentTrack(type: AgentTrackType, name: string, { muted = t
  * Build an OpenCut element (not a compound clip; see buildAgentNode). Keyframes are collected in
  * `keyframes`, tagged with `sceneId` when given.
  */
-export function buildAgentElement({ e, media, trackId, sceneId, canvas, keyframes: collected }: {
+export function buildAgentElement(args: {
+	e: AgentElement; media?: LoadedMedia; trackId: string; sceneId?: string; canvas: { width: number; height: number }; keyframes: PendingKeyframe[];
+}): any {
+	const element = buildAgentElementOnly(args);
+	// Animation presets written as raw params are checked like `animate`.
+	checkPresetParams(element, args.e.params);
+	return args.e.animate === undefined ? element : animateAgentElement(element, args.e.animate);
+}
+
+function buildAgentElementOnly({ e, media, trackId, sceneId, canvas, keyframes: collected }: {
 	e: AgentElement; media?: LoadedMedia; trackId: string; sceneId?: string; canvas: { width: number; height: number }; keyframes: PendingKeyframe[];
 }): any {
 	const keyframes = { push: (k: PendingKeyframe) => collected.push(sceneId ? { ...k, sceneId } : k) };

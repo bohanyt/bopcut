@@ -316,7 +316,10 @@ async function collectVisualSourceNode({
 		effectPassGroups: node.resolved.effectPasses,
 		mask,
 	});
-	if (strokeLayer) {
+	if (strokeLayer?.type === "layer") {
+		// The outline fades with its clip (its own opacity keyframes and animation presets).
+		items.push({ ...strokeLayer, opacity: node.resolved.opacity });
+	} else if (strokeLayer) {
 		items.push(strokeLayer);
 	}
 }

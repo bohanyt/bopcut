@@ -17,6 +17,7 @@ export const ANIMATION_PROPERTY_PATHS = [
 	"background.offsetY",
 	"background.cornerRadius",
 	"shake.intensity",
+	"typewriter",
 ] as const;
 
 export type AnimationPropertyPath = (typeof ANIMATION_PROPERTY_PATHS)[number];

@@ -23,6 +23,7 @@ import {
 	MagicWand05Icon,
 	DashboardSpeed02Icon,
 	Layers01Icon,
+	KeyframeAddIcon,
 } from "@hugeicons/core-free-icons";
 import { ElementParamsTab } from "./components/element-params-tab";
 import { CompoundTab } from "./components/compound-tab";
@@ -35,6 +36,7 @@ import { model3dParams } from "@/params/registry";
 import { OcShapesIcon } from "@/components/icons";
 import { TEXT_STYLE_KEYS } from "@/text/style";
 import { CaptionProperties } from "@/text/components/caption-properties";
+import { AnimationTab } from "@/animation/components/animation-tab";
 
 const TRANSFORM_PARAM_KEYS = [
 	"transform.positionX",
@@ -103,6 +105,19 @@ function buildTransformTab({
 				sectionKey="transform"
 			/>
 		),
+	};
+}
+
+function buildAnimationTab({
+	element,
+}: {
+	element: VisualElement | CompoundElement;
+}): PropertiesTabDef {
+	return {
+		id: "animation",
+		label: "Animation",
+		icon: <HugeiconsIcon icon={KeyframeAddIcon} size={16} />,
+		content: ({ trackId }) => <AnimationTab key={element.id} element={element} trackId={trackId} />,
 	};
 }
 
@@ -244,6 +259,7 @@ function getTextConfig({
 		tabs: [
 			buildTextTab({ element }),
 			buildTransformTab({ element }),
+			buildAnimationTab({ element }),
 			buildBlendingTab({ element }),
 		],
 	};
@@ -261,6 +277,7 @@ function getVideoConfig({
 		defaultTab: "transform",
 		tabs: [
 			buildTransformTab({ element }),
+			buildAnimationTab({ element }),
 			...(showAudioTab ? [buildAudioTab({ element })] : []),
 			buildSpeedTab({ element }),
 			buildBlendingTab({ element }),
@@ -283,6 +300,7 @@ function getImageConfig({
 				content: ({ trackId }: TabContentProps) => <ElementParamsTab element={element} trackId={trackId} paramKeys={model3dParams.map((p) => p.key)} sectionKey="model3d" />,
 			}] : []),
 			buildTransformTab({ element }),
+			buildAnimationTab({ element }),
 			buildBlendingTab({ element }),
 			buildMasksTab({ element }),
 			buildClipEffectsTab({ element }),
@@ -299,6 +317,7 @@ function getStickerConfig({
 		defaultTab: "transform",
 		tabs: [
 			buildTransformTab({ element }),
+			buildAnimationTab({ element }),
 			buildBlendingTab({ element }),
 			buildClipEffectsTab({ element }),
 		],
@@ -315,6 +334,7 @@ function getGraphicConfig({
 		tabs: [
 			buildGraphicTab({ element }),
 			buildTransformTab({ element }),
+			buildAnimationTab({ element }),
 			buildBlendingTab({ element }),
 			buildMasksTab({ element }),
 			buildClipEffectsTab({ element }),
@@ -360,6 +380,7 @@ function getCompoundConfig({
 				content: ({ trackId }) => <CompoundTab element={element} trackId={trackId} />,
 			},
 			buildTransformTab({ element }),
+			buildAnimationTab({ element }),
 			buildAudioTab({ element }),
 			buildBlendingTab({ element }),
 		],

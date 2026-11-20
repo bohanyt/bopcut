@@ -1,3 +1,4 @@
+import { withoutPresetSide } from "@/animation/presets";
 import type {
 	AudioTrack,
 	CompoundElement,
@@ -264,8 +265,13 @@ export function clipElementToRange<T extends TimelineElement>({
 		}).leftAnimations;
 	}
 
+	// A cut-off start or end takes its animation preset with it (like a split).
+	let params = element.params;
+	if (cutLeft > 0) params = withoutPresetSide(params, "in");
+	if (end < elementEnd) params = withoutPresetSide(params, "out");
 	return {
 		...element,
+		params,
 		startTime: start as MediaTime,
 		duration: keptDuration,
 		trimStart: (element.trimStart + leftSourceSpan) as MediaTime,

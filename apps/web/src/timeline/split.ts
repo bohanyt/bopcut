@@ -1,4 +1,5 @@
 // Splitting one timeline element in two at a timeline time (pure).
+import { withoutPresetSide } from "@/animation/presets";
 import type { TimelineElement } from "@/timeline";
 import { isRetimableElement } from "@/timeline";
 import { splitAnimationsAtTime } from "@/animation";
@@ -25,8 +26,17 @@ export function splitElementAt({ element, splitTime, rightId }: { element: Timel
 	const totalSourceSpan = roundMediaTime({ time: getSourceSpanAtClipTime({ clipTime: element.duration, retime: retimeRef }) });
 	const rightSourceSpan = subMediaTime({ a: totalSourceSpan, b: leftSourceSpan });
 	const { leftAnimations, rightAnimations } = splitAnimationsAtTime({ animations: element.animations, splitTime: relativeTime, shouldIncludeSplitBoundary: true });
-	const withoutFade = (key: "fadeIn" | "fadeOut") =>
-		typeof element.params?.[key] === "number" && element.params[key] > 0 ? { params: { ...element.params, [key]: 0 } } : {};
+	// Like audio fades, the left part keeps what happens at the start, the right part what happens at the end.
+	const withoutFade = (key: "fadeIn" | "fadeOut") => {
+		const params = { ...element.params };
+		let changed = false;
+		if (typeof params[key] === "number" && params[key] > 0) {
+			params[key] = 0;
+			changed = true;
+		}
+		const kept = withoutPresetSide(params, key === "fadeIn" ? "in" : "out");
+		return changed || kept !== params ? { params: kept } : {};
+	};
 	return {
 		left: {
 			...element,

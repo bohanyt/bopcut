@@ -1,3 +1,4 @@
+import { readPresetSettings } from "@/animation/presets";
 import type { CompoundElement, SceneTracks, TScene, TimelineTrack } from "@/timeline";
 import { readShakeSettings } from "@/rendering/shake";
 import {
@@ -85,6 +86,7 @@ function buildCompoundNode({
 		trimEnd: element.trimEnd,
 		transform: buildTransformFromParams({ params: element.params }),
 		shake: readShakeSettings(element.params),
+		presets: readPresetSettings(element.params),
 		animations: element.animations,
 		opacity: readOpacityFromParams({ params: element.params }),
 		blendMode: readBlendModeFromParams({ params: element.params }),
@@ -142,6 +144,7 @@ function buildTrackNodes({
 							retime: element.retime,
 							transform: buildTransformFromParams({ params: element.params }),
 							shake: readShakeSettings(element.params),
+							presets: readPresetSettings(element.params),
 							animations: element.animations,
 							opacity: readOpacityFromParams({ params: element.params }),
 							blendMode: readBlendModeFromParams({ params: element.params }),
@@ -157,6 +160,7 @@ function buildTrackNodes({
 						trimStart: element.trimStart, trimEnd: element.trimEnd,
 						transform: buildTransformFromParams({ params: element.params }),
 						shake: readShakeSettings(element.params),
+						presets: readPresetSettings(element.params),
 						animations: element.animations, opacity: readOpacityFromParams({ params: element.params }),
 						blendMode: readBlendModeFromParams({ params: element.params }),
 						effects: element.effects ?? [], masks: element.masks ?? [],
@@ -171,6 +175,7 @@ function buildTrackNodes({
 							trimEnd: element.trimEnd,
 							transform: buildTransformFromParams({ params: element.params }),
 							shake: readShakeSettings(element.params),
+							presets: readPresetSettings(element.params),
 							animations: element.animations,
 							opacity: readOpacityFromParams({ params: element.params }),
 							blendMode: readBlendModeFromParams({ params: element.params }),
@@ -211,6 +216,7 @@ function buildTrackNodes({
 						trimEnd: element.trimEnd,
 						transform: buildTransformFromParams({ params: element.params }),
 						shake: readShakeSettings(element.params),
+						presets: readPresetSettings(element.params),
 						animations: element.animations,
 						opacity: readOpacityFromParams({ params: element.params }),
 						blendMode: readBlendModeFromParams({ params: element.params }),
@@ -230,6 +236,7 @@ function buildTrackNodes({
 						trimEnd: element.trimEnd,
 						transform: buildTransformFromParams({ params: element.params }),
 						shake: readShakeSettings(element.params),
+						presets: readPresetSettings(element.params),
 						animations: element.animations,
 						opacity: readOpacityFromParams({ params: element.params }),
 						blendMode: readBlendModeFromParams({ params: element.params }),

@@ -229,6 +229,17 @@ A media file can carry its spoken words (from a transcript), in seconds of the f
 - `slide-left`: the same continuation slides out to the left (position keyframes) while the matched clip slides in from the right (position keyframes on it; refused when it already animates its position).
 - The result has `type`, `duration` and the address of the added part (`element`). Its agentId is `<agentId of the clip>~<type>`. A second transition reuses the track just above when it has that name and kind, is visible (and muted, for video) and is free there. The parts are independent elements: moving or trimming the clips later does not move them (move or delete them too). Sound is not crossfaded (use `fadeIn`/`fadeOut` on the audio).
 
+### Animation presets
+
+`animate:{in?, out?}` on an element (bundles, draft `add`), or the draft op `{op:"animate", match, in?, out?}`, gives a visual clip an in and an out animation. Each side is a preset name or `{type, duration}` (seconds, 0.05 to 10):
+- in: `fade` (0.3 s), `pop` (grows past its size and settles, 0.35 s), `impact` (comes down from 1.6x and lands, 0.25 s), `blur` (from blurred, 0.4 s), `typewriter` (text only: the letters appear in reading order, 1 s).
+- out: `fade` (0.3 s), `fall` (drops a quarter of the canvas and tips over 8°, 0.5 s), `dissolve` (blurs, grows a little and fades, 0.5 s).
+- `none` removes that side's preset.
+
+A preset is a setting of the clip (the params `animation.in`, `animation.inDuration`, `animation.out`, `animation.outDuration`; `"none"` for no preset; also in the editor's Animation tab), drawn on top of the clip's own opacity, transform and effects; the clip's keyframes are never changed. Raw `params` with these keys (`set`, elements) are checked like `animate`. An in preset runs from the clip's start and an out preset up to its end, so trims and speed changes keep them in place; when both would not fit, both are shortened alike and leave the clip whole for a moment (so an in preset completes on a drawn frame). A split keeps the in preset on the left part and the out preset on the right part (like audio fades); ungrouping a trimmed compound clip drops the preset of a side that was cut off; copies keep both. A transition's continuation starts as the clip looked at the cut (presets included) and has no presets of its own. The selection box in the preview shows the clip's own position, not the preset's motion.
+- `typewriter` is for text: the letters appear in reading order (right-to-left text from its right edge); a line mixing both directions appears whole once typed; underlines appear with the whole text. The text param `typewriter` (0 to 1, keyframable) does the same by hand.
+- The op's result has `animate:{in, out}` (each `{type, duration}` or null). With `basedOn`, the op is stale when the user changed a side it sets since the snapshot.
+
 ## Exports for agents
 
 Write `export-request.json` to get a finished video file without a browser download: `{rev:"export-1", name?, format?:"mp4"|"webm", quality?:"low"|"medium"|"high"|"very_high", fps?, includeAudio?, projectId?, allowMissing?}`.

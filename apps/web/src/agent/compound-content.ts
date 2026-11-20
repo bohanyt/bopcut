@@ -1,6 +1,7 @@
 // Compound clips built from agent definitions (draft `compound` op, `add` with `element.compound`,
 // bundle elements with `compound`). The nested scene's tracks are built like a draft `add`, so
 // every part stays a normal, editable element; times inside are relative to the clip's content.
+import { animateAgentElement } from "./animate";
 import type { CompoundElement, SceneTracks, TScene, TimelineElement } from "@/timeline";
 import { calculateTotalDuration, updateElementInSceneTracks } from "@/timeline";
 import { buildDefaultScene } from "@/timeline/scenes";
@@ -130,7 +131,7 @@ export function buildAgentCompound({ e, hostSceneId, ctx }: { e: AgentElement; h
 		const paths = k.path === "scale" ? ["transform.scaleX", "transform.scaleY"] : [k.path];
 		for (const propertyPath of paths) ctx.keyframes.push({ sceneId: hostSceneId, trackId: "", elementId: element.id, propertyPath, time: k.time, interpolation: k.interpolation, value: k.value });
 	}
-	return element;
+	return e.animate === undefined ? element : animateAgentElement(element, e.animate);
 }
 
 /** Adds pending keyframes to their elements (found by id in their scene; unset sceneId = defaultSceneId). */

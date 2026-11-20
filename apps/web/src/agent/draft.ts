@@ -1,6 +1,7 @@
 // Agent draft ops applied to a copy of the project's scenes. Pure: the bridge loads assets first,
 // then wraps the resulting scene list in one command, so the whole draft is one Undo step even
 // when it touches several scenes (the root timeline and compound clip contents).
+import type { ParamValues } from "@/params";
 import { type ElementRecord, StaleError, assertNoteNotStale, assertNotStale, assertRippleNotStale, fieldsMapOf, touchedFields } from "./stale";
 import type { Bookmark, SceneTracks, TScene, TimelineElement, TimelineTrack } from "@/timeline";
 import { buildGraphicElement } from "@/timeline/element-utils";
@@ -21,6 +22,8 @@ import { reconcileCaptionEdit } from "@/text/caption";
 import { parseSourceWords, type SourceWord } from "@/media/words";
 import { type WordRef, cutAtWords, cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
 import { cutRange, cutRangeBookmarks } from "@/timeline/range-cut";
+import { type AgentAnimateSide, animateAgentElement, animateParams, parseAgentAnimate, readAnimationPresets } from "./animate";
+import { PRESET_PARAM, checkPresetParams, presetLayerAt, readPresetSettings } from "@/animation/presets";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
@@ -54,6 +57,8 @@ export type DraftOp =
 	 * out left while the matched clip slides in from the right.
 	 */
 	| { op: "transition"; match: AgentMatch; type: TransitionType; duration?: number; color?: string }
+	/** In and out animation presets on the matched clip (see agent/animate). */
+	| { op: "animate"; match: AgentMatch; in?: AgentAnimateSide; out?: AgentAnimateSide }
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
 		& Pick<AgentElement, "params" | "keyframes" | "group"> & NonNullable<AgentElement["compound"]>);
 export const TRANSITION_TYPES = ["crossfade", "slide-left", "flash", "dip"] as const;
@@ -264,6 +269,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					if (el.sourceDuration !== undefined && (patch.duration !== undefined || patch.trimStart !== undefined)) {
 						patch.trimEnd = Math.max(0, el.sourceDuration - (patch.trimStart ?? el.trimStart) - (patch.duration ?? el.duration));
 					}
+					// Animation presets written as raw params are checked like an animate op.
+					checkPresetParams(el, op.params as ParamValues | undefined);
 					if (op.params) patch.params = { ...el.params, ...op.params };
 					if (op.caption && el.type !== "text") throw new Error("caption can only update a text element");
 					let next = { ...el, ...patch };
@@ -302,6 +309,21 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						? op.caption ? updateAgentCaption(reconcileCaptionEdit(el, next), op.caption) : reconcileCaptionEdit(el, next)
 						: next;
 				});
+				touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
+				address(result, "element", hit.sceneId, hit.element.id);
+				return;
+			}
+			case "animate": {
+				const hit = find(op.match);
+				const request = parseAgentAnimate({ in: op.in, out: op.out });
+				// Stale when the user changed these presets since the snapshot.
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: animateParams(request).map((key) => `params.${key}`), scenes: list });
+				const animated = animateAgentElement(hit.element, request);
+				editTracks(hit.sceneId, (tracks) => {
+					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
+					track.elements[hit.index] = animated;
+				}, { noRipple: true });
+				result.animate = readAnimationPresets(animated);
 				touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
 				address(result, "element", hit.sceneId, hit.element.id);
 				return;
@@ -376,16 +398,19 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					if (duration < 2 * frameTicks) throw new Error(`transition: ${previous.name} has no footage after its end to ${type === "crossfade" ? "fade out" : "slide"} (use flash or dip)`);
 					// The continuation starts as the clip ended: its animated values at its last frame become the
 					// copy's own (no jump at the cut); its keyframes stay with the clip.
-					const lastFrame = Math.max(0, previous.duration - 1);
+					// The clip's last drawn frame.
+					const lastFrame = Math.max(0, previous.duration - frameTicks);
 					const at = (path: string, fallback: number) => resolveAnimationPathValueAtTime({ animations: previous.animations, propertyPath: path, localTime: lastFrame, fallbackValue: fallback });
 					const param = (key: string, fallback: number) => (typeof previous.params?.[key] === "number" ? (previous.params[key] as number) : fallback);
+					// Its animation presets as drawn on that frame too (an out preset may have faded or moved it).
+					const shown = presetLayerAt(readPresetSettings(previous.params), lastFrame, previous.duration, canvas.height);
 					const ended: Record<string, number> = {
-						opacity: at("opacity", param("opacity", 1)),
+						opacity: at("opacity", param("opacity", 1)) * shown.opacity,
 						"transform.positionX": at("transform.positionX", param("transform.positionX", 0)),
-						"transform.positionY": at("transform.positionY", param("transform.positionY", 0)),
-						"transform.scaleX": at("transform.scaleX", param("transform.scaleX", 1)),
-						"transform.scaleY": at("transform.scaleY", param("transform.scaleY", 1)),
-						"transform.rotate": at("transform.rotate", param("transform.rotate", 0)),
+						"transform.positionY": at("transform.positionY", param("transform.positionY", 0)) + shown.offsetY,
+						"transform.scaleX": at("transform.scaleX", param("transform.scaleX", 1)) * shown.scale,
+						"transform.scaleY": at("transform.scaleY", param("transform.scaleY", 1)) * shown.scale,
+						"transform.rotate": at("transform.rotate", param("transform.rotate", 0)) + shown.rotate,
 					};
 					let tail: TimelineElement = {
 						...previous,
@@ -396,7 +421,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						duration: Math.round(duration) as MediaTime,
 						trimStart: Math.round(previous.trimStart + playedSource) as MediaTime,
 						trimEnd: Math.max(0, Math.round(previous.trimEnd - duration * rate)) as MediaTime,
-						params: { ...previous.params, ...ended, fadeIn: 0, fadeOut: 0 },
+						params: { ...previous.params, ...ended, fadeIn: 0, fadeOut: 0, [PRESET_PARAM.in]: "none", [PRESET_PARAM.out]: "none" },
 						animations: undefined,
 						...(previous.type === "video" ? { isSourceAudioEnabled: false } : {}),
 					} as TimelineElement;
