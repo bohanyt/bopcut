@@ -151,17 +151,24 @@ function recordOf(map: Map<string, ElementRecord>, sceneId: string, elementId: s
 	return map.get(`${sceneId}:${elementId}`) ?? map.get(`#${elementId}`);
 }
 
-/** A bounded history of snapshots the editor sent, so a draft's `basedOn` can be compared with now. */
+/**
+ * A bounded history of snapshots the editor sent, so a draft's `basedOn` can be compared with now. With
+ * `meta`, the timeline itself is kept too (by reference), for changes and frames of that state.
+ */
 export class SnapshotHistory {
-	private entries: { at: string; fields: Map<string, ElementRecord> }[] = [];
+	private entries: { at: string; fields: Map<string, ElementRecord>; state: { projectId: string; scenes: TScene[]; rootSceneId: string } | null }[] = [];
 	constructor(private readonly size = 64) {}
-	record(at: string, scenes: TScene[]) {
+	record(at: string, scenes: TScene[], meta?: { projectId: string; rootSceneId: string }) {
 		this.entries = this.entries.filter((entry) => entry.at !== at);
-		this.entries.push({ at, fields: fieldsMapOf(scenes) });
+		this.entries.push({ at, fields: fieldsMapOf(scenes), state: meta ? { ...meta, scenes } : null });
 		if (this.entries.length > this.size) this.entries.shift();
 	}
 	get(at: string): Map<string, ElementRecord> | undefined {
 		return this.entries.find((entry) => entry.at === at)?.fields;
+	}
+	/** The timeline as that snapshot showed it, when it was recorded with its project. */
+	state(at: string): { projectId: string; scenes: TScene[]; rootSceneId: string } | null {
+		return this.entries.find((entry) => entry.at === at)?.state ?? null;
 	}
 }
 

@@ -203,6 +203,19 @@ Add `{op:"note", text, start, end?, match?:[{agentId}|{id}]}`, `{op:"resolve-not
 
 Write `frames-request.json`: `{rev:"capture-1", times:[0,1,2], width:960}`. `rev` may contain only letters, digits, `_`, or `-`; times must be within the timeline. `width` is optional (default 960, maximum 4096; frames are always rendered at full resolution then scaled down); height follows the canvas aspect ratio. Frames show the root timeline (see *Compound clips for agents*) with compound clips rendered from their content, also while the human has a compound open. The active editor processes requests when no drag is in progress; `frames-result.json` contains `{rev,files:["frames/capture-1/0.jpg",...],projectId}` after all frames are saved. Use a new `rev` for each request.
 
+**Frames of a past state, and before/after pairs.** A frames request can name a timeline state:
+- `state` renders that state instead of the timeline now; `compare` also renders a second state at the same times. Each is `{syncedAt:"<a snapshot's syncedAt>"}` (the timeline as that snapshot showed it) or `{draft:"<rev>", side:"before"|"after"}` (just before or just after a draft applied).
+- Example: `{rev:"check-1", times:[2.5], compare:{draft:"d-7", side:"before"}}` gives `files` (now) and `compare` (before the draft): `frames/check-1/2.5.jpg` and `frames/check-1/2.5-compare.jpg`.
+- The editor remembers the states of its last 64 snapshots and 16 drafts in this session. An unknown or malformed state refuses the request: `frames-result.json` gets `{rev, files:[], error}`.
+
+## Changes for agents
+
+Write `changes-request.json` to learn what changed, as values:
+- `{rev:"changes-1", since:"<a snapshot's syncedAt>"}`: everything that changed after that snapshot.
+- `{rev:"changes-2", draft:"<rev>"}`: `draftChanges` (what that draft changed) and `changes` (what changed after it, usually by the user).
+
+The editor answers once per `rev` in `changes-result.json`: `{rev, projectId, syncedAt, since|draft, changes:[...], draftChanges?:[...]}`, or `{rev, error}` for an unknown snapshot or draft. Each change has `kind` (`set`, `add`, `delete`), `elementId`, `agentId`, `agentMade`, `name`, `track`, `sceneId`, `path`, `elementType`, `field` (`startTime`, `duration`, `trimStart`, `trimEnd`, `track`, a params key such as `content`, or `keyframes.<path>`), `from` and `to`, in seconds, the same as the edit log. Compound clip contents are included. The answer's `syncedAt` is a snapshot of the timeline at that moment, usable as the next `since`, as `basedOn`, or as a frames `state`. For each change, request a before/after frame pair with `compare` (see above).
+
 ## 3D models
 Assets with `type:"model"` accept GLB or glTF with embedded resources. On an element, use `model3d:{params:{rotationY:0,modelScale:1,cameraDistance:3.5,cameraFov:45,lightIntensity:2,lightX:3,lightY:4,lightZ:5}}`; `rotationX/Y/Z` are in degrees. Numeric parameters can be animated through `keyframes` (e.g. `path:"rotationY"`). Transform and opacity work as for image elements.
 
@@ -351,4 +364,4 @@ Compound clips the agent builds name their main track `Main Track`, like compoun
 
 **Bundle.** In `bundle.json`, an element in `main`, a `video` overlay, or `audio` may carry `compound:{main?, overlay?, audio?, elements?}` with the same layout as the bundle itself (plus `elements` with a per-element `track`, as in the `compound` op); asset keys refer to the bundle's `assets`. `duration` may be omitted (= content length). Overlay tracks holding a compound are created unmuted.
 
-**Edit log.** Human edits anywhere under the root timeline, inside compound clips included, are logged with `sceneId` and `path`. Grouping or ungrouping moves an element to another scene with the same id and is logged as one `sceneId` change: its local times, trims, and track are remapped by the move and are not logged, and the compound clip a group creates (or an ungroup removes) is not logged as an add or delete. If the element's position on the root timeline changed in the same edit, `startTime`/`duration` lines report it in root seconds. A compound clip's `trimEnd` follows its content length and is not logged. Agent drafts (inside compounds too) and their Undo/Redo are not logged.
+**Edit log.** Human edits anywhere under the root timeline, inside compound clips included, are logged with `sceneId` and `path`. Every element is logged, also the user's own; `agentMade` says whether the item was made by an agent. Grouping or ungrouping moves an element to another scene with the same id and is logged as one `sceneId` change: its local times, trims, and track are remapped by the move and are not logged, and the compound clip a group creates (or an ungroup removes) is not logged as an add or delete. If the element's position on the root timeline changed in the same edit, `startTime`/`duration` lines report it in root seconds. A compound clip's `trimEnd` follows its content length and is not logged. Agent drafts (inside compounds too) and their Undo/Redo are not logged.

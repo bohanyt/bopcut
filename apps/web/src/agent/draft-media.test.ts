@@ -12,7 +12,7 @@ mock.module("@/media/processing", () => ({
 	processMediaAssets: async ({ files }: { files: File[] }) => Array.from(files).map((file) => ({ name: file.name, type: "image", file, width: 400, height: 200 })),
 }));
 const { EditorCore } = await import("@/core");
-const { applyDraft, pollDraft } = await import("./bridge");
+const { applyDraft, pollDraft, pollChanges } = await import("./bridge");
 const { storageService } = await import("@/services/storage/service");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
@@ -584,5 +584,42 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(backend.state.results[0].error).toContain("another scene");
 		expect(elements(editor).some((e) => e.agentId === "late")).toBe(false);
 		expect(backend.state.deleted).toEqual(backend.state.saved);
+	});
+
+	test("a changes request for an applied draft lists what the draft changed and what the user changed after it", async () => {
+		const editor = setup();
+		(editor.project as any).isLoading = false;
+		const backend = fakeBackend();
+		const store = new Map<string, string>();
+		const previousStorage = (globalThis as any).localStorage;
+		(globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
+		const answered: any[] = [];
+		const inner = globalThis.fetch;
+		globalThis.fetch = (async (url: string, init?: { body?: string }) => {
+			if (String(url) === "/api/agent/changes-request") return new Response(JSON.stringify({ rev: "changes-1", draft: "d-applied" }));
+			if (String(url) === "/api/agent/changes-result") {
+				answered.push(JSON.parse(init?.body ?? "{}"));
+				return new Response("{}");
+			}
+			return inner(url as never, init as never);
+		}) as typeof fetch;
+		restore = () => {
+			backend.restore();
+			(globalThis as any).localStorage = previousStorage;
+		};
+		await applyDraft({ ...draft([{ op: "set", match: { agentId: "old" }, duration: 3 }]), rev: "d-applied" });
+		// The user then trims the same clip.
+		const scenes = editor.scenes.getScenes().map((scene) => ({
+			...scene,
+			tracks: { ...scene.tracks, main: { ...scene.tracks.main, elements: scene.tracks.main.elements.map((e) => ({ ...e, trimStart: T(0.5) })) } },
+		})) as TScene[];
+		editor.scenes.setScenes({ scenes, activeSceneId: "main" });
+		await pollChanges();
+		await pollChanges(); // answered once per rev
+		expect(answered.length).toBe(1);
+		expect(answered[0]).toMatchObject({ rev: "changes-1", projectId: "p", draft: "d-applied" });
+		expect(answered[0].draftChanges.map((c: any) => [c.agentId, c.field, c.from, c.to])).toEqual([["old", "duration", 2, 3]]);
+		expect(answered[0].changes.map((c: any) => [c.agentId, c.field, c.from, c.to])).toEqual([["old", "trimStart", 0, 0.5]]);
+		expect(typeof answered[0].syncedAt).toBe("string");
 	});
 });

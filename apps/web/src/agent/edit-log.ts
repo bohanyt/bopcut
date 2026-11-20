@@ -10,7 +10,8 @@ export type EditItem = {
 	params: Record<string, unknown>; animations: Record<string, unknown>;
 };
 export type EditSnapshot = { projectId: string; items: EditItem[] };
-export type EditLine = { t: string; projectId: string; actor: "user"; kind: "set" | "delete" | "add"; agentId: string | null; elementId: string; name: string; track: string; sceneId: string; path: string[]; elementType: string; field: string; from: unknown; to: unknown };
+/** `agentMade`: the item was made by an agent (it has an agentId); every element is logged either way. */
+export type EditLine = { t: string; projectId: string; actor: "user"; kind: "set" | "delete" | "add"; agentId: string | null; agentMade: boolean; elementId: string; name: string; track: string; sceneId: string; path: string[]; elementType: string; field: string; from: unknown; to: unknown };
 
 const keyOf = (item: EditItem) => `${item.sceneId}\u0000${item.id}`;
 
@@ -37,16 +38,16 @@ export function diffEdits(before: EditSnapshot | null, after: EditSnapshot, t = 
 	const lines: EditLine[] = [];
 	const add = (item: EditItem, kind: EditLine["kind"], field: string, from: unknown, to: unknown) => {
 		if (JSON.stringify(from) === JSON.stringify(to)) return;
-		lines.push({ t, projectId: after.projectId, actor: "user", kind, agentId: item.agentId, elementId: item.id, name: item.media ?? item.name, track: item.track, sceneId: item.sceneId, path: item.path, elementType: item.type, field, from: from ?? null, to: to ?? null });
+		lines.push({ t, projectId: after.projectId, actor: "user", kind, agentId: item.agentId, agentMade: item.agentId !== null, elementId: item.id, name: item.media ?? item.name, track: item.track, sceneId: item.sceneId, path: item.path, elementType: item.type, field, from: from ?? null, to: to ?? null });
 	};
 	for (const item of gone.values()) {
 		if (wrapsMoved(item, beforeScenes, afterScenes, movedOut)) continue;
-		if (item.agentId) add(item, "delete", "element", { startTime: item.startTime, duration: item.duration }, null);
+		add(item, "delete", "element", { startTime: item.startTime, duration: item.duration }, null);
 	}
 	for (const item of after.items) {
 		const prev = old.get(keyOf(item)) ?? moved.get(keyOf(item));
 		if (!prev) {
-			if (!item.agentId && !wrapsMoved(item, afterScenes, beforeScenes, movedIn)) add(item, "add", "element", null, { startTime: item.startTime, duration: item.duration });
+			if (!wrapsMoved(item, afterScenes, beforeScenes, movedIn)) add(item, "add", "element", null, { startTime: item.startTime, duration: item.duration });
 			continue;
 		}
 		if (prev.sceneId !== item.sceneId) {
