@@ -3,19 +3,24 @@ import type { RootNode } from "@/services/renderer/nodes/root-node";
 import type { ExportOptions, ExportResult } from "@/export";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { SceneExporter } from "@/services/renderer/scene-exporter";
-import { buildScene } from "@/services/renderer/scene-builder";
-import { createTimelineAudioBuffer } from "@/media/audio";
+import { buildScene, collectVisibleMedia } from "@/services/renderer/scene-builder";
+import { collectAudibleCandidates, createTimelineAudioBuffer } from "@/media/audio";
+import type { MediaLoadFailure } from "@/media/types";
 import { formatTimecode } from "opencut-wasm";
 import { downloadBlob } from "@/utils/browser";
-import { calculateTotalDuration, type TimelineElement, type TScene } from "@/timeline";
+import { calculateTotalDuration, type TScene } from "@/timeline";
+import { isElementMuted } from "@/timeline/audio-state";
 import type { TCanvasSize } from "@/project/types";
-import { collectCompoundScenes } from "@/timeline/compound";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
 	| { success: false; error: string };
+
+function unavailableMedia(missingMedia: MediaLoadFailure[]): ExportResult {
+	return { success: false, error: "Some media used in this timeline are unavailable.", missingMedia };
+}
 
 export class RendererManager {
 	private renderTree: RootNode | null = null;
@@ -169,11 +174,12 @@ export class RendererManager {
 
 	/** Checks a loaded scene before mixdown or rendering. */
 	checkExport({
-		format, allowMissing, scene, scenes, canvasSize,
-	}: Pick<ExportOptions, "format" | "allowMissing"> & {
+		format, allowMissing, includeAudio, scene, scenes, canvasSize, duration = calculateTotalDuration({ tracks: scene.tracks }),
+	}: Pick<ExportOptions, "format" | "allowMissing" | "includeAudio"> & {
 		scene: TScene;
 		scenes: TScene[];
 		canvasSize: TCanvasSize;
+		duration?: number;
 	}): ExportResult | null {
 		if (format === "mp4" && (canvasSize.width % 2 !== 0 || canvasSize.height % 2 !== 0)) {
 			return {
@@ -183,13 +189,14 @@ export class RendererManager {
 		}
 		if (allowMissing === true) return null;
 		const { tracks } = scene;
-		const elements = [tracks.main, ...tracks.overlay, ...tracks.audio].flatMap<TimelineElement>((track) => track.elements);
-		const nested = collectCompoundScenes({ scenes, elements });
 		const { media } = this.editor;
-		const missingMedia = media.getMissingSceneMedia({ scenes: [scene, ...nested], assets: media.getAssets() });
-		return missingMedia.length
-			? { success: false, error: "Some media used in this timeline are unavailable.", missingMedia }
-			: null;
+		const visual = collectVisibleMedia({ tracks, scenes, duration }).map(({ mediaId, name }) => ({ id: mediaId, name, requiresUrl: true }));
+		const audio = includeAudio ? collectAudibleCandidates({ tracks, scenes, duration, mediaAssets: media.getAssets() })
+			.flatMap(({ element }) => element.type === "audio" && element.sourceType === "upload" && !isElementMuted({ element })
+				? [{ id: element.mediaId, name: element.name }]
+				: []) : [];
+		const missingMedia = media.getMissingReferences([...visual, ...audio]);
+		return missingMedia.length ? unavailableMedia(missingMedia) : null;
 	}
 
 	/**
@@ -254,10 +261,12 @@ export class RendererManager {
 			const { canvasSize, background } = activeProject.settings;
 
 			const { media, project } = this.editor;
+			let cancelledWhileLoading = false;
 			if (media.isLoadingMedia() && !onCancel?.()) {
 				await new Promise<void>((resolve) => {
 					const check = () => {
-						if (media.isLoadingMedia() && !onCancel?.()) return;
+						cancelledWhileLoading = onCancel?.() === true;
+						if (media.isLoadingMedia() && !cancelledWhileLoading) return;
 						unsubscribeMedia();
 						unsubscribeProject();
 						resolve();
@@ -266,13 +275,14 @@ export class RendererManager {
 					const unsubscribeProject = project.subscribe(check);
 				});
 			}
-			if (onCancel?.()) return { success: false, cancelled: true };
+			if (cancelledWhileLoading || onCancel?.()) return { success: false, cancelled: true };
 
-			const preflight = this.checkExport({ format, allowMissing, scene: exported, scenes, canvasSize });
+			const preflight = this.checkExport({ format, allowMissing, includeAudio, scene: exported, scenes, canvasSize, duration });
 			if (preflight) return preflight;
 			const mediaAssets = media.getAssets();
 
 			let audioBuffer: AudioBuffer | null = null;
+			const audioFailures = new Map<string, MediaLoadFailure>();
 			if (includeAudio) {
 				onProgress?.({ progress: 0.05 });
 				audioBuffer = await createTimelineAudioBuffer({
@@ -280,6 +290,7 @@ export class RendererManager {
 					mediaAssets,
 					duration,
 					scenes,
+					onLibraryAudioFailure: (failure) => audioFailures.set(failure.id, failure),
 				});
 			}
 
@@ -287,6 +298,7 @@ export class RendererManager {
 			if (onCancel?.()) {
 				return { success: false, cancelled: true };
 			}
+			if (audioFailures.size && allowMissing !== true) return unavailableMedia([...audioFailures.values()]);
 
 			const scene = buildScene({
 				tracks,

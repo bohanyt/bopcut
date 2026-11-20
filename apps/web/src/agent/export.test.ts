@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { ALL_FORMATS, BufferSource, CanvasSource, EncodedPacket, EncodedPacketSink, EncodedVideoPacketSource, Input, Output } from "mediabunny";
-import type { CompoundElement, TScene, VideoElement } from "@/timeline";
+import type { CompoundElement, LibraryAudioElement, TScene, UploadAudioElement, VideoElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { ExportFormat } from "@/export";
 import type { MediaAsset } from "@/media/types";
@@ -12,7 +12,7 @@ const { defaultExportName, parseExportRequest, safeName } = await import("./expo
 const { CLAIM_MS, handleExportFile, handleExportResult, readTextLimited, saveExport, writeExportResult } = await import("./export-server");
 const { holdMediaUrls, revokeMediaUrl } = await import("@/media/url-release");
 const { EditorCore } = await import("@/core");
-const { pollExport } = await import("./bridge");
+const { pollExport, retryMissingMedia } = await import("./bridge");
 const { storageService } = await import("@/services/storage/service");
 const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
 const { RootNode } = await import("@/services/renderer/nodes/root-node");
@@ -20,7 +20,7 @@ const { SceneExporter } = await import("@/services/renderer/scene-exporter");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
 
-async function withCanvas(run: () => Promise<void>) {
+async function withCanvas(run: () => Promise<void>, extraGlobals: Record<string, unknown> = {}) {
 	class TestCanvas {
 		width = 0;
 		height = 0;
@@ -28,6 +28,7 @@ async function withCanvas(run: () => Promise<void>) {
 	const globals = {
 		HTMLCanvasElement: TestCanvas,
 		document: { createElement: () => new TestCanvas() },
+		...extraGlobals,
 	};
 	const previous = Object.getOwnPropertyDescriptors(globalThis);
 	for (const [key, value] of Object.entries(globals)) {
@@ -473,6 +474,118 @@ describe("the export poller", () => {
 				source.resolve([videoAsset]);
 				encode.mockRestore();
 				load.mockRestore();
+			}
+		}));
+
+	test("cancelling a browser export releases its slot while the media read is pending", async () => {
+		const editor = open("p", 2, { missing: true });
+		editor.save.stop();
+		const source = Promise.withResolvers<MediaAsset[]>();
+		const load = spyOn(storageService, "loadAllMediaAssets").mockReturnValue(source.promise);
+		const loading = editor.media.loadProjectMedia({ projectId: "p" });
+		const exporting = editor.project.export({ options: { format: "mp4", quality: "high" } });
+		try {
+			expect(editor.renderer.isExportRunning()).toBe(true);
+			editor.project.cancelExport();
+			const result = await Promise.race([exporting, Bun.sleep(0).then(() => "waiting for media")]);
+			expect(result).toEqual({ success: false, cancelled: true });
+			expect(editor.renderer.isExportRunning()).toBe(false);
+			expect(editor.media.isLoadingMedia()).toBe(true);
+		} finally {
+			source.resolve([]);
+			await loading;
+			await exporting;
+			load.mockRestore();
+		}
+	});
+
+	test("an unavailable library sound is reported before encoding unless explicitly allowed", () =>
+		withCanvas(async () => {
+			const editor = open("p");
+			editor.save.stop();
+			editor.media.setAssets({ assets: [{ ...videoAsset, hasAudio: false }] });
+			const [scene] = editor.scenes.getScenes();
+			const sound: LibraryAudioElement = {
+				id: "sound", type: "audio", sourceType: "library", sourceUrl: "/library/sound.mp3", name: "Library sound",
+				startTime: T(0), duration: T(1), trimStart: T(0), trimEnd: T(0), params: {},
+			};
+			scene.tracks.audio = [{ id: "audio", name: "Audio", type: "audio", muted: false, elements: [sound] }];
+			const fetchSound = spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 404 }));
+			const encode = spyOn(SceneExporter.prototype, "export").mockResolvedValue(new ArrayBuffer(10));
+			try {
+				const options = { format: "mp4", quality: "high", includeAudio: true } as const;
+				expect(await editor.project.export({ options })).toMatchObject({
+					success: false,
+					missingMedia: [{ name: sound.name, sourceUrl: sound.sourceUrl, error: expect.stringContaining("404") }],
+				});
+				expect(encode).not.toHaveBeenCalled();
+				expect((await editor.project.export({ options: { ...options, allowMissing: true } })).success).toBe(true);
+				expect(encode).toHaveBeenCalledTimes(1);
+				expect(fetchSound.mock.calls).toEqual([[sound.sourceUrl], [sound.sourceUrl]]);
+			} finally {
+				encode.mockRestore();
+				fetchSound.mockRestore();
+			}
+		}, { window: { AudioContext: class {} } }));
+
+	test("preflight checks only media used by the selected export", () =>
+		withCanvas(async () => {
+			const editor = open("p", 2, { nested: true });
+			editor.save.stop();
+			const [root, outer, inner] = editor.scenes.getScenes();
+			const missingClip = { ...clip(1), mediaId: "trimmed-video" };
+			inner.tracks.main.elements = [missingClip];
+			// Outer shows the second half of inner. The missing clip ends exactly at the trim.
+			outer.tracks.main.elements = outer.tracks.main.elements.map((element) => ({
+				...element, duration: T(1), trimStart: T(1),
+			}));
+			root.tracks.main.elements.push({ ...clip(2), id: "hidden", mediaId: "hidden-clip", hidden: true });
+			root.tracks.overlay.push({
+				...root.tracks.main, id: "hidden-track", hidden: true,
+				elements: [{ ...clip(2), mediaId: "hidden-track-video" }],
+			});
+			const audio: UploadAudioElement = {
+				id: "sound", type: "audio", sourceType: "upload", mediaId: "missing-audio", name: "Uploaded sound",
+				startTime: T(0), duration: T(1), trimStart: T(0), trimEnd: T(0), params: {},
+			};
+			root.tracks.audio = [{ id: "audio", name: "Audio", type: "audio", muted: false, elements: [audio] }];
+			inner.tracks.audio = [{
+				...root.tracks.audio[0], id: "nested-audio",
+				elements: [{ ...audio, mediaId: "trimmed-audio" }],
+			}];
+			const encode = spyOn(SceneExporter.prototype, "export").mockResolvedValue(new ArrayBuffer(10));
+			try {
+				const options = { format: "mp4", quality: "high" } as const;
+				expect((await editor.project.export({ options: { ...options, includeAudio: false } })).success).toBe(true);
+				expect((await editor.project.export({ options: { ...options, includeAudio: true } })).missingMedia?.map(({ id }) => id))
+					.toEqual(["missing-audio"]);
+				expect(encode).toHaveBeenCalledTimes(1);
+			} finally {
+				encode.mockRestore();
+			}
+		}));
+
+	test("the retry helper can restore references listed only in the folder export result", () =>
+		withCanvas(async () => {
+			const server = { useRenderer: true, request: { rev: "e1", includeAudio: false } };
+			const read = spyOn(storageService, "loadMediaAsset").mockResolvedValue(videoAsset);
+			const encode = spyOn(SceneExporter.prototype, "export").mockResolvedValue(new ArrayBuffer(10));
+			try {
+				await withServer(server, async (log) => {
+					const editor = open("p", 2, { missing: true });
+					expect(editor.media.getMissingMedia()).toEqual([]);
+					await pollExport();
+					const { missingMedia } = await log.result();
+					expect(missingMedia).toMatchObject([{ id: videoAsset.id }]);
+					await retryMissingMedia(missingMedia);
+					expect(read).toHaveBeenCalledWith({ projectId: "p", id: videoAsset.id });
+					server.request = { ...server.request, rev: "e2" };
+					await pollExport();
+					expect(await log.result()).toMatchObject({ status: "done", rev: "e2" });
+				});
+			} finally {
+				encode.mockRestore();
+				read.mockRestore();
 			}
 		}));
 

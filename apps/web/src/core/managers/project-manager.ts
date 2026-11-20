@@ -338,6 +338,7 @@ export class ProjectManager {
 
 	cancelExport(): void {
 		this.exportCancelRequested = true;
+		this.notify();
 	}
 
 	clearExportState(): void {

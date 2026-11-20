@@ -8,7 +8,7 @@ import type {
 } from "@/timeline";
 import { expandCompoundAudioTracks } from "@/timeline/compound";
 import { shouldMaintainPitch } from "@/retime/rate";
-import type { MediaAsset } from "@/media/types";
+import type { MediaAsset, MediaLoadFailure } from "@/media/types";
 import { applyAudioMasteringToBuffer } from "@/media/audio-mastering";
 import type { AudioCapableElement } from "@/timeline/audio-state";
 import {
@@ -97,11 +97,13 @@ export function collectAudibleCandidates({
 	tracks: sceneTracks,
 	mediaAssets,
 	scenes = [],
+	duration = Infinity,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
 	/** All project scenes; needed to mix the audio inside compound clips. */
 	scenes?: TScene[];
+	duration?: number;
 }): AudibleElementCandidate[] {
 	const tracks = expandCompoundAudioTracks({ tracks: sceneTracks, scenes });
 	const allTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
@@ -113,7 +115,7 @@ export function collectAudibleCandidates({
 
 		for (const element of track.elements) {
 			if (!canElementHaveAudio(element)) continue;
-			if (element.duration <= 0) continue;
+			if (element.duration <= 0 || element.startTime >= duration || element.startTime + element.duration <= 0) continue;
 
 			const mediaAsset = hasMediaId(element)
 				? (mediaMap.get(element.mediaId) ?? null)
@@ -146,25 +148,28 @@ export async function collectAudioElements({
 	mediaAssets,
 	audioContext,
 	scenes,
+	duration,
+	onLibraryAudioFailure,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
 	audioContext: AudioContext;
 	scenes?: TScene[];
+	duration?: number;
+	onLibraryAudioFailure?: (failure: MediaLoadFailure) => void;
 }): Promise<CollectedAudioElement[]> {
-	const candidates = collectAudibleCandidates({ tracks, mediaAssets, scenes });
-	const mediaMap = new Map<string, MediaAsset>(
-		mediaAssets.map((media) => [media.id, media]),
-	);
+	const candidates = collectAudibleCandidates({ tracks, mediaAssets, scenes, duration });
 	const pendingElements: Array<Promise<CollectedAudioElement | null>> = [];
 
 	for (const { element, mediaAsset } of candidates) {
+		if (isElementMuted({ element })) continue;
 		if (element.type === "audio") {
 			pendingElements.push(
 				resolveAudioBufferForElement({
 					element,
-					mediaMap,
+					mediaAsset,
 					audioContext,
+					onLibraryAudioFailure,
 				}).then((audioBuffer) => {
 					if (!audioBuffer) return null;
 					return {
@@ -226,20 +231,19 @@ export async function collectAudioElements({
 
 async function resolveAudioBufferForElement({
 	element,
-	mediaMap,
+	mediaAsset,
 	audioContext,
+	onLibraryAudioFailure,
 }: {
 	element: AudioElement;
-	mediaMap: Map<string, MediaAsset>;
+	mediaAsset: MediaAsset | null;
 	audioContext: AudioContext;
+	onLibraryAudioFailure?: (failure: MediaLoadFailure) => void;
 }): Promise<AudioBuffer | null> {
+	if (element.sourceType === "upload") {
+		return mediaAsset?.file ? await resolveAudioBufferForAsset({ asset: mediaAsset, audioContext }) : null;
+	}
 	try {
-		if (element.sourceType === "upload") {
-			const asset = mediaMap.get(element.mediaId);
-			if (!asset) return null;
-			return await resolveAudioBufferForAsset({ asset, audioContext });
-		}
-
 		if (element.buffer) return element.buffer;
 
 		const response = await fetch(element.sourceUrl);
@@ -247,9 +251,14 @@ async function resolveAudioBufferForElement({
 			throw new Error(`Library audio fetch failed: ${response.status}`);
 		}
 
-		const arrayBuffer = await response.arrayBuffer();
-		return await audioContext.decodeAudioData(arrayBuffer.slice(0));
+		return await audioContext.decodeAudioData(await response.arrayBuffer());
 	} catch (error) {
+		onLibraryAudioFailure?.({
+			id: `library:${element.sourceUrl}`,
+			name: element.name,
+			error: error instanceof Error ? error.message : String(error),
+			sourceUrl: element.sourceUrl,
+		});
 		console.warn("Failed to decode audio:", error);
 		return null;
 	}
@@ -645,6 +654,7 @@ export async function createTimelineAudioBuffer({
 	sampleRate = EXPORT_SAMPLE_RATE,
 	audioContext,
 	scenes,
+	onLibraryAudioFailure,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
@@ -652,6 +662,7 @@ export async function createTimelineAudioBuffer({
 	sampleRate?: number;
 	audioContext?: AudioContext;
 	scenes?: TScene[];
+	onLibraryAudioFailure?: (failure: MediaLoadFailure) => void;
 }): Promise<AudioBuffer | null> {
 	const context = audioContext ?? createAudioContext({ sampleRate });
 
@@ -660,6 +671,8 @@ export async function createTimelineAudioBuffer({
 		mediaAssets,
 		audioContext: context,
 		scenes,
+		duration,
+		onLibraryAudioFailure,
 	});
 
 	if (audioElements.length === 0) return null;

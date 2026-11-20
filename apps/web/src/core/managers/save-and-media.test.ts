@@ -70,6 +70,25 @@ describe("missing media", () => {
 			globalThis.fetch = realFetch;
 		}
 	});
+
+	test("toast and export retries share a read, and a stale export result skips the restored asset", async () => {
+		const editor = await load(project("p", new Date(0)), { failed: ["b"] });
+		const failures = editor.media.getMissingMedia();
+		const restored = { ...asset("b"), url: "blob:restored" };
+		const pending = Promise.withResolvers<MediaAsset>();
+		const read = mock(() => pending.promise);
+		stub({ loadMediaAsset: read });
+
+		const toastRetry = editor.media.retryMissingMedia({ projectId: "p" });
+		const exportRetry = editor.media.retryMissingMedia({ projectId: "p", failures });
+		pending.resolve(restored);
+		expect(await Promise.all([toastRetry, exportRetry])).toEqual([[], []]);
+		expect(read).toHaveBeenCalledTimes(1);
+		expect(editor.media.getAssets()).toEqual([restored]);
+
+		expect(await editor.media.retryMissingMedia({ projectId: "p", failures })).toEqual([]);
+		expect(read).toHaveBeenCalledTimes(1);
+	});
 });
 
 /** Renames the main scene: an edit the save manager sees, and visible in what is written. */

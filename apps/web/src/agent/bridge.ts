@@ -5,6 +5,7 @@ import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { defaultExportName, parseExportRequest } from "./export";
 import type { ExportResult } from "@/export";
+import type { MediaLoadFailure } from "@/media/types";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
@@ -223,10 +224,6 @@ export function installAgentBridge() {
 	editor.save.subscribe(readinessChanged);
 	editor.media.subscribe(readinessChanged);
 	editor.project.subscribe(readinessChanged);
-	const retryMissingMedia = () => {
-		const project = editor.project.getActiveOrNull();
-		return project ? editor.media.retryMissingMedia({ projectId: project.metadata.id }) : Promise.resolve([]);
-	};
 	// A snapshot taken in the console is remembered like a synced one, so a draft can be basedOn it.
 	const consoleSnapshot = () => {
 		const snap = agentSnapshot();
@@ -243,6 +240,12 @@ export function installAgentBridge() {
 		void pollChanges();
 		void pollExport();
 	}, 2000);
+}
+
+export function retryMissingMedia(failures?: MediaLoadFailure[]): Promise<MediaLoadFailure[]> {
+	const editor = EditorCore.getInstance();
+	const project = editor.project.getActiveOrNull();
+	return project ? editor.media.retryMissingMedia({ projectId: project.metadata.id, failures }) : Promise.resolve([]);
 }
 
 /**
@@ -331,14 +334,14 @@ async function answerExport() {
 		if (missingMedia?.length) {
 			return answer({
 				status: "error",
-				error: `${error} Restore the missing files (window.agent.retryMissingMedia() retries stored files) or send allowMissing:true with a new rev.`,
+				error: `${error} Restore the missing sources, pass this result's missingMedia to window.agent.retryMissingMedia() to reload stored files, then use a new rev. To export without them, send allowMissing:true with a new rev.`,
 				missingMedia,
 			});
 		}
 		return answer({ status: "error", error: cancelled ? "cancelled: the project was closed during the export" : error ?? "export failed" });
 	};
 	const preflight = editor.renderer.checkExport({
-		format: request.format, allowMissing: request.allowMissing, scene: before.root,
+		format: request.format, allowMissing: request.allowMissing, includeAudio: request.includeAudio, scene: before.root,
 		scenes: editor.scenes.getScenes(), canvasSize: before.project.settings.canvasSize,
 	});
 	if (preflight) return await reportFailure(preflight);
