@@ -221,6 +221,14 @@ A media file can carry its spoken words (from a transcript), in seconds of the f
 - A cut within 20 ms of a word's edge does not count (word timings are not that exact).
 - In the editor, resizing a clip whose media have words also snaps its edge to word edges (starts on the left, ends on the right), placed at whole frames from the edge (where a resize can land) and rounded outwards, so the snapped edge never lands inside the word; a mark that would land inside another word is left out.
 
+## Transitions
+
+`{op:"transition", match:<the clip after the cut>, type, duration?, color?}` adds a transition into the matched clip from the clip before it on its track (root timeline). It is made of ordinary, editable parts (nothing is locked or baked, and the preview and the export render it the same way). `duration` is in seconds (default 0.5, at most 5, rounded to whole frames, at least 2 frames).
+- `flash` (white) and `dip` (black, or `color:"#rrggbb"`): a full-canvas shape on the track "Transition flashes" just above the clip's track, centred on the cut, fading in to the cut and out after it (opacity keyframes).
+- `crossfade`: the end of the clip before continues for `duration` on a video track "Transitions" just above the clip's track (a copy that starts where the clip before was cut, silent, with an opacity keyframe from its opacity to 0). The clips themselves do not move. It needs footage after the end of the clip before; with less than `duration`, the transition is as long as the footage allows (the result has the `duration` used), and with none it fails (use `flash` or `dip`).
+- `slide-left`: the same continuation slides out to the left (position keyframes) while the matched clip slides in from the right (position keyframes on it; refused when it already animates its position).
+- The result has `type`, `duration` and the address of the added part (`element`). Its agentId is `<agentId of the clip>~<type>`. A second transition reuses the "Transitions" track just above when it is free there. Sound is not crossfaded (use `fadeIn`/`fadeOut` on the audio).
+
 ## Changes for agents
 
 Write `changes-request.json` to learn what changed, as values:

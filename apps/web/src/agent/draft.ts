@@ -11,7 +11,7 @@ import { applyRippleAdjustments, computeRippleAdjustments } from "@/ripple";
 import type { FrameRate } from "opencut-wasm";
 import { generateUUID } from "@/utils/id";
 import { validNote } from "./notes";
-import { type AgentElement, type AgentKeyframe, type AgentTrackRef, type LoadedMedia, secs } from "./elements";
+import { type AgentElement, type AgentKeyframe, type AgentTrackRef, type LoadedMedia, createAgentTrack, secs } from "./elements";
 import { type BuildContext, applyAgentKeyframes, cloneTracks, placeAgentElement, upsertAgentKeyframe } from "./compound-content";
 import { type AgentMatch, type ElementHit, addressOf, getScenePaths, orderedTracks, resolveCompoundTarget, resolveMatch } from "./scene-graph";
 import { updateAgentCaption, type AgentCaption } from "./captions";
@@ -45,8 +45,17 @@ export type DraftOp =
 	| { op: "words"; mediaId: string; words: SourceWord[] }
 	/** Cuts [start, end) (root timeline seconds) out of every track; everything after moves up. */
 	| { op: "cut"; start: number; end: number }
+	/**
+	 * A transition into the matched clip from the clip before it on its track, made of editable parts:
+	 * `flash`/`dip` a full-canvas colour that fades in and out over the cut; `crossfade` the end of the
+	 * clip before, continued on a track just above and fading out; `slide-left` that continuation sliding
+	 * out left while the matched clip slides in from the right.
+	 */
+	| { op: "transition"; match: AgentMatch; type: TransitionType; duration?: number; color?: string }
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
 		& Pick<AgentElement, "params" | "keyframes" | "group"> & NonNullable<AgentElement["compound"]>);
+export const TRANSITION_TYPES = ["crossfade", "slide-left", "flash", "dip"] as const;
+export type TransitionType = (typeof TRANSITION_TYPES)[number];
 /** `atomic: true`: if any op fails, the draft changes nothing. */
 export type Draft = { schema: string; rev: string; label?: string; projectId?: string; atomic?: boolean; basedOn?: string; ops: DraftOp[] };
 export type Touched = { sceneId: string; elementId: string };
@@ -293,6 +302,94 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				});
 				touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
 				address(result, "element", hit.sceneId, hit.element.id);
+				return;
+			}
+			case "transition": {
+				const hit = find(op.match);
+				if (hit.sceneId !== rootSceneId) throw new Error("transitions work on the root timeline");
+				const type = op.type;
+				if (!TRANSITION_TYPES.includes(type)) throw new Error(`transition type must be one of ${TRANSITION_TYPES.join(", ")}`);
+				const wanted = op.duration ?? 0.5;
+				if (typeof wanted !== "number" || !Number.isFinite(wanted) || wanted <= 0 || wanted > 5) throw new Error("transition duration must be 0 to 5 seconds");
+				const frameTicks = (TICKS_PER_SECOND * fps.denominator) / fps.numerator;
+				const frames = (ticks: number) => Math.round(ticks / frameTicks);
+				const cut = hit.element.startTime;
+				const lane = hit.track;
+				const id = hit.element.agentId ?? hit.element.id;
+				const tracksNow = sceneOf(hit.sceneId).tracks;
+				// The overlay position just above the clip's track (overlay index 0 = topmost).
+				const laneIndex = lane.id === tracksNow.main.id ? tracksNow.overlay.length : tracksNow.overlay.findIndex((t) => t.id === lane.id);
+				if (laneIndex < 0) throw new Error("transitions are for clips on video and overlay tracks");
+				let duration = Math.max(2, frames(secs(wanted))) * frameTicks;
+				if (type === "flash" || type === "dip") {
+					const color = op.color ?? (type === "flash" ? "#ffffff" : "#000000");
+					if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error("transition color must be like #ffffff");
+					// Centred on the cut (not before the start of the timeline).
+					const start = Math.max(0, cut - duration / 2);
+					const half = (cut - start) / TICKS_PER_SECOND || duration / 2 / TICKS_PER_SECOND;
+					const seconds = (cut + duration / 2 - start) / TICKS_PER_SECOND;
+					add({ name: "Transition flashes", type: "graphic", index: laneIndex }, {
+						agent_id: `${id}~${type}`, name: type === "flash" ? "Flash" : "Dip", start: start / TICKS_PER_SECOND, duration: seconds,
+						graphic: { definitionId: "rectangle", params: { fill: color, strokeWidth: 0, cornerRadius: 0 } }, size: [canvas.width, canvas.height],
+						keyframes: [{ path: "opacity", time: 0, value: 0 }, { path: "opacity", time: half, value: 1 }, { path: "opacity", time: seconds, value: 0 }],
+					}, result);
+				} else {
+					// The clip that ends at the cut on the same track, and footage of it after its end.
+					const previous = lane.elements.find((e) => e.id !== hit.element.id && Math.abs(e.startTime + e.duration - cut) <= frameTicks / 2);
+					if (!previous) throw new Error("transition: no clip ends where this one starts on its track");
+					const rate = (previous as { retime?: { rate?: number } }).retime?.rate ?? 1;
+					const playedSource = previous.duration * rate;
+					const after = previous.sourceDuration !== undefined ? previous.sourceDuration - previous.trimStart - playedSource : previous.type === "video" || previous.type === "audio" ? previous.trimEnd : Number.POSITIVE_INFINITY;
+					const handle = Math.floor(Math.max(0, after) / rate / frameTicks) * frameTicks;
+					duration = Math.min(duration, handle);
+					if (duration < 2 * frameTicks) throw new Error(`transition: ${previous.name} has no footage after its end to ${type === "crossfade" ? "fade out" : "slide"} (use flash or dip)`);
+					const opacity = typeof previous.params?.opacity === "number" ? previous.params.opacity : 1;
+					let tail: TimelineElement = {
+						...previous,
+						id: generateUUID(),
+						agentId: `${id}~${type}`,
+						name: `${previous.name} (${type})`,
+						startTime: cut as MediaTime,
+						duration: Math.round(duration) as MediaTime,
+						trimStart: Math.round(previous.trimStart + playedSource) as MediaTime,
+						trimEnd: Math.max(0, Math.round(previous.trimEnd - duration * rate)) as MediaTime,
+						params: { ...previous.params, fadeIn: 0, fadeOut: 0 },
+						animations: undefined,
+						...(previous.type === "video" ? { isSourceAudioEnabled: false } : {}),
+					} as TimelineElement;
+					const seconds = duration / TICKS_PER_SECOND;
+					const x = (element: TimelineElement) => (typeof element.params?.["transform.positionX"] === "number" ? (element.params["transform.positionX"] as number) : 0);
+					if (type === "crossfade") {
+						tail = upsertAgentKeyframe(tail, { propertyPath: "opacity", time: 0, value: opacity }, { strict: true });
+						tail = upsertAgentKeyframe(tail, { propertyPath: "opacity", time: seconds, value: 0 }, { strict: true });
+					} else {
+						tail = upsertAgentKeyframe(tail, { propertyPath: "transform.positionX", time: 0, value: x(previous) }, { strict: true });
+						tail = upsertAgentKeyframe(tail, { propertyPath: "transform.positionX", time: seconds, value: x(previous) - canvas.width }, { strict: true });
+					}
+					// slide-left also moves the clip itself in from the right: not over keyframes the user set.
+					if (type === "slide-left") assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: ["keyframes"], scenes: list });
+					editTracks(hit.sceneId, (tracks) => {
+						const above = tracks.overlay[laneIndex - 1];
+						const fits = above && above.name === "Transitions" && above.type === "video" && !above.elements.some((e) => e.startTime < cut + duration && e.startTime + e.duration > cut);
+						if (fits) (above.elements as TimelineElement[]).push(tail);
+						else tracks.overlay.splice(laneIndex, 0, { ...createAgentTrack("video", "Transitions"), elements: [tail] });
+						if (type === "slide-left") {
+							const track = orderedTracks(tracks).find((t) => t.id === lane.id) as any;
+							const index = track.elements.findIndex((e: TimelineElement) => e.id === hit.element.id);
+							let incoming = track.elements[index] as TimelineElement;
+							const existing = (incoming.animations as Record<string, unknown> | undefined)?.["transform.positionX"];
+							if (existing) throw new Error(`transition: ${incoming.name} already animates its position (slide-left would replace it)`);
+							incoming = upsertAgentKeyframe(incoming, { propertyPath: "transform.positionX", time: 0, value: x(incoming) + canvas.width }, { strict: true });
+							incoming = upsertAgentKeyframe(incoming, { propertyPath: "transform.positionX", time: seconds, value: x(incoming) }, { strict: true });
+							track.elements[index] = incoming;
+						}
+					}, { noRipple: true });
+					touched.push({ sceneId: hit.sceneId, elementId: tail.id });
+					if (type === "slide-left") touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
+					address(result, "element", hit.sceneId, tail.id);
+				}
+				result.type = type;
+				result.duration = duration / TICKS_PER_SECOND;
 				return;
 			}
 			case "cut": {
