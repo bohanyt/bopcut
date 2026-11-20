@@ -168,10 +168,15 @@ export class RendererManager {
 		onProgress?: ({ progress }: { progress: number }) => void;
 		onCancel?: () => boolean;
 	}): Promise<ExportResult> {
-		const { format, quality, fps, includeAudio } = options;
+		const { format, quality, fps, includeAudio, sceneId } = options;
 
 		try {
-			const tracks = this.editor.scenes.getActiveScene().tracks;
+			const active = this.editor.scenes.getActiveScene();
+			const exported = sceneId ? this.editor.scenes.getScenes().find((scene) => scene.id === sceneId) : active;
+			if (!exported) {
+				return { success: false, error: "Scene not found" };
+			}
+			const tracks = exported.tracks;
 			const mediaAssets = this.editor.media.getAssets();
 			const activeProject = this.editor.project.getActive();
 
@@ -179,7 +184,7 @@ export class RendererManager {
 				return { success: false, error: "No active project" };
 			}
 
-			const duration = this.editor.timeline.getTotalDuration();
+			const duration = exported.id === active.id ? this.editor.timeline.getTotalDuration() : calculateTotalDuration({ tracks });
 			if (duration === 0) {
 				return { success: false, error: "Project is empty" };
 			}

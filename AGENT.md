@@ -229,6 +229,15 @@ A media file can carry its spoken words (from a transcript), in seconds of the f
 - `slide-left`: the same continuation slides out to the left (position keyframes) while the matched clip slides in from the right (position keyframes on it; refused when it already animates its position).
 - The result has `type`, `duration` and the address of the added part (`element`). Its agentId is `<agentId of the clip>~<type>`. A second transition reuses the track just above when it has that name and kind, is visible (and muted, for video) and is free there. The parts are independent elements: moving or trimming the clips later does not move them (move or delete them too). Sound is not crossfaded (use `fadeIn`/`fadeOut` on the audio).
 
+## Exports for agents
+
+Write `export-request.json` to get a finished video file without a browser download: `{rev:"export-1", name?, format?:"mp4"|"webm", quality?:"low"|"medium"|"high"|"very_high", fps?, includeAudio?, projectId?, allowMissing?}`.
+- The open editor exports the root timeline (also while the user is inside a compound clip) once per `rev`, with the project's canvas, and the frame rate given or the project's. Defaults: mp4, high quality, with sound. It waits until the project is ready (loaded and saved), and refuses while stored media are missing unless `allowMissing:true`.
+- The file goes to `AGENT_WORKSPACE/exports/<name>.<format>`. The default name is the project's name and the local time. An existing file is never overwritten: the next one is `<name> (2).<format>`.
+- `export-result.json` shows `{rev, projectId, status:"exporting", progress}` while it runs (updated at most every 2 s), then `{rev, projectId, status:"done", file, bytes, format, quality, width, height, fps, duration, seconds}` (`seconds` = how long the export took), or `{rev, status:"error", error}`.
+- With `projectId`, only that project answers; another project leaves the request alone.
+- Encoding uses the browser's video encoder (hardware when the browser offers it).
+
 ## Changes for agents
 
 Write `changes-request.json` to learn what changed, as values:

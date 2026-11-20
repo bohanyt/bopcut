@@ -16,6 +16,7 @@ import { parseSelectionPayload } from "@/agent/selection-payload";
 import { consumeAppliedDraft } from "@/agent/draft-store";
 import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
+import { saveExport } from "@/agent/export-server";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -56,6 +57,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 		if (slug[0] === "frames-request") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "frames-request.json"))); } catch { return Response.json(null); }
 		}
+		if (slug[0] === "export-request") {
+			try { return json(await fs.readFile(path.join(WORKSPACE, "export-request.json"))); } catch { return Response.json(null); }
+		}
 		if (slug[0] === "changes-request") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "changes-request.json"))); } catch { return Response.json(null); }
 		}
@@ -85,6 +89,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	if (slug[0] === "frames-result") {
 		await writeAtomic(path.join(WORKSPACE, "frames-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
+	}
+	if (slug[0] === "export-result") {
+		const text = await req.text();
+		if (text.length > 1024 * 1024) return Response.json({ error: "Result too large" }, { status: 413 });
+		await writeAtomic(path.join(WORKSPACE, "export-result.json"), JSON.stringify(JSON.parse(text), null, 1));
+		return Response.json({ ok: true });
+	}
+	if (slug[0] === "export-file") {
+		// An exported video, streamed into AGENT_WORKSPACE/exports/ (a new name if one exists); see AGENT.md.
+		const query = new URL(req.url).searchParams;
+		if (!req.body) return Response.json({ error: "Invalid export" }, { status: 400 });
+		const file = await saveExport({ dir: path.join(WORKSPACE, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body });
+		return file ? Response.json({ file: `exports/${file}` }) : Response.json({ error: "Invalid export" }, { status: 400 });
 	}
 	if (slug[0] === "changes-result") {
 		// What changed since a snapshot, or for a draft; see AGENT.md.
