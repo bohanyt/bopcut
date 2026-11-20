@@ -21,7 +21,15 @@ describe("edit log", () => {
   current = snap(3); logger.changed(); current = snap(2); logger.changed(); await wait(); expect(sent).toHaveLength(1);
  });
  test("aggregates counts, projects, median and threshold", () => {
-  const lines = [diffEdits(snap(0), snap(1))[0], diffEdits(snap(1), snap(3))[0], { ...diffEdits(snap(3), snap(6))[0], projectId: "q" }];
+  const lines = [diffEdits(snap(0), snap(1), "t1")[0], diffEdits(snap(1), snap(3), "t2")[0], { ...diffEdits(snap(3), snap(6), "t3")[0], projectId: "q" }];
   expect(summarizeEdits(lines)[0]).toMatchObject({ count: 3, projects: 2, medianDelta: 2, ruleCandidate: true });
+  // One action that changes three items (one timestamp) is one edit, and edits of the user's own items do not make rules.
+  expect(summarizeEdits(lines.map((line) => ({ ...line, t: "same" })))[0]).toMatchObject({ count: 3, ruleCandidate: false });
+  expect(summarizeEdits(lines.map((line) => ({ ...line, agentMade: false })))[0]).toMatchObject({ count: 3, ruleCandidate: false });
+  // The pattern comes from the agent-made edits; older lines without agentMade count by their agentId.
+  const user = [1, 2, 3, 4].map((n) => ({ ...lines[0], t: `u${n}`, agentMade: false, from: 0, to: 100 }));
+  expect(summarizeEdits([...lines, ...user])[0]).toMatchObject({ count: 7, medianDelta: 2, ruleCandidate: true });
+  const legacy = lines.map(({ agentMade: _agentMade, ...line }) => ({ ...line, agentId: null }));
+  expect(summarizeEdits(legacy as never)[0]).toMatchObject({ ruleCandidate: false });
  });
 });

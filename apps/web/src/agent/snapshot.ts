@@ -2,7 +2,7 @@
 // content (`compounds`), with relative times, root-time visible intervals, and addresses.
 import type { CompoundElement, TScene, TimelineElement, TimelineTrack } from "@/timeline";
 import { calculateTotalDuration } from "@/timeline";
-import { isCompoundElement } from "@/timeline/compound";
+import { isCompoundElement, isCompoundScene } from "@/timeline/compound";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { EditItem } from "./edit-log";
 import { getSceneInstances, toRootInterval } from "./scene-graph";
@@ -72,6 +72,18 @@ export function buildSceneSnapshot({ scenes, rootSceneId, mediaName }: { scenes:
  * element's root-time span through its first path, so moving it between scenes can be told apart
  * from retiming it.
  */
+/** Edit items under every root scene of the project (each scene once): opening another scene is not an edit. */
+export function buildAllEditItems({ scenes, mediaName }: { scenes: TScene[]; mediaName: Map<string, string> }): EditItem[] {
+	const seen = new Map<string, EditItem>();
+	for (const root of scenes.filter((scene) => !isCompoundScene(scene))) {
+		for (const item of buildEditItems({ scenes, rootSceneId: root.id, mediaName })) {
+			const key = `${item.sceneId}\u0000${item.id}`;
+			if (!seen.has(key)) seen.set(key, item);
+		}
+	}
+	return [...seen.values()];
+}
+
 export function buildEditItems({ scenes, rootSceneId, mediaName }: { scenes: TScene[]; rootSceneId: string; mediaName: Map<string, string> }): EditItem[] {
 	const items: EditItem[] = [];
 	for (const [sceneId, { instances }] of getSceneInstances(scenes, rootSceneId, 1)) {
@@ -84,7 +96,9 @@ export function buildEditItems({ scenes, rootSceneId, mediaName }: { scenes: TSc
 				const end = e.startTime + e.duration;
 				const visible = toRootInterval(e.startTime, end, first.chain);
 				items.push({
-					id: e.id, agentId: e.agentId ?? null, name: e.name, media: mediaName.get((e as any).mediaId) ?? null, type: e.type, track: track.name,
+					id: e.id, agentId: e.agentId ?? null, name: e.name, media: mediaName.get((e as any).mediaId) ?? null, type: e.type, track: track.name, trackId: track.id,
+					// Caption words, timings and highlights (by reference: elements are never mutated).
+					...((e as { caption?: unknown }).caption !== undefined ? { caption: (e as { caption?: unknown }).caption } : {}),
 					sceneId, path: first.path, ...(isCompoundElement(e) ? { contentSceneId: e.sceneId } : {}),
 					startTime: sec(e.startTime), duration: sec(e.duration), trimStart: sec(e.trimStart), trimEnd: sec(e.trimEnd),
 					rootStart: sec(visible ? visible[0] : e.startTime + offset), rootEnd: sec(visible ? visible[1] : end + offset),

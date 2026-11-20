@@ -56,6 +56,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 		if (slug[0] === "frames-request") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "frames-request.json"))); } catch { return Response.json(null); }
 		}
+		if (slug[0] === "changes-request") {
+			try { return json(await fs.readFile(path.join(WORKSPACE, "changes-request.json"))); } catch { return Response.json(null); }
+		}
 		if (slug[0] === "draft") {
 			try { return json(await fs.readFile(path.join(WORKSPACE, "draft.json"))); } catch { return Response.json(null); }
 		}
@@ -70,15 +73,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	if (foreignOrigin(req)) return Response.json({ error: "Requests must come from the editor itself" }, { status: 403 });
 	if (slug[0] === "frame") {
 		const form = await req.formData();
-		const rev = form.get("rev"); const time = form.get("time"); const image = form.get("image");
-		if (typeof rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(rev) || typeof time !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(time) || !(image instanceof File) || image.type !== "image/jpeg") return Response.json({ error: "Invalid frame" }, { status: 400 });
-		const file = `frames/${rev}/${time}.jpg`;
+		const rev = form.get("rev"); const time = form.get("time"); const image = form.get("image"); const variant = form.get("variant");
+		if (typeof rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(rev) || typeof time !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(time) || !(image instanceof File) || image.type !== "image/jpeg" || (variant !== null && variant !== "compare")) return Response.json({ error: "Invalid frame" }, { status: 400 });
+		// A compared state's frame (before/after pairs) sits next to the frame of the same time.
+		const name = variant === "compare" ? `${time}-compare.jpg` : `${time}.jpg`;
+		const file = `frames/${rev}/${name}`;
 		await fs.mkdir(path.join(WORKSPACE, "frames", rev), { recursive: true });
-		await fs.writeFile(path.join(WORKSPACE, "frames", rev, `${time}.jpg`), Buffer.from(await image.arrayBuffer()));
+		await fs.writeFile(path.join(WORKSPACE, "frames", rev, name), Buffer.from(await image.arrayBuffer()));
 		return Response.json({ file });
 	}
 	if (slug[0] === "frames-result") {
 		await writeAtomic(path.join(WORKSPACE, "frames-result.json"), JSON.stringify(await req.json(), null, 1));
+		return Response.json({ ok: true });
+	}
+	if (slug[0] === "changes-result") {
+		// What changed since a snapshot, or for a draft; see AGENT.md.
+		const text = await req.text();
+		if (text.length > 16 * 1024 * 1024) return Response.json({ error: "Changes too large" }, { status: 413 });
+		await writeAtomic(path.join(WORKSPACE, "changes-result.json"), JSON.stringify(JSON.parse(text), null, 1));
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "sync") {

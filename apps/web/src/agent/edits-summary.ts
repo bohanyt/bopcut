@@ -5,15 +5,23 @@ export function summarizeEdits(lines: EditLine[]) {
 	for (const line of lines) {
 		const field = line.kind === "set" ? line.field : line.kind;
 		const key = JSON.stringify([line.track, line.elementType, field]);
-		groups.set(key, [...(groups.get(key) ?? []), line]);
+		const group = groups.get(key);
+		if (group) group.push(line);
+		else groups.set(key, [line]);
 	}
 	return [...groups.entries()].map(([key, entries]) => {
 		const [track, elementType, field] = JSON.parse(key) as string[];
-		const deltas = entries.filter((e) => typeof e.from === "number" && typeof e.to === "number").map((e) => (e.to as number) - (e.from as number)).sort((a, b) => a - b);
+		// A rule is about how the user fixes the agent's work: edits of agent-made items (older lines have no
+		// agentMade; their agentId says it). The pattern is taken from those when there are any.
+		const agentLines = entries.filter((e) => e.agentMade ?? e.agentId !== null);
+		const basis = agentLines.length ? agentLines : entries;
+		const deltas = basis.filter((e) => typeof e.from === "number" && typeof e.to === "number").map((e) => (e.to as number) - (e.from as number)).sort((a, b) => a - b);
 		const median = (values: number[]) => values.length ? (values[Math.floor((values.length - 1) / 2)] + values[Math.floor(values.length / 2)]) / 2 : null;
 		const pairs = new Map<string, number>();
-		for (const e of entries) { const pair = JSON.stringify([e.from, e.to]); pairs.set(pair, (pairs.get(pair) ?? 0) + 1); }
+		for (const e of basis) { const pair = JSON.stringify([e.from, e.to]); pairs.set(pair, (pairs.get(pair) ?? 0) + 1); }
 		const typical = JSON.parse([...pairs.entries()].sort((a, b) => b[1] - a[1])[0][0]);
-		return { track, elementType, field, count: entries.length, projects: new Set(entries.map((e) => e.projectId)).size, medianDelta: median(deltas), typical, ruleCandidate: entries.length >= 3 };
+		// One action (one timestamp, such as a bulk delete) counts once.
+		const agentEdits = new Set(agentLines.map((e) => e.t)).size;
+		return { track, elementType, field, count: entries.length, projects: new Set(entries.map((e) => e.projectId)).size, medianDelta: median(deltas), typical, ruleCandidate: agentEdits >= 3 };
 	}).sort((a, b) => a.track.localeCompare(b.track) || a.elementType.localeCompare(b.elementType) || a.field.localeCompare(b.field));
 }

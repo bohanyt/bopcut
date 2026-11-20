@@ -81,7 +81,8 @@ export class RendererManager {
 	}
 
 	/** Renders the open scene at `time` (default: playhead), or another scene's timeline when `sceneId` is given. */
-	async createSnapshot({ time, sceneId }: { time?: import("@/wasm").MediaTime; sceneId?: string } = {}): Promise<SnapshotResult> {
+	/** `scenes`: render that timeline state instead of the editor's (for example a past one). */
+	async createSnapshot({ time, sceneId, scenes: given, settings }: { time?: import("@/wasm").MediaTime; sceneId?: string; scenes?: import("@/timeline").TScene[]; settings?: Pick<import("@/project/types").TProjectSettings, "canvasSize" | "background" | "fps"> } = {}): Promise<SnapshotResult> {
 		try {
 			const activeProject = this.editor.project.getActive();
 
@@ -90,11 +91,12 @@ export class RendererManager {
 			}
 
 			const active = this.editor.scenes.getActiveScene();
-			const scene = sceneId ? this.editor.scenes.getScenes().find((s) => s.id === sceneId) : active;
+			const scenes = given ?? this.editor.scenes.getScenes();
+			const scene = sceneId ? scenes.find((s) => s.id === sceneId) : given ? undefined : active;
 			if (!scene) {
 				return { success: false, error: "Scene not found" };
 			}
-			const isOpen = scene.id === active.id;
+			const isOpen = !given && scene.id === active.id;
 			const duration = isOpen
 				? this.editor.timeline.getTotalDuration()
 				: calculateTotalDuration({ tracks: scene.tracks });
@@ -102,14 +104,14 @@ export class RendererManager {
 				return { success: false, error: "Project is empty" };
 			}
 
-			const { canvasSize, fps } = activeProject.settings;
+			const { canvasSize, fps, background } = settings ?? activeProject.settings;
 			const renderTree = buildScene({
 				tracks: isOpen ? (this.editor.timeline.getPreviewTracks() ?? active.tracks) : scene.tracks,
 				mediaAssets: this.editor.media.getAssets(),
 				duration,
 				canvasSize,
-				background: activeProject.settings.background,
-				scenes: this.editor.scenes.getScenes(),
+				background,
+				scenes,
 			});
 			const renderTime = Math.min(
 				time ?? this.editor.playback.getCurrentTime(),
