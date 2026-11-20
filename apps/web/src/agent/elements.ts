@@ -36,6 +36,8 @@ export type AgentElement = {
 	mediaId?: string;
 	/** `"words"`: a start or end inside a spoken word of the media moves out of it (see word-cuts). */
 	cut?: "words";
+	/** Starts the clip where this word of its media starts / ends it where this word ends (see word-cuts). */
+	startAtWord?: import("@/timeline/word-cuts").WordRef; endAfterWord?: import("@/timeline/word-cuts").WordRef;
 	model3d?: { params?: Record<string, number> }; effect?: string; effectParams?: Record<string, number>;
 	graphic?: { definitionId: string; params?: ParamValues }; icon?: { name: string; color?: string; svg?: string }; text?: string; group?: string;
 	params?: ParamValues; size?: [number, number];

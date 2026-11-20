@@ -17,7 +17,7 @@ import { type AgentMatch, type ElementHit, addressOf, getScenePaths, orderedTrac
 import { updateAgentCaption, type AgentCaption } from "./captions";
 import { reconcileCaptionEdit } from "@/text/caption";
 import { parseSourceWords, type SourceWord } from "@/media/words";
-import { cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
+import { type WordRef, cutAtWords, cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
@@ -26,6 +26,8 @@ export type DraftOp =
 		op: "set"; match: AgentMatch; start?: number; duration?: number; trimStart?: number; params?: Record<string, unknown>; caption?: Partial<AgentCaption>;
 		/** `"words"`: after the change, a start or end inside a spoken word moves out of it (see word-cuts). */
 		cut?: "words";
+		/** Starts the clip where this word starts / ends it where this word ends (see word-cuts `cutAtWords`). */
+		startAtWord?: WordRef; endAfterWord?: WordRef;
 		/** `merge` (default) upserts these keys; `replace` first drops every keyframe of the element. */
 		keyframes?: AgentKeyframe[]; keyframesMode?: "merge" | "replace";
 	}
@@ -92,7 +94,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	 * Moves the cuts of an element just placed out of spoken words; fails if its end would then run into
 	 * the next clip on its track. Returns the element as it is now.
 	 */
-	const snapPlaced = (sceneId: string, elementId: string, words: SourceWord[]) =>
+	const snapPlaced = (sceneId: string, elementId: string, words: SourceWord[], at?: { startWord?: WordRef; endWord?: WordRef; result: any }) =>
 		editTracks(sceneId, (tracks) => {
 			for (const track of orderedTracks(tracks) as any[]) {
 				const index = track.elements.findIndex((e: TimelineElement) => e.id === elementId);
@@ -100,7 +102,14 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const el = track.elements[index];
 				// What was built (a text or compound with a mediaId has no cuts to snap).
 				if (el.type !== "video" && el.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
-				const snapped = snapCutsToWords(el, words, fps);
+				let snapped = null;
+				if (at) {
+					const cut = cutAtWords(el, words, fps, { startWord: at.startWord, endWord: at.endWord });
+					if (typeof cut === "string") throw new Error(cut);
+					snapped = cut.patch;
+					if (cut.start) at.result.startWord = cut.start;
+					if (cut.end) at.result.endWord = cut.end;
+				} else snapped = snapCutsToWords(el, words, fps);
 				if (!snapped) return el;
 				const next = { ...el, ...snapped };
 				assertRoomForEnd(track.elements, index, el.startTime + el.duration, next.startTime + next.duration);
@@ -119,7 +128,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	const refuseNestedCut = (elements: unknown[]) => {
 		for (const e of elements as AgentElement[]) {
 			if (!e || typeof e !== "object") continue;
-			if (e.cut !== undefined) throw new Error("cut works on a top-level add or set, not inside a compound or a replace");
+			if (e.cut !== undefined || e.startAtWord !== undefined || e.endAfterWord !== undefined) throw new Error("cut, startAtWord and endAfterWord work on a top-level add or set, not inside a compound or a replace");
 			const content = e.compound;
 			if (content) refuseNestedCut([...(content.main ?? []), ...(content.overlay ?? []).flatMap((t) => t.elements ?? []), ...(content.audio ?? []), ...(content.elements ?? [])]);
 		}
@@ -176,7 +185,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		const content = element.compound;
 		if (content) refuseNestedCut([...(content.main ?? []), ...(content.overlay ?? []).flatMap((t) => t.elements ?? []), ...(content.audio ?? []), ...(content.elements ?? [])]);
 		let words: SourceWord[] | undefined;
-		if (cutWords) {
+		const atWords = element.startAtWord !== undefined || element.endAfterWord !== undefined;
+		if (atWords && cutWords) throw new Error("startAtWord/endAfterWord already cut at words (no cut needed)");
+		if (cutWords || atWords) {
 			const loaded = mediaFor(element);
 			if (!loaded || (loaded.type !== "video" && loaded.type !== "audio")) throw new Error('cut: "words" is for video and audio clips');
 			words = needWords(draftWords.get(loaded.id) ?? loaded.words ?? wordsOf?.(loaded.id));
@@ -184,7 +195,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		const ctx: BuildContext = { canvas, keyframes: [], mediaFor, existing: list, created: [] };
 		// Placed as usual first (defaults, track, place), then its cuts move out of words.
 		const placed = editTracks(sceneId, (tracks) => placeAgentElement({ tracks, sceneId, e: element, ref: track, ctx }));
-		if (words) placed.element = snapPlaced(sceneId, placed.element.id, words);
+		if (words) placed.element = snapPlaced(sceneId, placed.element.id, words, atWords ? { startWord: element.startAtWord, endWord: element.endAfterWord, result } : undefined);
 		placedElement(sceneId, track.name, placed, ctx, result);
 	};
 	/** Keyframes, nested scenes, selection, and result addresses of an element just placed. */
@@ -217,7 +228,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const cutWords = checkCut(op.cut);
 				const hit = find(op.match);
 				let setWords: SourceWord[] | undefined;
-				if (cutWords) {
+				const atWords = op.startAtWord !== undefined || op.endAfterWord !== undefined;
+				if (atWords && (op.trimStart !== undefined || op.duration !== undefined || cutWords)) throw new Error("startAtWord/endAfterWord replace trimStart, duration and cut");
+				if (cutWords || atWords) {
 					if (hit.element.type !== "video" && hit.element.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
 					setWords = needWords(wordsFor((hit.element as { mediaId?: unknown }).mediaId));
 				}
@@ -249,7 +262,15 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 							for (const target of keyframeTargets(next, k)) next = upsertAgentKeyframe(next, { ...target, time: k.time, interpolation: k.interpolation }, { strict: true });
 						}
 					}
-					if (setWords) {
+					if (setWords && atWords) {
+						const cut = cutAtWords(next, setWords, fps, { startWord: op.startAtWord, endWord: op.endAfterWord, limit: sourceEnd(el) });
+						if (typeof cut === "string") throw new Error(cut);
+						const requestedEnd = next.startTime + next.duration;
+						next = { ...next, ...cut.patch };
+						assertRoomForEnd(track.elements, hit.index, requestedEnd, next.startTime + next.duration);
+						if (cut.start) result.startWord = cut.start;
+						if (cut.end) result.endWord = cut.end;
+					} else if (setWords) {
 						// The source ends where it did before this op (a shorter clip does not shorten its file).
 						const snapped = snapCutsToWords(next, setWords, fps, { limit: sourceEnd(el) });
 						if (snapped) {

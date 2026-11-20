@@ -79,6 +79,15 @@ export function snapCutsToWords(clip: Clip, words: SourceWord[], fps: FrameRate,
 	let target = to;
 	for (let i = 0, word = wordInside(words, target); word && i <= words.length; i++, word = wordInside(words, target)) target = word.end;
 	target = Math.min(limit, target);
+	return fitSpan(clip, words, fps, newFrom, target, limit);
+}
+
+/**
+ * The trims and duration that play the source from `newFrom` to `target` (seconds), in whole frames:
+ * rounded up, unless that would reach into the next word or past `limit`, then down if the last word
+ * still plays to within the tolerance, else left exact.
+ */
+function fitSpan(clip: Clip, words: SourceWord[], fps: FrameRate, newFrom: number, target: number, limit: number): Pick<Clip, "trimStart" | "duration" | "trimEnd"> {
 	const frame = fps.denominator / fps.numerator;
 	// Timeline length of the source span, then whole frames of it.
 	const exact = getClipTimeAtSourceTime({ sourceTime: target - newFrom, retime: clip.retime });
@@ -96,6 +105,45 @@ export function snapCutsToWords(clip: Clip, words: SourceWord[], fps: FrameRate,
 	const played = Math.round(getSourceTimeAtClipTime({ clipTime: sec(duration), retime: clip.retime }) * TICKS_PER_SECOND);
 	const trimEnd = Math.max(0, Math.round(limit * TICKS_PER_SECOND) - trimStart - played) as MediaTime;
 	return { trimStart, duration, trimEnd };
+}
+
+/** A word named in a draft: its text, and which occurrence (1 = the first after the clip's start). */
+export type WordRef = string | { text: string; occurrence?: number };
+
+const normalized = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+/**
+ * The word a reference names: matching text (case and punctuation aside), the `occurrence`-th that starts
+ * at or after `after` (source seconds). An error message when there is none.
+ */
+export function findWord(words: SourceWord[], ref: WordRef, after: number): SourceWord | string {
+	const text = typeof ref === "string" ? ref : ref?.text;
+	const occurrence = typeof ref === "string" ? 1 : (ref?.occurrence ?? 1);
+	if (typeof text !== "string" || !normalized(text)) return "a word reference needs text";
+	if (!Number.isInteger(occurrence) || occurrence < 1) return "occurrence must be 1 or more";
+	const wanted = normalized(text);
+	let seen = 0;
+	for (const word of words) {
+		if (word.start < after - WORD_TOLERANCE || normalized(word.text) !== wanted) continue;
+		if (++seen === occurrence) return word;
+	}
+	return `no ${occurrence > 1 ? `occurrence ${occurrence} of ` : ""}"${text}" after ${round(after)} s in the media's words`;
+}
+
+/**
+ * Cuts a clip at named words: it starts where `startWord` starts and ends where `endWord` ends (each
+ * found from the clip's start, the end from the new start), in whole frames that never cut a word.
+ */
+export function cutAtWords(clip: Clip, words: SourceWord[], fps: FrameRate, { startWord, endWord, limit = sourceEnd(clip) }: { startWord?: WordRef; endWord?: WordRef; limit?: number }): { patch: Pick<Clip, "trimStart" | "duration" | "trimEnd">; start?: SourceWord; end?: SourceWord } | string {
+	const { from, to } = playedSpan(clip);
+	const start = startWord === undefined ? undefined : findWord(words, startWord, from);
+	if (typeof start === "string") return start;
+	const newFrom = start ? start.start : from;
+	const end = endWord === undefined ? undefined : findWord(words, endWord, newFrom);
+	if (typeof end === "string") return end;
+	const target = Math.min(limit, end ? end.end : to);
+	if (target <= newFrom) return "the end word comes before the start";
+	return { patch: fitSpan(clip, words, fps, newFrom, target, limit), ...(start ? { start } : {}), ...(end ? { end } : {}) };
 }
 
 /**

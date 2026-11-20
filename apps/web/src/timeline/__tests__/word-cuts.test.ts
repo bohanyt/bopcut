@@ -4,7 +4,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
-const { cutWarnings, snapCutsToWords, wordEdgeTimes, wordInside } = await import("@/timeline/word-cuts");
+const { cutWarnings, findWord, snapCutsToWords, wordEdgeTimes, wordInside } = await import("@/timeline/word-cuts");
 const { fieldsMapOf } = await import("@/agent/stale");
 const { parseSourceWords } = await import("@/media/words");
 const { computeAgentDraft } = await import("@/agent/draft");
@@ -247,5 +247,43 @@ describe("review round 3", () => {
 		const loaded = { id: "m1", type: "video" as const, duration: 10, words };
 		const out = computeAgentDraft({ scenes: scenesWith([]), rootSceneId: "main", ops: [{ op: "add", track: { name: "Captions", type: "text" }, element: { name: "t", text: "hi", mediaId: "m1", start: 0, duration: 1, cut: "words" } }] as never, mediaFor: () => loaded, canvas: { width: 1920, height: 1080 }, fps, ripple: false });
 		expect(out.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("video and audio") });
+	});
+});
+
+describe("cuts at named words", () => {
+	test("a word is found by its text (case and punctuation aside), its occurrence, from the clip's start", () => {
+		const repeated = [...words, { text: "Punchline!", start: 3, end: 3.5 }];
+		expect(findWord(repeated, "PUNCHLINE", 0)).toMatchObject({ start: 1.45 });
+		expect(findWord(repeated, { text: "punchline", occurrence: 2 }, 0)).toMatchObject({ start: 3 });
+		expect(findWord(repeated, "punchline", 2.5)).toMatchObject({ start: 3 });
+		expect(findWord(repeated, "nope", 0)).toContain('no "nope"');
+		expect(findWord(repeated, { text: "so", occurrence: 0 }, 0)).toContain("occurrence");
+	});
+
+	test("end the clip after the punchline word: within one frame of its end, no word cut", () => {
+		const out = run(scenesWith([clip(0.9, 3)]), [{ op: "set", match: { agentId: "clip" }, endAfterWord: "punchline" }]);
+		expect(out.results[0]).toMatchObject({ ok: true, endWord: { text: "punchline", end: 2.05 } });
+		const after = main(out.scenes);
+		const end = (after.trimStart + after.duration) / TICKS_PER_SECOND;
+		expect(end).toBeGreaterThanOrEqual(2.05 - 0.02);
+		expect(end - 2.05).toBeLessThanOrEqual(1 / 30 + 1e-6);
+		expect(wordInside(words, end)).toBeNull();
+		expect(out.results[0].cutWarnings).toBeUndefined();
+	});
+
+	test("start at a word and end after another; mixing with explicit timing is refused; adds take them too", () => {
+		const both = run(scenesWith([clip(0, 5)]), [{ op: "set", match: { agentId: "clip" }, startAtWord: "the", endAfterWord: "lands" }]);
+		expect(both.results[0]).toMatchObject({ ok: true, startWord: { text: "the" }, endWord: { text: "lands" } });
+		expect(sec(main(both.scenes).trimStart)).toBe(1.25);
+		expect(run(scenesWith([clip(0, 5)]), [{ op: "set", match: { agentId: "clip" }, duration: 1, endAfterWord: "lands" }]).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("replace trimStart") });
+		expect(run(scenesWith([clip(0, 5)]), [{ op: "set", match: { agentId: "clip" }, startAtWord: "lands", endAfterWord: "so" }]).results[0]).toMatchObject({ ok: false });
+		const loaded = { id: "m1", type: "video" as const, duration: 10, words };
+		const added = computeAgentDraft({ scenes: scenesWith([]), rootSceneId: "main", ops: [{ op: "add", track: { name: "Main" }, element: { agent_id: "n", name: "n", mediaId: "m1", start: 20, duration: 5, startAtWord: "so", endAfterWord: "punchline" } }] as never, mediaFor: () => loaded, canvas: { width: 1920, height: 1080 }, fps, ripple: false });
+		expect(added.results[0]).toMatchObject({ ok: true, startWord: { text: "so" }, endWord: { text: "punchline" } });
+	});
+
+	test("with basedOn, a named-word cut counts as touching trimStart and duration", () => {
+		const out = computeAgentDraft({ scenes: scenesWith([clip(0.8, 4)]), rootSceneId: "main", ops: [{ op: "set", match: { agentId: "clip" }, endAfterWord: "lands" }] as never, mediaFor: () => undefined, canvas: { width: 1920, height: 1080 }, fps, ripple: false, wordsOf: () => words, base: fieldsMapOf(scenesWith([clip(0, 5)])) });
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true });
 	});
 });
