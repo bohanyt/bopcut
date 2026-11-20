@@ -10,6 +10,7 @@ import { frameRateToFloat } from "@/fps/utils";
 import { downloadBlob } from "@/utils/browser";
 import { calculateTotalDuration } from "@/timeline";
 import { lastFrameMediaTime } from "@/wasm";
+import { holdMediaUrls } from "@/media/url-release";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
@@ -178,10 +179,14 @@ export class RendererManager {
 			return { success: false, error: "Another export is running; try again when it finishes" };
 		}
 		this.exportRunning = true;
+		const releaseMedia = holdMediaUrls();
+		this.notify();
 		try {
 			return await this.runExport(job);
 		} finally {
+			releaseMedia();
 			this.exportRunning = false;
+			this.notify();
 		}
 	}
 
@@ -230,6 +235,11 @@ export class RendererManager {
 				});
 			}
 
+			// Checked again before encoding: preparing the sound can take a while.
+			if (onCancel?.()) {
+				return { success: false, cancelled: true };
+			}
+
 			const scene = buildScene({
 				tracks,
 				mediaAssets,
@@ -270,7 +280,8 @@ export class RendererManager {
 				const buffer = await exporter.export({ rootNode: scene });
 				clearInterval(cancelInterval);
 
-				if (cancelled) {
+				// Also a cancel that came after the last check (a short export ends within 100 ms).
+				if (cancelled || onCancel?.()) {
 					return { success: false, cancelled: true };
 				}
 

@@ -16,7 +16,7 @@ import { parseSelectionPayload } from "@/agent/selection-payload";
 import { consumeAppliedDraft } from "@/agent/draft-store";
 import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
-import { MAX_EXPORT_BYTES, readTextLimited, saveExport } from "@/agent/export-server";
+import { handleExportFile, handleExportResult } from "@/agent/export-server";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -90,26 +90,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		await writeAtomic(path.join(WORKSPACE, "frames-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
 	}
-	if (slug[0] === "export-result") {
-		const text = await readTextLimited(req, 1024 * 1024);
-		if (text === null) return Response.json({ error: "Result too large" }, { status: 413 });
-		let body: unknown;
-		try {
-			body = JSON.parse(text);
-		} catch {
-			return Response.json({ error: "Invalid result" }, { status: 400 });
-		}
-		await writeAtomic(path.join(WORKSPACE, "export-result.json"), JSON.stringify(body, null, 1));
-		return Response.json({ ok: true });
-	}
-	if (slug[0] === "export-file") {
-		// An exported video, streamed into AGENT_WORKSPACE/exports/ (a new name if one exists); see AGENT.md.
-		const query = new URL(req.url).searchParams;
-		if (!req.body) return Response.json({ error: "Invalid export" }, { status: 400 });
-		if (Number(req.headers.get("content-length") ?? 0) > MAX_EXPORT_BYTES) return Response.json({ error: "Export too large" }, { status: 413 });
-		const saved = await saveExport({ dir: path.join(WORKSPACE, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body });
-		return "file" in saved ? Response.json({ file: `exports/${saved.file}` }) : Response.json({ error: saved.error }, { status: saved.status });
-	}
+	// Agent exports (see AGENT.md): progress and errors, and the video with its final answer.
+	if (slug[0] === "export-result") return handleExportResult(req, WORKSPACE);
+	if (slug[0] === "export-file") return handleExportFile(req, WORKSPACE);
 	if (slug[0] === "changes-result") {
 		// What changed since a snapshot, or for a draft; see AGENT.md.
 		const text = await req.text();

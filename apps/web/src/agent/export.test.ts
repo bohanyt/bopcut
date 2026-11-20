@@ -6,7 +6,8 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { defaultExportName, parseExportRequest, safeName } = await import("./export");
-const { readTextLimited, saveExport } = await import("./export-server");
+const { CLAIM_MS, handleExportFile, handleExportResult, readTextLimited, saveExport, writeExportResult } = await import("./export-server");
+const { holdMediaUrls, revokeMediaUrl } = await import("@/media/url-release");
 const { EditorCore } = await import("@/core");
 const { pollExport } = await import("./bridge");
 
@@ -50,8 +51,8 @@ describe("saving an export", () => {
 
 	test("streams into the exports folder and never overwrites an earlier export", () =>
 		inTempDir(async (dir, fs, path) => {
-			expect(await saveExport({ dir, name: "final", format: "mp4", body: body("one") })).toEqual({ file: "final.mp4" });
-			expect(await saveExport({ dir, name: "final", format: "mp4", body: body("two") })).toEqual({ file: "final (2).mp4" });
+			expect(await saveExport({ dir, name: "final", format: "mp4", body: body("one") })).toEqual({ file: "final.mp4", bytes: 3 });
+			expect(await saveExport({ dir, name: "final", format: "mp4", body: body("two") })).toEqual({ file: "final (2).mp4", bytes: 3 });
 			expect(await fs.readFile(path.join(dir, "final.mp4"), "utf8")).toBe("one");
 			expect(await saveExport({ dir, name: "x", format: "mov", body: body("no") })).toMatchObject({ status: 400 });
 			expect((await fs.readdir(dir)).sort()).toEqual(["final (2).mp4", "final.mp4"]);
@@ -78,7 +79,7 @@ describe("saving an export", () => {
 			const link = path.join(dir, "exports");
 			await fs.mkdir(real);
 			await fs.symlink(real, link, "junction");
-			expect(await saveExport({ dir: link, name: "x", format: "mp4", body: body("x") })).toMatchObject({ status: 409 });
+			expect(await saveExport({ dir: link, name: "x", format: "mp4", body: body("x") })).toMatchObject({ status: 403 });
 			expect(await fs.readdir(real)).toEqual([]);
 		}));
 
@@ -89,8 +90,8 @@ describe("saving an export", () => {
 		});
 		try {
 			await inTempDir(async (dir, fs, path) => {
-				expect(await saveExport({ dir, name: "f", format: "webm", body: body("one") })).toEqual({ file: "f.webm" });
-				expect(await saveExport({ dir, name: "f", format: "webm", body: body("two") })).toEqual({ file: "f (2).webm" });
+				expect(await saveExport({ dir, name: "f", format: "webm", body: body("one") })).toEqual({ file: "f.webm", bytes: 3 });
+				expect(await saveExport({ dir, name: "f", format: "webm", body: body("two") })).toEqual({ file: "f (2).webm", bytes: 3 });
 				expect(await fs.readFile(path.join(dir, "f.webm"), "utf8")).toBe("one");
 				expect(await fs.readFile(path.join(dir, "f (2).webm"), "utf8")).toBe("two");
 				expect((await fs.readdir(dir)).sort()).toEqual(["f (2).webm", "f.webm"]);
@@ -110,6 +111,53 @@ describe("saving an export", () => {
 	});
 });
 
+async function inTemp(run: (dir: string, fs: typeof import("node:fs").promises, path: typeof import("node:path")) => Promise<void>) {
+	const os = await import("node:os");
+	const fs = (await import("node:fs")).promises;
+	const path = await import("node:path");
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-"));
+	try {
+		await run(dir, fs, path);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}
+
+describe("the result file", () => {
+	test("a final answer is never replaced; a running export belongs to the tab that took it", () =>
+		inTemp(async (workspace, fs, path) => {
+			const t0 = 1_000_000;
+			const write = (result: Record<string, unknown>, now?: number) => writeExportResult({ workspace, result: result as any, now });
+			expect(await write({ rev: "e1", status: "exporting", tab: "a", progress: 0 }, t0)).toEqual({ ok: true });
+			expect(await write({ rev: "e1", status: "exporting", tab: "b", progress: 0 }, t0 + 1000)).toEqual({ ok: false, reason: "claimed" });
+			expect(await write({ rev: "e1", status: "exporting", tab: "a", progress: 0.5 }, t0 + 2000)).toEqual({ ok: true });
+			// A tab that stopped reporting is taken to be gone.
+			expect(await write({ rev: "e1", status: "exporting", tab: "b", progress: 0 }, t0 + 2000 + CLAIM_MS)).toEqual({ ok: true });
+			expect(await write({ rev: "e1", status: "error", tab: "b", error: "x" }, t0 + 2000 + CLAIM_MS)).toEqual({ ok: true });
+			expect(await write({ rev: "e1", status: "exporting", tab: "a", progress: 0.9 })).toEqual({ ok: false, reason: "answered" });
+			expect(JSON.parse(await fs.readFile(path.join(workspace, "export-result.json"), "utf8"))).toMatchObject({ rev: "e1", status: "error", tab: "b" });
+			// A new request starts over.
+			expect(await write({ rev: "e2", status: "exporting", tab: "a" })).toEqual({ ok: true });
+		}));
+
+	test("the video and its final answer are written in one request; a finished request is not saved again", () =>
+		inTemp(async (workspace, fs, path) => {
+			const query = (rev: string) => new URLSearchParams({ rev, projectId: "p", tab: "a", name: "final", format: "mp4", result: JSON.stringify({ width: 1080, status: "exporting", file: "x" }) });
+			const post = (rev: string) => new Request(`http://x/api/agent/export-file?${query(rev)}`, { method: "POST", body: "video" });
+			const first = await handleExportFile(post("e1"), workspace);
+			expect(first.status).toBe(200);
+			expect(await first.json()).toEqual({ file: "exports/final.mp4", bytes: 5 });
+			expect(JSON.parse(await fs.readFile(path.join(workspace, "export-result.json"), "utf8"))).toMatchObject({ rev: "e1", projectId: "p", tab: "a", status: "done", file: "exports/final.mp4", bytes: 5, width: 1080 });
+			const again = await handleExportFile(post("e1"), workspace);
+			expect(again.status).toBe(409);
+			expect(await again.json()).toMatchObject({ answered: true });
+			expect(await fs.readdir(path.join(workspace, "exports"))).toEqual(["final.mp4"]);
+			// "done" only comes with the video.
+			expect((await handleExportResult(new Request("http://x/", { method: "POST", body: JSON.stringify({ rev: "e2", status: "done" }) }), workspace)).status).toBe(400);
+			expect((await handleExportResult(new Request("http://x/", { method: "POST", body: "{" }), workspace)).status).toBe(400);
+		}));
+});
+
 describe("one export at a time", () => {
 	afterEach(() => EditorCore.reset());
 
@@ -120,6 +168,55 @@ describe("one export at a time", () => {
 		const result = await editor.renderer.exportProject({ options: { format: "mp4", quality: "high" } });
 		expect(result.success).toBe(false);
 		expect(result.error).toContain("Another export is running");
+	});
+
+	test("while it exports, the editor hears of it and media URLs stay usable", async () => {
+		EditorCore.reset();
+		const editor = EditorCore.getInstance();
+		const revoked: string[] = [];
+		const revoke = spyOn(URL, "revokeObjectURL").mockImplementation((url: string) => {
+			revoked.push(url);
+		});
+		let heard = 0;
+		const unsubscribe = editor.renderer.subscribe(() => heard++);
+		let during: Record<string, unknown> = {};
+		(editor.renderer as any).runExport = async () => {
+			during = { running: editor.renderer.isExportRunning(), heard };
+			revokeMediaUrl("blob:removed-meanwhile");
+			during.revoked = [...revoked];
+			return { success: false, error: "x" };
+		};
+		try {
+			await editor.renderer.exportProject({ options: { format: "mp4", quality: "high" } });
+		} finally {
+			unsubscribe();
+			revoke.mockRestore();
+		}
+		expect(during).toEqual({ running: true, heard: 1, revoked: [] });
+		expect(revoked).toEqual(["blob:removed-meanwhile"]);
+		expect(heard).toBe(2);
+		expect(editor.renderer.isExportRunning()).toBe(false);
+	});
+
+	test("media URLs are revoked once no export holds them", () => {
+		const revoked: string[] = [];
+		const revoke = spyOn(URL, "revokeObjectURL").mockImplementation((url: string) => {
+			revoked.push(url);
+		});
+		try {
+			revokeMediaUrl("blob:a");
+			expect(revoked).toEqual(["blob:a"]);
+			const first = holdMediaUrls();
+			const second = holdMediaUrls();
+			revokeMediaUrl("blob:b");
+			first();
+			first(); // a release counts once
+			expect(revoked).toEqual(["blob:a"]);
+			second();
+			expect(revoked).toEqual(["blob:a", "blob:b"]);
+		} finally {
+			revoke.mockRestore();
+		}
 	});
 });
 
@@ -138,66 +235,79 @@ describe("the export poller", () => {
 		(editor.media as any).isLoading = false;
 	};
 
-	/** A fresh editor with one project, a fake export and a fake server; `run` drives the poller. */
-	async function withServer(
-		server: { request: unknown; onRequest?: () => void; resultOk?: () => boolean; delayProgress?: number },
-		run: (log: { exports: any[]; results: any[]; files: string[]; gets: number }) => Promise<void>,
-	) {
-		EditorCore.reset();
-		const editor = EditorCore.getInstance();
-		editor.save.stop();
-		open("p");
-		const log = { exports: [] as any[], results: [] as any[], files: [] as string[], gets: 0 };
-		(editor.renderer as any).exportProject = async ({ options, onProgress }: { options: { sceneId: string }; onProgress: (p: { progress: number }) => void }) => {
-			// What the real export reads at its start: the scene and its clip's length.
-			const scene = editor.scenes.getScenes().find((s) => s.id === options.sceneId);
-			log.exports.push({ options, duration: scene?.tracks.main.elements[0]?.duration });
-			onProgress({ progress: 0.5 });
-			return { success: true, buffer: new ArrayBuffer(10) };
-		};
-		const store = new Map<string, string>();
-		const previousStorage = (globalThis as any).localStorage;
-		(globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
-		const realFetch = globalThis.fetch;
-		globalThis.fetch = (async (url: string, init?: { body?: unknown }) => {
-			const u = String(url);
-			if (u === "/api/agent/export-request") {
-				log.gets++;
-				server.onRequest?.();
-				return new Response(JSON.stringify(server.request));
-			}
-			if (u.startsWith("/api/agent/export-file")) {
-				log.files.push(u);
-				return new Response(JSON.stringify({ file: "exports/final.mp4" }));
-			}
-			if (u === "/api/agent/export-result") {
-				const body = JSON.parse(String(init?.body));
-				if (server.resultOk && !server.resultOk()) return new Response("down", { status: 500 });
-				// What the result file holds is the last write that finished.
-				if (body.status === "exporting" && server.delayProgress) await new Promise((r) => setTimeout(r, server.delayProgress));
-				log.results.push(body);
+	type Log = { exports: any[]; posts: any[]; uploads: number; gets: number; result: () => Promise<any> };
+	type Server = { request: unknown; onRequest?: () => void; onClaim?: () => void; result?: Record<string, unknown>; replyLost?: boolean; duringExport?: () => void };
+	/** A fresh editor with one project, a fake export, and the real server handlers on a temporary workspace. */
+	const withServer = (server: Server, run: (log: Log) => Promise<void>) =>
+		inTemp(async (workspace, fs, path) => {
+			EditorCore.reset();
+			const editor = EditorCore.getInstance();
+			editor.save.stop();
+			open("p");
+			if (server.result) await fs.writeFile(path.join(workspace, "export-result.json"), JSON.stringify(server.result));
+			const log: Log = {
+				exports: [],
+				posts: [],
+				uploads: 0,
+				gets: 0,
+				result: async () => {
+					try {
+						return JSON.parse(await fs.readFile(path.join(workspace, "export-result.json"), "utf8"));
+					} catch {
+						return null;
+					}
+				},
+			};
+			(editor.renderer as any).exportProject = async ({ options, onProgress, onCancel }: { options: { sceneId: string }; onProgress: (p: { progress: number }) => void; onCancel: () => boolean }) => {
+				// What the real export reads at its start: the scene and its clip's length.
+				const scene = editor.scenes.getScenes().find((s) => s.id === options.sceneId);
+				log.exports.push({ options, duration: scene?.tracks.main.elements[0]?.duration });
+				onProgress({ progress: 0.5 });
+				server.duringExport?.();
+				if (onCancel()) return { success: false, cancelled: true };
+				return { success: true, buffer: new ArrayBuffer(10) };
+			};
+			const store = new Map<string, string>();
+			const previousStorage = (globalThis as any).localStorage;
+			(globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
+			const realFetch = globalThis.fetch;
+			globalThis.fetch = (async (url: string, init?: { body?: unknown }) => {
+				const u = String(url);
+				if (u === "/api/agent/export-request") {
+					log.gets++;
+					server.onRequest?.();
+					return new Response(JSON.stringify(server.request));
+				}
+				if (u === "/api/agent/export-result") {
+					log.posts.push(JSON.parse(String(init?.body)));
+					if (log.posts.length === 1) server.onClaim?.();
+					return handleExportResult(new Request("http://x/", { method: "POST", body: String(init?.body) }), workspace);
+				}
+				if (u.startsWith("/api/agent/export-file")) {
+					log.uploads++;
+					const response = await handleExportFile(new Request(`http://x${u}`, { method: "POST", body: init?.body as ArrayBuffer }), workspace);
+					if (server.replyLost) throw new TypeError("network error");
+					return response;
+				}
 				return new Response("{}");
+			}) as typeof fetch;
+			try {
+				await run(log);
+			} finally {
+				globalThis.fetch = realFetch;
+				(globalThis as any).localStorage = previousStorage;
 			}
-			return new Response("{}");
-		}) as typeof fetch;
-		try {
-			await run(log);
-		} finally {
-			globalThis.fetch = realFetch;
-			(globalThis as any).localStorage = previousStorage;
-		}
-	}
+		});
 
-	test("exports the root timeline once per rev and reports progress and the file", () =>
+	test("exports the root timeline once per rev; the file and its answer land in the workspace", () =>
 		withServer({ request: { rev: "e1", name: "final" } }, async (log) => {
 			await pollExport();
 			await pollExport(); // once per rev
 			expect(log.exports.length).toBe(1);
 			expect(log.exports[0].options).toMatchObject({ format: "mp4", quality: "high", includeAudio: true, sceneId: "main" });
-			expect(log.files.length).toBe(1);
-			expect(log.files[0]).toContain("name=final");
-			expect(log.results[0]).toMatchObject({ rev: "e1", projectId: "p", status: "exporting", progress: 0 });
-			expect(log.results.at(-1)).toMatchObject({ rev: "e1", status: "done", file: "exports/final.mp4", bytes: 10, width: 1080, height: 1920, fps: 30, duration: 2 });
+			expect(log.uploads).toBe(1);
+			expect(log.posts[0]).toMatchObject({ rev: "e1", projectId: "p", status: "exporting", progress: 0 });
+			expect(await log.result()).toMatchObject({ rev: "e1", projectId: "p", status: "done", file: "exports/final.mp4", bytes: 10, width: 1080, height: 1920, fps: 30, duration: 2 });
 		}));
 
 	test("takes the editor as it is once the request has arrived", () =>
@@ -205,14 +315,22 @@ describe("the export poller", () => {
 			// The clip grew while the request was read: the export and the answer both use the new length.
 			await pollExport();
 			expect(log.exports[0].duration).toBe(T(5));
-			expect(log.results.at(-1)).toMatchObject({ status: "done", duration: 5 });
+			expect(await log.result()).toMatchObject({ status: "done", duration: 5 });
+		}));
+
+	test("takes the editor as it is once the request is taken", () =>
+		withServer({ request: { rev: "e1" }, onClaim: () => open("p", 7) }, async (log) => {
+			await pollExport();
+			expect(log.exports[0].duration).toBe(T(7));
+			expect(await log.result()).toMatchObject({ status: "done", duration: 7 });
 		}));
 
 	test("a project switch while the request is read leaves the request alone", () =>
 		withServer({ request: { rev: "e1", projectId: "p" }, onRequest: () => open("q") }, async (log) => {
 			await pollExport();
 			expect(log.exports.length).toBe(0);
-			expect(log.results.length).toBe(0);
+			expect(log.posts.length).toBe(0);
+			expect(await log.result()).toBeNull();
 		}));
 
 	test("waits while another export runs", () =>
@@ -223,26 +341,42 @@ describe("the export poller", () => {
 			expect(log.exports.length).toBe(0);
 		}));
 
-	test("a saved export whose answer could not be posted is posted again, not exported again", () => {
-		let up = false;
-		return withServer({ request: { rev: "e1" }, resultOk: () => up }, async (log) => {
-			await pollExport(); // exported and saved, but the result route is down
-			expect(log.exports.length).toBe(1);
-			expect(log.results.length).toBe(0);
-			up = true;
+	test("leaves a request another tab is exporting; takes it over once that tab is gone", async () => {
+		await withServer({ request: { rev: "e1" }, result: { rev: "e1", status: "exporting", tab: "other", updatedAt: new Date().toISOString() } }, async (log) => {
 			await pollExport();
+			expect(log.exports.length).toBe(0);
+			expect(await log.result()).toMatchObject({ tab: "other" });
+		});
+		await withServer({ request: { rev: "e1" }, result: { rev: "e1", status: "exporting", tab: "other", updatedAt: new Date(Date.now() - CLAIM_MS - 1000).toISOString() } }, async (log) => {
 			await pollExport();
 			expect(log.exports.length).toBe(1);
-			expect(log.files.length).toBe(1);
-			expect(log.results.map((r) => r.status)).toEqual(["done"]);
+			expect(await log.result()).toMatchObject({ status: "done" });
 		});
 	});
 
-	test("a slow progress post never lands over the final answer", () =>
-		withServer({ request: { rev: "e1" }, delayProgress: 30 }, async (log) => {
+	test("a request answered before (for example before a reload) is not exported again", () =>
+		withServer({ request: { rev: "e1" }, result: { rev: "e1", status: "done", file: "exports/old.mp4" } }, async (log) => {
 			await pollExport();
-			await new Promise((r) => setTimeout(r, 60)); // anything still on its way lands
-			expect(log.results.at(-1)).toMatchObject({ status: "done" });
-			expect(log.results.filter((r) => r.status === "done").length).toBe(1);
+			await pollExport();
+			expect(log.exports.length).toBe(0);
+			expect(log.posts.length).toBe(1); // refused once, then known as answered
+			expect(await log.result()).toMatchObject({ status: "done", file: "exports/old.mp4" });
+		}));
+
+	test("a lost reply after the video was saved keeps its answer and is not exported again", () =>
+		withServer({ request: { rev: "e1", name: "final" }, replyLost: true }, async (log) => {
+			await pollExport();
+			await pollExport();
+			expect(log.exports.length).toBe(1);
+			expect(log.uploads).toBe(1);
+			expect(log.posts.map((p) => p.status)).toEqual(["exporting", "error"]); // the error is refused
+			expect(await log.result()).toMatchObject({ status: "done", file: "exports/final.mp4" });
+		}));
+
+	test("closing or reopening the project during the export stops it", () =>
+		withServer({ request: { rev: "e1" }, duringExport: () => open("q") }, async (log) => {
+			await pollExport();
+			expect(log.uploads).toBe(0);
+			expect(await log.result()).toMatchObject({ status: "error", error: expect.stringContaining("cancelled") });
 		}));
 });
