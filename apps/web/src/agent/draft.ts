@@ -244,6 +244,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			case "ungroup": {
 				const hit = find(op.match);
 				if (!isCompoundElement(hit.element)) throw new Error("ungroup: not a compound clip");
+				// Ungrouping can give the content new ids (later ops would see it as new) and drops the content
+				// scene with its notes: refused if the user changed the compound or anything in it since basedOn.
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all" });
 				const restored = ungroupCompoundElement({ scenes: list, hostSceneId: hit.sceneId, ref: { trackId: hit.track.id, elementId: hit.element.id } });
 				list = restored.scenes;
 				const refs = restored.elements.map((ref) => ({ sceneId: hit.sceneId, elementId: ref.elementId }));

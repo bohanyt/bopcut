@@ -10,7 +10,7 @@ import { TICKS_PER_SECOND } from "@/wasm";
 import { orderedTracks } from "./scene-graph";
 
 /** The comparable state of one element: timing in seconds, each param and the keyframes as JSON. */
-export type ElementFields = { start: number; duration: number; trimStart: number; params: Record<string, string>; animations: string; whole: string };
+export type ElementFields = { start: number; duration: number; trimStart: number; params: Record<string, string>; animations: string; caption: string; whole: string };
 
 /** One element in a snapshot: its fields, the track it is on, and (compound clips) a digest of their content. */
 export type ElementRecord = { fields: ElementFields; trackId: string; content: string | null };
@@ -75,16 +75,19 @@ function jsonOf(value: unknown): { json: string; digest: string } {
 export function fieldsOf(element: TimelineElement): ElementFields {
 	const cached = fieldsCache.get(element);
 	if (cached) return cached;
-	const { params: rawParams, animations: rawAnimations, ...rest } = element as TimelineElement & { animations?: unknown };
+	const { params: rawParams, animations: rawAnimations, caption: rawCaption, ...rest } = element as TimelineElement & { animations?: unknown; caption?: unknown };
 	const params = paramsOf(rawParams);
 	const animations = jsonOf(rawAnimations ?? null);
+	// A caption's words, timings and highlights (kept beside the text).
+	const caption = jsonOf(rawCaption ?? null);
 	const fields: ElementFields = {
 		start: sec(element.startTime),
 		duration: sec(element.duration),
 		trimStart: sec(element.trimStart),
 		params: params.params,
 		animations: animations.json,
-		whole: digest(`${stableJson(rest)}|${params.digest}|${animations.digest}`),
+		caption: caption.digest,
+		whole: digest(`${stableJson(rest)}|${params.digest}|${animations.digest}|${caption.digest}`),
 	};
 	fieldsCache.set(element, fields);
 	return fields;
@@ -175,6 +178,7 @@ export function touchedFields(op: { start?: unknown; duration?: unknown; trimSta
 
 function differs(field: string, then: ElementRecord, now: ElementRecord): boolean {
 	if (field === "keyframes") return then.fields.animations !== now.fields.animations;
+	if (field === "caption") return then.fields.caption !== now.fields.caption;
 	if (field === "element") return then.fields.whole !== now.fields.whole;
 	if (field === "track") return then.trackId !== now.trackId;
 	if (field === "content") return then.content !== now.content;
@@ -186,6 +190,7 @@ function currentValues(fields: string[], element: TimelineElement, record: Eleme
 	const out: Record<string, unknown> = {};
 	for (const field of fields) {
 		if (field === "keyframes") out.keyframes = (element as { animations?: unknown }).animations ?? null;
+		else if (field === "caption") out.caption = (element as { caption?: unknown }).caption ?? null;
 		else if (field === "element") out.element = element;
 		else if (field === "track") out.trackId = record.trackId;
 		else if (field === "content") out.content = "changed";
@@ -207,7 +212,11 @@ export function assertNotStale({ base, now, sceneId, element, fields }: { base: 
 	if (!current) return;
 	const then = recordOf(base, sceneId, element.id);
 	if (!then) throw new StaleError(["the element (added after basedOn)"], { id: element.id });
-	const list = fields === "all" ? ["element", "track", ...(then.content !== null || current.content !== null ? ["content"] : [])] : fields;
+	// New text on a caption also rewrites its words and highlights: those count as touched too.
+	const hasCaption = (element as { caption?: unknown }).caption !== undefined;
+	const list = fields === "all"
+		? ["element", "track", ...(then.content !== null || current.content !== null ? ["content"] : [])]
+		: hasCaption && fields.includes("params.content") ? [...fields, "caption"] : fields;
 	const changed = list.filter((field) => differs(field, then, current));
 	if (changed.length) throw new StaleError(changed, currentValues(changed, element, current));
 }

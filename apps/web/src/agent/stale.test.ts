@@ -168,4 +168,33 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		expect(fieldOf(moved).params).toBe(fieldOf(element).params);
 		expect(fieldOf(moved).whole).not.toBe(fieldOf(element).whole);
 	});
+
+	test("ungrouping a compound the user changed inside (text or notes) is refused, and its content stays checked", () => {
+		const content = (label: string, notes: unknown[] = []): TScene => ({
+			id: "inner", name: "inner", isMain: false, bookmarks: notes, createdAt: new Date(0), updatedAt: new Date(0),
+			tracks: { main: { id: "t-in", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, overlay: [{ id: "t-in-text", name: "Text", type: "text", hidden: false, elements: [text("label", "label", { content: label })] }], audio: [] } as unknown as SceneTracks,
+		}) as TScene;
+		const compound = { id: "box", agentId: "box", type: "compound", name: "box", sceneId: "inner", startTime: T(0), duration: T(3), trimStart: T(0), trimEnd: T(0), params: {} } as unknown as TimelineElement;
+		const scenes = (label: string, notes: unknown[] = []) => [scenesWith([compound])[0], content(label, notes)];
+		const base = fieldsMapOf(scenes("Helo"));
+		const corrected = run(scenes("Hello"), [
+			{ op: "ungroup", match: { agentId: "box" } },
+			{ op: "set", match: { agentId: "label" }, params: { content: "Helo!" } },
+		], base);
+		expect(corrected.results.map((r) => r.stale)).toEqual([true, true]);
+		const noted = run(scenes("Helo", [{ time: 0, note: "keep" }]), [{ op: "ungroup", match: { agentId: "box" } }], base);
+		expect(noted.results[0]).toMatchObject({ ok: false, stale: true, fields: ["content"] });
+		const untouched = run(scenes("Helo"), [{ op: "ungroup", match: { agentId: "box" } }], base);
+		expect(untouched.results[0]).toMatchObject({ ok: true });
+	});
+
+	test("new text on a caption whose highlights the user changed is refused (the update would rewrite them)", () => {
+		const caption = (highlight: boolean) => ({ ...text("c1", "cap-1", { content: "One two" }), caption: { words: [{ text: "One", start: 0, end: 0.5, highlight }, { text: "two", start: 0.5, end: 1 }] } }) as unknown as TimelineElement;
+		const out = run(scenesWith([caption(true)]), [{ op: "set", match: { agentId: "cap-1" }, params: { content: "First two" } }], fieldsMapOf(scenesWith([caption(false)])));
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true, fields: ["caption"] });
+		// A plain text element without caption data is checked on its text only.
+		const plain = scenesWith([text("t1", "t-1", { content: "a" })]);
+		const moved = scenesWith([{ ...text("t1", "t-1", { content: "a" }), startTime: T(1) } as TimelineElement]);
+		expect(run(moved, [{ op: "set", match: { agentId: "t-1" }, params: { content: "b" } }], fieldsMapOf(plain)).results[0]).toMatchObject({ ok: true });
+	});
 });
