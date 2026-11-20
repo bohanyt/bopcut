@@ -11,11 +11,11 @@ No account or database is required. Projects and media are stored in `<repo>/wor
 
 ## Agent workspace (`apps/web/.env.local`)
 ```
-BOPENCUT_DATA=C:\path\to\data-folder         # default: <repo>/workspace
-AGENT_WORKSPACE=C:\path\to\workspace     # default: <repo>/workspace
-AGENT_FILES_ROOT=C:\path\to\asset-root        # default: = AGENT_WORKSPACE
+BOPENCUT_DATA=/path/to/data-folder      # Default: <repo>/workspace
+AGENT_WORKSPACE=/path/to/workspace      # Default: <repo>/workspace
+AGENT_FILES_ROOT=/path/to/asset-root    # Default: AGENT_WORKSPACE
 ```
-BOPENCUT_DATA can point outside the repository; do not commit private data. Use one workspace per job; change the environment and restart the server to switch projects.
+`BOPENCUT_DATA` is the parent of the `projects/` directory. Open and switch projects from the Projects page. `BOPENCUT_DATA` is read on each request; restart the server after changing `AGENT_WORKSPACE` or `AGENT_FILES_ROOT`. Keep private data outside the repository.
 
 | File in AGENT_WORKSPACE | Direction | Contents |
 |---|---|---|
@@ -250,7 +250,7 @@ Write `export-request.json` to get a finished video file without a browser downl
 - The video is the timeline as it is when the export starts; edits made during the export are not in it. Closing the project or opening another one during the export stops it (`error:"cancelled: ..."`).
 - One export runs at a time: the request waits while the user exports from the export button, and the button waits while the agent's export runs (a notice in the editor says so).
 - With `projectId`, only that project answers; another project leaves the request alone.
-- Encoding uses the browser's video encoder (hardware when the browser offers it). The video is held in the browser's memory only until it is saved. At most 8 GiB per file; `exports/` must be a real folder, not a link.
+- Encoding uses the browser's video encoder (hardware when the browser offers it). The browser holds the full file in memory before uploading. The browser export buffer is capped at 4 GiB and may run out of memory earlier. The server accepts uploads up to 8 GiB. Use a real directory for `exports/`.
 
 ## Changes for agents
 

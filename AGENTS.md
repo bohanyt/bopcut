@@ -24,23 +24,9 @@ See [`AGENT.md`](AGENT.md) for the workflow (drafts, notes, frames, preferences,
 - Follow the surrounding code style. **All code, comments, docs and commit messages are in English; only README.md is in Indonesian.**
 - The agent workspace protocol (bundles, drafts, notes, frames, preferences) is in `AGENT.md`; update it when the format changes.
 
-## OpenCut architecture notes
+## Repository layout
 
-Bopencut-specific code, including the agent bridge, storage server, and renderer additions, lives in TypeScript under `apps/web`. The Rust direction below is upstream's long-term plan, not a rule for bopencut changes.
-
-
-An ongoing migration is moving all business logic into `rust/`. Each app under `apps/` is a UI shell — it owns rendering, interaction, and platform-specific concerns, but never owns logic. The UI framework for any given app is a replaceable detail.
-
-### `rust/`
-
-The single source of truth for all non-UI code. Everything platform-agnostic belongs here: no components, no hooks, no framework imports.
-
-### `apps/`
-
-Each app is a frontend that calls into Rust. Logic is never duplicated between apps — only UI is, because each platform may use an entirely different framework and language to build it.
-
-- `web/` — Next.js
-- `desktop/` — GPUI
+The Next.js editor, agent bridge, storage server and renderer integration live in `apps/web`. Shared primitives used by the editor's WebAssembly dependency live in `rust/`. The desktop prototype lives in `apps/desktop`.
 
 ## Web
 
