@@ -45,7 +45,7 @@ Buka `http://127.0.0.1:3000/projects`.
 | Folder kerja agen (sync, draf, frame, log editan) | `<repo>/workspace/` | `AGENT_WORKSPACE` |
 | Akar aset yang boleh dibaca agen | = `AGENT_WORKSPACE` | `AGENT_FILES_ROOT` |
 
-`BOPENCUT_DATA` menunjuk ke folder induk `projects/`. `workspace/` tidak masuk Git. Kalau memakai folder lain, pastikan folder itu juga tidak dikomit. Data lama yang masih tersimpan di browser disalin otomatis ke folder saat pertama dibuka, tanpa menghapus aslinya.
+`BOPENCUT_DATA` menunjuk ke folder induk `projects/`. `workspace/` tidak masuk Git. Kalau memakai folder lain, pastikan folder itu juga tidak dikomit. Project lama yang masih tersimpan di browser, beserta medianya, disalin otomatis ke folder saat halaman Projects memuat daftar project (sebelum project mana pun dibuka), tanpa menghapus aslinya.
 
 ## Memakai bopencut dengan AI lokal
 

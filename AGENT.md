@@ -15,7 +15,7 @@ BOPENCUT_DATA=/path/to/data-folder      # Default: <repo>/workspace
 AGENT_WORKSPACE=/path/to/workspace      # Default: <repo>/workspace
 AGENT_FILES_ROOT=/path/to/asset-root    # Default: AGENT_WORKSPACE
 ```
-`BOPENCUT_DATA` is the parent of the `projects/` directory. Open and switch projects from the Projects page. Changing any of these paths requires restarting the server. Keep private data outside the repository.
+`BOPENCUT_DATA` is the parent of the `projects/` directory. Open and switch projects from the Projects page. `BOPENCUT_DATA` is read on each request; restart the server after changing `AGENT_WORKSPACE` or `AGENT_FILES_ROOT`. Keep private data outside the repository.
 
 | File in AGENT_WORKSPACE | Direction | Contents |
 |---|---|---|
