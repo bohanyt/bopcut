@@ -33,6 +33,8 @@ export interface MeasuredTextElement extends MeasuredTextLayout {
 	emphasisWords: number[];
 	/** Per caption word, how far it has appeared (1 = shown); all 1 unless the style reveals words. */
 	wordReveal: number[];
+	/** Share of the characters shown, in reading order (1 = all; the typewriter animation). */
+	typed: number;
 }
 
 let textMeasurementContext:
@@ -253,6 +255,7 @@ export function measureTextElement({
 					style,
 				)
 			: [],
+		typed: Math.min(1, Math.max(0, textNumber(element, "typewriter", 1, localTime))),
 	};
 }
 

@@ -150,7 +150,10 @@ function resolveEffectPassGroups({
 				width,
 				height,
 			});
-		});
+		})
+		// An effect that changes nothing right now (for example a blur of 0) has no passes; the GPU
+		// compositor refuses an empty group.
+		.filter((passes) => passes.length > 0);
 }
 
 function resolveVisualState({

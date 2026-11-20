@@ -338,6 +338,16 @@ const textElementParams: ElementParamDefinition[] = [
 		step: 0.1,
 	},
 	{
+		// Share of the characters shown, in reading order (the typewriter animation animates it).
+		key: "typewriter",
+		label: "Typed",
+		type: "number",
+		default: 1,
+		min: 0,
+		max: 1,
+		step: 0.01,
+	},
+	{
 		key: "background.enabled",
 		label: "Background Enabled",
 		type: "boolean",

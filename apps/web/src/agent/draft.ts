@@ -21,6 +21,7 @@ import { reconcileCaptionEdit } from "@/text/caption";
 import { parseSourceWords, type SourceWord } from "@/media/words";
 import { type WordRef, cutAtWords, cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
 import { cutRange, cutRangeBookmarks } from "@/timeline/range-cut";
+import { type AgentAnimateSide, animateAgentElement, readAnimationPresets } from "./animate";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
@@ -54,6 +55,8 @@ export type DraftOp =
 	 * out left while the matched clip slides in from the right.
 	 */
 	| { op: "transition"; match: AgentMatch; type: TransitionType; duration?: number; color?: string }
+	/** In and out animation presets on the matched clip, as editable keyframes (see agent/animate). */
+	| { op: "animate"; match: AgentMatch; in?: AgentAnimateSide; out?: AgentAnimateSide }
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
 		& Pick<AgentElement, "params" | "keyframes" | "group"> & NonNullable<AgentElement["compound"]>);
 export const TRANSITION_TYPES = ["crossfade", "slide-left", "flash", "dip"] as const;
@@ -302,6 +305,20 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						? op.caption ? updateAgentCaption(reconcileCaptionEdit(el, next), op.caption) : reconcileCaptionEdit(el, next)
 						: next;
 				});
+				touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
+				address(result, "element", hit.sceneId, hit.element.id);
+				return;
+			}
+			case "animate": {
+				const hit = find(op.match);
+				// Both sides depend on the clip's keyframes and length.
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: ["keyframes", "duration"], scenes: list });
+				const animated = animateAgentElement(hit.element, { in: op.in, out: op.out }, canvas.height);
+				editTracks(hit.sceneId, (tracks) => {
+					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
+					track.elements[hit.index] = animated;
+				}, { noRipple: true });
+				result.animate = readAnimationPresets(animated);
 				touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
 				address(result, "element", hit.sceneId, hit.element.id);
 				return;

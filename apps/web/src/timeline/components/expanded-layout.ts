@@ -39,6 +39,7 @@ const PROPERTY_LABELS: Partial<Record<string, string>> = {
 	"background.offsetY": "BG Offset Y",
 	"background.cornerRadius": "Corner Radius",
 	"shake.intensity": "Shake",
+	typewriter: "Typed",
 };
 
 export function getPropertyLabel(path: AnimationPath): string {

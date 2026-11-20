@@ -30,16 +30,17 @@ function drawGlyphs(
 	ctx.lineJoin = "round";
 	ctx.lineCap = "round";
 	setCanvasLetterSpacing({ ctx, letterSpacingPx: layout.letterSpacing });
-	const runs =
-		layout.wordRuns ??
-		layout.lines.map((text, index) => ({
-			text,
-			index: -1,
-			x: 0,
-			y: index * layout.lineHeightPx - layout.block.visualCenterOffset,
-			width: layout.lineMetrics[index].width,
-		}));
-	ctx.textAlign = layout.wordRuns ? "left" : layout.textAlign;
+	const typing = (layout.typed ?? 1) < 1;
+	const lineRuns = layout.lines.map((text, index) => ({
+		text,
+		index: -1,
+		// While typing, each line is drawn from its left edge, so its letters stay where they are.
+		x: typing && layout.textAlign !== "left" ? -layout.lineMetrics[index].width / (layout.textAlign === "center" ? 2 : 1) : 0,
+		y: index * layout.lineHeightPx - layout.block.visualCenterOffset,
+		width: layout.lineMetrics[index].width,
+	}));
+	const runs = typing ? typedRuns(layout.wordRuns ?? lineRuns, layout.typed) : (layout.wordRuns ?? lineRuns);
+	ctx.textAlign = layout.wordRuns || typing ? "left" : layout.textAlign;
 	const draw = (stroke?: { color: string; width: number }) => {
 		for (const run of runs) {
 			const active =
@@ -92,6 +93,20 @@ function drawGlyphs(
 			textAlign: layout.textAlign,
 		});
 	ctx.restore();
+}
+
+/** The runs cut to the first `typed` share of their characters (in reading order). */
+function typedRuns<T extends { text: string }>(runs: T[], typed: number): T[] {
+	const total = runs.reduce((sum, run) => sum + Array.from(run.text).length, 0);
+	let left = Math.floor(typed * total + 1e-9);
+	const shown: T[] = [];
+	for (const run of runs) {
+		if (left <= 0) break;
+		const chars = Array.from(run.text);
+		shown.push(chars.length <= left ? run : { ...run, text: chars.slice(0, left).join("") });
+		left -= chars.length;
+	}
+	return shown;
 }
 
 /** Rasterize the combined glyph alpha once, so overlapping rings cast one shadow. */

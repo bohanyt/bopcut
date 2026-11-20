@@ -247,3 +247,69 @@ test("reveal: unspoken words are not drawn, appearing words fade in, spoken word
 	expect(appearing.count).toBeGreaterThan(firstOnly.count);
 	expect(appearing.count).toBeLessThan(both.count);
 });
+
+test("typewriter: only the first share of the letters is drawn, and they stay where they are", () => {
+	const plain = (typed: number): TextElement => ({
+		...element,
+		caption: undefined,
+		params: { content: "Hello world", fontFamily: FONT, fontSize: 15, textAlign: "center", "shadow.opacity": 0, typewriter: typed },
+	});
+	const inked = (typed: number) => {
+		const { canvas, pixels, layout } = render(1, 0.5, plain(typed));
+		let left = canvas.width;
+		let right = 0;
+		let count = 0;
+		for (let y = 0; y < canvas.height; y++)
+			for (let x = 0; x < canvas.width; x++)
+				if (pixels[(y * canvas.width + x) * 4 + 3] > 20) {
+					count++;
+					left = Math.min(left, x);
+					right = Math.max(right, x);
+				}
+		return { count, left, right, layout };
+	};
+	const all = inked(1);
+	const half = inked(0.5);
+	const none = inked(0);
+	expect(half.layout.typed).toBe(0.5);
+	expect(none.count).toBe(0);
+	expect(half.count).toBeGreaterThan(0);
+	expect(half.count).toBeLessThan(all.count * 0.75);
+	// Centered text grows to the right from where it will end up, without moving.
+	expect(half.left).toBe(all.left);
+	expect(half.right).toBeLessThan(all.right - 20);
+});
+
+test("an effect that changes nothing right now (a blur of 0) gives the compositor no empty pass group", async () => {
+	mock.module("@/services/renderer/compositor/wasm-compositor", () => ({
+		wasmCompositor: {},
+	}));
+	mock.module("@/services/renderer/gpu-renderer", () => ({
+		gpuRenderer: {},
+		initializeGpuRenderer: async () => {},
+		isGpuAvailable: () => false,
+	}));
+	const { resolveRenderTree } = await import("@/services/renderer/resolve");
+	const { RootNode } = await import("@/services/renderer/nodes/root-node");
+	const { TextNode } = await import("@/services/renderer/nodes/text-node");
+	const { registerDefaultEffects } = await import("@/effects");
+	registerDefaultEffects();
+	const node = new TextNode({
+		...element,
+		effects: [
+			{ id: "still", type: "blur", params: { intensity: 0 }, enabled: true },
+			{ id: "soft", type: "blur", params: { intensity: 10 }, enabled: true },
+		],
+		transform: { position: { x: 0, y: 0 }, scaleX: 1, scaleY: 1, rotate: 0 },
+		opacity: 1,
+		canvasCenter: { x: 320, y: 180 },
+		canvasHeight: 360,
+	} as never);
+	const root = new RootNode({ duration: time(2) });
+	root.add(node);
+	const renderer = { width: 640, height: 360, outputWidth: 640, outputHeight: 360, renderScale: 1, exactFrames: false } as unknown as CanvasRenderer;
+	await resolveRenderTree({ node: root, renderer, time: time(0.5) });
+	const groups = node.resolved?.effectPasses ?? [];
+	expect(groups.length).toBe(1);
+	expect(groups.every((passes) => passes.length > 0)).toBe(true);
+});
