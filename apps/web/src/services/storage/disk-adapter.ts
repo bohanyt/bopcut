@@ -20,6 +20,10 @@ export class DiskAdapter {
 	 */
 	private gone = new Set<string>();
 	async get(id: string): Promise<SerializedProject | null> {
+		return (await this.read(id))?.value ?? null;
+	}
+	/** Reads a project with the revision of that copy (the shared cache can move on meanwhile). */
+	private async read(id: string): Promise<{ value: SerializedProject; revision: string } | null> {
 		const response = await fetch(projectUrl(id), { cache: "no-store" });
 		if (response.status === 404) {
 			if (this.revisions.has(id)) this.gone.add(id);
@@ -27,8 +31,9 @@ export class DiskAdapter {
 			return null;
 		}
 		await checked(response);
-		this.revisions.set(id, response.headers.get("etag") ?? "new");
-		return response.json();
+		const revision = response.headers.get("etag") ?? "new";
+		this.revisions.set(id, revision);
+		return { value: await response.json(), revision };
 	}
 	async getAll(): Promise<SerializedProject[]> {
 		return (await checked(await fetch(base, { cache: "no-store" }))).json();
@@ -57,12 +62,14 @@ export class DiskAdapter {
 		let result: SerializedProject | null = null;
 		await this.queued(key, async () => {
 			for (let attempt = 0; attempt < 5; attempt++) {
-				const current = await this.get(key);
+				const current = await this.read(key);
 				if (!current) return;
-				const next = change(current);
+				const next = change(current.value);
+				// The revision of the copy that was changed, not the shared cache: another read may have moved
+				// that on (to a newer copy, or to "gone"), and the write must not pass on its strength.
 				const response = await fetch(projectUrl(key), {
 					method: "PUT",
-					headers: { "Content-Type": "application/json", "If-Match": this.revisions.get(key) ?? "new" },
+					headers: { "Content-Type": "application/json", "If-Match": current.revision },
 					body: JSON.stringify(next),
 				});
 				if (response.status === 409) continue;

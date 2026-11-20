@@ -49,6 +49,8 @@ export class ProjectManager {
 	/** Projects being deleted, and deleted, in this editor: they do not open. */
 	private deleting = new Set<string>();
 	private deleted = new Set<string>();
+	/** Renames of stored projects still being written: a load of that project waits for them. */
+	private renames = new Map<string, Promise<unknown>>();
 	private isInitialized = false;
 	private invalidProjectIds = new Set<string>();
 	private storageMigrationPromise: Promise<void> | null = null;
@@ -150,7 +152,10 @@ export class ProjectManager {
 		try {
 			const attempts = 5;
 			for (let attempt = 1; ; attempt++) {
-				if (this.deleting.has(id) || this.deleted.has(id)) throw new Error(`Project with id ${id} not found`);
+				this.assertOpenable(id);
+				// A rename being written: the copy read below has the new name, and the next saves keep it.
+				await this.renames.get(id)?.catch(() => undefined);
+				if (superseded()) return;
 				// Changes of this project that are not on disk yet (it is open, or was closed a moment ago)
 				// are written first, so the read below has them.
 				const unsaved = await this.editor.save.settleProject(id);
@@ -170,7 +175,7 @@ export class ProjectManager {
 					throw new Error(`Project with id ${id} not found`);
 				}
 				if (superseded()) return; // a newer load started meanwhile and takes over
-				if (this.deleting.has(id) || this.deleted.has(id)) throw new Error(`Project with id ${id} not found`);
+				this.assertOpenable(id);
 				if (this.editor.save.editsOf(id) === mark) break;
 				if (attempt === attempts) throw new Error("The project kept changing while it was reopened");
 			}
@@ -380,12 +385,9 @@ export class ProjectManager {
 						this.editor.save.releaseProject(id);
 						return { id, error: error instanceof Error ? error.message : String(error) };
 					}
+					// The storage delete removed the media too.
 					this.deleted.add(id);
 					this.editor.save.discardProject(id);
-					// A failure here only leaves files of a deleted project behind.
-					await storageService.deleteProjectMedia({ projectId: id }).catch((error) => {
-						console.error(`Media of deleted project ${id} not removed:`, error);
-					});
 					return { id, error: null };
 				}),
 			);
@@ -445,8 +447,12 @@ export class ProjectManager {
 			const unsaved = await this.editor.save.settleProject(id);
 			if (unsaved) throw new Error(`Earlier changes of this project are not saved yet: ${unsaved}`);
 			// Renamed on the stored copy as it is when written: a write in between is read again, so the
-			// rename never puts an older timeline back.
-			const metadata = await storageService.renameProject({ id, name });
+			// rename never puts an older timeline back. A load of the project waits for it.
+			const renaming = storageService.renameProject({ id, name });
+			this.renames.set(id, renaming);
+			const metadata = await renaming.finally(() => {
+				if (this.renames.get(id) === renaming) this.renames.delete(id);
+			});
 			if (!metadata) {
 				toast.error("Project not found", {
 					description: "Please try again",
@@ -654,10 +660,9 @@ export class ProjectManager {
 		if (!this.active) return;
 
 		try {
-			const didUpdateThumbnail = await this.updateThumbnailFromTimeline();
-			if (didUpdateThumbnail) {
-				await this.editor.save.flush();
-			}
+			// A forced edit: written with the project's other changes when it closes, in the background
+			// (leaving does not wait for the write).
+			await this.updateThumbnailFromTimeline();
 		} catch (error) {
 			console.error("Failed to generate project thumbnail on exit:", error);
 		}
@@ -776,6 +781,14 @@ export class ProjectManager {
 	subscribe(listener: () => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
+	}
+
+	/** Throws when a project cannot be opened because it is being deleted (or was). */
+	private assertOpenable(id: string): void {
+		// Not "not found" while the delete runs: the editor would create a new project in its place,
+		// although the delete can still fail.
+		if (this.deleting.has(id)) throw new Error("This project is being deleted");
+		if (this.deleted.has(id)) throw new Error(`Project with id ${id} not found`);
 	}
 
 	/**

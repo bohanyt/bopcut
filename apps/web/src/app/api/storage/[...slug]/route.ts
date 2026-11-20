@@ -113,7 +113,20 @@ async function handle(
 			if (s.length === 2 && method === "DELETE")
 				return await withProjectLock(id, async () => {
 					await atomicWrite(marker(id), JSON.stringify({ deleted: true }));
-					await fs.rm(projectDir(id), { recursive: true, force: true });
+					// Moved out of the projects in one step first: if that fails (a file is held open), nothing of
+					// the project is removed, so a failed delete never leaves a timeline without its media.
+					const trash = path.join(dataRoot(), "trash", `${id}-${Date.now()}`);
+					await fs.mkdir(path.dirname(trash), { recursive: true });
+					try {
+						await fs.rename(projectDir(id), trash);
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+						return Response.json({ ok: true }); // already gone
+					}
+					// What cannot be removed now stays in the trash folder; the project is gone either way.
+					await fs.rm(trash, { recursive: true, force: true }).catch((error) => {
+						console.error(`Deleted project ${id} not fully removed from the trash:`, error);
+					});
 					return Response.json({ ok: true });
 				});
 			if (s[2] === "migration" && s.length === 3 && method === "GET")

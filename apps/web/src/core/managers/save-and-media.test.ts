@@ -90,6 +90,7 @@ function memoryDisk(stored: TProject[]) {
 		read?: (id: string) => Promise<void> | void;
 		media?: (projectId: string) => Promise<void> | void;
 		write?: (project: TProject) => Promise<void> | void;
+		rename?: (id: string) => Promise<void> | void;
 	} = {};
 	stub({
 		ensureMigrations: async () => {},
@@ -111,6 +112,7 @@ function memoryDisk(stored: TProject[]) {
 		},
 		// Applied to the stored copy at the moment it is written (see DiskAdapter.update).
 		renameProject: async ({ id, name }: { id: string; name: string }) => {
+			await hooks.rename?.(id);
 			const file = files.get(id);
 			if (!file) return null;
 			file.metadata = { ...file.metadata, name, updatedAt: new Date() };
@@ -734,7 +736,8 @@ describe("save sessions: concurrent deletes, renames and creates", () => {
 		});
 		edit(editor, "a: kept");
 		await editor.project.deleteProjects({ ids: ["a", "b"] });
-		expect(mediaDeleted).toEqual(["b"]);
+		// The storage delete of a project removes its media too: nothing else is deleted.
+		expect(mediaDeleted).toEqual([]);
 		expect(disk.files.has("b")).toBe(false);
 		expect(editor.project.getActive().metadata.id).toBe("a");
 		expect(await editor.save.flush()).toBe(true);
@@ -840,5 +843,115 @@ describe("save sessions: concurrent deletes, renames and creates", () => {
 		write.open();
 		expect(await editor.save.settleProject("a")).toBeNull();
 		expect(mainName(disk.files.get("a")!)).toBe("a: saving");
+	});
+});
+
+describe("save sessions: storage edge cases", () => {
+	test("a rename writes with the revision of the copy it changed, even if the shared cache moved on", async () => {
+		const { DiskAdapter } = await import("@/services/storage/disk-adapter");
+		for (const moved of ["r2", null]) {
+			const adapter = new DiskAdapter();
+			const ifMatch: string[] = [];
+			const realFetch = globalThis.fetch;
+			globalThis.fetch = (async (_url: string, init?: { method?: string; headers?: Record<string, string> }) => {
+				if (init?.method === "PUT") {
+					ifMatch.push(init.headers?.["If-Match"] ?? "");
+					return new Response("conflict", { status: 409 });
+				}
+				return new Response(JSON.stringify(project("r", new Date(0))), { status: 200, headers: { etag: "r1" } });
+			}) as typeof fetch;
+			try {
+				await expect(adapter.update("r", (value) => {
+					// Another read (an open, a duplicate) refreshed the cache, or saw the project gone.
+					if (moved) (adapter as any).revisions.set("r", moved);
+					else (adapter as any).revisions.delete("r");
+					return { ...value, metadata: { ...value.metadata, name: "renamed" } };
+				})).rejects.toThrow("kept changing");
+			} finally {
+				globalThis.fetch = realFetch;
+			}
+			expect(ifMatch.length).toBe(5);
+			expect(ifMatch.every((revision) => revision === "r1")).toBe(true);
+		}
+	});
+
+	test("the storage delete moves a project out in one step, then removes it", async () => {
+		const os = await import("node:os");
+		const fs = (await import("node:fs")).promises;
+		const path = await import("node:path");
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "delete-"));
+		const previous = process.env.BOPENCUT_DATA;
+		process.env.BOPENCUT_DATA = root;
+		try {
+			const route = await import("@/app/api/storage/[...slug]/route");
+			const call = (method: string, slug: string[], init: RequestInit = {}) =>
+				(route as any)[method](new Request(`http://localhost/api/storage/${slug.join("/")}`, { method, ...init }), { params: Promise.resolve({ slug }) }) as Promise<Response>;
+			const stored = { ...project("d", new Date(0)), metadata: { ...project("d", new Date(0)).metadata, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() } };
+			expect((await call("PUT", ["projects", "d"], { headers: { "Content-Type": "application/json", "If-Match": "new" }, body: JSON.stringify(stored) })).status).toBe(200);
+			await fs.mkdir(path.join(root, "projects", "d", "media"), { recursive: true });
+			await fs.writeFile(path.join(root, "projects", "d", "media", "m.bin"), "x");
+			expect((await call("DELETE", ["projects", "d"])).status).toBe(200);
+			expect((await call("GET", ["projects", "d"])).status).toBe(404);
+			expect(await fs.readdir(path.join(root, "projects"))).toEqual([]);
+			expect(await fs.readdir(path.join(root, "trash"))).toEqual([]);
+			// Deleting it again is fine.
+			expect((await call("DELETE", ["projects", "d"])).status).toBe(200);
+		} finally {
+			if (previous === undefined) delete process.env.BOPENCUT_DATA;
+			else process.env.BOPENCUT_DATA = previous;
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test("opening a project while its rename is written waits for it, and keeps the new name", async () => {
+		const editor = await load(project("b", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const rename = gate();
+		disk.hooks.rename = () => rename.promise;
+		const renaming = editor.project.renameProject({ id: "a", name: "renamed" });
+		await wait(5);
+		const opening = editor.project.loadProject({ id: "a" });
+		await wait(10);
+		expect(editor.project.getActive().metadata.id).toBe("b");
+		rename.open();
+		await Promise.all([renaming, opening]);
+		expect(editor.project.getActive().metadata.name).toBe("renamed");
+		edit(editor, "a: edited");
+		editor.project.closeProject();
+		expect(await editor.save.settleProject("a")).toBeNull();
+		expect(disk.files.get("a")!.metadata.name).toBe("renamed");
+	});
+
+	test("opening a project while it is being deleted says so (not \"not found\", which would start a new project)", async () => {
+		const editor = await load(project("b", new Date(0)));
+		memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const deleting = gate();
+		stub({ deleteProject: () => deleting.promise, deleteProjectMedia: async () => {} });
+		const removal = editor.project.deleteProjects({ ids: ["a"] });
+		await wait(5);
+		await expect(editor.project.loadProject({ id: "a" })).rejects.toThrow("being deleted");
+		deleting.fail(new Error("EBUSY"));
+		await removal;
+		// The delete failed: the project opens again.
+		await editor.project.loadProject({ id: "a" });
+		expect(editor.project.getActive().metadata.id).toBe("a");
+	});
+
+	test("leaving the editor does not wait for a save in progress", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		disk.hooks.write = () => new Promise(() => {});
+		(editor.project as any).updateThumbnailFromTimeline = async () => {
+			await editor.project.updateThumbnail({ thumbnail: "exit" });
+			return true;
+		};
+		edit(editor, "a: saving");
+		void editor.save.flush();
+		await wait(5);
+		const started = Date.now();
+		await editor.project.prepareExit();
+		editor.project.closeProject();
+		expect(Date.now() - started).toBeLessThan(200);
+		expect(editor.save.hasUnsavedChangesOf("a")).toBe(true);
 	});
 });
