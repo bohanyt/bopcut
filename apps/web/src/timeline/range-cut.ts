@@ -53,9 +53,11 @@ export function cutRange({ tracks, start, end, newId }: { tracks: SceneTracks; s
 			if (rest.startTime + rest.duration > end) {
 				const split = splitElementAt({ element: rest, splitTime: end, rightId: rest.id });
 				if (split) {
-					// The part after the range: the original's id when the clip started inside the range.
+					// The part after the range: the original's id when the clip started inside the range. When
+					// the part before kept the original, this one gets its own agentId, so later ops can tell them apart.
 					const tailId = rest === element ? element.id : rest.id;
-					parts.push({ ...split.right, id: tailId, startTime: start });
+					const tail = { ...split.right, id: tailId, startTime: start };
+					parts.push(rest !== element && element.agentId ? { ...tail, agentId: `${element.agentId}~after` } : tail);
 				}
 			}
 			kept.push(...parts);
@@ -72,12 +74,24 @@ export function cutRange({ tracks, start, end, newId }: { tracks: SceneTracks; s
 	};
 }
 
-/** Notes after the range move up with the timeline; notes inside it move to where it was cut. */
-export function cutRangeBookmarks(bookmarks: Bookmark[], start: MediaTime, end: MediaTime): Bookmark[] {
+/**
+ * Notes after the range move up with the timeline; notes inside it move to where it was cut, one frame
+ * apart (two notes never share a time: the timeline tells notes apart by their time). A note's span
+ * follows the timeline too: its end moves like a time does.
+ */
+export function cutRangeBookmarks(bookmarks: Bookmark[], start: MediaTime, end: MediaTime, frame: MediaTime): Bookmark[] {
 	const length = end - start;
+	const map = (time: number) => (time < start ? time : time >= end ? time - length : start);
+	const taken = new Set<number>();
+	for (const bookmark of bookmarks) if (bookmark.time < start || bookmark.time >= end) taken.add(map(bookmark.time));
 	return bookmarks.map((bookmark) => {
-		if (bookmark.time < start) return bookmark;
-		if (bookmark.time >= end) return { ...bookmark, time: (bookmark.time - length) as MediaTime };
-		return { ...bookmark, time: start };
+		let time = map(bookmark.time);
+		if (bookmark.time >= start && bookmark.time < end) {
+			while (taken.has(time)) time += frame;
+			taken.add(time);
+		}
+		const span = bookmark.duration ? Math.max(0, map(bookmark.time + bookmark.duration) - time) : 0;
+		const { duration: _duration, ...rest } = bookmark;
+		return { ...rest, time: time as MediaTime, ...(span > 0 ? { duration: span as MediaTime } : {}) } as Bookmark;
 	});
 }

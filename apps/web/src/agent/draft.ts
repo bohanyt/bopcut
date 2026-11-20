@@ -299,19 +299,26 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				if (typeof op.start !== "number" || typeof op.end !== "number" || !Number.isFinite(op.start) || !Number.isFinite(op.end) || op.start < 0 || op.end <= op.start) {
 					throw new Error("cut needs start and end in seconds, start < end");
 				}
-				const start = secs(op.start);
-				const end = secs(op.end);
+				// On whole frames: the start rounds up and the end down, so what stays on either side is never cut
+				// into (and notes and clips after the cut stay on frames).
+				const frameTicks = (TICKS_PER_SECOND * fps.denominator) / fps.numerator;
+				const start = Math.round(Math.ceil(secs(op.start) / frameTicks - 1e-9) * frameTicks) as MediaTime;
+				const end = Math.round(Math.floor(secs(op.end) / frameTicks + 1e-9) * frameTicks) as MediaTime;
+				if (end <= start) throw new Error("cut: the range is shorter than a frame");
 				const cut = editTracks(rootSceneId, (tracks) => {
 					const out = cutRange({ tracks, start, end, newId: generateUUID });
 					// What the user changed since basedOn is never cut away or trimmed by an older draft.
 					for (const element of out.removed) assertNotStale({ base, now, sceneId: rootSceneId, element, fields: "all", scenes: list });
-					for (const element of out.trimmed) assertNotStale({ base, now, sceneId: rootSceneId, element, fields: ["start", "duration", "trimStart"], scenes: list });
+					// Trimming rewrites fades, keyframes and timing: a clip the user changed in any way is left alone.
+					for (const element of out.trimmed) assertNotStale({ base, now, sceneId: rootSceneId, element, fields: "all", scenes: list });
 					tracks.overlay = out.tracks.overlay;
 					tracks.main = out.tracks.main;
 					tracks.audio = out.tracks.audio;
 					return out;
 				}, { noRipple: true });
-				setRootBookmarks(cutRangeBookmarks(bookmarksOfRoot(), start, end));
+				setRootBookmarks(cutRangeBookmarks(bookmarksOfRoot(), start, end, Math.round(frameTicks) as MediaTime));
+				result.start = start / TICKS_PER_SECOND;
+				result.end = end / TICKS_PER_SECOND;
 				for (const element of cut.kept) touched.push({ sceneId: rootSceneId, elementId: element.id });
 				result.removed = cut.removed.length;
 				result.trimmed = cut.trimmed.length;
