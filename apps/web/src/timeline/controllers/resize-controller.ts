@@ -336,7 +336,9 @@ export class ResizeController {
 	private wordSnapPoints(member: GroupResizeMember, side: ResizeSide, fps: FrameRate): SnapPoint[] {
 		const words = this.config.getWords?.(member);
 		if (!words?.length) return [];
-		return wordEdgeTimes({ clip: member, startTime: member.startTime, words, side, fps }).map((time) => ({
+		const reachable = (time: MediaTime) =>
+			side === "left" ? member.leftNeighborBound === null || time >= member.leftNeighborBound : member.rightNeighborBound === null || time <= member.rightNeighborBound;
+		return wordEdgeTimes({ clip: member, startTime: member.startTime, words, side, fps }).filter(reachable).map((time) => ({
 			time,
 			type: "word" as const,
 			elementId: member.elementId,

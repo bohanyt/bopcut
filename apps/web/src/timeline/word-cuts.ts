@@ -72,24 +72,25 @@ export function snapCutsToWords(clip: Clip, words: SourceWord[], fps: FrameRate,
 	const { from, to } = playedSpan(clip);
 	if (!wordInside(words, from) && !wordInside(words, to)) return null;
 	// Overlapping words: moving out of one can land inside another, so the cut moves until it is out of all.
+	// Every move goes strictly further out, so this ends (at most once per word).
 	let newFrom = from;
-	for (let i = 0, word = wordInside(words, newFrom); word && i < OVERLAP_LOOKBACK * 2; i++, word = wordInside(words, newFrom)) newFrom = word.start;
+	for (let i = 0, word = wordInside(words, newFrom); word && i <= words.length; i++, word = wordInside(words, newFrom)) newFrom = word.start;
 	newFrom = Math.max(0, newFrom);
 	let target = to;
-	for (let i = 0, word = wordInside(words, target); word && i < OVERLAP_LOOKBACK * 2; i++, word = wordInside(words, target)) target = word.end;
+	for (let i = 0, word = wordInside(words, target); word && i <= words.length; i++, word = wordInside(words, target)) target = word.end;
 	target = Math.min(limit, target);
 	const frame = fps.denominator / fps.numerator;
 	// Timeline length of the source span, then whole frames of it.
 	const exact = getClipTimeAtSourceTime({ sourceTime: target - newFrom, retime: clip.retime });
 	const sourceAt = (clipSeconds: number) => newFrom + getSourceTimeAtClipTime({ clipTime: clipSeconds, retime: clip.retime });
+	const within = (seconds: number) => sourceAt(seconds) <= limit + 1e-9;
 	const up = Math.ceil(exact / frame - 1e-9) * frame;
-	const down = Math.max(frame, Math.floor(exact / frame + 1e-9) * frame);
-	const upEnd = sourceAt(up);
-	const fitsUp = upEnd <= limit + 1e-9 && !wordInside(words, upEnd);
-	const keepsWord = sourceAt(down) >= target - WORD_TOLERANCE;
+	const down = Math.floor(exact / frame + 1e-9) * frame;
+	const fitsUp = within(up) && !wordInside(words, sourceAt(up));
+	const keepsWord = down > 0 && within(down) && sourceAt(down) >= target - WORD_TOLERANCE;
 	const seconds = fitsUp ? up : keepsWord ? down : exact;
 	// At least one frame, unless even that runs past the end of the source.
-	const atLeastFrame = sourceAt(frame) <= limit + 1e-9 ? Math.max(frame, seconds) : seconds;
+	const atLeastFrame = within(frame) ? Math.max(frame, seconds) : seconds;
 	const trimStart = Math.round(newFrom * TICKS_PER_SECOND) as MediaTime;
 	const duration = Math.round(atLeastFrame * TICKS_PER_SECOND) as MediaTime;
 	const played = Math.round(getSourceTimeAtClipTime({ clipTime: sec(duration), retime: clip.retime }) * TICKS_PER_SECOND);

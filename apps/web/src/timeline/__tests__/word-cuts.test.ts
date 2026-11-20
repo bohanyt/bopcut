@@ -228,3 +228,24 @@ describe("review round 2", () => {
 		}
 	});
 });
+
+describe("review round 3", () => {
+	test("many overlapping words: the start still ends up outside all of them", () => {
+		const chain = Array.from({ length: 18 }, (_, i) => ({ text: `w${i}`, start: 1 + i * 0.1, end: 1.25 + i * 0.1 }));
+		const patch = snapCutsToWords(clip(2.6, 0.5), chain, fps)!;
+		expect(wordInside(chain, patch.trimStart / TICKS_PER_SECOND)).toBeNull();
+	});
+
+	test("a short retimed cut near the end of the source never runs past it", () => {
+		const fast = { ...clip(9.9, 0.02, { retime: { rate: 2 } }), sourceDuration: T(9.95) } as unknown as VideoElement;
+		const patch = snapCutsToWords(fast, [{ text: "end", start: 9.85, end: 10.2 }], fps)!;
+		const played = (patch.duration / TICKS_PER_SECOND) * 2;
+		expect(patch.trimStart / TICKS_PER_SECOND + played).toBeLessThanOrEqual(9.95 + 1e-6);
+	});
+
+	test("cut on an add that builds a text (a mediaId does not make it a clip) fails", () => {
+		const loaded = { id: "m1", type: "video" as const, duration: 10, words };
+		const out = computeAgentDraft({ scenes: scenesWith([]), rootSceneId: "main", ops: [{ op: "add", track: { name: "Captions", type: "text" }, element: { name: "t", text: "hi", mediaId: "m1", start: 0, duration: 1, cut: "words" } }] as never, mediaFor: () => loaded, canvas: { width: 1920, height: 1080 }, fps, ripple: false });
+		expect(out.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("video and audio") });
+	});
+});

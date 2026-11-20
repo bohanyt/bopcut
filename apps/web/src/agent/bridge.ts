@@ -549,8 +549,14 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		// Words that could not be put back count as not rolled back, like files that could not be removed.
 		return { ...cleanup, failed: [...cleanup.failed, ...wordsFailed] };
 	};
-	const cleanupNote = (cleanup: Awaited<ReturnType<typeof discard>>) =>
-		cleanup?.failed.length ? `; ${cleanup.failed.length} imported ${cleanup.failed.length === 1 ? "file" : "files"} could not be removed from storage` : "";
+	const cleanupNote = (cleanup: Awaited<ReturnType<typeof discard>>) => {
+		const files = cleanup?.failed.filter((entry) => !entry.id.startsWith("words:")).length ?? 0;
+		const words = (cleanup?.failed.length ?? 0) - files;
+		return [
+			files ? `; ${files} imported ${files === 1 ? "file" : "files"} could not be removed from storage` : "",
+			words ? `; the words of ${words} ${words === 1 ? "media file" : "media files"} could not be put back` : "",
+		].join("");
+	};
 	// The user started dragging while assets loaded: committing now would cancel the drag, so the draft
 	// waits for the release (at most a minute).
 	if (timelineBusy() && !(await whenPreviewEnds({ timeoutMs: 60000 }))) {

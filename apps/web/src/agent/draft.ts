@@ -98,6 +98,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const index = track.elements.findIndex((e: TimelineElement) => e.id === elementId);
 				if (index < 0) continue;
 				const el = track.elements[index];
+				// What was built (a text or compound with a mediaId has no cuts to snap).
+				if (el.type !== "video" && el.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
 				const snapped = snapCutsToWords(el, words, fps);
 				if (!snapped) return el;
 				const next = { ...el, ...snapped };
@@ -106,7 +108,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				return next;
 			}
 			throw new Error(`element not found: ${elementId}`);
-		});
+			// The clip was just added: rounding it a hair shorter must not pull the clips after it.
+		}, { noRipple: true });
 	/** A clip snapped longer must not run into the next clip on its track (ripple only closes gaps). */
 	const assertRoomForEnd = (elements: TimelineElement[], index: number, requestedEnd: number, end: number) => {
 		const blocked = elements.find((other, j) => j !== index && other.startTime >= requestedEnd && other.startTime < end);
@@ -133,11 +136,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	};
 	const replace = (scene: TScene) => { list = list.map((s) => (s.id === scene.id ? scene : s)); };
 	/** Edits one scene's tracks; plain edits ripple like a timeline edit when ripple editing is on. */
-	const editTracks = <T>(sceneId: string, edit: (tracks: SceneTracks) => T): T => {
+	const editTracks = <T>(sceneId: string, edit: (tracks: SceneTracks) => T, { noRipple = false }: { noRipple?: boolean } = {}): T => {
 		const scene = sceneOf(sceneId);
 		const tracks = cloneTracks(scene.tracks);
 		const out = edit(tracks);
-		const next = ripple ? applyRippleAdjustments({ tracks, adjustments: computeRippleAdjustments({ beforeTracks: scene.tracks, afterTracks: tracks }) }) : tracks;
+		const next = ripple && !noRipple ? applyRippleAdjustments({ tracks, adjustments: computeRippleAdjustments({ beforeTracks: scene.tracks, afterTracks: tracks }) }) : tracks;
 		// A clip this edit moves (explicitly or by ripple) must not be one the user moved after basedOn.
 		assertRippleNotStale({ base, now, sceneId, before: scene.tracks, after: next });
 		replace({ ...scene, tracks: next, updatedAt: new Date() });
