@@ -398,7 +398,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					if (duration < 2 * frameTicks) throw new Error(`transition: ${previous.name} has no footage after its end to ${type === "crossfade" ? "fade out" : "slide"} (use flash or dip)`);
 					// The continuation starts as the clip ended: its animated values at its last frame become the
 					// copy's own (no jump at the cut); its keyframes stay with the clip.
-					const lastFrame = Math.max(0, previous.duration - 1);
+					// The clip's last drawn frame.
+					const lastFrame = Math.max(0, previous.duration - frameTicks);
 					const at = (path: string, fallback: number) => resolveAnimationPathValueAtTime({ animations: previous.animations, propertyPath: path, localTime: lastFrame, fallbackValue: fallback });
 					const param = (key: string, fallback: number) => (typeof previous.params?.[key] === "number" ? (previous.params[key] as number) : fallback);
 					// Its animation presets as drawn on that frame too (an out preset may have faded or moved it).

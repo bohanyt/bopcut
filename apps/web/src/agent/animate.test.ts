@@ -83,7 +83,18 @@ describe("animate for agents", () => {
 		const tail = out.scenes[0].tracks.overlay.at(-1)!.elements[0];
 		expect(readAnimationPresets(tail)).toEqual({ in: null, out: null });
 		const keys = ((tail.animations?.opacity as { keys?: { value: number }[] } | undefined)?.keys ?? []).map((k) => k.value);
-		expect(keys[0]).toBeLessThan(0.1); // the fade out had nearly hidden the clip at its last frame
+		// On its last drawn frame (2 s - 1/30 s) the 0.3 s fade out is 89% through: 1 - 0.889^3 of the clip shows.
+		expect(keys[0]).toBeCloseTo(1 - ((2 - 1 / 30 - 1.7) / 0.3) ** 3, 2); // opacity keys keep two decimals
+	});
+
+	test("a transition's continuation samples the clip's last drawn frame", () => {
+		const scenes = scenesWith([video("A", 0, 2), video("B", 2, 2)]);
+		const quick = run(scenes, [{ op: "animate", match: { agentId: "A" }, out: { type: "fade", duration: 0.05 } }]).scenes;
+		const out = run(quick, [{ op: "transition", match: { agentId: "B" }, type: "crossfade", duration: 0.5 }]);
+		const tail = out.scenes[0].tracks.overlay.at(-1)!.elements[0];
+		const first = ((tail.animations?.opacity as { keys?: { value: number }[] } | undefined)?.keys ?? [])[0]?.value ?? 0;
+		// At 30 fps the last frame is a third into the 50 ms fade: still mostly visible.
+		expect(first).toBeGreaterThan(0.9);
 	});
 });
 

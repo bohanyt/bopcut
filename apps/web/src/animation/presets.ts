@@ -71,6 +71,7 @@ export function applyAnimationPresets<T extends TimelineElement>(element: T, req
 		if (!spec) continue;
 		const types: readonly string[] = side === "in" ? ANIMATION_IN_TYPES : ANIMATION_OUT_TYPES;
 		if (spec.type !== "none" && !types.includes(spec.type)) throw new Error(`${side} animation must be one of ${types.join(", ")} or none`);
+		if (spec.type !== "none" && (element.type === "audio" || element.type === "effect")) throw new Error(`animations are for visual clips, not ${element.type}`);
 		if (spec.type === "typewriter" && element.type !== "text") throw new Error("typewriter is for text");
 		if (spec.duration !== undefined && (typeof spec.duration !== "number" || !Number.isFinite(spec.duration) || spec.duration < MIN_PRESET_SECONDS || spec.duration > MAX_PRESET_SECONDS)) {
 			throw new Error(`${side} animation duration must be ${MIN_PRESET_SECONDS} to ${MAX_PRESET_SECONDS} seconds`);
@@ -95,15 +96,20 @@ export function applyAnimationPresets<T extends TimelineElement>(element: T, req
 export function checkPresetParams(element: TimelineElement, params: ParamValues | undefined): void {
 	if (!params || !Object.values(PRESET_PARAM).some((key) => key in params)) return;
 	const merged = { ...element.params, ...params };
-	const side = (typeKey: string, durationKey: string) => {
+	const side = (name: "in" | "out", typeKey: string, durationKey: string) => {
 		if (!(typeKey in params) && !(durationKey in params)) return undefined;
-		const type = merged[typeKey] ?? "none";
-		const duration = merged[durationKey];
+		// Every value given is checked, also a length next to "none".
+		if (typeKey in params && typeof params[typeKey] !== "string") throw new Error(`${typeKey} must be a preset name or "none"`);
+		const duration = durationKey in params ? params[durationKey] : merged[durationKey];
+		if (durationKey in params && (typeof duration !== "number" || !Number.isFinite(duration) || duration < MIN_PRESET_SECONDS || duration > MAX_PRESET_SECONDS)) {
+			throw new Error(`${name} animation duration must be ${MIN_PRESET_SECONDS} to ${MAX_PRESET_SECONDS} seconds`);
+		}
+		const type = typeof merged[typeKey] === "string" ? merged[typeKey] : "none";
 		return { type, ...(duration === undefined || type === "none" ? {} : { duration }) };
 	};
 	applyAnimationPresets(element, {
-		in: side(PRESET_PARAM.in, PRESET_PARAM.inDuration),
-		out: side(PRESET_PARAM.out, PRESET_PARAM.outDuration),
+		in: side("in", PRESET_PARAM.in, PRESET_PARAM.inDuration),
+		out: side("out", PRESET_PARAM.out, PRESET_PARAM.outDuration),
 	} as AnimationPresetRequest);
 }
 
@@ -131,9 +137,9 @@ export function presetLayerAt(settings: PresetSettings, localTime: number, durat
 	if (!settings.in && !settings.out) return NO_PRESET_LAYER;
 	let inTicks = (settings.in?.seconds ?? 0) * TICKS_PER_SECOND;
 	let outTicks = (settings.out?.seconds ?? 0) * TICKS_PER_SECOND;
-	// Shortened to fit, the presets leave the clip whole for a moment (a tenth, at least a frame at 30 fps),
+	// Shortened to fit, the presets leave the clip whole for a moment (a tenth, at least a frame at 24 fps),
 	// so an in preset is complete on a frame that is drawn (the clip's end itself is not).
-	const room = Math.max(0, duration - Math.max(duration * 0.1, TICKS_PER_SECOND / 30));
+	const room = Math.max(0, duration - Math.max(duration * 0.1, TICKS_PER_SECOND / 24));
 	if (inTicks + outTicks > room && inTicks + outTicks > 0) {
 		const fit = room / (inTicks + outTicks);
 		inTicks *= fit;

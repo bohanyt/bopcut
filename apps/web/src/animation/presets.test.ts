@@ -117,5 +117,20 @@ describe("animation presets", () => {
 		expect(readAnimationPresets(cutEnd)).toEqual({ in: { type: "fade", duration: 0.3 }, out: null });
 		expect(clipElementToRange({ element: el, rangeStart: T(0), rangeEnd: T(5) })).toBe(el);
 	});
+
+	test("a three-frame clip at 24 fps still shows every letter on its last frame", () => {
+		const el = applyAnimationPresets(text(3 / 24), { in: { type: "typewriter" } });
+		expect(layer(el, 2 / 24).typed).toBe(1);
+	});
+
+	test("raw preset params are checked value by value; animations are for visual clips", async () => {
+		const { checkPresetParams } = await import("./presets");
+		const el = text(2);
+		expect(() => checkPresetParams(el, { "animation.in": null as never })).toThrow("must be a preset name");
+		expect(() => checkPresetParams(el, { "animation.in": "none", "animation.inDuration": 99 })).toThrow("0.05 to 10 seconds");
+		expect(() => checkPresetParams({ ...el, type: "audio" } as never, { "animation.in": "fade" })).toThrow("visual clips");
+		expect(() => checkPresetParams(el, { "animation.in": "none", "animation.inDuration": 0.5 })).not.toThrow();
+		expect(() => checkPresetParams(el, { content: "x" })).not.toThrow();
+	});
 });
 
