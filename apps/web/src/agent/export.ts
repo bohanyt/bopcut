@@ -42,9 +42,13 @@ export function parseExportRequest(value: unknown): ExportRequest | string | nul
 	};
 }
 
-/** A file name from any text: letters, digits, spaces, dots, dashes and underscores only, at most 80 characters. */
+/**
+ * A file name from any text: letters, digits, spaces, dots, dashes and underscores only, at most 80
+ * characters, never a Windows device name (`con`, `nul`, `com1`...: those get a `_`).
+ */
 export function safeName(text: string): string {
-	return text.normalize("NFC").replace(/[^\p{L}\p{N} ._-]+/gu, "-").replace(/\.{2,}/g, ".").replace(/^[\s.-]+|[\s.-]+$/g, "").slice(0, 80).trim();
+	const name = text.normalize("NFC").replace(/[^\p{L}\p{N} ._-]+/gu, "-").replace(/\.{2,}/g, ".").replace(/^[\s.-]+|[\s.-]+$/g, "").slice(0, 80).trim();
+	return /^(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])(\.|$)/i.test(name) ? name.replace(/^[^.]*/, (base) => `${base}_`) : name;
 }
 
 /** The default export name: the project's name and the local time (e.g. `My clip 2026-11-20 14-05-09`). */

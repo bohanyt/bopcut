@@ -234,9 +234,11 @@ A media file can carry its spoken words (from a transcript), in seconds of the f
 Write `export-request.json` to get a finished video file without a browser download: `{rev:"export-1", name?, format?:"mp4"|"webm", quality?:"low"|"medium"|"high"|"very_high", fps?, includeAudio?, projectId?, allowMissing?}`.
 - The open editor exports the root timeline (also while the user is inside a compound clip) once per `rev`, with the project's canvas, and the frame rate given or the project's. Defaults: mp4, high quality, with sound. It waits until the project is ready (loaded and saved), and refuses while stored media are missing unless `allowMissing:true`.
 - The file goes to `AGENT_WORKSPACE/exports/<name>.<format>`. The default name is the project's name and the local time. An existing file is never overwritten: the next one is `<name> (2).<format>`.
-- `export-result.json` shows `{rev, projectId, status:"exporting", progress}` while it runs (updated at most every 2 s), then `{rev, projectId, status:"done", file, bytes, format, quality, width, height, fps, duration, seconds}` (`seconds` = how long the export took), or `{rev, status:"error", error}`.
+- `export-result.json` shows `{rev, projectId, status:"exporting", progress}` while it runs (updated at most every 2 s), then `{rev, projectId, status:"done", file, bytes, format, quality, width, height, fps, duration, seconds}` (`seconds` = how long the export took), or `{rev, projectId, status:"error", error}`. Once the final answer is written, no progress update comes after it.
+- The video is the timeline as it is when the export starts; edits made during the export are not in it. Closing the project during the export stops it (`error:"cancelled: ..."`).
+- One export runs at a time: the request waits while the user exports from the export button, and the button refuses while the agent's export runs (a notice in the editor says so).
 - With `projectId`, only that project answers; another project leaves the request alone.
-- Encoding uses the browser's video encoder (hardware when the browser offers it).
+- Encoding uses the browser's video encoder (hardware when the browser offers it). The video is held in the browser's memory only until it is saved. At most 8 GiB per file; `exports/` must be a real folder, not a link.
 
 ## Changes for agents
 

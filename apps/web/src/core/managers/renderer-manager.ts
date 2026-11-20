@@ -18,6 +18,7 @@ type SnapshotResult =
 export class RendererManager {
 	private renderTree: RootNode | null = null;
 	private _isDegraded = false;
+	private exportRunning = false;
 	private listeners = new Set<() => void>();
 
 	constructor(private editor: EditorCore) {}
@@ -159,7 +160,32 @@ export class RendererManager {
 		}
 	}
 
-	async exportProject({
+	/** Whether an export (the user's or an agent's) is running: one runs at a time. */
+	isExportRunning(): boolean {
+		return this.exportRunning;
+	}
+
+	/**
+	 * Exports the timeline as it is when this is called (read before the first wait, so later edits are
+	 * not mixed in). Refused while another export runs.
+	 */
+	async exportProject(job: {
+		options: ExportOptions;
+		onProgress?: ({ progress }: { progress: number }) => void;
+		onCancel?: () => boolean;
+	}): Promise<ExportResult> {
+		if (this.exportRunning) {
+			return { success: false, error: "Another export is running; try again when it finishes" };
+		}
+		this.exportRunning = true;
+		try {
+			return await this.runExport(job);
+		} finally {
+			this.exportRunning = false;
+		}
+	}
+
+	private async runExport({
 		options,
 		onProgress,
 		onCancel,
@@ -171,8 +197,9 @@ export class RendererManager {
 		const { format, quality, fps, includeAudio, sceneId } = options;
 
 		try {
+			const scenes = this.editor.scenes.getScenes();
 			const active = this.editor.scenes.getActiveScene();
-			const exported = sceneId ? this.editor.scenes.getScenes().find((scene) => scene.id === sceneId) : active;
+			const exported = sceneId ? scenes.find((scene) => scene.id === sceneId) : active;
 			if (!exported) {
 				return { success: false, error: "Scene not found" };
 			}
@@ -199,7 +226,7 @@ export class RendererManager {
 					tracks,
 					mediaAssets,
 					duration,
-					scenes: this.editor.scenes.getScenes(),
+					scenes,
 				});
 			}
 
@@ -209,7 +236,7 @@ export class RendererManager {
 				duration,
 				canvasSize,
 				background: activeProject.settings.background,
-				scenes: this.editor.scenes.getScenes(),
+				scenes,
 			});
 
 			const exporter = new SceneExporter({

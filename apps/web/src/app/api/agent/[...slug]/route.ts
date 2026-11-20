@@ -16,7 +16,7 @@ import { parseSelectionPayload } from "@/agent/selection-payload";
 import { consumeAppliedDraft } from "@/agent/draft-store";
 import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
-import { saveExport } from "@/agent/export-server";
+import { MAX_EXPORT_BYTES, readTextLimited, saveExport } from "@/agent/export-server";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -91,17 +91,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "export-result") {
-		const text = await req.text();
-		if (text.length > 1024 * 1024) return Response.json({ error: "Result too large" }, { status: 413 });
-		await writeAtomic(path.join(WORKSPACE, "export-result.json"), JSON.stringify(JSON.parse(text), null, 1));
+		const text = await readTextLimited(req, 1024 * 1024);
+		if (text === null) return Response.json({ error: "Result too large" }, { status: 413 });
+		let body: unknown;
+		try {
+			body = JSON.parse(text);
+		} catch {
+			return Response.json({ error: "Invalid result" }, { status: 400 });
+		}
+		await writeAtomic(path.join(WORKSPACE, "export-result.json"), JSON.stringify(body, null, 1));
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "export-file") {
 		// An exported video, streamed into AGENT_WORKSPACE/exports/ (a new name if one exists); see AGENT.md.
 		const query = new URL(req.url).searchParams;
 		if (!req.body) return Response.json({ error: "Invalid export" }, { status: 400 });
-		const file = await saveExport({ dir: path.join(WORKSPACE, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body });
-		return file ? Response.json({ file: `exports/${file}` }) : Response.json({ error: "Invalid export" }, { status: 400 });
+		if (Number(req.headers.get("content-length") ?? 0) > MAX_EXPORT_BYTES) return Response.json({ error: "Export too large" }, { status: 413 });
+		const saved = await saveExport({ dir: path.join(WORKSPACE, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body });
+		return "file" in saved ? Response.json({ file: `exports/${saved.file}` }) : Response.json({ error: saved.error }, { status: saved.status });
 	}
 	if (slug[0] === "changes-result") {
 		// What changed since a snapshot, or for a draft; see AGENT.md.

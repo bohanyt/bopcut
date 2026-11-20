@@ -4,6 +4,7 @@ import { draftHistory, isForOtherProject, snapshotHistory } from "./history";
 import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { defaultExportName, parseExportRequest } from "./export";
+import type { ExportResult } from "@/export";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
@@ -248,15 +249,45 @@ export function installAgentBridge() {
  * Answers `export-request.json`: exports the root timeline (once per rev and project) into the workspace's
  * `exports/` folder and reports progress and the result in `export-result.json`. Exported for tests.
  */
-let exporting = false;
 export async function pollExport() {
+	if (exporting) return;
+	exporting = true;
+	try {
+		await answerExport();
+	} finally {
+		exporting = false;
+	}
+}
+
+let exporting = false;
+/** An answer not posted yet (the result route failed): posted again on the next poll, never exported again. */
+let unposted: { key: string; rev: string; body: Record<string, unknown> } | null = null;
+
+const postExportResult = (body: Record<string, unknown>) =>
+	fetch("/api/agent/export-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+async function postUnposted() {
+	const answer = unposted;
+	if (!answer) return;
+	const response = await postExportResult(answer.body).catch(() => null);
+	if (!response?.ok) return;
+	markAnswered(answer.key, answer.rev);
+	if (unposted === answer) unposted = null;
+}
+
+/** The open project when it can export now: loaded and saved, no other export, no drag in progress. */
+function exportable() {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const root = agentRootScene();
-	if (!project || !root || exporting || timelineBusy() || editor.project.getExportState().isExporting) return;
-	// Like frames: only a loaded, saved project is exported.
+	if (!project || !root || timelineBusy() || editor.renderer.isExportRunning()) return null;
 	const { ready, missingMedia } = agentReadiness();
-	if (!ready) return;
+	return ready ? { project, root, missingMedia } : null;
+}
+
+async function answerExport() {
+	if (unposted) return await postUnposted();
+	if (!exportable()) return;
 	let raw: unknown = null;
 	try {
 		raw = await (await fetch("/api/agent/export-request", { cache: "no-store" })).json();
@@ -265,55 +296,80 @@ export async function pollExport() {
 	}
 	const rev = raw && typeof raw === "object" && typeof (raw as { rev?: unknown }).rev === "string" ? (raw as { rev: string }).rev : null;
 	if (!rev || !/^[a-zA-Z0-9_-]{1,100}$/.test(rev)) return;
+	// Checked again now that the request is here: the editor may have changed while it was read.
+	const now = exportable();
+	if (!now) return;
+	const { project, root, missingMedia } = now;
 	const projectId = project.metadata.id;
 	if (typeof (raw as { projectId?: unknown }).projectId === "string" && (raw as { projectId: string }).projectId !== projectId) return; // another project's
 	const key = `agent-export-${projectId}`;
 	if (wasAnswered(key, rev)) return;
-	const result = (body: Record<string, unknown>) =>
-		fetch("/api/agent/export-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev, projectId, ...body }) });
-	const finish = async (body: Record<string, unknown>) => {
-		if ((await result(body)).ok) markAnswered(key, rev);
+	const answer = async (body: Record<string, unknown>) => {
+		unposted = { key, rev, body: { rev, projectId, ...body } };
+		await postUnposted();
 	};
 	const request = parseExportRequest(raw);
-	if (typeof request === "string") return await finish({ status: "error", error: request });
+	if (typeof request === "string") return await answer({ status: "error", error: request });
 	if (!request) return;
 	if (missingMedia.length && !request.allowMissing) {
-		return await finish({ status: "error", error: `${missingMedia.length} stored media could not be loaded; retry them (window.agent.retryMissingMedia()) or send allowMissing:true`, missingMedia });
+		return await answer({ status: "error", error: `${missingMedia.length} stored media could not be loaded; retry them (window.agent.retryMissingMedia()) or send allowMissing:true`, missingMedia });
 	}
-	exporting = true;
+	const editor = EditorCore.getInstance();
+	const settings = project.settings;
+	const fps = request.fps ? { numerator: Math.round(request.fps * 1000), denominator: 1000 } : settings.fps;
+	const name = request.name ?? defaultExportName(project.metadata.name);
+	const duration = calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND;
 	const started = Date.now();
-	// Progress at most every 2 s (from the export state the editor shows).
+	// Progress: one post at a time, at most every 2 s, and none once the export has ended (so it never
+	// lands over the final answer).
+	let running = true;
 	let lastPost = 0;
-	const unsubscribe = editor.project.subscribe(() => {
-		const { isExporting, progress } = editor.project.getExportState();
-		if (!isExporting || Date.now() - lastPost < 2000) return;
+	let posting: Promise<unknown> | null = null;
+	const progress = (value: number) => {
+		if (!running || posting || Date.now() - lastPost < 2000) return;
 		lastPost = Date.now();
-		void result({ status: "exporting", progress: Math.round(progress * 1000) / 1000 }).catch(() => {});
-	});
+		posting = postExportResult({ rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000 })
+			.catch(() => {})
+			.finally(() => {
+				posting = null;
+			});
+	};
+	progress(0);
+	const toastId = toast.loading("Exporting a video for the agent", { description: "The export button waits until it is done" });
+	let result: ExportResult;
 	try {
-		await result({ status: "exporting", progress: 0 });
-		const settings = project.settings;
-		const fps = request.fps ? { numerator: Math.round(request.fps * 1000), denominator: 1000 } : settings.fps;
-		const exported = await editor.project.export({ options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, sceneId: root.id } });
-		if (!exported.success || !exported.buffer) return await finish({ status: "error", error: exported.cancelled ? "cancelled" : exported.error ?? "export failed" });
-		const name = request.name ?? defaultExportName(project.metadata.name);
-		const query = new URLSearchParams({ rev, name, format: request.format });
-		const saved = await fetch(`/api/agent/export-file?${query}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: exported.buffer });
-		if (!saved.ok) return await finish({ status: "error", error: `the file could not be saved: ${await saved.text()}` });
-		const { file } = (await saved.json()) as { file: string };
-		const duration = calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND;
-		await finish({
-			status: "done", file, bytes: exported.buffer.byteLength, format: request.format, quality: request.quality,
-			width: settings.canvasSize.width, height: settings.canvasSize.height, fps: fps.numerator / fps.denominator,
-			duration: Math.round(duration * 1000) / 1000, seconds: Math.round((Date.now() - started) / 100) / 10,
+		// No wait between the checks above and this call: the export takes the timeline as it is now. It
+		// stops if the project is closed (its media go with it).
+		result = await editor.renderer.exportProject({
+			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, sceneId: root.id },
+			onProgress: ({ progress: value }) => progress(value),
+			onCancel: () => editor.project.getActiveOrNull()?.metadata.id !== projectId,
 		});
 	} catch (error) {
-		console.error("Agent export failed:", error);
-		await finish({ status: "error", error: errorText(error) }).catch(() => {});
+		result = { success: false, error: errorText(error) };
 	} finally {
-		unsubscribe();
-		exporting = false;
+		running = false;
+		await posting;
+		toast.dismiss(toastId);
 	}
+	if (!result.success || !result.buffer) {
+		return await answer({ status: "error", error: result.cancelled ? "cancelled: the project was closed during the export" : result.error ?? "export failed" });
+	}
+	const bytes = result.buffer.byteLength;
+	let file: string;
+	try {
+		const query = new URLSearchParams({ rev, name, format: request.format });
+		const saved = await fetch(`/api/agent/export-file?${query}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: result.buffer });
+		if (!saved.ok) return await answer({ status: "error", error: `the file could not be saved: ${await saved.text()}` });
+		file = ((await saved.json()) as { file: string }).file;
+	} catch (error) {
+		return await answer({ status: "error", error: `the file could not be saved: ${errorText(error)}` });
+	}
+	await answer({
+		status: "done", file, bytes, format: request.format, quality: request.quality,
+		width: settings.canvasSize.width, height: settings.canvasSize.height, fps: fps.numerator / fps.denominator,
+		duration: Math.round(duration * 1000) / 1000, seconds: Math.round((Date.now() - started) / 100) / 10,
+	});
 }
 
 /** What a kept timeline state carries besides its scenes: project, root, render settings, media names. */
