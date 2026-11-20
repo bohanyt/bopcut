@@ -5,6 +5,7 @@ import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import { DiskAdapter, DiskSoundsAdapter } from "./disk-adapter";
 import { toast } from "sonner";
+import { parseSourceWords } from "@/media/words";
 import { getProjectId } from "./migrations/transformers/utils";
 import type { ProjectRecord } from "./migrations/transformers/types";
 import { type StorageCapacityCheckResult, isStorageQuotaExceededError } from "./quota";
@@ -384,11 +385,23 @@ class StorageService {
 			hasAudio: mediaAsset.hasAudio,
 			thumbnailUrl: mediaAsset.thumbnailUrl,
 			ephemeral: mediaAsset.ephemeral,
+			...(mediaAsset.words ? { words: mediaAsset.words } : {}),
 			...(staged ? { staged: true } : {}),
 		};
 
 		await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
 		this.manifests.get(projectId)?.set(metadata.id, metadata);
+	}
+
+	/** Sets (or replaces) the spoken words stored with a media file. */
+	async setMediaWords({ projectId, id, words }: { projectId: string; id: string; words: import("@/media/words").SourceWord[] | undefined }): Promise<void> {
+		const manifest = this.manifests.get(projectId) ?? (await this.fetchManifest({ projectId }));
+		const metadata = manifest.get(id);
+		if (!metadata) throw new Error(`Media ${id} is not stored`);
+		const { words: _old, ...rest } = metadata;
+		const updated = words ? { ...rest, words } : rest;
+		await this.projectsAdapter.updateMediaMetadata(projectId, updated);
+		manifest.set(id, updated);
 	}
 
 	/** Clears the staged mark of media whose draft committed, so every later load includes them. */
@@ -461,6 +474,7 @@ class StorageService {
 			hasAudio: metadata.hasAudio,
 			thumbnailUrl: metadata.thumbnailUrl,
 			ephemeral: metadata.ephemeral,
+			...(metadata.words ? { words: parseSourceWords(metadata.words) ?? undefined } : {}),
 		};
 	}
 

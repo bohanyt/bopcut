@@ -33,6 +33,8 @@ import {
 } from "@/timeline";
 import type { ElementRef } from "@/timeline/types";
 import type { FrameRate } from "opencut-wasm";
+import type { SourceWord } from "@/media/words";
+import { wordEdgeTimes } from "@/timeline/word-cuts";
 
 // --- Session ---
 
@@ -43,6 +45,8 @@ interface ResizeSession {
 	fps: FrameRate;
 	members: GroupResizeMember[];
 	result: GroupResizeResult | null;
+	/** Word edges each member's edge snaps to (worked out once, when the resize starts). */
+	wordPoints: Map<string, SnapPoint[]>;
 }
 
 type Session = { kind: "idle" } | ResizeSession;
@@ -61,6 +65,8 @@ export interface ResizeConfig {
 	previewElements: (updates: GroupResizeUpdate[]) => void;
 	commitElements: (updates: GroupResizeUpdate[]) => void;
 	onSnapPointChange?: (snapPoint: SnapPoint | null) => void;
+	/** Spoken words of the media a clip plays (source seconds), so its edges also snap to word edges. */
+	getWords?: (ref: ElementRef) => SourceWord[] | undefined;
 }
 
 export interface ResizeConfigRef {
@@ -237,6 +243,7 @@ export class ResizeController {
 			fps,
 			members,
 			result: null,
+			wordPoints: new Map(members.map((member) => [member.elementId, this.wordSnapPoints(member, side, fps)])),
 		};
 		this.activate();
 		this.notify();
@@ -303,11 +310,11 @@ export class ResizeController {
 				session.side === "left"
 					? member.startTime
 					: addMediaTime({ a: member.startTime, b: member.duration });
-			const snapResult = resolveTimelineSnap({
-				targetTime: addMediaTime({ a: baseEdgeTime, b: rawDeltaTime }),
-				snapPoints,
-				maxSnapDistance,
-			});
+			const targetTime = addMediaTime({ a: baseEdgeTime, b: rawDeltaTime });
+			const onPoints = resolveTimelineSnap({ targetTime, snapPoints, maxSnapDistance });
+			const wordPoints = session.wordPoints.get(member.elementId);
+			const onWords = wordPoints?.length ? resolveTimelineSnap({ targetTime, snapPoints: wordPoints, maxSnapDistance }) : null;
+			const snapResult = onWords?.snapPoint && (!onPoints.snapPoint || onWords.snapDistance < onPoints.snapDistance) ? onWords : onPoints;
 			if (
 				snapResult.snapPoint &&
 				snapResult.snapDistance < closestSnapDistance
@@ -320,6 +327,23 @@ export class ResizeController {
 
 		this.config.onSnapPointChange?.(closestSnapPoint);
 		return deltaTime;
+	}
+
+	/**
+	 * Word edges of the member's media on the timeline: starts for its left edge, ends for its right edge
+	 * (the clip's own content does not move while one edge is resized).
+	 */
+	private wordSnapPoints(member: GroupResizeMember, side: ResizeSide, fps: FrameRate): SnapPoint[] {
+		const words = this.config.getWords?.(member);
+		if (!words?.length) return [];
+		const reachable = (time: MediaTime) =>
+			side === "left" ? member.leftNeighborBound === null || time >= member.leftNeighborBound : member.rightNeighborBound === null || time <= member.rightNeighborBound;
+		return wordEdgeTimes({ clip: member, startTime: member.startTime, words, side, fps }).filter(reachable).map((time) => ({
+			time,
+			type: "word" as const,
+			elementId: member.elementId,
+			trackId: member.trackId,
+		}));
 	}
 
 	private handleMouseMove({ clientX }: MouseEvent): void {

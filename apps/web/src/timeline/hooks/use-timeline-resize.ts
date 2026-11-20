@@ -55,6 +55,12 @@ export function useTimelineResize({
 				})),
 			}),
 		onSnapPointChange,
+		getWords: ({ trackId, elementId }) => {
+			const tracks = editor.scenes.getActiveScene().tracks;
+			const track = [...tracks.overlay, tracks.main, ...tracks.audio].find((t) => t.id === trackId);
+			const mediaId = (track?.elements.find((e) => e.id === elementId) as { mediaId?: unknown } | undefined)?.mediaId;
+			return typeof mediaId === "string" ? editor.media.getAssets().find((asset) => asset.id === mediaId)?.words : undefined;
+		},
 	};
 	const configRef = useCommittedRef(config);
 	const [controller] = useState(() => new ResizeController({ configRef }));

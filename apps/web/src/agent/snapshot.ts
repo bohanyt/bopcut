@@ -4,6 +4,8 @@ import type { CompoundElement, TScene, TimelineElement, TimelineTrack } from "@/
 import { calculateTotalDuration } from "@/timeline";
 import { isCompoundElement, isCompoundScene } from "@/timeline/compound";
 import { TICKS_PER_SECOND } from "@/wasm";
+import type { SourceWord } from "@/media/words";
+import { cutWarnings } from "@/timeline/word-cuts";
 import type { EditItem } from "./edit-log";
 import { getSceneInstances, toRootInterval } from "./scene-graph";
 
@@ -19,7 +21,8 @@ export function animationSeconds(value: any): any {
 
 const offsetOf = (chain: CompoundElement[]) => chain.reduce((sum, clip) => sum + clip.startTime - clip.trimStart, 0);
 
-export function buildSceneSnapshot({ scenes, rootSceneId, mediaName }: { scenes: TScene[]; rootSceneId: string; mediaName: Map<string, string> }) {
+/** `wordsOf`: spoken words of a media file, so clips whose cuts fall inside a word say so (`cutWarnings`). */
+export function buildSceneSnapshot({ scenes, rootSceneId, mediaName, wordsOf }: { scenes: TScene[]; rootSceneId: string; mediaName: Map<string, string>; wordsOf?: (mediaId: string) => SourceWord[] | undefined }) {
 	const byScene = getSceneInstances(scenes, rootSceneId);
 	const element = (e: TimelineElement, sceneId: string) => {
 		const { instances: own = [], truncated = false } = byScene.get(sceneId) ?? {};
@@ -30,6 +33,7 @@ export function buildSceneSnapshot({ scenes, rootSceneId, mediaName }: { scenes:
 			effectType: x.effectType ?? null, graphic: x.definitionId ? { definitionId: x.definitionId } : null, icon: x.definitionId === "icon" ? { name: e.params.iconName, color: e.params.color } : null, groupId: e.groupId ?? null, params: e.params, hasKeyframes: !!e.animations && Object.keys(e.animations).length > 0,
 			sceneId, path: own[0]?.path ?? null,
 			...(e.type === "text" && e.caption ? { caption: { text: e.params.content, ...e.caption } } : {}),
+			...cutWarningsOf(e),
 			// Where it shows in the root timeline, once per path to its scene; [] = trimmed out by an enclosing clip.
 			visible: own.flatMap((instance) => {
 				const interval = toRootInterval(e.startTime, e.startTime + e.duration, instance.chain);
@@ -40,6 +44,13 @@ export function buildSceneSnapshot({ scenes, rootSceneId, mediaName }: { scenes:
 			...(isCompoundElement(e) ? { compound: { sceneId: e.sceneId, kind: "compound", volume: typeof e.params.volume === "number" ? e.params.volume : 0, muted: e.params.muted === true, sourceDuration: sec(e.sourceDuration ?? 0) } } : {}),
 		};
 	};
+	function cutWarningsOf(e: TimelineElement) {
+		const mediaId = (e as { mediaId?: unknown }).mediaId;
+		if ((e.type !== "video" && e.type !== "audio") || typeof mediaId !== "string") return {};
+		const words = wordsOf?.(mediaId);
+		const warnings = words ? cutWarnings(e, words) : [];
+		return warnings.length ? { cutWarnings: warnings } : {};
+	}
 	const lane = (track: TimelineTrack, group: string, index: number, sceneId: string) => ({
 		group, index, id: track.id, name: track.name, type: track.type, hidden: "hidden" in track ? track.hidden ?? false : false, muted: "muted" in track ? track.muted ?? false : false,
 		elements: track.elements.map((e: TimelineElement) => element(e, sceneId)),

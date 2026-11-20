@@ -364,6 +364,13 @@ export class MediaManager {
 		this.notify();
 	}
 
+	/** Sets the spoken words of a project media file in the editor (stored by storageService.setMediaWords). */
+	setMediaWords({ id, words }: { id: string; words: import("@/media/words").SourceWord[] | undefined }): void {
+		if (!this.assets.some((asset) => asset.id === id)) return;
+		this.assets = this.assets.map((asset) => (asset.id === id ? { ...asset, words } : asset));
+		this.notify();
+	}
+
 	getAssets(): MediaAsset[] {
 		return this.assets;
 	}

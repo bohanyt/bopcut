@@ -155,13 +155,35 @@ export async function saveMedia(
 	}
 }
 
+/**
+ * Media metadata, parsed once per version of its file: every range request of a playing video reads it,
+ * and spoken words can make it large.
+ */
+const metadataCache = new Map<string, { mtimeMs: number; size: number; meta: any }>();
+async function readMetadataCached(file: string): Promise<any> {
+	let stat: { mtimeMs: number; size: number };
+	try {
+		stat = await fs.stat(file);
+	} catch {
+		metadataCache.delete(file);
+		return null;
+	}
+	const cached = metadataCache.get(file);
+	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.meta;
+	const meta = await readJson(file);
+	metadataCache.delete(file);
+	metadataCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, meta });
+	if (metadataCache.size > 256) metadataCache.delete(metadataCache.keys().next().value as string);
+	return meta;
+}
+
 export async function mediaResponse(
 	id: string,
 	mediaId: string,
 	range: string | null,
 ): Promise<Response> {
 	const dir = path.join(projectDir(id), "media");
-	const meta = await readJson(
+	const meta = await readMetadataCached(
 		path.join(dir, "_metadata", `${safeId(mediaId)}.json`),
 	);
 	if (!meta || !new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(meta.diskFile))

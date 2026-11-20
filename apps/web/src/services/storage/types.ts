@@ -34,6 +34,8 @@ export interface MediaAssetData {
 	 * the project's timeline uses them, so another tab never picks up a file a failed draft deletes.
 	 */
 	staged?: boolean;
+	/** Spoken words of the file (source seconds), for cuts that never chop a word. */
+	words?: import("@/media/words").SourceWord[];
 }
 
 export type SerializedScene = Omit<TScene, "createdAt" | "updatedAt"> & {

@@ -5,6 +5,8 @@ import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { EditorCore } from "@/core";
+import { storageService } from "@/services/storage/service";
+import { parseSourceWords, type SourceWord } from "@/media/words";
 import { toast } from "sonner";
 import { pollFrames } from "./frames";
 import { loadIcon } from "@/stickers/providers/iconify";
@@ -23,6 +25,13 @@ import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
 
 export type { Draft, DraftOp } from "./draft";
+
+/** Spoken words of the project's media files, looked up by id (built once per snapshot or draft). */
+function mediaWords(): (mediaId: string) => SourceWord[] | undefined {
+	const words = new Map<string, SourceWord[]>();
+	for (const asset of EditorCore.getInstance().media.getAssets()) if (asset.words) words.set(asset.id, asset.words);
+	return (mediaId) => words.get(mediaId);
+}
 
 function mediaNames() {
 	return new Map(EditorCore.getInstance().media.getAssets().map((m) => [m.id, m.name]));
@@ -104,7 +113,7 @@ export function agentSnapshot() {
 	const active = editor.scenes.getActiveSceneOrNull();
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
-	const view = buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() });
+	const view = buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords() });
 	const { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt } = agentReadiness();
 	return {
 		schema: "opencut-agent-sync-1", projectId: project.metadata.id, projectName: project.metadata.name,
@@ -130,7 +139,7 @@ export function agentSelection(view?: ReturnType<typeof buildSceneSnapshot>) {
 	const active = editor.scenes.getActiveSceneOrNull();
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
-	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() });
+	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords() });
 	const lanes = active.id === scene.id ? snapshot.tracks : (snapshot.compounds.find((c) => c.sceneId === active.id)?.tracks ?? []);
 	const selected = editor.selection.getSelectedElements().flatMap(({ trackId, elementId }) => {
 		const lane = lanes.find((l) => l.id === trackId);
@@ -450,11 +459,51 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		const elements = opElements[i];
 		return elements instanceof Error ? [] : elements;
 	};
+	// A file used several times is imported once: words given on any of its references go with it.
+	const wordsByAsset = new Map<string, unknown>();
+	for (const walked of opElements) {
+		if (walked instanceof Error) continue;
+		for (const e of walked) {
+			if (e?.asset && typeof e.asset !== "string" && e.asset.words !== undefined && !wordsByAsset.has(assetKey(e.asset))) wordsByAsset.set(assetKey(e.asset), e.asset.words);
+		}
+	}
+	// `words` ops are stored before the timeline changes (then a draft never reports words it could not
+	// store); a draft that does not apply puts the previous words back.
+	const previousWords = new Map<string, SourceWord[] | undefined>();
+	/** Puts back the words of every media whose words this draft stored; what could not be put back. */
+	const restoreWords = async () => {
+		const failed: { id: string; error: string }[] = [];
+		for (const [id, words] of previousWords) {
+			try {
+				await storageService.setMediaWords({ projectId, id, words });
+			} catch (error) {
+				failed.push({ id: `words:${id}`, error: errorText(error) });
+			}
+		}
+		return failed;
+	};
 	for (const [i, op] of ops.entries()) {
 		const errors: string[] = [];
 		const walked = opElements[i];
 		if (walked instanceof Error) {
 			failures[i] = `invalid elements: ${walked.message}`;
+			continue;
+		}
+		if (op.op === "words") {
+			const target = editor.media.getAssets().find((asset) => asset.id === op.mediaId);
+			const words = parseSourceWords(op.words);
+			if (!target) failures[i] = `media not in project: ${String(op.mediaId)}`;
+			else if (!words) failures[i] = "words must be a list of {text, start, end} in seconds";
+			else {
+				const before = previousWords.has(target.id) ? previousWords.get(target.id) : target.words;
+				try {
+					await storageService.setMediaWords({ projectId, id: target.id, words });
+					// Only words that were stored are put back.
+					if (!previousWords.has(target.id)) previousWords.set(target.id, before);
+				} catch (error) {
+					failures[i] = `words not stored: ${errorText(error)}`;
+				}
+			}
 			continue;
 		}
 		if (op.op === "set" && op.caption?.preset) {
@@ -478,7 +527,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 				} else if (e.asset && typeof e.asset !== "string") {
 					const asset = e.asset;
 					const key = assetKey(asset);
-					if (!byPath.has(key)) byPath.set(key, stageAgentAsset({ projectId, asset, onId: (id) => staged.push(id) }));
+					const withWords = wordsByAsset.has(key) ? { ...asset, words: wordsByAsset.get(key) as SourceWord[] } : asset;
+					if (!byPath.has(key)) byPath.set(key, stageAgentAsset({ projectId, asset: withWords, onId: (id) => staged.push(id) }));
 					media.set(e, await byPath.get(key)!);
 				}
 			} catch (error) {
@@ -487,15 +537,26 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		}
 		if (errors.length) failures[i] = errors.join("; ");
 	}
-	/** Removes staged imports (all, or those `keep` does not need) and reports what could not be removed. */
-	const discard = async (keep: Set<string> = new Set()) => {
-		const drop = staged.filter((id) => !keep.has(id));
-		if (drop.length === 0) return null;
-		const cleanup = await editor.media.discardStagedMediaAssets({ ids: drop });
-		return cleanup;
+	/**
+	 * Removes staged imports (all, or those `keep` does not need) and reports what could not be removed.
+	 * Without `keep` the draft does not apply: stored words are put back too.
+	 */
+	const discard = async (keep?: Set<string>) => {
+		const wordsFailed = keep ? [] : await restoreWords();
+		const drop = staged.filter((id) => !keep?.has(id));
+		if (drop.length === 0 && wordsFailed.length === 0) return null;
+		const cleanup = drop.length ? await editor.media.discardStagedMediaAssets({ ids: drop }) : { removed: [], failed: [] };
+		// Words that could not be put back count as not rolled back, like files that could not be removed.
+		return { ...cleanup, failed: [...cleanup.failed, ...wordsFailed] };
 	};
-	const cleanupNote = (cleanup: Awaited<ReturnType<typeof discard>>) =>
-		cleanup?.failed.length ? `; ${cleanup.failed.length} imported ${cleanup.failed.length === 1 ? "file" : "files"} could not be removed from storage` : "";
+	const cleanupNote = (cleanup: Awaited<ReturnType<typeof discard>>) => {
+		const files = cleanup?.failed.filter((entry) => !entry.id.startsWith("words:")).length ?? 0;
+		const words = (cleanup?.failed.length ?? 0) - files;
+		return [
+			files ? `; ${files} imported ${files === 1 ? "file" : "files"} could not be removed from storage` : "",
+			words ? `; the words of ${words} ${words === 1 ? "media file" : "media files"} could not be put back` : "",
+		].join("");
+	};
 	// The user started dragging while assets loaded: committing now would cancel the drag, so the draft
 	// waits for the release (at most a minute).
 	if (timelineBusy() && !(await whenPreviewEnds({ timeoutMs: 60000 }))) {
@@ -530,12 +591,16 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	}
 
 
+	const loadedWords = new Map<string, SourceWord[]>();
+	for (const loaded of media.values()) if (loaded.words) loadedWords.set(loaded.id, loaded.words);
 	// Read the scenes after loading: the human may have edited meanwhile.
 	const before = editor.scenes.getScenes();
 	const openScene = editor.scenes.getActiveScene();
 	const outcome = computeAgentDraft({
 		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true,
 		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled, base,
+		// Also the words of media this draft imports (a later set can cut by them).
+		wordsOf: ((project) => (id: string) => loadedWords.get(id) ?? project(id))(mediaWords()),
 	});
 	// The open scene stays open unless the draft removed it (ungrouping the compound being edited): then the root opens.
 	const openAfter = outcome.scenes.some((scene) => scene.id === openScene.id) ? openScene.id : root.id;
@@ -589,6 +654,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		return;
 	}
 	const cleanup = await discard(new Set(publish));
+	// Words the draft set (already stored) are the media's words in the editor from now on.
+	for (const [mediaId, words] of outcome.words) editor.media.setMediaWords({ id: mediaId, words });
 
 	// Report where `url` and `sfx` assets were saved and their sources (for credits and reuse as `path`).
 	for (const [i, op] of ops.entries()) {

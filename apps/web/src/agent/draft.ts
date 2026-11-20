@@ -2,8 +2,8 @@
 // then wraps the resulting scene list in one command, so the whole draft is one Undo step even
 // when it touches several scenes (the root timeline and compound clip contents).
 import { type ElementRecord, StaleError, assertNoteNotStale, assertNotStale, assertRippleNotStale, fieldsMapOf, touchedFields } from "./stale";
-import type { Bookmark, SceneTracks, TScene } from "@/timeline";
-import { TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
+import type { Bookmark, SceneTracks, TScene, TimelineElement } from "@/timeline";
+import { type MediaTime, TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
 import { getFrameTime } from "@/timeline/bookmarks";
 import { buildCompoundFromElements, isCompoundElement, relocateVisualCompounds, syncCompoundDurations, ungroupCompoundElement } from "@/timeline/compound";
@@ -16,12 +16,16 @@ import { type BuildContext, applyAgentKeyframes, cloneTracks, placeAgentElement,
 import { type AgentMatch, type ElementHit, addressOf, getScenePaths, orderedTracks, resolveCompoundTarget, resolveMatch } from "./scene-graph";
 import { updateAgentCaption, type AgentCaption } from "./captions";
 import { reconcileCaptionEdit } from "@/text/caption";
+import { parseSourceWords, type SourceWord } from "@/media/words";
+import { cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
 export type DraftOp =
 	| {
 		op: "set"; match: AgentMatch; start?: number; duration?: number; trimStart?: number; params?: Record<string, unknown>; caption?: Partial<AgentCaption>;
+		/** `"words"`: after the change, a start or end inside a spoken word moves out of it (see word-cuts). */
+		cut?: "words";
 		/** `merge` (default) upserts these keys; `replace` first drops every keyframe of the element. */
 		keyframes?: AgentKeyframe[]; keyframesMode?: "merge" | "replace";
 	}
@@ -34,6 +38,8 @@ export type DraftOp =
 	| { op: "add"; track: DraftTrackRef; element: AgentElement }
 	| { op: "group"; agent_id?: string; name?: string; match: AgentMatch[] }
 	| { op: "ungroup"; match: AgentMatch }
+	/** Spoken words of a project media file (source seconds), kept with it; later ops of the draft use them. */
+	| { op: "words"; mediaId: string; words: SourceWord[] }
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
 		& Pick<AgentElement, "params" | "keyframes" | "group"> & NonNullable<AgentElement["compound"]>);
 /** `atomic: true`: if any op fails, the draft changes nothing. */
@@ -60,13 +66,64 @@ function keyframeTargets(el: any, k: AgentKeyframe): { propertyPath: string; val
 	return [{ propertyPath: k.path, value: k.value }];
 }
 
-export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, fps, ripple, atomic = false, results: initial = [], base }: {
+export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, fps, ripple, atomic = false, results: initial = [], base, wordsOf }: {
 	scenes: TScene[]; rootSceneId: string; ops: DraftOp[]; mediaFor: (e: AgentElement) => LoadedMedia | undefined;
 	canvas: { width: number; height: number }; fps: FrameRate; ripple: boolean; atomic?: boolean; results?: any[];
 	/** Element state at the draft's `basedOn` snapshot: set/replace/delete on fields changed since then are stale. */
 	base?: Map<string, ElementRecord>;
-}): { scenes: TScene[]; results: any[]; touched: Touched[]; applied: boolean } {
+	/** Spoken words of a project media file, if known. */
+	wordsOf?: (mediaId: string) => SourceWord[] | undefined;
+}): { scenes: TScene[]; results: any[]; touched: Touched[]; applied: boolean; words: Map<string, SourceWord[]> } {
 	let list = scenes;
+	// Words set by `words` ops of this draft (the bridge stores them once it commits).
+	const draftWords = new Map<string, SourceWord[]>();
+	const wordsFor = (mediaId: unknown) => (typeof mediaId === "string" ? draftWords.get(mediaId) ?? wordsOf?.(mediaId) : undefined);
+	const elementIn = (sceneId: string, elementId: string) =>
+		orderedTracks(sceneOf(sceneId).tracks).flatMap((track): TimelineElement[] => track.elements).find((e) => e.id === elementId);
+	const checkCut = (cut: unknown) => {
+		if (cut !== undefined && cut !== "words") throw new Error('cut must be "words"');
+		return cut === "words";
+	};
+	const needWords = (words: SourceWord[] | undefined) => {
+		if (!words) throw new Error('cut: "words" needs the media\'s words (asset.words or a words op)');
+		return words;
+	};
+	/**
+	 * Moves the cuts of an element just placed out of spoken words; fails if its end would then run into
+	 * the next clip on its track. Returns the element as it is now.
+	 */
+	const snapPlaced = (sceneId: string, elementId: string, words: SourceWord[]) =>
+		editTracks(sceneId, (tracks) => {
+			for (const track of orderedTracks(tracks) as any[]) {
+				const index = track.elements.findIndex((e: TimelineElement) => e.id === elementId);
+				if (index < 0) continue;
+				const el = track.elements[index];
+				// What was built (a text or compound with a mediaId has no cuts to snap).
+				if (el.type !== "video" && el.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
+				const snapped = snapCutsToWords(el, words, fps);
+				if (!snapped) return el;
+				const next = { ...el, ...snapped };
+				assertRoomForEnd(track.elements, index, el.startTime + el.duration, next.startTime + next.duration);
+				track.elements[index] = next;
+				return next;
+			}
+			throw new Error(`element not found: ${elementId}`);
+			// The clip was just added: rounding it a hair shorter must not pull the clips after it.
+		}, { noRipple: true });
+	/** A clip snapped longer must not run into the next clip on its track (ripple only closes gaps). */
+	const assertRoomForEnd = (elements: TimelineElement[], index: number, requestedEnd: number, end: number) => {
+		const blocked = elements.find((other, j) => j !== index && other.startTime >= requestedEnd && other.startTime < end);
+		if (blocked) throw new Error(`snapping to the word's end would overlap ${blocked.name || blocked.id}; make room for the whole word first`);
+	};
+	/** `cut` only on a top-level add or set (inside a compound it would not be applied). */
+	const refuseNestedCut = (elements: unknown[]) => {
+		for (const e of elements as AgentElement[]) {
+			if (!e || typeof e !== "object") continue;
+			if (e.cut !== undefined) throw new Error("cut works on a top-level add or set, not inside a compound or a replace");
+			const content = e.compound;
+			if (content) refuseNestedCut([...(content.main ?? []), ...(content.overlay ?? []).flatMap((t) => t.elements ?? []), ...(content.audio ?? []), ...(content.elements ?? [])]);
+		}
+	};
 	// The timeline before this draft: stale checks compare the snapshot with it, never with the draft's own edits.
 	const now = base ? fieldsMapOf(scenes) : undefined;
 	const results: any[] = [...initial];
@@ -79,11 +136,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	};
 	const replace = (scene: TScene) => { list = list.map((s) => (s.id === scene.id ? scene : s)); };
 	/** Edits one scene's tracks; plain edits ripple like a timeline edit when ripple editing is on. */
-	const editTracks = <T>(sceneId: string, edit: (tracks: SceneTracks) => T): T => {
+	const editTracks = <T>(sceneId: string, edit: (tracks: SceneTracks) => T, { noRipple = false }: { noRipple?: boolean } = {}): T => {
 		const scene = sceneOf(sceneId);
 		const tracks = cloneTracks(scene.tracks);
 		const out = edit(tracks);
-		const next = ripple ? applyRippleAdjustments({ tracks, adjustments: computeRippleAdjustments({ beforeTracks: scene.tracks, afterTracks: tracks }) }) : tracks;
+		const next = ripple && !noRipple ? applyRippleAdjustments({ tracks, adjustments: computeRippleAdjustments({ beforeTracks: scene.tracks, afterTracks: tracks }) }) : tracks;
 		// A clip this edit moves (explicitly or by ripple) must not be one the user moved after basedOn.
 		assertRippleNotStale({ base, now, sceneId, before: scene.tracks, after: next });
 		replace({ ...scene, tracks: next, updatedAt: new Date() });
@@ -115,8 +172,19 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			if ("error" in target) throw new Error(target.error);
 			sceneId = target.sceneId;
 		}
+		const cutWords = checkCut(element.cut);
+		const content = element.compound;
+		if (content) refuseNestedCut([...(content.main ?? []), ...(content.overlay ?? []).flatMap((t) => t.elements ?? []), ...(content.audio ?? []), ...(content.elements ?? [])]);
+		let words: SourceWord[] | undefined;
+		if (cutWords) {
+			const loaded = mediaFor(element);
+			if (!loaded || (loaded.type !== "video" && loaded.type !== "audio")) throw new Error('cut: "words" is for video and audio clips');
+			words = needWords(draftWords.get(loaded.id) ?? loaded.words ?? wordsOf?.(loaded.id));
+		}
 		const ctx: BuildContext = { canvas, keyframes: [], mediaFor, existing: list, created: [] };
+		// Placed as usual first (defaults, track, place), then its cuts move out of words.
 		const placed = editTracks(sceneId, (tracks) => placeAgentElement({ tracks, sceneId, e: element, ref: track, ctx }));
+		if (words) placed.element = snapPlaced(sceneId, placed.element.id, words);
 		placedElement(sceneId, track.name, placed, ctx, result);
 	};
 	/** Keyframes, nested scenes, selection, and result addresses of an element just placed. */
@@ -146,7 +214,13 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				return;
 			}
 			case "set": {
+				const cutWords = checkCut(op.cut);
 				const hit = find(op.match);
+				let setWords: SourceWord[] | undefined;
+				if (cutWords) {
+					if (hit.element.type !== "video" && hit.element.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
+					setWords = needWords(wordsFor((hit.element as { mediaId?: unknown }).mediaId));
+				}
 				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: touchedFields(op), scenes: list });
 				editTracks(hit.sceneId, (tracks) => {
 					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
@@ -175,6 +249,15 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 							for (const target of keyframeTargets(next, k)) next = upsertAgentKeyframe(next, { ...target, time: k.time, interpolation: k.interpolation }, { strict: true });
 						}
 					}
+					if (setWords) {
+						// The source ends where it did before this op (a shorter clip does not shorten its file).
+						const snapped = snapCutsToWords(next, setWords, fps, { limit: sourceEnd(el) });
+						if (snapped) {
+							const requestedEnd = next.startTime + next.duration;
+							next = { ...next, ...snapped };
+							assertRoomForEnd(track.elements, hit.index, requestedEnd, next.startTime + next.duration);
+						}
+					}
 					track.elements[hit.index] = el.type === "text" && next.type === "text"
 						? op.caption ? updateAgentCaption(reconcileCaptionEdit(el, next), op.caption) : reconcileCaptionEdit(el, next)
 						: next;
@@ -183,11 +266,21 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				address(result, "element", hit.sceneId, hit.element.id);
 				return;
 			}
+			case "words": {
+				if (typeof op.mediaId !== "string") throw new Error("words needs mediaId");
+				const words = parseSourceWords(op.words);
+				if (!words) throw new Error("words must be a list of {text, start, end} in seconds");
+				draftWords.set(op.mediaId, words);
+				result.mediaId = op.mediaId;
+				result.words = words.length;
+				return;
+			}
 			case "replace": {
 				const hit = find(op.match);
 				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all", scenes: list });
 				const given = op.element;
 				if (!given || typeof given !== "object") throw new Error("replace needs an element");
+				refuseNestedCut([given]);
 				if (op.track !== undefined && (typeof op.track?.name !== "string" || "compound" in op.track)) throw new Error("replace: track needs {name} and stays in the element's scene");
 				const old = hit.element;
 				// Unset fields keep the replaced element's agentId, name, and span.
@@ -304,6 +397,15 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		try {
 			run(op, result);
 			result.ok = true;
+			// Cuts this op left inside a spoken word (video and audio clips whose media has words).
+			const warnings = touched.slice(saved.touched).flatMap(({ sceneId, elementId }) => {
+				const element = elementIn(sceneId, elementId) as (TimelineElement & { mediaId?: unknown }) | undefined;
+				if (!element || (element.type !== "video" && element.type !== "audio")) return [];
+				const fromAsset = op?.op === "add" || op?.op === "replace" ? mediaFor(op.element as AgentElement)?.words : undefined;
+				const words = (typeof element.mediaId === "string" ? draftWords.get(element.mediaId) : undefined) ?? fromAsset ?? wordsFor(element.mediaId);
+				return words ? cutWarnings(element, words).map((warning) => ({ elementId, ...warning })) : [];
+			});
+			if (warnings.length) result.cutWarnings = warnings;
 		} catch (error) {
 			// An op that fails changes nothing; the rest of the draft still applies.
 			list = saved.list;
@@ -324,11 +426,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	if (atomic && results.some((r) => !r?.ok)) {
 		// All or nothing: the ops that would have applied are reported as skipped; nothing changes.
 		const skipped = (r: any) => ({ op: r.op, ...(r.match !== undefined ? { match: r.match } : {}), ...(r.agentId !== undefined ? { agentId: r.agentId } : {}), ok: false, skipped: true, error: "not applied: another op of this atomic draft failed" });
-		return { scenes, touched: [], applied: false, results: results.map((r) => (r?.ok ? skipped(r) : r)) };
+		return { scenes, touched: [], applied: false, results: results.map((r) => (r?.ok ? skipped(r) : r)), words: new Map() };
 	}
 	// Derived compound state up front (track relocation, durations), so applying the draft adds no
 	// side effects to other scenes and one undo restores exactly what it changed.
 	list = syncCompoundDurations(relocateVisualCompounds(list));
 	for (const fill of finish) fill();
-	return { scenes: list, results, touched, applied: true };
+	return { scenes: list, results, touched, applied: true, words: draftWords };
 }
