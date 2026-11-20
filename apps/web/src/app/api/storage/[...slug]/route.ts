@@ -120,13 +120,19 @@ async function handle(
 					try {
 						await fs.rename(projectDir(id), trash);
 					} catch (error) {
+						// Already gone is fine.
 						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-						return Response.json({ ok: true }); // already gone
 					}
-					// What cannot be removed now stays in the trash folder; the project is gone either way.
-					await fs.rm(trash, { recursive: true, force: true }).catch((error) => {
-						console.error(`Deleted project ${id} not fully removed from the trash:`, error);
-					});
+					// What cannot be removed now stays in the trash folder (the project is gone either way) and is
+					// tried again on the next delete, with anything else left there.
+					const left = await fs.readdir(path.dirname(trash)).catch(() => [] as string[]);
+					await Promise.all(
+						left.map((name) =>
+							fs.rm(path.join(path.dirname(trash), name), { recursive: true, force: true }).catch((error) => {
+								console.error(`Deleted project files not removed yet (${name}):`, error);
+							}),
+						),
+					);
 					return Response.json({ ok: true });
 				});
 			if (s[2] === "migration" && s.length === 3 && method === "GET")

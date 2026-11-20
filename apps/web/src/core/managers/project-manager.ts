@@ -154,8 +154,19 @@ export class ProjectManager {
 			for (let attempt = 1; ; attempt++) {
 				this.assertOpenable(id);
 				// A rename being written: the copy read below has the new name, and the next saves keep it.
-				await this.renames.get(id)?.catch(() => undefined);
-				if (superseded()) return;
+				const rename = this.renames.get(id);
+				if (rename) {
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					const done = await Promise.race([
+						rename.then(() => true, () => true),
+						new Promise<boolean>((resolve) => {
+							timer = setTimeout(() => resolve(false), 15000);
+						}),
+					]);
+					clearTimeout(timer);
+					if (superseded()) return;
+					if (!done) throw new Error("A rename of this project is still being saved; try again in a moment");
+				}
 				// Changes of this project that are not on disk yet (it is open, or was closed a moment ago)
 				// are written first, so the read below has them.
 				const unsaved = await this.editor.save.settleProject(id);
@@ -291,6 +302,9 @@ export class ProjectManager {
 		try {
 			await storageService.saveProject({ project });
 			this.updateSavedMetadata(project.metadata);
+			// A project no longer in the editor (written after it closed): the project list shows it, so it
+			// hears about it. The open one is not notified (see above).
+			if (this.active?.metadata.id !== project.metadata.id) this.notify();
 			return null;
 		} catch (error) {
 			console.error("Failed to save project:", error);

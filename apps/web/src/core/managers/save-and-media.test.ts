@@ -894,8 +894,11 @@ describe("save sessions: storage edge cases", () => {
 			expect((await call("GET", ["projects", "d"])).status).toBe(404);
 			expect(await fs.readdir(path.join(root, "projects"))).toEqual([]);
 			expect(await fs.readdir(path.join(root, "trash"))).toEqual([]);
-			// Deleting it again is fine.
+			// Deleting it again is fine, and files a failed cleanup left in the trash are removed then.
+			await fs.mkdir(path.join(root, "trash", "left-0", "media"), { recursive: true });
+			await fs.writeFile(path.join(root, "trash", "left-0", "media", "big.bin"), "x");
 			expect((await call("DELETE", ["projects", "d"])).status).toBe(200);
+			expect(await fs.readdir(path.join(root, "trash"))).toEqual([]);
 		} finally {
 			if (previous === undefined) delete process.env.BOPENCUT_DATA;
 			else process.env.BOPENCUT_DATA = previous;
