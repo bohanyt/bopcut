@@ -44,13 +44,14 @@ const LABELS: Record<string, string> = {
 function PresetSide({
 	side,
 	element,
+	current,
 	onApply,
 }: {
 	side: "in" | "out";
 	element: TimelineElement;
+	current: { type: string; duration: number } | null;
 	onApply: (request: AnimationPresetRequest) => void;
 }) {
-	const current = readAnimationPresets(element)[side];
 	const types = (side === "in" ? ANIMATION_IN_TYPES : ANIMATION_OUT_TYPES).filter(
 		(type) => type !== "typewriter" || element.type === "text",
 	);
@@ -108,6 +109,7 @@ export function AnimationTab({
 	const canvasHeight = useEditor(
 		(e) => e.project.getActiveOrNull()?.settings.canvasSize.height ?? 1080,
 	);
+	const presets = readAnimationPresets(element);
 	const onApply = (request: AnimationPresetRequest) => {
 		let next: TimelineElement;
 		try {
@@ -137,8 +139,8 @@ export function AnimationTab({
 			</SectionHeader>
 			<SectionContent>
 				<SectionFields>
-					<PresetSide side="in" element={element} onApply={onApply} />
-					<PresetSide side="out" element={element} onApply={onApply} />
+					<PresetSide side="in" element={element} current={presets.in} onApply={onApply} />
+					<PresetSide side="out" element={element} current={presets.out} onApply={onApply} />
 					<p className="text-muted-foreground text-xs">
 						Made of keyframes: adjust them on the timeline.
 					</p>

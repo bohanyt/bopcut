@@ -109,13 +109,17 @@ describe("animation presets", () => {
 		return { ...element, animations: upsertPathKeyframe({ animations: element.animations, propertyPath: path, time: T(seconds), value, keyframeId: id, channelLayout: target.channelLayout, coerceValue: target.coerceValue }) };
 	};
 
-	test("a keyframe of the clip's own is never written over: refused where the preset needs one, kept at the join", () => {
-		expect(() => applyAnimationPresets(own(text(2), "opacity", 0, 0.7), { in: { type: "fade" } }, canvas)).toThrow("has its own keyframe at 0 s");
-		const atJoin = applyAnimationPresets(own(text(2), "opacity", 0.3, 0.7), { in: { type: "fade" } }, canvas);
-		expect(at(atJoin, "opacity", 0.3)).toBeCloseTo(0.7, 6);
-		const removed = applyAnimationPresets(atJoin, { in: { type: "none" } }, canvas);
-		expect(keyIds(removed, "opacity")).toEqual(["mine-0.3"]);
-		expect(at(removed, "opacity", 0.3)).toBeCloseTo(0.7, 6);
+	test("a keyframe of the clip's own inside a preset's window is never written over: the preset is refused", () => {
+		for (const t of [0, 0.1, 0.3]) {
+			expect(() => applyAnimationPresets(own(text(2), "opacity", t, 0.7), { in: { type: "fade" } }, canvas)).toThrow(`has its own keyframe at ${t} s, inside the preset`);
+		}
+		// Just after the window: kept, and the fade ends at its value.
+		const after = applyAnimationPresets(own(text(2), "opacity", 0.5, 0.7), { in: { type: "fade" } }, canvas);
+		expect(at(after, "opacity", 0.3)).toBeCloseTo(0.7, 6);
+		const removed = applyAnimationPresets(after, { in: { type: "none" } }, canvas);
+		expect(keyIds(removed, "opacity")).toEqual(["mine-0.5"]);
+		// Another property is no obstacle.
+		expect(readAnimationPresets(applyAnimationPresets(own(text(2), "transform.rotate", 0, 10), { in: { type: "fade" } }, canvas)).in?.type).toBe("fade");
 	});
 
 	test("both sides at once are cleared before either is written (no opacity left at 0)", () => {
@@ -126,18 +130,20 @@ describe("animation presets", () => {
 		expect(readAnimationPresets(both)).toEqual({ in: { type: "fade", duration: 0.5 }, out: { type: "fade", duration: 0.3 } });
 	});
 
-	test("where a preset joins the clip's own motion, that motion goes on as it was", () => {
-		// A hold from 0.2 s to 1 s stays a hold after a fade in that ends inside it.
-		let held = own(own(text(2), "opacity", 0.2, 0.8, "a"), "opacity", 1, 0.4, "b");
+	test("the clip's own motion outside a preset goes on as it was", () => {
+		// A hold from 1 s to 1.5 s stays a hold, and the fade in ends at the value the clip has before it.
+		let held = own(own(text(2), "opacity", 1, 0.8, "a"), "opacity", 1.5, 0.4, "b");
 		held = { ...held, animations: updateScalarKeyframeCurve({ animations: held.animations, propertyPath: "opacity", componentKey: "value", keyframeId: "a", patch: { segmentToNext: "step" } }) };
-		const faded = applyAnimationPresets(held, { in: { type: "fade", duration: 0.5 } }, canvas);
-		expect(at(faded, "opacity", 0.9)).toBeCloseTo(0.8, 6);
-		expect(at(faded, "opacity", 1)).toBeCloseTo(0.4, 6);
-		// Pop's opacity joins at 40% of its window: measured there, not at the window's end.
-		const ramp = own(own(text(2), "opacity", 0.1, 1, "c"), "opacity", 0.5, 0, "d");
-		const pop = applyAnimationPresets(ramp, { in: { type: "pop" } }, canvas);
-		expect(at(pop, "opacity", 0.14)).toBeCloseTo(0.9, 2);
-		expect(at(pop, "opacity", 0.3)).toBeCloseTo(0.5, 6);
+		const faded = applyAnimationPresets(held, { in: { type: "fade", duration: 0.5 }, out: { type: "fade", duration: 0.3 } }, canvas);
+		expect(at(faded, "opacity", 0.5)).toBeCloseTo(0.8, 6);
+		expect(at(faded, "opacity", 0.8)).toBeCloseTo(0.8, 6);
+		expect(at(faded, "opacity", 1.4)).toBeCloseTo(0.8, 6);
+		expect(at(faded, "opacity", 1.6)).toBeCloseTo(0.4, 6);
+		expect(at(faded, "opacity", 2)).toBe(0);
+		// Pop's opacity joins at 40% of its window, its scale at the end: each measured where it joins.
+		const pop = applyAnimationPresets(own(text(2), "transform.scaleX", 1, 3, "c"), { in: { type: "pop" } }, canvas);
+		expect(at(pop, "transform.scaleX", 0.35)).toBeCloseTo(3, 6);
+		expect(at(pop, "transform.scaleX", 0)).toBeCloseTo(1.5, 6);
 	});
 
 	test("a fade between equal values stays flat", () => {
@@ -178,4 +184,23 @@ describe("animation presets", () => {
 		expect(keyIds(right, "opacity").every((id) => id.startsWith("anim-out-"))).toBe(true);
 		expect(Object.values(applyAnimationPresets(right, { out: { type: "none" } }, canvas).animations ?? {}).filter(Boolean)).toEqual([]);
 	});
+
+	test("a shorter clip squeezes its out preset after the clip's own keys, never onto them", () => {
+		const el = applyAnimationPresets(own(text(4), "opacity", 1.5, 0.7), { out: { type: "fade", duration: 1 } }, canvas);
+		const times = (e: TextElement) => getChannelsFromData({ data: e.animations?.opacity as never })[0].keys.map((k) => k.time);
+		// Trimmed to 2 s: the fade fits in the half second after the own key at 1.5 s.
+		const trimmed = reanchorOutPreset({ ...el, duration: T(2) }, el.duration);
+		expect(readAnimationPresets(trimmed).out?.duration).toBeCloseTo(0.5, 2);
+		expect(at(trimmed, "opacity", 1.5)).toBeCloseTo(0.7, 6);
+		expect(at(trimmed, "opacity", 2)).toBe(0);
+		expect(new Set(times(trimmed)).size).toBe(times(trimmed).length);
+		// The curve is squeezed with it: its handles shrink by the same factor.
+		const handle = (e: TextElement) => (getChannelsFromData({ data: e.animations?.opacity as never })[0].keys.find((k) => k.id.startsWith("anim-out-")) as { rightHandle?: { dt: number } }).rightHandle?.dt ?? 0;
+		expect(handle(trimmed)).toBeCloseTo(handle(el) / 2, -1);
+		// Trimmed to the own key itself: no room, the preset goes (no two keys at one time).
+		const onKey = reanchorOutPreset({ ...el, duration: T(1.5) }, el.duration);
+		expect(readAnimationPresets(onKey).out).toBeNull();
+		expect(new Set(times(onKey)).size).toBe(times(onKey).length);
+	});
 });
+

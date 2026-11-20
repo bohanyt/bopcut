@@ -89,4 +89,22 @@ describe("animate for agents", () => {
 		expect(opacity(clip, 2)).toBeCloseTo(1, 6);
 		expect(opacity(clip, 3)).toBe(0);
 	});
+
+	test("dragging a trim shows the out preset where releasing it puts it", async () => {
+		const { EditorCore } = await import("@/core");
+		EditorCore.reset();
+		const editor = EditorCore.getInstance();
+		editor.save.stop();
+		const animated = run(scenesWith([video("A", 0, 2)]), [{ op: "animate", match: { agentId: "A" }, out: "fade" }]).scenes;
+		editor.project.setActiveProject({ project: { metadata: { id: "p", name: "p", createdAt: new Date(0), updatedAt: new Date(0) }, scenes: animated, currentSceneId: "main", settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1080, height: 1920 } } } as never });
+		editor.scenes.setScenes({ scenes: animated, activeSceneId: "main" });
+		const clip = animated[0].tracks.main.elements[0];
+		editor.timeline.previewElements({ updates: [{ trackId: "t-main", elementId: clip.id, updates: { duration: T(3) } }] });
+		const previewed = editor.timeline.getPreviewTracks()!.main.elements[0];
+		expect(opacity(previewed, 2)).toBeCloseTo(1, 6);
+		expect(opacity(previewed, 3)).toBe(0);
+		editor.timeline.discardPreview();
+		EditorCore.reset();
+	});
 });
+

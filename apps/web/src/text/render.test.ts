@@ -344,3 +344,20 @@ test("typewriter: right-to-left text grows from its right edge; underlines come 
 	expect(underlined(0).count).toBe(0);
 	expect(underlined(1).count).toBeGreaterThan(inked({ ...hebrew(1), params: { ...hebrew(1).params, content: "Hello world" } }).count);
 });
+
+test("typewriter: a line mixing both directions appears whole once it is typed (it would reorder as it grows)", () => {
+	const mixed = (typed: number): TextElement => ({
+		...element,
+		caption: undefined,
+		params: { content: "Title \u05e9\u05dc\u05d5\u05dd", fontFamily: FONT, fontSize: 15, textAlign: "center", "shadow.opacity": 0, typewriter: typed },
+	});
+	const count = (target: TextElement) => {
+		const { pixels } = render(1, 0.5, target);
+		let n = 0;
+		for (let i = 3; i < pixels.length; i += 4) if (pixels[i] > 20) n++;
+		return n;
+	};
+	expect(count(mixed(0.9))).toBe(0);
+	expect(count(mixed(1))).toBeGreaterThan(0);
+});
+

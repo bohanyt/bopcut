@@ -102,8 +102,9 @@ function drawGlyphs(
 }
 
 // The first strong letter of a text decides its direction (Hebrew, Arabic and nearby scripts are right to left).
-const STRONG = /[A-Za-zÀ-ʯͰ-ԯ֐-ࣿיִ-﷿ﹰ-﻿]/;
-const RTL = /[֐-ࣿיִ-﷿ﹰ-﻿]/;
+const STRONG = /[A-Za-z\u00C0-\u02AF\u0370-\u052F\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+const LTR = /[A-Za-z\u00C0-\u02AF\u0370-\u052F]/;
 
 /**
  * The runs cut to the first `typed` share of their characters (in reading order); a right-to-left run is
@@ -117,7 +118,10 @@ function typedRuns<T extends { text: string }>(runs: T[], typed: number): (T & {
 		if (left <= 0) break;
 		const chars = Array.from(run.text);
 		const rtl = RTL.test(STRONG.exec(run.text)?.[0] ?? "");
-		shown.push({ ...run, text: chars.length <= left ? run.text : chars.slice(0, left).join(""), rtl });
+		const whole = chars.length <= left;
+		// A run mixing both directions would reorder as it grows: it appears whole once it is typed.
+		const mixed = !whole && RTL.test(run.text) && LTR.test(run.text);
+		if (!mixed) shown.push({ ...run, text: whole ? run.text : chars.slice(0, left).join(""), rtl });
 		left -= chars.length;
 	}
 	return shown;

@@ -2,7 +2,7 @@
 // editable. Their keyframe ids start with `anim-in-` / `anim-out-`, so applying a preset again replaces
 // the earlier preset's keyframes and never the user's own. Out presets stay at the clip's end when its
 // length changes (see reanchorOutPreset).
-import type { ElementAnimations, NormalizedCubicBezier, ScalarAnimationKey, ScalarSegmentType } from "@/animation/types";
+import type { ElementAnimations, NormalizedCubicBezier, ScalarAnimationKey } from "@/animation/types";
 import { getCurveHandlesForNormalizedCubicBezier } from "@/animation/curve-bridge";
 import { getChannelsFromData, isLeafChannelData } from "@/animation/channel-data";
 import { removeElementKeyframe, updateScalarKeyframeCurve, upsertPathKeyframe } from "@/animation/keyframes";
@@ -155,25 +155,17 @@ function writeTracks<T extends TimelineElement>(element: T, side: Side, type: st
 		const target = resolveAnimationTarget({ element: next, path: track.path });
 		if (!target) throw new Error(`${side} ${type}: this clip has no ${track.path} to animate`);
 		const join = track.points.find((point) => point.join)!;
-		const joinTime = timeOf(join);
+		// The preset's window holds only its own keys: a keyframe of the clip's own there would be written over
+		// or cut into, so the request fails and names it.
+		const mine = scalarKeys(next, track.path).find((key) => !presetSideOf(key.id) && key.time >= window.start - 1 && key.time <= window.end + 1);
+		if (mine) {
+			throw new Error(`${side} ${type}: ${track.path} has its own keyframe at ${seconds(mine.time)} s, inside the preset (${seconds(window.start)} to ${seconds(window.end)} s); move or delete it first`);
+		}
 		// The property's own value where the preset meets the rest of the clip (before anything is written).
-		const edge = valueAt(next, track.path, joinTime);
-		const own = scalarKeys(next, track.path);
-		const ownAt = (time: number) => own.find((key) => Math.abs(key.time - time) < 1);
-		// The segment of the clip's own keys the join lands in keeps its kind (a hold stays a hold).
-		const before = own.filter((key) => key.time <= joinTime).pop();
-		const ids: (string | null)[] = [];
+		const edge = valueAt(next, track.path, timeOf(join));
+		const ids: string[] = [];
 		for (const point of track.points) {
 			const time = timeOf(point);
-			const mine = ownAt(time);
-			if (mine) {
-				// A keyframe of the clip's own at the join is the join itself; anywhere else it would be written over.
-				if (point.join) {
-					ids.push(mine.id);
-					continue;
-				}
-				throw new Error(`${side} ${type}: ${track.path} has its own keyframe at ${seconds(time)} s, where the preset needs one; move or delete it first`);
-			}
 			const id = `${presetPrefix(side)}${track.path}-${n++}`;
 			ids.push(id);
 			const animations = upsertPathKeyframe({
@@ -183,25 +175,16 @@ function writeTracks<T extends TimelineElement>(element: T, side: Side, type: st
 			});
 			next = { ...next, animations };
 		}
-		const keyOf = (id: string | null) => (id ? scalarKeys(next, track.path).find((key) => key.id === id) : undefined);
+		const keyOf = (id: string | undefined) => scalarKeys(next, track.path).find((key) => key.id === id);
 		track.points.forEach((point, index) => {
 			const left = keyOf(ids[index]);
-			if (!left || presetSideOf(left.id) !== side) return; // the clip's own keys keep their curves
-			if (point.join && side === "in") {
-				// After the join the clip's own motion goes on as it did.
-				const kind: ScalarSegmentType = before?.segmentToNext === "step" ? "step" : "linear";
-				next = { ...next, animations: updateScalarKeyframeCurve({ animations: next.animations, propertyPath: track.path, componentKey: "value", keyframeId: left.id, patch: { segmentToNext: kind, rightHandle: null } }) };
-				return;
-			}
 			const right = keyOf(ids[index + 1]);
 			// Easing; a segment between equal values stays flat (no overshoot).
-			if (!point.ease || !right || left.value === right.value) return;
+			if (!left || !right || !point.ease || left.value === right.value) return;
 			const handles = getCurveHandlesForNormalizedCubicBezier({ leftKey: left, rightKey: right, cubicBezier: point.ease });
 			if (!handles) return;
 			let animations = updateScalarKeyframeCurve({ animations: next.animations, propertyPath: track.path, componentKey: "value", keyframeId: left.id, patch: { rightHandle: handles.rightHandle, segmentToNext: "bezier", tangentMode: "broken" } });
-			if (presetSideOf(right.id) === side) {
-				animations = updateScalarKeyframeCurve({ animations, propertyPath: track.path, componentKey: "value", keyframeId: right.id, patch: { leftHandle: handles.leftHandle, tangentMode: "broken" } });
-			}
+			animations = updateScalarKeyframeCurve({ animations, propertyPath: track.path, componentKey: "value", keyframeId: right.id, patch: { leftHandle: handles.leftHandle, tangentMode: "broken" } });
 			next = { ...next, animations };
 		});
 	}
@@ -270,30 +253,41 @@ export function applyAnimationPresets<T extends TimelineElement>(element: T, req
 	return dropUnusedBlur(next);
 }
 
+/** The shortest an out preset is squeezed to when its clip gets shorter; below it the preset goes. */
+const MIN_SQUEEZED = 0.02 * TICKS_PER_SECOND;
+
 /**
- * After the clip's length changed (a trim at its end, a speed change), its out preset moves along so it
- * still ends with the clip; squeezed into the room left after the in preset, or dropped without room.
- * Keys are moved as they are (their values and curves stay).
+ * After the clip's length changed (a trim, a speed change), its out preset moves along so it still ends
+ * with the clip. Without room (the in preset, or a keyframe of the clip's own on a property it animates,
+ * would fall inside it) it is squeezed into the room left, its curves scaled in time, or removed below
+ * MIN_SQUEEZED. Called before the animations are cut to the new length.
  */
 export function reanchorOutPreset<T extends TimelineElement>(element: T, previousDuration: number): T {
-	const delta = element.duration - previousDuration;
+	const end = element.duration;
 	const keys = presetKeys(element.animations, "out");
-	if (!delta || !keys.length) return element;
+	if (end === previousDuration || !keys.length) return element;
 	const start = Math.min(...keys.map((key) => key.time));
 	const length = previousDuration - start;
-	const inEnd = presetLength(element, "in");
-	const free = element.duration - inEnd - 2;
-	if (free < 1) return dropUnusedBlur(withoutPreset(element, "out"));
-	const scale = length > free ? free / length : 1;
-	const newStart = element.duration - length * scale;
-	const move = (time: number) => roundMediaTime({ time: newStart + (time - start) * scale }) as MediaTime;
+	const paths = [...new Set(keys.map((key) => key.path))];
+	const own = paths.flatMap((path) => scalarKeys(element, path).filter((key) => !presetSideOf(key.id)).map((key) => key.time));
+	// One of the clip's own at the new end would share its time with the preset's last key.
+	if (own.some((time) => Math.abs(time - end) < 2)) return dropUnusedBlur(withoutPreset(element, "out"));
+	const ownBefore = own.filter((time) => time < end);
+	const earliest = Math.max(presetLength(element, "in") + 2, ownBefore.length ? Math.max(...ownBefore) + 2 : 0);
+	const free = end - earliest;
+	if (free < MIN_SQUEEZED || length <= 0) return dropUnusedBlur(withoutPreset(element, "out"));
+	const scale = Math.min(1, free / length);
+	const newStart = end - length * scale;
 	let animations = element.animations;
-	for (const path of new Set(keys.map((key) => key.path))) {
+	for (const path of paths) {
 		const data = animations?.[path];
 		if (!isLeafChannelData(data)) continue;
-		const moved = data.keys.map((key) => (presetSideOf(key.id) === "out" ? { ...key, time: move(key.time) } : key));
-		// A key of the clip's own the moved keys would now pass stays where it is; the order is kept by time.
-		animations = { ...animations, [path]: { ...data, keys: [...moved].sort((a, b) => a.time - b.time) } as never };
+		const moved = (data.keys as ScalarAnimationKey[]).map((key) => {
+			if (presetSideOf(key.id) !== "out") return key;
+			const scaled = (handle: ScalarAnimationKey["leftHandle"]) => (handle && scale !== 1 ? { ...handle, dt: roundMediaTime({ time: handle.dt * scale }) as MediaTime } : handle);
+			return { ...key, time: roundMediaTime({ time: newStart + (key.time - start) * scale }) as MediaTime, leftHandle: scaled(key.leftHandle), rightHandle: scaled(key.rightHandle) };
+		});
+		animations = { ...animations, [path]: { ...data, keys: moved.sort((a, b) => a.time - b.time) } as never };
 	}
 	return { ...element, animations };
 }
