@@ -2,7 +2,7 @@
 
 **bopencut** adalah editor video web tempat **manusia dan AI mengedit timeline yang sama**. AI menyusun draf video dari skrip; kamu menggeser, memotong, dan menata di UI seperti CapCut; lalu AI merapikan bagian yang kamu tunjuk. Semua perubahan AI bisa di-Undo, dan editanmu tidak tertimpa.
 
-> bopencut adalah fork dari **OpenCut (classic)** buatan tim [OpenCut](https://github.com/opencut-app/opencut), lisensi MIT (lihat [`LICENSE`](LICENSE)). Editor dasarnya sepenuhnya karya mereka. README asli OpenCut: [`docs/opencut-readme-asli.md`](docs/opencut-original-readme.md).
+> bopencut adalah fork dari **OpenCut (classic)** buatan tim [OpenCut](https://github.com/opencut-app/opencut-classic), lisensi MIT (lihat [`LICENSE`](LICENSE)). Editor dasarnya sepenuhnya karya mereka. README asli OpenCut: [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
 
 ## Yang bisa dilakukan
 
@@ -45,7 +45,7 @@ Buka `http://127.0.0.1:3000/projects`.
 | Folder kerja agen (sync, draf, frame, log editan) | `<repo>/workspace/` | `AGENT_WORKSPACE` |
 | Akar aset yang boleh dibaca agen | = `AGENT_WORKSPACE` | `AGENT_FILES_ROOT` |
 
-`workspace/` tidak masuk Git. Kalau memakai folder lain, pastikan folder itu juga tidak dikomit. Data lama yang masih tersimpan di browser disalin otomatis ke folder saat pertama dibuka, tanpa menghapus aslinya.
+`BOPENCUT_DATA` menunjuk ke folder induk `projects/`. `workspace/` tidak masuk Git. Kalau memakai folder lain, pastikan folder itu juga tidak dikomit. Data lama yang masih tersimpan di browser disalin otomatis ke folder saat pertama dibuka, tanpa menghapus aslinya.
 
 ## Memakai bopencut dengan AI lokal
 
