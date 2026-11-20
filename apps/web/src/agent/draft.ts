@@ -18,6 +18,7 @@ import { updateAgentCaption, type AgentCaption } from "./captions";
 import { reconcileCaptionEdit } from "@/text/caption";
 import { parseSourceWords, type SourceWord } from "@/media/words";
 import { type WordRef, cutAtWords, cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
+import { cutRange, cutRangeBookmarks } from "@/timeline/range-cut";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
@@ -42,6 +43,8 @@ export type DraftOp =
 	| { op: "ungroup"; match: AgentMatch }
 	/** Spoken words of a project media file (source seconds), kept with it; later ops of the draft use them. */
 	| { op: "words"; mediaId: string; words: SourceWord[] }
+	/** Cuts [start, end) (root timeline seconds) out of every track; everything after moves up. */
+	| { op: "cut"; start: number; end: number }
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
 		& Pick<AgentElement, "params" | "keyframes" | "group"> & NonNullable<AgentElement["compound"]>);
 /** `atomic: true`: if any op fails, the draft changes nothing. */
@@ -290,6 +293,37 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				});
 				touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
 				address(result, "element", hit.sceneId, hit.element.id);
+				return;
+			}
+			case "cut": {
+				if (typeof op.start !== "number" || typeof op.end !== "number" || !Number.isFinite(op.start) || !Number.isFinite(op.end) || op.start < 0 || op.end <= op.start) {
+					throw new Error("cut needs start and end in seconds, start < end");
+				}
+				// On whole frames: the start rounds up and the end down, so what stays on either side is never cut
+				// into (and notes and clips after the cut stay on frames).
+				const frameTicks = (TICKS_PER_SECOND * fps.denominator) / fps.numerator;
+				const start = Math.round(Math.ceil(secs(op.start) / frameTicks - 1e-9) * frameTicks) as MediaTime;
+				const end = Math.round(Math.floor(secs(op.end) / frameTicks + 1e-9) * frameTicks) as MediaTime;
+				if (end <= start) throw new Error("cut: the range is shorter than a frame");
+				const cut = editTracks(rootSceneId, (tracks) => {
+					const out = cutRange({ tracks, start, end, newId: generateUUID });
+					// What the user changed since basedOn is never cut away or trimmed by an older draft.
+					for (const element of out.removed) assertNotStale({ base, now, sceneId: rootSceneId, element, fields: "all", scenes: list });
+					// Trimming rewrites fades, keyframes and timing: a clip the user changed in any way is left alone.
+					for (const element of out.trimmed) assertNotStale({ base, now, sceneId: rootSceneId, element, fields: "all", scenes: list });
+					tracks.overlay = out.tracks.overlay;
+					tracks.main = out.tracks.main;
+					tracks.audio = out.tracks.audio;
+					return out;
+				}, { noRipple: true });
+				setRootBookmarks(cutRangeBookmarks(bookmarksOfRoot(), start, end, Math.round(frameTicks) as MediaTime));
+				result.start = start / TICKS_PER_SECOND;
+				result.end = end / TICKS_PER_SECOND;
+				for (const element of cut.kept) touched.push({ sceneId: rootSceneId, elementId: element.id });
+				result.removed = cut.removed.length;
+				result.trimmed = cut.trimmed.length;
+				result.shifted = cut.shifted.length;
+				addresses(result, "kept", cut.kept.map((element) => ({ sceneId: rootSceneId, elementId: element.id })));
 				return;
 			}
 			case "words": {

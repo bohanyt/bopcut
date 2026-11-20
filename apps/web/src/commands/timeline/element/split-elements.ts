@@ -9,6 +9,7 @@ import { EditorCore } from "@/core";
 import { isRetimableElement } from "@/timeline";
 import { splitAnimationsAtTime } from "@/animation";
 import { getSourceSpanAtClipTime } from "@/retime";
+import { splitElementAt } from "@/timeline/split";
 import {
 	addMediaTime,
 	type MediaTime,
@@ -79,6 +80,16 @@ export class SplitElementsCommand extends Command {
 					return [element];
 				}
 
+				if (this.retainSide === "both") {
+					const secondElementId = generateUUID();
+					this.rightSideElements.push({
+						trackId: track.id,
+						elementId: secondElementId,
+					});
+					const parts = splitElementAt({ element, splitTime: this.splitTime, rightId: secondElementId });
+					return parts ? [parts.left, parts.right] : [element];
+				}
+
 				const relativeTime = subMediaTime({
 					a: this.splitTime,
 					b: element.startTime,
@@ -145,7 +156,8 @@ export class SplitElementsCommand extends Command {
 							...(retimeRef !== undefined ? { retime: retimeRef } : {}),
 						},
 					];
-				} else if (this.retainSide === "right") {
+				} else {
+					// retainSide === "right" ("both" returned above)
 					const newId = generateUUID();
 					this.rightSideElements.push({
 						trackId: track.id,
@@ -155,34 +167,6 @@ export class SplitElementsCommand extends Command {
 						{
 							...element,
 							id: newId,
-							startTime: this.splitTime,
-							duration: rightVisibleDuration,
-							trimStart: rightTrimStart,
-							name: `${element.name} (right)`,
-							animations: rightAnimations,
-							...(retimeRef !== undefined ? { retime: retimeRef } : {}),
-						},
-					];
-				} else {
-					const secondElementId = generateUUID();
-					this.rightSideElements.push({
-						trackId: track.id,
-						elementId: secondElementId,
-					});
-					splitResult = [
-						{
-							...element,
-							...withoutFade("fadeOut"),
-							duration: leftVisibleDuration,
-							trimEnd: leftTrimEnd,
-							name: `${element.name} (left)`,
-							animations: leftAnimations,
-							...(retimeRef !== undefined ? { retime: retimeRef } : {}),
-						},
-						{
-							...element,
-							...withoutFade("fadeIn"),
-							id: secondElementId,
 							startTime: this.splitTime,
 							duration: rightVisibleDuration,
 							trimStart: rightTrimStart,
