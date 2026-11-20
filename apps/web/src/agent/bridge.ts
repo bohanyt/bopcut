@@ -1,6 +1,7 @@
 // Every timeline change is written to AGENT_WORKSPACE/project.json (seconds, pixels),
 // so the agent can see each item's location, time, and position without opening the browser.
 import { SnapshotHistory } from "./stale";
+import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { EditorCore } from "@/core";
 import { toast } from "sonner";
 import { pollFrames } from "./frames";
@@ -54,20 +55,26 @@ export function agentReadiness() {
 	return { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt };
 }
 
+/** A drag on the timeline is in progress: a resize or trim preview, or a clip move. */
+function timelineBusy(): boolean {
+	return EditorCore.getInstance().timeline.isPreviewActive() || isTimelineGestureActive();
+}
+
 /** Resolves true once no timeline drag is in progress, false after `timeoutMs` (on changes, not polled). */
 function whenPreviewEnds({ timeoutMs }: { timeoutMs: number }): Promise<boolean> {
 	const timeline = EditorCore.getInstance().timeline;
-	if (!timeline.isPreviewActive()) return Promise.resolve(true);
+	if (!timelineBusy()) return Promise.resolve(true);
 	return new Promise((resolve) => {
 		const finish = (ended: boolean) => {
 			clearTimeout(timer);
-			unsubscribe();
+			for (const unsubscribe of unsubscribes) unsubscribe();
 			resolve(ended);
 		};
+		const check = () => {
+			if (!timelineBusy()) finish(true);
+		};
 		const timer = setTimeout(() => finish(false), timeoutMs);
-		const unsubscribe = timeline.subscribe(() => {
-			if (!timeline.isPreviewActive()) finish(true);
-		});
+		const unsubscribes = [timeline.subscribe(check), subscribeTimelineGestures(check)];
 	});
 }
 
@@ -252,7 +259,7 @@ export async function pollDraft() {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	if (!project || applying) return;
-	if (editor.timeline.isPreviewActive()) return; // a human is dragging: wait until release
+	if (timelineBusy()) return; // a human is dragging: wait until release
 	if (!agentReadiness().ready) return; // media still loading or a save pending: the draft waits
 	// The session is taken before the fetch: a project opened while draft.json is read is not the
 	// one this poll was for, and the draft is left for the next poll (not marked seen, not refused).
@@ -342,6 +349,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		return;
 	}
 	if (!project || !active || !agentRootScene()) return;
+	// The root scene the draft runs against (another one opened while it loads or waits stops it).
+	const rootBefore = agentRootScene()?.id;
 	const projectId = project.metadata.id;
 	const ops: DraftOp[] = Array.isArray(draft?.ops) ? structuredClone(draft.ops) : [];
 	const report = (body: Record<string, unknown>) =>
@@ -432,7 +441,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		cleanup?.failed.length ? `; ${cleanup.failed.length} imported ${cleanup.failed.length === 1 ? "file" : "files"} could not be removed from storage` : "";
 	// The user started dragging while assets loaded: committing now would cancel the drag, so the draft
 	// waits for the release (at most a minute).
-	if (editor.timeline.isPreviewActive() && !(await whenPreviewEnds({ timeoutMs: 60000 }))) {
+	if (timelineBusy() && !(await whenPreviewEnds({ timeoutMs: 60000 }))) {
 		const cleanup = await discard();
 		await report({ ok: false, applied: false, error: "the user kept dragging on the timeline; nothing was applied, resend" + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
@@ -445,6 +454,12 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		return;
 	}
 	const root = agentRootScene();
+	// Another root scene was opened while the draft loaded or waited: its ops were meant for the first one.
+	if (root && rootBefore && root.id !== rootBefore) {
+		const cleanup = await discard();
+		await report({ ok: false, applied: false, error: "another scene was opened before the draft applied; nothing was applied, resend" + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
+		return;
+	}
 	if (failures.some(Boolean) || !root) {
 		const cleanup = await discard();
 		const count = failures.filter(Boolean).length;

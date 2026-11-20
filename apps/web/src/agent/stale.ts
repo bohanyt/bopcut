@@ -126,7 +126,7 @@ export function fieldsMapOf(scenes: TScene[]): Map<string, ElementRecord> {
 	for (const scene of scenes) {
 		for (const bookmark of scene.bookmarks ?? []) {
 			const id = bookmark.id ?? `legacy-${bookmark.time}`;
-			map.set(`note:${id}`, { fields: { ...NO_FIELDS, whole: digest(stableJson(bookmark)) }, trackId: "", trackState: "", content: null });
+			map.set(`note:${scene.id}:${id}`, { fields: { ...NO_FIELDS, whole: digest(stableJson(bookmark)) }, trackId: "", trackState: "", content: null });
 		}
 		for (const track of orderedTracks(scene.tracks)) {
 			const trackState = digest(stableJson({ ...track, elements: undefined }));
@@ -224,7 +224,9 @@ export function assertNotStale({ base, now, sceneId, element, fields, scenes }: 
 	if (!base || !now) return;
 	const current = recordOf(now, sceneId, element.id);
 	if (!current) {
-		// Made by this draft. A compound it made can hold the user's clips (group): those are checked whole.
+		// Made by this draft. A compound it made can hold the user's clips (group): those are checked whole,
+		// unless only the track is checked (grouping it again keeps what it holds).
+		if (fields !== "all" && fields.every((field) => field === "track")) return;
 		const nested = (element as { sceneId?: unknown }).sceneId;
 		const content = element.type === "compound" && typeof nested === "string" ? scenes?.find((scene) => scene.id === nested) : undefined;
 		if (content) {
@@ -246,11 +248,11 @@ export function assertNotStale({ base, now, sceneId, element, fields, scenes }: 
 }
 
 /** Throws StaleError when a note changed (resolved, reopened, edited) between the snapshot and now. */
-export function assertNoteNotStale({ base, now, noteId }: { base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; noteId: string }) {
+export function assertNoteNotStale({ base, now, sceneId, noteId }: { base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; sceneId: string; noteId: string }) {
 	if (!base || !now) return;
-	const current = now.get(`note:${noteId}`);
+	const current = now.get(`note:${sceneId}:${noteId}`);
 	if (!current) return;
-	const then = base.get(`note:${noteId}`);
+	const then = base.get(`note:${sceneId}:${noteId}`);
 	if (!then) throw new StaleError(["the note (added after basedOn)"], { id: noteId });
 	if (then.fields.whole !== current.fields.whole) throw new StaleError(["note"], { id: noteId });
 }

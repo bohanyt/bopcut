@@ -550,4 +550,39 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(backend.state.results[0]).toMatchObject({ applied: true });
 		expect(elements(editor).some((e) => e.agentId === "late")).toBe(true);
 	});
+
+	test("a clip move started while the draft's assets load is not cut off: the draft waits for the release", async () => {
+		const editor = setup();
+		const { beginTimelineGesture } = await import("@/timeline/gesture-state");
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		restore = backend.restore;
+		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") }]));
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		const release = beginTimelineGesture(); // the user grabs a clip
+		slow.open();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(backend.state.results).toEqual([]);
+		release();
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: true });
+	});
+
+	test("another root scene opened while the draft loads: nothing applies to it", async () => {
+		const editor = setup();
+		const other = scene("other", { overlay: [], main: { id: "t-other", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, audio: [] });
+		editor.scenes.setScenes({ scenes: [...editor.scenes.getScenes(), { ...other, isMain: false }], activeSceneId: "main" });
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		restore = backend.restore;
+		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") }]));
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		await editor.scenes.switchToScene({ sceneId: "other" });
+		slow.open();
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: false });
+		expect(backend.state.results[0].error).toContain("another scene");
+		expect(elements(editor).some((e) => e.agentId === "late")).toBe(false);
+		expect(backend.state.deleted).toEqual(backend.state.saved);
+	});
 });

@@ -37,7 +37,7 @@ BOPENCUT_DATA can point outside the repository; do not commit private data. Use 
 - Checks compare the snapshot with the timeline as it was before the draft, so two ops of one draft never trip over each other, and an element added by an earlier op can be changed by a later one. An element an earlier op moved into a compound (`group`) is still checked, and an op on a compound the draft made is checked by what it holds. `group` is refused for a clip whose track changed (`track`), and `resolve-note` for a note the user reopened or changed (`note`).
 - Fields the user did not touch apply as usual, and nothing is ever locked. Without `atomic`, the other ops still apply; with `atomic:true`, one stale op cancels the whole draft. If every op of a draft fails (for example all are stale), nothing is applied or saved, and the draft result has `applied:false` (and `stale:true` when an op was stale).
 - The editor remembers its last 64 snapshots. An unknown or malformed `basedOn` (after a reload, or a very old snapshot) refuses the whole draft as stale (`stale:true` on the draft) before anything is imported.
-- A draft whose assets finish loading while the user drags on the timeline waits for the release (at most a minute) instead of cancelling the drag.
+- A draft whose assets finish loading while the user drags on the timeline (moving, trimming or resizing clips) waits for the release (at most a minute) instead of cancelling the drag. If another scene was opened while the draft loaded or waited, nothing is applied.
 - Use a snapshot taken after your previous draft applied.
 - Drafts without `basedOn` are not checked.
 

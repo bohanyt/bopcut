@@ -286,7 +286,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				result.id = op.id;
 				if (index < 0) throw new Error("note not found");
 				// Not a note the user reopened (or changed) since basedOn.
-				assertNoteNotStale({ base, now, noteId: op.id });
+				assertNoteNotStale({ base, now, sceneId: rootSceneId, noteId: op.id });
 				bookmarks[index] = { ...bookmarks[index], resolved: true };
 				setRootBookmarks(bookmarks);
 				return;

@@ -225,4 +225,20 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		expect((out.scenes[0].bookmarks[0] as { resolved?: boolean }).resolved).toBe(false);
 		expect(run(withNote(false), [{ op: "resolve-note", id: "n1" }], fieldsMapOf(withNote(false))).results[0]).toMatchObject({ ok: true });
 	});
+
+	test("notes are told apart by scene, and grouping a wrapper the draft made again is not refused", () => {
+		const root = (resolved: boolean) => ({ ...scenesWith([])[0], bookmarks: [{ time: 0, note: "fix", resolved }] }) as unknown as TScene;
+		const later = { ...scenesWith([])[0], id: "later", isMain: false, bookmarks: [{ time: 0, note: "other", resolved: true }] } as unknown as TScene;
+		// Two legacy notes at the same time in different scenes: the root one was reopened.
+		const out = run([root(false), later], [{ op: "resolve-note", id: "legacy-0" }], fieldsMapOf([root(true), later]));
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true, fields: ["note"] });
+
+		const snapshot = scenesWith([text("c1", "cap-1", { content: "Helo" }), text("c2", "cap-2", {})]);
+		const corrected = scenesWith([text("c1", "cap-1", { content: "Hello" }), text("c2", "cap-2", {})]);
+		const nested = run(corrected, [
+			{ op: "group", agent_id: "inner", match: [{ agentId: "cap-1" }] },
+			{ op: "group", agent_id: "outer", match: [{ agentId: "inner" }, { agentId: "cap-2" }] },
+		], fieldsMapOf(snapshot));
+		expect(nested.results.map((r) => r.ok)).toEqual([true, true]);
+	});
 });
