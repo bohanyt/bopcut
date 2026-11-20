@@ -361,3 +361,61 @@ test("typewriter: a line mixing both directions appears whole once it is typed (
 	expect(count(mixed(1))).toBeGreaterThan(0);
 });
 
+test("typewriter: a Japanese and Hebrew line also appears whole once typed", () => {
+	const mixed = (typed: number): TextElement => ({
+		...element,
+		caption: undefined,
+		params: { content: "\u65e5\u672c\u8a9e \u05e9\u05dc\u05d5\u05dd", fontFamily: FONT, fontSize: 15, textAlign: "center", "shadow.opacity": 0, typewriter: typed },
+	});
+	const { layout } = render(1, 0.5, mixed(0.9));
+	const { pixels } = render(1, 0.5, mixed(0.9));
+	let n = 0;
+	for (let i = 3; i < pixels.length; i += 4) if (pixels[i] > 20) n++;
+	expect(layout.typed).toBeCloseTo(0.9, 6);
+	expect(n).toBe(0);
+});
+
+test("animation presets reach the renderer: opacity, blur and the typed share", async () => {
+	mock.module("@/services/renderer/compositor/wasm-compositor", () => ({
+		wasmCompositor: {},
+	}));
+	mock.module("@/services/renderer/gpu-renderer", () => ({
+		gpuRenderer: {},
+		initializeGpuRenderer: async () => {},
+		isGpuAvailable: () => false,
+	}));
+	const { resolveRenderTree } = await import("@/services/renderer/resolve");
+	const { RootNode } = await import("@/services/renderer/nodes/root-node");
+	const { TextNode } = await import("@/services/renderer/nodes/text-node");
+	const node = (params: Record<string, unknown>) =>
+		new TextNode({
+			...element,
+			caption: undefined,
+			params: { ...element.params, ...params },
+			transform: { position: { x: 0, y: 0 }, scaleX: 1, scaleY: 1, rotate: 0 },
+			opacity: 1,
+			canvasCenter: { x: 320, y: 180 },
+			canvasHeight: 360,
+		} as never);
+	const renderer = { width: 640, height: 360, outputWidth: 640, outputHeight: 360, renderScale: 1, exactFrames: false } as unknown as CanvasRenderer;
+	const at = async (target: InstanceType<typeof TextNode>, seconds: number) => {
+		const root = new RootNode({ duration: time(2) });
+		root.add(target);
+		await resolveRenderTree({ node: root, renderer, time: time(seconds) });
+		return target.resolved!;
+	};
+	const fading = node({ "animation.in": "blur", "animation.inDuration": 0.5, "animation.out": "fall" });
+	const start = await at(fading, 0);
+	expect(start.opacity).toBe(0);
+	expect(start.effectPasses.length).toBe(1);
+	const middle = await at(fading, 1);
+	expect(middle.opacity).toBe(1);
+	expect(middle.effectPasses.length).toBe(0);
+	expect(middle.transform.position.y).toBe(0);
+	const falling = await at(fading, 1.99);
+	expect(falling.transform.position.y).toBeGreaterThan(50);
+	expect(falling.transform.rotate).toBeGreaterThan(5);
+	const typing = await at(node({ "animation.in": "typewriter", "animation.inDuration": 1 }), 0.5);
+	expect(typing.measuredText.typed).toBeCloseTo(0.5, 6);
+});
+

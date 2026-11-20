@@ -1,3 +1,4 @@
+import { presetLayerAt, readPresetSettings } from "@/animation/presets";
 import { CORNER_RADIUS_MIN } from "@/text/background";
 import { DEFAULTS } from "@/timeline/defaults";
 import type { TextElement } from "@/timeline";
@@ -255,7 +256,12 @@ export function measureTextElement({
 					style,
 				)
 			: [],
-		typed: Math.min(1, Math.max(0, textNumber(element, "typewriter", 1, localTime))),
+		// The typewriter param (keyframable) and the typewriter animation preset, whichever shows less.
+		typed: Math.min(
+			1,
+			Math.max(0, textNumber(element, "typewriter", 1, localTime)),
+			presetLayerAt(readPresetSettings(element.params), localTime, element.duration, canvasHeight).typed,
+		),
 	};
 }
 

@@ -1,3 +1,4 @@
+import { NO_PRESET_LAYER, type PresetLayer, presetLayerAt, readPresetSettings } from "@/animation/presets";
 import { TICKS_PER_SECOND, mediaTimeToSeconds, roundMediaTime } from "@/wasm";
 import { getElementLocalTime } from "@/animation";
 import { resolveEffectParamsAtTime } from "@/animation/effect-param-channel";
@@ -19,6 +20,7 @@ import {
 } from "@/text/measure-element";
 import { resolveColorAtTime, resolveOpacityAtTime } from "@/animation/values";
 import { resolveTransformAtTime } from "@/rendering/animation-values";
+import type { Transform } from "@/rendering";
 import { applyShake, readShakeSettings } from "@/rendering/shake";
 import { videoCache } from "@/services/video-cache/service";
 import type { CanvasRenderer } from "./canvas-renderer";
@@ -177,22 +179,27 @@ function resolveVisualState({
 		elementStartTime: params.timeOffset,
 		elementDuration: params.duration,
 	});
-	const transform = applyShake({
-		transform: resolveTransformAtTime({
-			baseTransform: params.transform,
+	const preset = params.presets ? presetLayerAt(params.presets, localTime, params.duration, context.renderer.height) : NO_PRESET_LAYER;
+	const transform = withPresetLayer(
+		applyShake({
+			transform: resolveTransformAtTime({
+				baseTransform: params.transform,
+				animations: params.animations,
+				localTime,
+			}),
+			settings: params.shake,
 			animations: params.animations,
 			localTime,
+			ticksPerSecond: TICKS_PER_SECOND,
 		}),
-		settings: params.shake,
-		animations: params.animations,
-		localTime,
-		ticksPerSecond: TICKS_PER_SECOND,
-	});
-	const opacity = resolveOpacityAtTime({
-		baseOpacity: params.opacity,
-		animations: params.animations,
-		localTime,
-	});
+		preset,
+	);
+	const opacity =
+		resolveOpacityAtTime({
+			baseOpacity: params.opacity,
+			animations: params.animations,
+			localTime,
+		}) * preset.opacity;
 	const containScale = Math.min(
 		context.renderer.width / sourceWidth,
 		context.renderer.height / sourceHeight,
@@ -204,18 +211,45 @@ function resolveVisualState({
 		Math.abs(sourceHeight * containScale * transform.scaleY),
 	);
 
+	const passWidth = Math.max(1, Math.round(effectWidth * context.renderer.renderScale));
+	const passHeight = Math.max(1, Math.round(effectHeight * context.renderer.renderScale));
 	return {
 		localTime,
 		transform,
 		opacity,
-		effectPasses: resolveEffectPassGroups({
-			effects: params.effects,
-			animations: params.animations,
-			localTime,
-			width: Math.max(1, Math.round(effectWidth * context.renderer.renderScale)),
-			height: Math.max(1, Math.round(effectHeight * context.renderer.renderScale)),
-		}),
+		effectPasses: [
+			...resolveEffectPassGroups({
+				effects: params.effects,
+				animations: params.animations,
+				localTime,
+				width: passWidth,
+				height: passHeight,
+			}),
+			...presetBlurPasses(preset, passWidth, passHeight),
+		],
 	};
+}
+
+/** The transform with an animation preset's scale, drop and tilt on top. */
+function withPresetLayer(transform: Transform, preset: PresetLayer): Transform {
+	if (preset === NO_PRESET_LAYER) return transform;
+	return {
+		...transform,
+		position: { ...transform.position, y: transform.position.y + preset.offsetY },
+		scaleX: transform.scaleX * preset.scale,
+		scaleY: transform.scaleY * preset.scale,
+		rotate: transform.rotate + preset.rotate,
+	};
+}
+
+/** An animation preset's blur, as one more pass group (none while it blurs nothing). */
+function presetBlurPasses(preset: PresetLayer, width: number, height: number): EffectPass[][] {
+	if (preset.blur <= 0) return [];
+	const passes = buildGaussianBlurPasses({
+		sigmaX: intensityToSigma({ intensity: preset.blur, resolution: width, reference: 1920 }),
+		sigmaY: intensityToSigma({ intensity: preset.blur, resolution: height, reference: 1080 }),
+	});
+	return passes.length ? [passes] : [];
 }
 
 // The nested scene is resolved at its own local time: t - startTime + trimStart.
@@ -408,24 +442,29 @@ function resolveTextNode({
 		elementDuration: node.params.duration,
 	});
 	const background = buildTextBackgroundFromElement({ element: node.params });
+	const preset = presetLayerAt(readPresetSettings(node.params.params), localTime, node.params.duration, context.renderer.height);
 
 	return {
-		transform: applyShake({
-			transform: resolveTransformAtTime({
-				baseTransform: node.params.transform,
+		transform: withPresetLayer(
+			applyShake({
+				transform: resolveTransformAtTime({
+					baseTransform: node.params.transform,
+					animations: node.params.animations,
+					localTime,
+				}),
+				settings: readShakeSettings(node.params.params),
 				animations: node.params.animations,
 				localTime,
+				ticksPerSecond: TICKS_PER_SECOND,
 			}),
-			settings: readShakeSettings(node.params.params),
-			animations: node.params.animations,
-			localTime,
-			ticksPerSecond: TICKS_PER_SECOND,
-		}),
-		opacity: resolveOpacityAtTime({
-			baseOpacity: node.params.opacity,
-			animations: node.params.animations,
-			localTime,
-		}),
+			preset,
+		),
+		opacity:
+			resolveOpacityAtTime({
+				baseOpacity: node.params.opacity,
+				animations: node.params.animations,
+				localTime,
+			}) * preset.opacity,
 		textColor: resolveColorAtTime({
 			baseColor:
 				typeof node.params.params.color === "string"
@@ -441,13 +480,16 @@ function resolveTextNode({
 			propertyPath: "background.color",
 			localTime,
 		}),
-		effectPasses: resolveEffectPassGroups({
-			effects: node.params.effects,
-			animations: node.params.animations,
-			localTime,
-			width: context.renderer.outputWidth,
-			height: context.renderer.outputHeight,
-		}),
+		effectPasses: [
+			...resolveEffectPassGroups({
+				effects: node.params.effects,
+				animations: node.params.animations,
+				localTime,
+				width: context.renderer.outputWidth,
+				height: context.renderer.outputHeight,
+			}),
+			...presetBlurPasses(preset, context.renderer.outputWidth, context.renderer.outputHeight),
+		],
 		measuredText: measureTextElement({
 			element: node.params,
 			canvasHeight: node.params.canvasHeight,

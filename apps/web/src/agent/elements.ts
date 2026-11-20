@@ -44,7 +44,7 @@ export type AgentElement = {
 	params?: ParamValues; size?: [number, number];
 	caption?: AgentCaption;
 	keyframes?: AgentKeyframe[];
-	/** In and out animation presets, written as editable keyframes after `keyframes` (see agent/animate). */
+	/** In and out animation presets (see agent/animate). */
 	animate?: import("./animate").AgentAnimate;
 	/** Makes this element a compound clip holding these nested tracks (times relative to the clip's content). */
 	compound?: AgentCompoundContent;
@@ -110,11 +110,7 @@ export async function retrieveAgentAsset(asset: AgentAsset): Promise<RetrievedAs
 	return body as RetrievedAsset;
 }
 /** Keyframe to add once the element is placed; time in seconds, relative to the element. */
-export type PendingKeyframe = {
-	sceneId?: string; trackId: string; elementId: string; propertyPath: string; time: number; value: number | string; interpolation?: AgentKeyframe["interpolation"];
-	/** Not a keyframe: the element's `animate` presets, applied after its keyframes. */
-	animate?: { request: unknown; canvasHeight: number };
-};
+export type PendingKeyframe = { sceneId?: string; trackId: string; elementId: string; propertyPath: string; time: number; value: number | string; interpolation?: AgentKeyframe["interpolation"] };
 
 export const secs = (seconds: number) => mediaTimeFromSeconds({ seconds });
 
@@ -199,13 +195,7 @@ export function buildAgentElement(args: {
 	e: AgentElement; media?: LoadedMedia; trackId: string; sceneId?: string; canvas: { width: number; height: number }; keyframes: PendingKeyframe[];
 }): any {
 	const element = buildAgentElementOnly(args);
-	const { e, sceneId, canvas, keyframes } = args;
-	if (e.animate !== undefined) {
-		// Checked now, so a bad request fails the element; applied with its keyframes (see applyAgentKeyframes).
-		animateAgentElement(element, e.animate, canvas.height);
-		keyframes.push({ ...(sceneId ? { sceneId } : {}), trackId: args.trackId, elementId: element.id, propertyPath: "", time: 0, value: 0, animate: { request: e.animate, canvasHeight: canvas.height } });
-	}
-	return element;
+	return args.e.animate === undefined ? element : animateAgentElement(element, args.e.animate);
 }
 
 function buildAgentElementOnly({ e, media, trackId, sceneId, canvas, keyframes: collected }: {

@@ -1,3 +1,4 @@
+import type { PresetSettings } from "@/animation/presets";
 import { BaseNode } from "./base-node";
 import type { Effect, EffectPass } from "@/effects/types";
 import type { Mask } from "@/masks/types";
@@ -19,6 +20,8 @@ export interface VisualNodeParams {
 	masks?: Mask[];
 	/** Camera shake added on top of the transform (see rendering/shake.ts). */
 	shake?: ShakeSettings;
+	/** In and out animation presets drawn on top (see animation/presets.ts). */
+	presets?: PresetSettings;
 }
 
 export interface ResolvedVisualNodeState {

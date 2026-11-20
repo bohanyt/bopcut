@@ -21,8 +21,7 @@ import { reconcileCaptionEdit } from "@/text/caption";
 import { parseSourceWords, type SourceWord } from "@/media/words";
 import { type WordRef, cutAtWords, cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
 import { cutRange, cutRangeBookmarks } from "@/timeline/range-cut";
-import { type AgentAnimateSide, animateAgentElement, parseAgentAnimate, readAnimationPresets } from "./animate";
-import { reanchorOutPreset, touchesPresetBlur } from "@/animation/presets";
+import { type AgentAnimateSide, animateAgentElement, animateParams, parseAgentAnimate, readAnimationPresets } from "./animate";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
@@ -56,7 +55,7 @@ export type DraftOp =
 	 * out left while the matched clip slides in from the right.
 	 */
 	| { op: "transition"; match: AgentMatch; type: TransitionType; duration?: number; color?: string }
-	/** In and out animation presets on the matched clip, as editable keyframes (see agent/animate). */
+	/** In and out animation presets on the matched clip (see agent/animate). */
 	| { op: "animate"; match: AgentMatch; in?: AgentAnimateSide; out?: AgentAnimateSide }
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
 		& Pick<AgentElement, "params" | "keyframes" | "group"> & NonNullable<AgentElement["compound"]>);
@@ -302,8 +301,6 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 							assertRoomForEnd(track.elements, hit.index, requestedEnd, next.startTime + next.duration);
 						}
 					}
-					// An out animation preset stays at the clip's end.
-					if (next.duration !== el.duration) next = reanchorOutPreset(next, el.duration);
 					track.elements[hit.index] = el.type === "text" && next.type === "text"
 						? op.caption ? updateAgentCaption(reconcileCaptionEdit(el, next), op.caption) : reconcileCaptionEdit(el, next)
 						: next;
@@ -315,10 +312,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			case "animate": {
 				const hit = find(op.match);
 				const request = parseAgentAnimate({ in: op.in, out: op.out });
-				// Both sides depend on the clip's keyframes and length; the blur presets also on its effects.
-				const fields = ["keyframes", "duration", ...(touchesPresetBlur(hit.element, request) ? ["element"] : [])];
-				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields, scenes: list });
-				const animated = animateAgentElement(hit.element, request, canvas.height);
+				// Stale when the user changed these presets since the snapshot.
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: animateParams(request).map((key) => `params.${key}`), scenes: list });
+				const animated = animateAgentElement(hit.element, request);
 				editTracks(hit.sceneId, (tracks) => {
 					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
 					track.elements[hit.index] = animated;

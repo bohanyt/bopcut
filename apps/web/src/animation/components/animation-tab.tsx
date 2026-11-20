@@ -1,5 +1,5 @@
-// In and out animation presets for a clip. They are written as ordinary keyframes, so the result can be
-// edited on the timeline afterwards; choosing a preset again replaces only the preset's own keyframes.
+// In and out animation presets for a clip: drawn on top of the clip's own animation, so its keyframes
+// stay as they are, and trims, speed changes and copies keep them.
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
@@ -24,6 +24,8 @@ import {
 	ANIMATION_OUT_TYPES,
 	DEFAULT_IN_SECONDS,
 	DEFAULT_OUT_SECONDS,
+	MAX_PRESET_SECONDS,
+	MIN_PRESET_SECONDS,
 	type AnimationPresetRequest,
 	applyAnimationPresets,
 	readAnimationPresets,
@@ -53,7 +55,9 @@ function PresetSide({
 	onApply: (request: AnimationPresetRequest) => void;
 }) {
 	const types = (side === "in" ? ANIMATION_IN_TYPES : ANIMATION_OUT_TYPES).filter(
-		(type) => type !== "typewriter" || element.type === "text",
+		(type) =>
+			(type !== "typewriter" || element.type === "text") &&
+			((type !== "blur" && type !== "dissolve") || element.type !== "compound"),
 	);
 	const type = current?.type ?? "none";
 	const [duration, setDuration] = useState(current ? String(current.duration) : "");
@@ -84,9 +88,8 @@ function PresetSide({
 						onChange={(event) => setDuration(event.target.value)}
 						onBlur={() => {
 							const seconds = Number.parseFloat(duration);
-							if (Number.isFinite(seconds) && seconds > 0 && seconds <= 10 && seconds !== current.duration) apply(type, seconds);
-							// Shows the length the clip has now (a length that does not fit is shortened).
-							setDuration(String(current.duration));
+							if (Number.isFinite(seconds) && seconds >= MIN_PRESET_SECONDS && seconds <= MAX_PRESET_SECONDS && seconds !== current.duration) apply(type, seconds);
+							else setDuration(String(current.duration));
 						}}
 						onReset={() =>
 							apply(type, side === "in" ? DEFAULT_IN_SECONDS[type as keyof typeof DEFAULT_IN_SECONDS] : DEFAULT_OUT_SECONDS[type as keyof typeof DEFAULT_OUT_SECONDS])
@@ -106,30 +109,18 @@ export function AnimationTab({
 	trackId: string;
 }) {
 	const editor = useEditor();
-	const canvasHeight = useEditor(
-		(e) => e.project.getActiveOrNull()?.settings.canvasSize.height ?? 1080,
-	);
 	const presets = readAnimationPresets(element);
 	const onApply = (request: AnimationPresetRequest) => {
 		let next: TimelineElement;
 		try {
-			next = applyAnimationPresets(element, request, { canvasHeight });
+			next = applyAnimationPresets(element, request);
 		} catch (error) {
 			toast.error("Animation not applied", { description: error instanceof Error ? error.message : String(error) });
 			return;
 		}
-		const effectsOf = (el: TimelineElement) => (el as { effects?: unknown }).effects;
-		// Nothing changed (for example a length that does not fit, shortened to the one it has): no undo step.
-		if (JSON.stringify(next.animations ?? null) === JSON.stringify(element.animations ?? null) && effectsOf(next) === effectsOf(element)) return;
 		// One edit, so one undo.
 		editor.timeline.updateElements({
-			updates: [
-				{
-					trackId,
-					elementId: element.id,
-					patch: { animations: next.animations, ...("effects" in next ? { effects: (next as { effects?: unknown }).effects } : {}) } as Partial<TimelineElement>,
-				},
-			],
+			updates: [{ trackId, elementId: element.id, patch: { params: next.params } }],
 		});
 	};
 	return (
@@ -142,7 +133,7 @@ export function AnimationTab({
 					<PresetSide side="in" element={element} current={presets.in} onApply={onApply} />
 					<PresetSide side="out" element={element} current={presets.out} onApply={onApply} />
 					<p className="text-muted-foreground text-xs">
-						Made of keyframes: adjust them on the timeline.
+						Drawn on top of the clip's own keyframes; on a short clip both are shortened to fit.
 					</p>
 				</SectionFields>
 			</SectionContent>

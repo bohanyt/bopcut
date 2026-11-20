@@ -1,5 +1,4 @@
 import { clampAnimationsToDuration } from "@/animation";
-import { reanchorOutPreset } from "@/animation/presets";
 import {
 	clampRetimeRate,
 	getSourceSpanAtClipTime,
@@ -86,19 +85,15 @@ const deriveRules: ElementUpdateRule[] = [
 const enforceRules: ElementUpdateRule[] = [
 	{
 		triggers: ["duration"],
-		apply: ({ element, originalElement }) => {
-			// An out animation preset stays at the clip's end (see animation/presets).
-			const anchored = reanchorOutPreset(element, originalElement.duration);
-			return {
-				element: {
-					...anchored,
-					animations: clampAnimationsToDuration({
-						animations: anchored.animations,
-						duration: anchored.duration,
-					}),
-				},
-			};
-		},
+		apply: ({ element }) => ({
+			element: {
+				...element,
+				animations: clampAnimationsToDuration({
+					animations: element.animations,
+					duration: element.duration,
+				}),
+			},
+		}),
 	},
 	{
 		triggers: ["startTime"],

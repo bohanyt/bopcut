@@ -833,23 +833,6 @@ function cloneChannelWithKeyIds({
 			});
 }
 
-/** Keyframe ids of animation presets start with `anim-in-` / `anim-out-` (see animation/presets). */
-const PRESET_MARK = /^anim-(?:in|out)-/;
-
-/** A new keyframe id for a copy, still marked as its preset's when the original was. */
-function keepPresetMark(id: string, fresh: string): string {
-	return `${PRESET_MARK.exec(id)?.[0] ?? ""}${fresh}`;
-}
-
-/** The preset mark of the keys on both sides of `time`, when both belong to the same preset. */
-function presetMarkAround(channel: AnimationChannel | undefined, time: number): string {
-	const keys = channel?.keys ?? [];
-	const before = keys.filter((key) => key.time < time).pop();
-	const after = keys.find((key) => key.time > time);
-	const mark = before && PRESET_MARK.exec(before.id)?.[0];
-	return mark && after?.id.startsWith(mark) ? mark : "";
-}
-
 export function cloneAnimations({
 	animations,
 	shouldRegenerateKeyframeIds = false,
@@ -872,7 +855,7 @@ export function cloneAnimations({
 			for (const key of primaryChannel.keys) {
 				keyIdMap.set(
 					key.id,
-					shouldRegenerateKeyframeIds ? keepPresetMark(key.id, generateUUID()) : key.id,
+					shouldRegenerateKeyframeIds ? generateUUID() : key.id,
 				);
 			}
 		}
@@ -1271,10 +1254,8 @@ export function splitAnimationsAtTime({
 			continue;
 		}
 
-		// A split inside an animation preset's window keeps the new boundary keys in that preset.
-		const mark = presetMarkAround(getChannelsFromData({ data })[0], splitTime);
-		const leftBoundaryId = `${mark}${generateUUID()}`;
-		const rightBoundaryId = `${mark}${generateUUID()}`;
+		const leftBoundaryId = generateUUID();
+		const rightBoundaryId = generateUUID();
 
 		for (const [componentKey, channel] of getChannelDataEntries({ data })) {
 			const splitResult = splitChannelAtTime({

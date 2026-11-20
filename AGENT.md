@@ -231,17 +231,14 @@ A media file can carry its spoken words (from a transcript), in seconds of the f
 
 ### Animation presets
 
-`animate:{in?, out?}` on an element (bundles, draft `add`), or the draft op `{op:"animate", match, in?, out?}`, gives a visual clip an in and an out animation. Each side is a preset name or `{type, duration}` (seconds, at most 10):
+`animate:{in?, out?}` on an element (bundles, draft `add`), or the draft op `{op:"animate", match, in?, out?}`, gives a visual clip an in and an out animation. Each side is a preset name or `{type, duration}` (seconds, 0.05 to 10):
 - in: `fade` (0.3 s), `pop` (grows past its size and settles, 0.35 s), `impact` (comes down from 1.6x and lands, 0.25 s), `blur` (from blurred, 0.4 s), `typewriter` (text only: the letters appear in reading order, 1 s).
 - out: `fade` (0.3 s), `fall` (drops a quarter of the canvas and tips over 8°, 0.5 s), `dissolve` (blurs, grows a little and fades, 0.5 s).
 - `none` removes that side's preset.
 
-The presets are ordinary keyframes (opacity, scale, position, rotation, the text param `typewriter` from 0 to 1, and for the blur presets the intensity of a blur effect with id `anim-blur`), so they can be edited afterwards, in the editor's Animation tab or as keyframes. Their keyframe ids start with `anim-in-` / `anim-out-`: applying a preset again replaces only that side's earlier preset, and the clip's own keyframes stay.
-- A preset's window holds only its own keyframes: a keyframe of the clip's own on a property it animates, inside or at the edge of its window, is never written over; the request fails and names it (move or delete it first). Outside the window the clip's own keyframes stay as they are, and the preset meets them at the values they give (a fade in ends at the clip's opacity there).
-- Both sides asked for together are shortened to fit the clip; one side gets the room the other side's preset leaves, and fails if there is none.
-- The out preset stays at the clip's end when its length changes (a trim, a speed change, `set` with `duration`; also while a trim is dragged), squeezed (curves too) into the room after the in preset and the clip's own keyframes, or removed with less than 0.02 s of room. Copies keep their presets; a split inside a preset keeps the new boundary keys in it.
-- `blur` and `dissolve` need a clip that takes effects (not a compound clip). `typewriter` is for text: letters appear in reading order (right-to-left text from its right edge); a line mixing both directions appears whole once typed; underlines appear with the whole text.
-- The op's result has `animate:{in, out}` (each `{type, duration}` or null). In a draft, `animate` on `add` is applied after the element's `keyframes`. With `basedOn`, the op is stale when the clip's keyframes or length changed since (and, for the blur presets, anything else on the clip, such as its effects).
+A preset is a setting of the clip (the params `animation.in`, `animation.inDuration`, `animation.out`, `animation.outDuration`, also in the editor's Animation tab), drawn on top of the clip's own opacity, transform and effects; the clip's keyframes are never changed. An in preset runs from the clip's start and an out preset up to its end, so trims and speed changes keep them in place; when both would overlap, both are shortened alike. A split keeps the in preset on the left part and the out preset on the right part (like audio fades); copies keep both.
+- `blur` and `dissolve` need a clip that takes effects (not a compound clip). `typewriter` is for text: the letters appear in reading order (right-to-left text from its right edge); a line mixing both directions appears whole once typed; underlines appear with the whole text. The text param `typewriter` (0 to 1, keyframable) does the same by hand.
+- The op's result has `animate:{in, out}` (each `{type, duration}` or null). With `basedOn`, the op is stale when the user changed a side it sets since the snapshot.
 
 ## Exports for agents
 

@@ -102,9 +102,9 @@ function drawGlyphs(
 }
 
 // The first strong letter of a text decides its direction (Hebrew, Arabic and nearby scripts are right to left).
-const STRONG = /[A-Za-z\u00C0-\u02AF\u0370-\u052F\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+const STRONG = /\p{L}/u;
 const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
-const LTR = /[A-Za-z\u00C0-\u02AF\u0370-\u052F]/;
+const LTR = /(?![\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF])\p{L}/u;
 
 /**
  * The runs cut to the first `typed` share of their characters (in reading order); a right-to-left run is

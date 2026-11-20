@@ -4,6 +4,9 @@ import {
 	ANIMATION_IN_TYPES,
 	ANIMATION_OUT_TYPES,
 	type AnimationPresetRequest,
+	MAX_PRESET_SECONDS,
+	MIN_PRESET_SECONDS,
+	PRESET_PARAM,
 	applyAnimationPresets,
 	readAnimationPresets,
 } from "@/animation/presets";
@@ -21,7 +24,9 @@ function side(name: "in" | "out", value: unknown): { type: string; duration?: nu
 		throw new Error(`animate.${name} must be one of ${types.join(", ")} or none (a name, or {type, duration})`);
 	}
 	const { type, duration } = spec as { type: string; duration?: unknown };
-	if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0 || duration > 10)) throw new Error(`animate.${name}.duration must be 0 to 10 seconds`);
+	if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration < MIN_PRESET_SECONDS || duration > MAX_PRESET_SECONDS)) {
+		throw new Error(`animate.${name}.duration must be ${MIN_PRESET_SECONDS} to ${MAX_PRESET_SECONDS} seconds`);
+	}
 	return duration === undefined ? { type } : { type, duration: duration as number };
 }
 
@@ -35,9 +40,17 @@ export function parseAgentAnimate(value: unknown): AnimationPresetRequest {
 }
 
 /** Applies an agent's animate request (raw or parsed) to an element (pure); only visual clips animate. */
-export function animateAgentElement<T extends TimelineElement>(element: T, value: unknown, canvasHeight: number): T {
+export function animateAgentElement<T extends TimelineElement>(element: T, value: unknown): T {
 	if (element.type === "audio" || element.type === "effect") throw new Error(`animate is for visual clips, not ${element.type}`);
-	return applyAnimationPresets(element, parseAgentAnimate(value), { canvasHeight });
+	return applyAnimationPresets(element, parseAgentAnimate(value));
+}
+
+/** The params a request changes (for stale-draft checks). */
+export function animateParams(request: AnimationPresetRequest): string[] {
+	return [
+		...(request.in ? [PRESET_PARAM.in, PRESET_PARAM.inDuration] : []),
+		...(request.out ? [PRESET_PARAM.out, PRESET_PARAM.outDuration] : []),
+	];
 }
 
 export { readAnimationPresets };

@@ -1,4 +1,3 @@
-import { reanchorOutPreset } from "@/animation/presets";
 import type { EditorCore } from "@/core";
 import { reconcileCaptionEdit } from "@/text/caption";
 import type { ElementBounds } from "@/preview/element-bounds";
@@ -816,9 +815,7 @@ export class TimelineManager {
 			const nextElements = track.elements.map((element) => {
 				const overlay = this.previewOverlay.get(element.id);
 				if (!overlay) return element;
-				let next = { ...element, ...overlay } as TimelineElement;
-				// A trim being dragged shows the out animation preset where the commit puts it (see update-pipeline).
-				if ("duration" in overlay && next.duration !== element.duration) next = reanchorOutPreset(next, element.duration);
+				const next = { ...element, ...overlay } as TimelineElement;
 				return element.type === "text" &&
 					next.type === "text" &&
 					element.params.content !== next.params.content

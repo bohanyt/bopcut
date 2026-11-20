@@ -131,11 +131,7 @@ export function buildAgentCompound({ e, hostSceneId, ctx }: { e: AgentElement; h
 		const paths = k.path === "scale" ? ["transform.scaleX", "transform.scaleY"] : [k.path];
 		for (const propertyPath of paths) ctx.keyframes.push({ sceneId: hostSceneId, trackId: "", elementId: element.id, propertyPath, time: k.time, interpolation: k.interpolation, value: k.value });
 	}
-	if (e.animate !== undefined) {
-		animateAgentElement(element, e.animate, ctx.canvas.height);
-		ctx.keyframes.push({ sceneId: hostSceneId, trackId: "", elementId: element.id, propertyPath: "", time: 0, value: 0, animate: { request: e.animate, canvasHeight: ctx.canvas.height } });
-	}
-	return element;
+	return e.animate === undefined ? element : animateAgentElement(element, e.animate);
 }
 
 /** Adds pending keyframes to their elements (found by id in their scene; unset sceneId = defaultSceneId). */
@@ -145,13 +141,12 @@ export function applyAgentKeyframes({ scenes, keyframes, defaultSceneId }: { sce
 		const own = keyframes.filter((k) => (k.sceneId ?? defaultSceneId) === scene.id);
 		if (own.length === 0) return scene;
 		let tracks = scene.tracks;
-		// Keyframes first, then the animation presets (they start and end at the values the keyframes give).
-		for (const k of [...own.filter((k) => !k.animate), ...own.filter((k) => k.animate)]) {
+		for (const k of own) {
 			const track = orderedTracks(tracks).find((t) => t.elements.some((element) => element.id === k.elementId));
 			if (!track) continue;
 			tracks = updateElementInSceneTracks({
 				tracks, trackId: track.id, elementId: k.elementId,
-				update: (element) => (k.animate ? animateAgentElement(element, k.animate.request, k.animate.canvasHeight) : upsertAgentKeyframe(element, k)),
+				update: (element) => upsertAgentKeyframe(element, k),
 			});
 		}
 		return { ...scene, tracks };
