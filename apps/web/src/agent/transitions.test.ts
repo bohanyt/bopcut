@@ -5,6 +5,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { computeAgentDraft } = await import("./draft");
+const { upsertAgentKeyframe } = await import("./compound-content");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
 const s = (ticks: number) => Math.round((ticks / TICKS_PER_SECOND) * 1000) / 1000;
@@ -87,5 +88,47 @@ describe("transitions", () => {
 		expect(out.results.map((r) => r.ok)).toEqual([true, true]);
 		expect(out.scenes[0].tracks.overlay.length).toBe(1);
 		expect(out.scenes[0].tracks.overlay[0].elements.length).toBe(2);
+	});
+});
+
+describe("transitions: review fixes", () => {
+	test("a flash at the start of the timeline starts at full strength (still visible)", () => {
+		const out = run(scenesWith([video("B", 0, 2)]), [{ op: "transition", match: { agentId: "B" }, type: "flash", duration: 2 / 30 }]);
+		const flash = out.scenes[0].tracks.overlay.at(-1)!.elements[0];
+		expect(keys(flash, "opacity")[0]).toEqual([0, 1]);
+		expect(keys(flash, "opacity").at(-1)![1]).toBe(0);
+	});
+
+	test("never longer than the clip it leads into", () => {
+		const out = run(scenesWith([video("A", 0, 2), video("B", 2, 0.1)]), [{ op: "transition", match: { agentId: "B" }, type: "crossfade", duration: 0.5 }]);
+		expect(out.results[0]).toMatchObject({ ok: true, duration: 0.1 });
+	});
+
+	test("a title's continuation goes on a text track; a hidden Transitions track is not reused", () => {
+		const title = (id: string, start: number) => ({ id, agentId: id, type: "text", name: id, startTime: T(start), duration: T(2), trimStart: T(0), trimEnd: T(0), params: { content: id } }) as unknown as TimelineElement;
+		const titles = scenesWith([], [{ id: "t-titles", name: "Titles", type: "text", hidden: false, elements: [title("X", 0), title("Y", 2)] }]);
+		const out = run(titles, [{ op: "transition", match: { agentId: "Y" }, type: "crossfade", duration: 0.3 }]);
+		expect(out.results[0]).toMatchObject({ ok: true });
+		expect(out.scenes[0].tracks.overlay[0]).toMatchObject({ name: "Transitions", type: "text" });
+		const hidden = scenesWith([video("A", 0, 2), video("B", 2, 2)], [{ id: "t-tr", name: "Transitions", type: "video", hidden: true, muted: true, elements: [] }]);
+		const again = run(hidden, [{ op: "transition", match: { agentId: "B" }, type: "crossfade", duration: 0.3 }]);
+		expect(again.scenes[0].tracks.overlay.length).toBe(2);
+	});
+
+	test("the continuation starts as the clip ended (its animated values), not from its plain settings", () => {
+		let fading = video("A", 0, 2);
+		fading = upsertAgentKeyframe(fading, { propertyPath: "opacity", time: 0, value: 1 }, { strict: true });
+		fading = upsertAgentKeyframe(fading, { propertyPath: "opacity", time: 2, value: 0.3 }, { strict: true });
+		const out = run(scenesWith([fading, video("B", 2, 2)]), [{ op: "transition", match: { agentId: "B" }, type: "crossfade", duration: 0.3 }]);
+		const tail = out.scenes[0].tracks.overlay.at(-1)!.elements[0];
+		expect(keys(tail, "opacity")[0][1]).toBeCloseTo(0.3, 1);
+	});
+
+	test("of clips ending at the cut, the one drawn on top is continued", () => {
+		const under = video("U", 0, 2, { trimEnd: T(0), sourceDuration: T(2) });
+		const top = video("V", 1, 1);
+		const out = run(scenesWith([under, top, video("B", 2, 2)]), [{ op: "transition", match: { agentId: "B" }, type: "crossfade", duration: 0.3 }]);
+		expect(out.results[0]).toMatchObject({ ok: true });
+		expect((out.scenes[0].tracks.overlay.at(-1)!.elements[0] as { mediaId?: string }).mediaId).toBe("m-V");
 	});
 });

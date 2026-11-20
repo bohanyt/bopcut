@@ -2,7 +2,9 @@
 // then wraps the resulting scene list in one command, so the whole draft is one Undo step even
 // when it touches several scenes (the root timeline and compound clip contents).
 import { type ElementRecord, StaleError, assertNoteNotStale, assertNotStale, assertRippleNotStale, fieldsMapOf, touchedFields } from "./stale";
-import type { Bookmark, SceneTracks, TScene, TimelineElement } from "@/timeline";
+import type { Bookmark, SceneTracks, TScene, TimelineElement, TimelineTrack } from "@/timeline";
+import { buildGraphicElement } from "@/timeline/element-utils";
+import { resolveAnimationPathValueAtTime } from "@/animation";
 import { type MediaTime, TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
 import { getFrameTime } from "@/timeline/bookmarks";
@@ -312,38 +314,79 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const wanted = op.duration ?? 0.5;
 				if (typeof wanted !== "number" || !Number.isFinite(wanted) || wanted <= 0 || wanted > 5) throw new Error("transition duration must be 0 to 5 seconds");
 				const frameTicks = (TICKS_PER_SECOND * fps.denominator) / fps.numerator;
-				const frames = (ticks: number) => Math.round(ticks / frameTicks);
-				const cut = hit.element.startTime;
+				const wholeFrames = (ticks: number) => Math.floor(ticks / frameTicks + 1e-9) * frameTicks;
+				const incoming = hit.element;
+				const cut = incoming.startTime;
 				const lane = hit.track;
-				const id = hit.element.agentId ?? hit.element.id;
+				const id = incoming.agentId ?? incoming.id;
 				const tracksNow = sceneOf(hit.sceneId).tracks;
 				// The overlay position just above the clip's track (overlay index 0 = topmost).
 				const laneIndex = lane.id === tracksNow.main.id ? tracksNow.overlay.length : tracksNow.overlay.findIndex((t) => t.id === lane.id);
 				if (laneIndex < 0) throw new Error("transitions are for clips on video and overlay tracks");
-				let duration = Math.max(2, frames(secs(wanted))) * frameTicks;
+				// Never longer than the clip it leads into (it would cover the next edit).
+				let duration = Math.round(Math.min(Math.max(2 * frameTicks, Math.round(secs(wanted) / frameTicks) * frameTicks), wholeFrames(incoming.duration)));
+				if (duration < 2 * frameTicks) throw new Error(`transition: ${incoming.name} is shorter than two frames`);
+				const seconds = (ticks: number) => ticks / TICKS_PER_SECOND;
+				/**
+				 * Puts a generated part on a track of `type` named `name` just above the clip's track: the track
+				 * there is reused when it is that kind, visible (and muted, for video) and free at that time,
+				 * else a new one is made there.
+				 */
+				const placeAbove = (tracks: SceneTracks, name: string, trackType: "video" | "graphic" | "text", element: TimelineElement) => {
+					const above = tracks.overlay[laneIndex - 1] as (TimelineTrack & { hidden?: boolean; muted?: boolean }) | undefined;
+					const from = element.startTime;
+					const to = element.startTime + element.duration;
+					const fits = !!above && above.name === name && above.type === trackType && !above.hidden && (trackType !== "video" || above.muted !== false)
+						&& !above.elements.some((e) => e.startTime < to && e.startTime + e.duration > from);
+					if (fits) (above!.elements as TimelineElement[]).push(element);
+					else tracks.overlay.splice(laneIndex, 0, { ...createAgentTrack(trackType, name), elements: [element] });
+				};
 				if (type === "flash" || type === "dip") {
 					const color = op.color ?? (type === "flash" ? "#ffffff" : "#000000");
 					if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error("transition color must be like #ffffff");
-					// Centred on the cut (not before the start of the timeline).
-					const start = Math.max(0, cut - duration / 2);
-					const half = (cut - start) / TICKS_PER_SECOND || duration / 2 / TICKS_PER_SECOND;
-					const seconds = (cut + duration / 2 - start) / TICKS_PER_SECOND;
-					add({ name: "Transition flashes", type: "graphic", index: laneIndex }, {
-						agent_id: `${id}~${type}`, name: type === "flash" ? "Flash" : "Dip", start: start / TICKS_PER_SECOND, duration: seconds,
-						graphic: { definitionId: "rectangle", params: { fill: color, strokeWidth: 0, cornerRadius: 0 } }, size: [canvas.width, canvas.height],
-						keyframes: [{ path: "opacity", time: 0, value: 0 }, { path: "opacity", time: half, value: 1 }, { path: "opacity", time: seconds, value: 0 }],
-					}, result);
+					// Centred on the cut (from the start of the timeline at most).
+					const start = Math.max(0, wholeFrames(cut - duration / 2));
+					const length = Math.round(Math.max(frameTicks, cut + duration / 2 - start));
+					const base = Math.min(canvas.width, canvas.height);
+					let shape = {
+						...buildGraphicElement({ definitionId: "rectangle", name: type === "flash" ? "Flash" : "Dip", startTime: start as MediaTime, params: { fill: color, strokeWidth: 0, cornerRadius: 0, "transform.scaleX": canvas.width / base, "transform.scaleY": canvas.height / base } }),
+						id: generateUUID(), agentId: `${id}~${type}`, duration: length as MediaTime, trimStart: 0 as MediaTime, trimEnd: 0 as MediaTime,
+					} as TimelineElement;
+					const peak = seconds(cut - start);
+					// At the very start of the timeline it starts at full strength (a peak at 0 and a fade after it).
+					if (peak > 0) shape = upsertAgentKeyframe(shape, { propertyPath: "opacity", time: 0, value: 0 }, { strict: true });
+					shape = upsertAgentKeyframe(shape, { propertyPath: "opacity", time: peak, value: 1 }, { strict: true });
+					shape = upsertAgentKeyframe(shape, { propertyPath: "opacity", time: seconds(length), value: 0 }, { strict: true });
+					editTracks(hit.sceneId, (tracks) => placeAbove(tracks, "Transition flashes", "graphic", shape), { noRipple: true });
+					touched.push({ sceneId: hit.sceneId, elementId: shape.id });
+					address(result, "element", hit.sceneId, shape.id);
+					duration = length;
 				} else {
-					// The clip that ends at the cut on the same track, and footage of it after its end.
-					const previous = lane.elements.find((e) => e.id !== hit.element.id && Math.abs(e.startTime + e.duration - cut) <= frameTicks / 2);
+					// The clip that shows at the cut and ends there (of overlapping ones, the one drawn on top), and
+					// its footage after its end.
+					const previous = lane.elements
+						.filter((e) => e.id !== incoming.id && Math.abs(e.startTime + e.duration - cut) <= frameTicks / 2)
+						.sort((a, b) => a.startTime - b.startTime || a.id.localeCompare(b.id))
+						.at(-1);
 					if (!previous) throw new Error("transition: no clip ends where this one starts on its track");
 					const rate = (previous as { retime?: { rate?: number } }).retime?.rate ?? 1;
 					const playedSource = previous.duration * rate;
 					const after = previous.sourceDuration !== undefined ? previous.sourceDuration - previous.trimStart - playedSource : previous.type === "video" || previous.type === "audio" ? previous.trimEnd : Number.POSITIVE_INFINITY;
-					const handle = Math.floor(Math.max(0, after) / rate / frameTicks) * frameTicks;
-					duration = Math.min(duration, handle);
+					duration = Math.min(duration, wholeFrames(Math.max(0, after) / rate));
 					if (duration < 2 * frameTicks) throw new Error(`transition: ${previous.name} has no footage after its end to ${type === "crossfade" ? "fade out" : "slide"} (use flash or dip)`);
-					const opacity = typeof previous.params?.opacity === "number" ? previous.params.opacity : 1;
+					// The continuation starts as the clip ended: its animated values at its last frame become the
+					// copy's own (no jump at the cut); its keyframes stay with the clip.
+					const lastFrame = Math.max(0, previous.duration - 1);
+					const at = (path: string, fallback: number) => resolveAnimationPathValueAtTime({ animations: previous.animations, propertyPath: path, localTime: lastFrame, fallbackValue: fallback });
+					const param = (key: string, fallback: number) => (typeof previous.params?.[key] === "number" ? (previous.params[key] as number) : fallback);
+					const ended: Record<string, number> = {
+						opacity: at("opacity", param("opacity", 1)),
+						"transform.positionX": at("transform.positionX", param("transform.positionX", 0)),
+						"transform.positionY": at("transform.positionY", param("transform.positionY", 0)),
+						"transform.scaleX": at("transform.scaleX", param("transform.scaleX", 1)),
+						"transform.scaleY": at("transform.scaleY", param("transform.scaleY", 1)),
+						"transform.rotate": at("transform.rotate", param("transform.rotate", 0)),
+					};
 					let tail: TimelineElement = {
 						...previous,
 						id: generateUUID(),
@@ -353,39 +396,37 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						duration: Math.round(duration) as MediaTime,
 						trimStart: Math.round(previous.trimStart + playedSource) as MediaTime,
 						trimEnd: Math.max(0, Math.round(previous.trimEnd - duration * rate)) as MediaTime,
-						params: { ...previous.params, fadeIn: 0, fadeOut: 0 },
+						params: { ...previous.params, ...ended, fadeIn: 0, fadeOut: 0 },
 						animations: undefined,
 						...(previous.type === "video" ? { isSourceAudioEnabled: false } : {}),
 					} as TimelineElement;
-					const seconds = duration / TICKS_PER_SECOND;
-					const x = (element: TimelineElement) => (typeof element.params?.["transform.positionX"] === "number" ? (element.params["transform.positionX"] as number) : 0);
+					const length = seconds(duration);
 					if (type === "crossfade") {
-						tail = upsertAgentKeyframe(tail, { propertyPath: "opacity", time: 0, value: opacity }, { strict: true });
-						tail = upsertAgentKeyframe(tail, { propertyPath: "opacity", time: seconds, value: 0 }, { strict: true });
+						tail = upsertAgentKeyframe(tail, { propertyPath: "opacity", time: 0, value: ended.opacity }, { strict: true });
+						tail = upsertAgentKeyframe(tail, { propertyPath: "opacity", time: length, value: 0 }, { strict: true });
 					} else {
-						tail = upsertAgentKeyframe(tail, { propertyPath: "transform.positionX", time: 0, value: x(previous) }, { strict: true });
-						tail = upsertAgentKeyframe(tail, { propertyPath: "transform.positionX", time: seconds, value: x(previous) - canvas.width }, { strict: true });
+						tail = upsertAgentKeyframe(tail, { propertyPath: "transform.positionX", time: 0, value: ended["transform.positionX"] }, { strict: true });
+						tail = upsertAgentKeyframe(tail, { propertyPath: "transform.positionX", time: length, value: ended["transform.positionX"] - canvas.width }, { strict: true });
 					}
+					// The copy goes on a track of its kind (a title on a text track, a shape on a graphic track).
+					const trackType = previous.type === "text" ? "text" : previous.type === "graphic" || previous.type === "sticker" ? "graphic" : "video";
 					// slide-left also moves the clip itself in from the right: not over keyframes the user set.
-					if (type === "slide-left") assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: ["keyframes"], scenes: list });
+					if (type === "slide-left") assertNotStale({ base, now, sceneId: hit.sceneId, element: incoming, fields: ["keyframes"], scenes: list });
 					editTracks(hit.sceneId, (tracks) => {
-						const above = tracks.overlay[laneIndex - 1];
-						const fits = above && above.name === "Transitions" && above.type === "video" && !above.elements.some((e) => e.startTime < cut + duration && e.startTime + e.duration > cut);
-						if (fits) (above.elements as TimelineElement[]).push(tail);
-						else tracks.overlay.splice(laneIndex, 0, { ...createAgentTrack("video", "Transitions"), elements: [tail] });
+						placeAbove(tracks, "Transitions", trackType, tail);
 						if (type === "slide-left") {
 							const track = orderedTracks(tracks).find((t) => t.id === lane.id) as any;
-							const index = track.elements.findIndex((e: TimelineElement) => e.id === hit.element.id);
-							let incoming = track.elements[index] as TimelineElement;
-							const existing = (incoming.animations as Record<string, unknown> | undefined)?.["transform.positionX"];
-							if (existing) throw new Error(`transition: ${incoming.name} already animates its position (slide-left would replace it)`);
-							incoming = upsertAgentKeyframe(incoming, { propertyPath: "transform.positionX", time: 0, value: x(incoming) + canvas.width }, { strict: true });
-							incoming = upsertAgentKeyframe(incoming, { propertyPath: "transform.positionX", time: seconds, value: x(incoming) }, { strict: true });
-							track.elements[index] = incoming;
+							const index = track.elements.findIndex((e: TimelineElement) => e.id === incoming.id);
+							let moving = track.elements[index] as TimelineElement;
+							if ((moving.animations as Record<string, unknown> | undefined)?.["transform.positionX"]) throw new Error(`transition: ${moving.name} already animates its position (slide-left would replace it)`);
+							const x = typeof moving.params?.["transform.positionX"] === "number" ? (moving.params["transform.positionX"] as number) : 0;
+							moving = upsertAgentKeyframe(moving, { propertyPath: "transform.positionX", time: 0, value: x + canvas.width }, { strict: true });
+							moving = upsertAgentKeyframe(moving, { propertyPath: "transform.positionX", time: length, value: x }, { strict: true });
+							track.elements[index] = moving;
 						}
 					}, { noRipple: true });
 					touched.push({ sceneId: hit.sceneId, elementId: tail.id });
-					if (type === "slide-left") touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
+					if (type === "slide-left") touched.push({ sceneId: hit.sceneId, elementId: incoming.id });
 					address(result, "element", hit.sceneId, tail.id);
 				}
 				result.type = type;
