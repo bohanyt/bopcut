@@ -52,7 +52,7 @@ const gate = () => {
  * Fake agent file API and storage. `slow` paths wait for their gate, `missing` paths 404.
  * Storage records saved and deleted media ids; `failSave`/`failDelete` make those calls throw.
  */
-function fakeBackend({ slow = new Map<string, Promise<void>>(), missing = new Set<string>(), failSave = new Set<string>(), failDelete = false } = {}) {
+function fakeBackend({ slow = new Map<string, Promise<void>>(), missing = new Set<string>(), failSave = new Set<string>(), failDelete = false, slowDelete = Promise.resolve() } = {}) {
 	const state = { saved: [] as string[], deleted: [] as string[], promoted: [] as string[], results: [] as any[], fileNames: new Map<string, string>() };
 	const realFetch = globalThis.fetch;
 	globalThis.fetch = (async (url: string, init?: { body?: string }) => {
@@ -76,6 +76,7 @@ function fakeBackend({ slow = new Map<string, Promise<void>>(), missing = new Se
 			if (failSave.has(mediaAsset.file.name)) throw new Error("EPERM: operation not permitted, rename");
 		},
 		deleteMediaAsset: async ({ id }: { id: string }) => {
+			await slowDelete;
 			if (failDelete) throw new Error("EBUSY: resource busy");
 			state.deleted.push(id);
 		},
@@ -377,6 +378,35 @@ describe("drafts belong to the project session they were queued in", () => {
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		expect(disk.writes.at(-1)?.agentIds).not.toContain("first");
 		expect(backend.state.promoted).toEqual([]);
+	});
+
+	test("a write that lands while the draft's unused imports are still being removed still promotes the used ones", async () => {
+		const editor = setup();
+		const removal = gate();
+		const backend = fakeBackend({ slowDelete: removal.promise });
+		const disk = projectWrites();
+		restore = () => {
+			backend.restore();
+			disk.restore();
+		};
+		editor.save.start();
+		const run = applyDraft(draft([
+			{ op: "add", track: { name: "Logos" }, element: image("used.png", "used") },
+			// Fails after its asset was imported: that import is unused and removed (slowly).
+			{ op: "replace", match: { agentId: "nope" }, element: image("unused.png", "unused") },
+		]));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// The project closes while the removal runs: its background write has the draft.
+		otherProject(editor);
+		expect(await editor.save.settleProject("p")).toBeNull();
+		removal.open();
+		await run;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		const used = backend.state.fileNames;
+		const usedId = [...used.entries()].find(([, name]) => name.includes("used") && !name.includes("unused"))?.[0];
+		expect(usedId).toBeDefined();
+		expect(backend.state.results[0]).toMatchObject({ applied: true, saved: true });
+		expect(backend.state.promoted).toEqual([usedId as string]);
 	});
 
 	test("the draft's write hangs while another project opens and saves: the draft is not reported saved", async () => {

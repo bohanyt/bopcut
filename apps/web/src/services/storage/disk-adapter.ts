@@ -14,9 +14,15 @@ async function checked(response: Response): Promise<Response> {
 export class DiskAdapter {
 	private revisions = new Map<string, string>();
 	private writes = new Map<string, Promise<void>>();
+	/**
+	 * Projects this adapter saw exist and then saw gone (deleted here or in another tab): a write never
+	 * creates them again. Ids are never reused, so a new project is never in here.
+	 */
+	private gone = new Set<string>();
 	async get(id: string): Promise<SerializedProject | null> {
 		const response = await fetch(projectUrl(id), { cache: "no-store" });
 		if (response.status === 404) {
+			if (this.revisions.has(id)) this.gone.add(id);
 			this.revisions.delete(id);
 			return null;
 		}
@@ -37,10 +43,42 @@ export class DiskAdapter {
 		key: string;
 		value: SerializedProject;
 	}): Promise<void> {
+		await this.queued(key, () => this.writeProject(key, value));
+	}
+	/**
+	 * Changes the stored project with `change`, applied to the copy on disk at the moment of the write:
+	 * if another write lands in between, it is read again and changed again (never overwritten). Null
+	 * when the project does not exist.
+	 */
+	async update(
+		key: string,
+		change: (value: SerializedProject) => SerializedProject,
+	): Promise<SerializedProject | null> {
+		let result: SerializedProject | null = null;
+		await this.queued(key, async () => {
+			for (let attempt = 0; attempt < 5; attempt++) {
+				const current = await this.get(key);
+				if (!current) return;
+				const next = change(current);
+				const response = await fetch(projectUrl(key), {
+					method: "PUT",
+					headers: { "Content-Type": "application/json", "If-Match": this.revisions.get(key) ?? "new" },
+					body: JSON.stringify(next),
+				});
+				if (response.status === 409) continue;
+				await checked(response);
+				this.revisions.set(key, response.headers.get("etag") ?? "new");
+				result = next;
+				return;
+			}
+			throw new Error("The project kept changing; try again");
+		});
+		return result;
+	}
+	/** Writes of one project run one after another, in call order. */
+	private async queued(key: string, run: () => Promise<void>): Promise<void> {
 		const previous = this.writes.get(key) ?? Promise.resolve();
-		const current = previous
-			.catch(() => undefined)
-			.then(() => this.writeProject(key, value));
+		const current = previous.catch(() => undefined).then(run);
 		this.writes.set(key, current);
 		try {
 			await current;
@@ -52,6 +90,7 @@ export class DiskAdapter {
 		key: string,
 		value: SerializedProject,
 	): Promise<void> {
+		if (this.gone.has(key)) throw new Error("The project was deleted; not saved");
 		let expected = this.revisions.get(key);
 		if (!expected) {
 			await this.get(key);
@@ -99,6 +138,7 @@ export class DiskAdapter {
 	async remove(id: string): Promise<void> {
 		await checked(await fetch(projectUrl(id), { method: "DELETE" }));
 		this.revisions.delete(id);
+		this.gone.add(id);
 	}
 	async clear(): Promise<void> {
 		for (const id of await this.list()) await this.remove(id);

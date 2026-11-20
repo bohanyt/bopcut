@@ -60,6 +60,8 @@ export class SaveSession {
 	private held = false;
 	private snapshot: TProject | null = null;
 	private writing: Promise<void> | null = null;
+	/** The project the write in progress writes, and the revision it covers. */
+	private inFlight: { target: number; project: TProject } | null = null;
 	/** Someone waits for the write after the one in progress: it starts right away. */
 	private urgent = false;
 	private timer: ReturnType<typeof setTimeout> | null = null;
@@ -128,7 +130,8 @@ export class SaveSession {
 			this.host.finished(this);
 			return;
 		}
-		this.snapshot = snapshot();
+		// The write in progress already has every edit: its project is the snapshot (nothing recomputed).
+		this.snapshot = this.writing && this.inFlight?.target === this.revision ? this.inFlight.project : snapshot();
 		if (!this.snapshot) {
 			this.lastError = "the project could not be read from the editor to save it";
 			console.error(`Unsaved changes of ${this.name} could not be kept:`, this.lastError);
@@ -240,9 +243,11 @@ export class SaveSession {
 		if (!project) return;
 		this.clearTimer();
 		this.urgent = false;
+		this.inFlight = { target, project };
 		const run = (async () => {
 			const error = await this.host.persist(project);
 			this.writing = null;
+			this.inFlight = null;
 			if (this.detached) return;
 			let retryIn: number | null = null;
 			if (error === null) {

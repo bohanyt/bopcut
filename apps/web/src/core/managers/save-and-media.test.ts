@@ -109,6 +109,13 @@ function memoryDisk(stored: TProject[]) {
 			await hooks.write?.(written);
 			files.set(written.metadata.id, structuredClone(written));
 		},
+		// Applied to the stored copy at the moment it is written (see DiskAdapter.update).
+		renameProject: async ({ id, name }: { id: string; name: string }) => {
+			const file = files.get(id);
+			if (!file) return null;
+			file.metadata = { ...file.metadata, name, updatedAt: new Date() };
+			return file.metadata;
+		},
 	});
 	return { files, writes, hooks };
 }
@@ -305,11 +312,17 @@ describe("save sessions across project switches", () => {
 
 	test("A→A: reopening the open project writes its unsaved edit first, and the reopened timeline has it", async () => {
 		const editor = await load(project("a", new Date(0)));
-		memoryDisk([project("a", new Date(0))]);
+		const disk = memoryDisk([project("a", new Date(0))]);
+		let reads = 0;
+		disk.hooks.read = () => {
+			reads++;
+		};
 		edit(editor, "a: unsaved");
 		await editor.project.loadProject({ id: "a" });
 		expect(mainName({ scenes: editor.scenes.getScenes() } as TProject)).toBe("a: unsaved");
 		expect(editor.save.hasUnsavedChanges()).toBe(false);
+		// The edit was on disk before the read started: read once, not again.
+		expect(reads).toBe(1);
 	});
 
 	test("A→B→A quickly: A opens again only after its background write, and has the edit", async () => {
@@ -608,6 +621,8 @@ describe("save sessions: reads, renames, deletes and the page guard", () => {
 		}) as typeof fetch;
 		try {
 			await expect(adapter.set({ key: "gone", value: project("gone", new Date(0)) as any })).rejects.toThrow("deleted");
+			// The save session's retry: still not created again.
+			await expect(adapter.set({ key: "gone", value: project("gone", new Date(0)) as any })).rejects.toThrow("deleted");
 		} finally {
 			globalThis.fetch = realFetch;
 		}
@@ -700,5 +715,130 @@ describe("save sessions: reads, renames, deletes and the page guard", () => {
 			if (previous === undefined) delete (globalThis as any).window;
 			else (globalThis as any).window = previous;
 		}
+	});
+});
+
+describe("save sessions: concurrent deletes, renames and creates", () => {
+	test("a batch delete where one project fails: the deleted one stays deleted, the other keeps its media and saving", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const mediaDeleted: string[] = [];
+		stub({
+			deleteProject: async ({ id }: { id: string }) => {
+				if (id === "a") throw new Error("EBUSY");
+				disk.files.delete(id);
+			},
+			deleteProjectMedia: async ({ projectId }: { projectId: string }) => {
+				mediaDeleted.push(projectId);
+			},
+		});
+		edit(editor, "a: kept");
+		await editor.project.deleteProjects({ ids: ["a", "b"] });
+		expect(mediaDeleted).toEqual(["b"]);
+		expect(disk.files.has("b")).toBe(false);
+		expect(editor.project.getActive().metadata.id).toBe("a");
+		expect(await editor.save.flush()).toBe(true);
+		expect(mainName(disk.files.get("a")!)).toBe("a: kept");
+		expect(disk.writes.some((w) => w.id === "b")).toBe(false);
+	});
+
+	test("a project read while it is deleted does not open afterwards", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		stub({ deleteProject: async ({ id }: { id: string }) => { disk.files.delete(id); }, deleteProjectMedia: async () => {} });
+		const read = gate();
+		disk.hooks.read = (id) => (id === "b" ? read.promise : undefined);
+		const opening = editor.project.loadProject({ id: "b" });
+		await wait(5);
+		await editor.project.deleteProjects({ ids: ["b"] });
+		read.open(); // returns the copy read before the delete
+		await expect(opening).rejects.toThrow("not found");
+		expect(editor.project.getActive().metadata.id).toBe("a");
+		expect(disk.writes.some((w) => w.id === "b")).toBe(false);
+	});
+
+	test("deleting the open project does not cancel another project that is opening", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		stub({ deleteProject: async ({ id }: { id: string }) => { disk.files.delete(id); }, deleteProjectMedia: async () => {} });
+		const read = gate();
+		disk.hooks.read = (id) => (id === "b" ? read.promise : undefined);
+		const opening = editor.project.loadProject({ id: "b" });
+		await wait(5);
+		await editor.project.deleteProjects({ ids: ["a"] });
+		expect(editor.project.getActiveOrNull()).toBeNull();
+		read.open();
+		await opening;
+		expect(editor.project.getActive().metadata.id).toBe("b");
+		expect(editor.project.getIsLoading()).toBe(false);
+	});
+
+	test("a new project whose first write fails counts as unsaved (not ready) and is retried", async () => {
+		const editor = EditorCore.getInstance();
+		(editor.project as any).isLoading = false;
+		(editor.save as any).retryDelaysMs = [5];
+		let fail = true;
+		let written = 0;
+		stub({ saveProject: async () => {
+			if (fail) throw new Error("EIO");
+			written++;
+		} });
+		await expect(editor.project.createNewProject({ name: "new" })).rejects.toThrow("EIO");
+		expect(agentReadiness()).toMatchObject({ ready: false, pendingSave: true });
+		fail = false;
+		await until(() => !editor.save.getIsDirty());
+		expect(written).toBeGreaterThan(0);
+		expect(agentReadiness().ready).toBe(true);
+	});
+
+	test("the rename of a stored project is applied to the copy on disk when it is written", async () => {
+		const { DiskAdapter } = await import("@/services/storage/disk-adapter");
+		const adapter = new DiskAdapter();
+		const stored = (scenes: string) => ({ ...project("r", new Date(0)), scenes: [{ ...project("r", new Date(0)).scenes[0], name: scenes }] });
+		let version = 1;
+		const bodies: any[] = [];
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (_url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
+			if (init?.method === "PUT") {
+				bodies.push(JSON.parse(init.body ?? "{}"));
+				// Another write lands between the first read and the first write.
+				if (init.headers?.["If-Match"] === "r1") {
+					version = 2;
+					return new Response("conflict", { status: 409 });
+				}
+				return new Response("{}", { status: 200, headers: { etag: "r3" } });
+			}
+			return new Response(JSON.stringify(stored(version === 1 ? "old timeline" : "newer timeline")), { status: 200, headers: { etag: `r${version}` } });
+		}) as typeof fetch;
+		try {
+			const renamed = await adapter.update("r", (value) => ({ ...value, metadata: { ...value.metadata, name: "renamed" } }));
+			expect(renamed?.metadata.name).toBe("renamed");
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+		expect(bodies.length).toBe(2);
+		expect(bodies[1].metadata.name).toBe("renamed");
+		expect(bodies[1].scenes[0].name).toBe("newer timeline");
+	});
+
+	test("closing a project while its latest edit is being written reuses that write's project", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		const write = gate();
+		disk.hooks.write = () => write.promise;
+		edit(editor, "a: saving");
+		void editor.save.flush();
+		await wait(5);
+		let snapshots = 0;
+		const real = editor.project.snapshotActive.bind(editor.project);
+		editor.project.snapshotActive = () => {
+			snapshots++;
+			return real();
+		};
+		editor.project.closeProject();
+		expect(snapshots).toBe(0);
+		write.open();
+		expect(await editor.save.settleProject("a")).toBeNull();
+		expect(mainName(disk.files.get("a")!)).toBe("a: saving");
 	});
 });

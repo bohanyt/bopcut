@@ -46,6 +46,9 @@ export class ProjectManager {
 	private loadSequence = 0;
 	/** The load that put the open project in the editor and is still loading its media, or null. */
 	private installing: number | null = null;
+	/** Projects being deleted, and deleted, in this editor: they do not open. */
+	private deleting = new Set<string>();
+	private deleted = new Set<string>();
 	private isInitialized = false;
 	private invalidProjectIds = new Set<string>();
 	private storageMigrationPromise: Promise<void> | null = null;
@@ -125,6 +128,8 @@ export class ProjectManager {
 			return newProject.metadata.id;
 		} catch (error) {
 			toast.error("Failed to save new project");
+			// Not on disk: the project counts as unsaved (not ready for the agent) and autosave retries.
+			saveSession.markDirty({ force: true });
 			throw error;
 		} finally {
 			saveSession.markReady();
@@ -143,23 +148,31 @@ export class ProjectManager {
 		// project stays as it was (timeline, media, saving).
 		let result: Awaited<ReturnType<typeof storageService.loadProject>>;
 		try {
+			const attempts = 5;
 			for (let attempt = 1; ; attempt++) {
+				if (this.deleting.has(id) || this.deleted.has(id)) throw new Error(`Project with id ${id} not found`);
 				// Changes of this project that are not on disk yet (it is open, or was closed a moment ago)
-				// are written first, so the read below has them. An edit counted after this mark (even one
-				// saved by the time the read returns) can be missing from what is read: then it is read again.
-				const mark = this.editor.save.editsOf(id);
+				// are written first, so the read below has them.
 				const unsaved = await this.editor.save.settleProject(id);
 				if (superseded()) return;
 				if (unsaved) throw new Error(`Earlier changes of this project are not saved yet: ${unsaved}`);
+				if (this.editor.save.hasUnsavedChangesOf(id)) {
+					// Edited while it was being written: write that too.
+					if (attempt === attempts) throw new Error("The project kept changing while it was reopened");
+					continue;
+				}
+				// Every edit counted so far is on disk now. One counted after this mark can be missing from
+				// what is read (even if it is saved by the time the read returns): then it is read again.
+				const mark = this.editor.save.editsOf(id);
 				await this.ensureStorageMigrations();
 				result = await storageService.loadProject({ id });
 				if (!result) {
 					throw new Error(`Project with id ${id} not found`);
 				}
 				if (superseded()) return; // a newer load started meanwhile and takes over
-				// The open project is this one and was edited while it was read: read again.
-				if (this.editor.save.editsOf(id) === mark && !this.editor.save.hasUnsavedChangesOf(id)) break;
-				if (attempt === 3) throw new Error("The project kept changing while it was reopened");
+				if (this.deleting.has(id) || this.deleted.has(id)) throw new Error(`Project with id ${id} not found`);
+				if (this.editor.save.editsOf(id) === mark) break;
+				if (attempt === attempts) throw new Error("The project kept changing while it was reopened");
 			}
 		} catch (error) {
 			console.error("Failed to load project:", error);
@@ -332,13 +345,14 @@ export class ProjectManager {
 			} catch (error) {
 				console.error("Failed to load projects:", error);
 			} finally {
-				this.isLoading = false;
+				// A project still loading its media keeps the loading state (its load ends it).
+				if (this.installing === null) this.isLoading = false;
 				this.isInitialized = true;
 				this.notify();
 			}
 		} catch (error) {
 			console.error("Failed to run migrations:", error);
-			this.isLoading = false;
+			if (this.installing === null) this.isLoading = false;
 			this.isInitialized = true;
 			this.notify();
 		}
@@ -348,47 +362,53 @@ export class ProjectManager {
 		const uniqueIds = Array.from(new Set(ids));
 		if (uniqueIds.length === 0) return;
 
-		// No write of these projects may land after the delete (it would bring the project back): writes
-		// are held, and one in progress is waited for. Their unsaved edits are dropped once deleted.
-		const held = await Promise.all(uniqueIds.map((id) => this.editor.save.holdProject(id)));
-		if (held.some((done) => !done)) {
-			for (const id of uniqueIds) this.editor.save.releaseProject(id);
-			toast.error("Failed to delete project", { description: "A save of it is still running; try again in a moment" });
-			return;
-		}
+		for (const id of uniqueIds) this.deleting.add(id);
 		try {
-			await Promise.all(
-				uniqueIds.map((id) =>
-					Promise.all([
-						storageService.deleteProjectMedia({ projectId: id }),
-						storageService.deleteProject({ id }),
-					]),
-				),
+			const outcomes = await Promise.all(
+				uniqueIds.map(async (id): Promise<{ id: string; error: string | null }> => {
+					// No write of the project may land after the delete (it would bring it back): its writes are
+					// held, and one in progress is waited for.
+					if (!(await this.editor.save.holdProject(id))) {
+						this.editor.save.releaseProject(id);
+						return { id, error: "a save of it is still running; try again in a moment" };
+					}
+					try {
+						// The project first: if it cannot be deleted, its media stay, so nothing it uses is lost.
+						await storageService.deleteProject({ id });
+					} catch (error) {
+						// Not deleted: its saving goes on.
+						this.editor.save.releaseProject(id);
+						return { id, error: error instanceof Error ? error.message : String(error) };
+					}
+					this.deleted.add(id);
+					this.editor.save.discardProject(id);
+					// A failure here only leaves files of a deleted project behind.
+					await storageService.deleteProjectMedia({ projectId: id }).catch((error) => {
+						console.error(`Media of deleted project ${id} not removed:`, error);
+					});
+					return { id, error: null };
+				}),
 			);
 
-			for (const id of uniqueIds) this.editor.save.discardProject(id);
-			const idSet = new Set(uniqueIds);
+			const deletedIds = new Set(outcomes.filter((outcome) => outcome.error === null).map((outcome) => outcome.id));
 			this.savedProjects = this.savedProjects.filter(
-				(project) => !idSet.has(project.id),
+				(project) => !deletedIds.has(project.id),
 			);
-
-			const shouldClearActive =
-				this.active && idSet.has(this.active.metadata.id);
-
-			if (shouldClearActive) {
+			if (this.active && deletedIds.has(this.active.metadata.id)) {
 				this.session++;
-				this.supersedeLoads();
 				this.active = null;
 				this.editor.media.clearAllAssets();
 				this.editor.scenes.clearScenes();
 			}
-
 			this.notify();
-		} catch (error) {
-			console.error("Failed to delete projects:", error);
-			// Not deleted (or not all of them): their saving goes on.
-			for (const id of uniqueIds) this.editor.save.releaseProject(id);
-			toast.error("Failed to delete project", { description: error instanceof Error ? error.message : "Please try again" });
+
+			const failed = outcomes.filter((outcome) => outcome.error !== null);
+			if (failed.length > 0) {
+				console.error("Failed to delete projects:", failed);
+				toast.error(failed.length === 1 ? "Failed to delete project" : `Failed to delete ${failed.length} projects`, { description: failed[0].error ?? undefined });
+			}
+		} finally {
+			for (const id of uniqueIds) this.deleting.delete(id);
 		}
 	}
 
@@ -420,33 +440,23 @@ export class ProjectManager {
 				if (!(await this.editor.save.flush())) toast.error("Project renamed, but not saved yet", { description: this.editor.save.getLastError(id) ?? "Saving is retried" });
 				return;
 			}
-			// Changes of a project closed a moment ago are written first: renaming the stored copy before
-			// that would put the old timeline back over them.
+			// Changes of a project closed a moment ago are written first: a retry of its last write after
+			// the rename would bring the old name back.
 			const unsaved = await this.editor.save.settleProject(id);
 			if (unsaved) throw new Error(`Earlier changes of this project are not saved yet: ${unsaved}`);
-			const result = await storageService.loadProject({ id });
-			if (!result) {
+			// Renamed on the stored copy as it is when written: a write in between is read again, so the
+			// rename never puts an older timeline back.
+			const metadata = await storageService.renameProject({ id, name });
+			if (!metadata) {
 				toast.error("Project not found", {
 					description: "Please try again",
 				});
 				return;
 			}
-			// Opened meanwhile: rename it in the editor instead (its session writes it).
-			if (this.renameActive({ id, name })) return;
-
-			const updatedProject: TProject = {
-				...result.project,
-				metadata: {
-					...result.project.metadata,
-					name,
-					updatedAt: new Date(),
-				},
-			};
-
-			await storageService.saveProject({ project: updatedProject });
-			// Opened while the stored copy was written: the editor gets the name too.
+			this.updateSavedMetadata(metadata);
+			this.notify();
+			// Opened meanwhile (from before the rename): renamed in the editor too, so its saves keep it.
 			this.renameActive({ id, name });
-			this.updateMetadata(updatedProject);
 		} catch (error) {
 			console.error("Failed to rename project:", error);
 			toast.error("Failed to rename project", {

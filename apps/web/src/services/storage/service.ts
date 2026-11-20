@@ -217,6 +217,27 @@ class StorageService {
 		});
 	}
 
+	/**
+	 * Renames a stored project on the copy that is on disk when it is written (a write in between is
+	 * re-read, not overwritten). The new metadata, or null when the project does not exist.
+	 */
+	async renameProject({ id, name }: { id: string; name: string }): Promise<TProjectMetadata | null> {
+		const updated = await this.projectsAdapter.update(id, (stored) => ({
+			...stored,
+			metadata: { ...stored.metadata, name, updatedAt: new Date().toISOString() },
+		}));
+		if (!updated) return null;
+		const { metadata } = updated;
+		return {
+			id: metadata.id,
+			name: metadata.name,
+			thumbnail: metadata.thumbnail,
+			duration: metadata.duration ?? 0,
+			createdAt: new Date(metadata.createdAt),
+			updatedAt: new Date(metadata.updatedAt),
+		} as TProjectMetadata;
+	}
+
 	async loadProject({
 		id,
 	}: {

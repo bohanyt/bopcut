@@ -14,6 +14,7 @@ import { s, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { NO_SELECTION } from "./selection-payload";
 import { mediaIdsInScenes } from "@/core/managers/media-manager";
 import type { SaveSession } from "@/core/managers/save-manager";
+import type { TProject } from "@/project/types";
 import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
 
@@ -429,6 +430,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	const publish = staged.filter((id) => used.has(id));
 	let saveSession: SaveSession | null = null;
 	let revision = 0;
+	let written: Promise<TProject | null> = Promise.resolve(null);
 	if (!error) {
 		try {
 			const command = new AgentDraftCommand({ before, after: outcome.scenes, selection, openBefore: openScene.id, openAfter, wrap: (action) => (editLogger ? editLogger.agent(action) : action()) });
@@ -446,6 +448,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 			const current = editor.save.getCurrent();
 			saveSession = current?.projectId === projectId && current.session === session?.session ? current : null;
 			revision = saveSession?.markDirty({ force: true }) ?? 0;
+			// Waited for from here: a write that lands while the cleanup below runs still counts.
+			if (saveSession) written = saveSession.whenSaved(revision);
 		} catch (e) {
 			error = errorText(e);
 		}
@@ -479,9 +483,9 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	// Promoted once a write that contains the commit is on disk, also if that is a later retry: before
 	// that, another tab loading the project would see media its saved timeline does not use yet.
 	// Only imports the written timeline uses: one undone before the write stays staged.
-	const promotion = ownSession.whenSaved(revision).then(async (written) => {
-		if (!written || publish.length === 0) return;
-		const inUse = usedMediaIds(written.scenes ?? []);
+	const promotion = written.then(async (project) => {
+		if (!project || publish.length === 0) return;
+		const inUse = usedMediaIds(project.scenes ?? []);
 		const ids = publish.filter((id) => inUse.has(id));
 		if (ids.length === 0) return;
 		const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids });
