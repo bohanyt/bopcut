@@ -13,6 +13,7 @@ import { getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { NO_SELECTION } from "./selection-payload";
 import { mediaIdsInScenes } from "@/core/managers/media-manager";
+import type { SaveSession } from "@/core/managers/save-manager";
 import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
 
@@ -40,21 +41,32 @@ export function agentReadiness() {
 	const projectId = project?.metadata.id ?? null;
 	const mediaLoaded = !!projectId && editor.media.isProjectMediaLoaded({ projectId });
 	const missingMedia = mediaLoaded ? editor.media.getMissingMedia() : [];
-	const pendingSave = editor.save.getIsDirty();
-	const saveError = projectId ? editor.save.getLastError(projectId) : null;
-	const savedAt = (projectId && editor.save.getLastSavedAt(projectId)?.toISOString()) || null;
+	// Save state of the open project's own session (never of a project closed a moment ago).
+	const session = editor.save.getCurrent();
+	const own = session?.projectId === projectId ? session : null;
+	const pendingSave = !!own?.isDirty();
+	const saveError = own?.lastError ?? null;
+	const savedAt = own?.savedAt?.toISOString() ?? null;
 	const ready = !!project && !editor.project.getIsLoading() && mediaLoaded && !pendingSave && !saveError;
 	return { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt };
 }
 
-/** Resolves true once agentReadiness().ready, false after `timeoutMs`. */
-export async function whenAgentReady({ timeoutMs = 120000 }: { timeoutMs?: number } = {}): Promise<boolean> {
-	const deadline = Date.now() + timeoutMs;
-	while (!agentReadiness().ready) {
-		if (Date.now() > deadline) return false;
-		await new Promise((resolve) => setTimeout(resolve, 100));
-	}
-	return true;
+/** Resolves true once agentReadiness().ready, false after `timeoutMs` (checked on changes, not polled). */
+export function whenAgentReady({ timeoutMs = 120000 }: { timeoutMs?: number } = {}): Promise<boolean> {
+	if (agentReadiness().ready) return Promise.resolve(true);
+	const editor = EditorCore.getInstance();
+	return new Promise((resolve) => {
+		const finish = (ready: boolean) => {
+			clearTimeout(timer);
+			for (const unsubscribe of unsubscribes) unsubscribe();
+			resolve(ready);
+		};
+		const check = () => {
+			if (agentReadiness().ready) finish(true);
+		};
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		const unsubscribes = [editor.save.subscribe(check), editor.media.subscribe(check), editor.project.subscribe(check)];
+	});
 }
 
 export function agentSnapshot() {
@@ -414,6 +426,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	// Staged imports the result uses; the others (only used by failed ops) are removed.
 	const used = usedMediaIds(outcome.scenes);
 	const publish = staged.filter((id) => used.has(id));
+	let saveSession: SaveSession | null = null;
+	let revision = 0;
 	if (!error) {
 		try {
 			const command = new AgentDraftCommand({ before, after: outcome.scenes, selection, openBefore: openScene.id, openAfter, wrap: (action) => (editLogger ? editLogger.agent(action) : action()) });
@@ -426,6 +440,11 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 				editor.media.unpublishMediaAssets({ projectId, ids: publish });
 				throw e;
 			}
+			// Same task as the commit: the open session is the draft's project (checked above), and the
+			// revision counts the commit even when saving cannot start yet.
+			const current = editor.save.getCurrent();
+			saveSession = current?.projectId === projectId && current.session === session?.session ? current : null;
+			revision = saveSession?.markDirty({ force: true }) ?? 0;
 		} catch (e) {
 			error = errorText(e);
 		}
@@ -448,22 +467,28 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		}
 	}
 
-	// The result is written once the change is on disk. The commit marks the project dirty even if
-	// saving is paused, so a paused save is reported as not saved instead of passing silently.
-	editor.save.markDirty({ force: true });
-	const saved = await editor.save.settle();
-	// Promoted only once the timeline that uses them is on disk: before that, another tab loading the
-	// project would see media its saved timeline does not use yet.
-	if (saved) {
+	// The result is written once the change is on disk: a write of the draft's own project (its save
+	// session) that contains the commit. A session is per opened project, so a project opened meanwhile
+	// can neither make this look saved nor take its write.
+	if (!saveSession) {
+		await report({ sceneId: root.id, applied: true, saved: false, saveError: "no save session for the project", ...(cleanup ? { cleanup } : {}), results: outcome.results });
+		return;
+	}
+	const ownSession: SaveSession = saveSession;
+	// Promoted once a write that contains the commit is on disk, also if that is a later retry: before
+	// that, another tab loading the project would see media its saved timeline does not use yet.
+	const promotion = ownSession.whenSaved(revision).then(async (saved) => {
+		if (!saved || publish.length === 0) return;
 		const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids: publish });
 		if (promoteError) console.warn("Staged media not promoted (they still load because the timeline uses them):", promoteError);
-	}
+	});
+	const saved = await ownSession.settle(revision);
+	if (saved) await promotion;
 	const failed = outcome.results.filter((r) => !r?.ok).length;
 	const description = `${outcome.results.length - failed} changes${failed ? `, ${failed} failed` : ""} · changed items selected · Ctrl+Z to undo`;
-	// Save state of this draft's project, not of whatever project is open by now.
-	const saveError = saved ? null : (editor.save.getLastError(projectId) ?? (editor.save.getIsPaused() ? "saving is paused (a project is opening)" : "save did not finish"));
+	const saveError = saved ? null : (ownSession.lastError ?? (!editor.save.isRunning() ? "saving is off" : ownSession.isLoading() ? "the project is still loading" : editor.save.getCurrent() === ownSession ? "save did not finish" : "save did not finish; it is retried in the background"));
 	if (!saved) toast.error(`Agent draft applied but not saved: ${draft.label ?? draft.rev}`, { description: saveError ?? undefined });
 	else if (failed) toast.warning(`Agent draft partly applied: ${draft.label ?? draft.rev}`, { description });
 	else toast(`Agent draft applied: ${draft.label ?? draft.rev}`, { description });
-	await report({ sceneId: root.id, applied: true, saved, savedAt: editor.save.getLastSavedAt(projectId)?.toISOString() ?? null, ...(saved ? {} : { saveError }), ...(cleanup ? { cleanup } : {}), results: outcome.results });
+	await report({ sceneId: root.id, applied: true, saved, savedAt: ownSession.savedAt?.toISOString() ?? null, ...(saved ? {} : { saveError }), ...(cleanup ? { cleanup } : {}), results: outcome.results });
 }

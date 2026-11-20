@@ -139,7 +139,8 @@ function EditorRuntimeBindings() {
 
 	useEffect(() => {
 		const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-			if (!editor.save.getIsDirty()) return;
+			// Also a project closed a moment ago whose last changes are still being written.
+			if (!editor.save.hasUnsavedChanges()) return;
 			event.preventDefault();
 			(event as unknown as { returnValue: string }).returnValue = "";
 		};

@@ -25,7 +25,6 @@ function setup() {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
 	editor.save.stop();
-	editor.save.pause();
 	const scenes = [scene("main", {
 		overlay: [{ id: "t-g", name: "Shapes", type: "graphic", hidden: false, elements: [el("graphic", "box", 0, 4, { agentId: "box", definitionId: "line", params: { drawProgress: 1 } })] as any }],
 		main: { id: "t-main", name: "Main", type: "video", muted: false, hidden: false, elements: [el("image", "old", 0, 2, { agentId: "old", mediaId: "m-old" })] as VideoElement[] },
@@ -44,8 +43,9 @@ const draft = (ops: unknown[], extra: Record<string, unknown> = {}) => ({ schema
 const image = (path: string, agent_id: string) => ({ agent_id, name: agent_id, asset: { path, type: "image", name: agent_id }, start: 0, duration: 1 });
 const gate = () => {
 	let open!: () => void;
-	const promise = new Promise<void>((resolve) => { open = resolve; });
-	return { promise, open };
+	let fail!: (error: Error) => void;
+	const promise = new Promise<void>((resolve, reject) => { open = resolve; fail = reject; });
+	return { promise, open, fail };
 };
 
 /**
@@ -88,6 +88,22 @@ function fakeBackend({ slow = new Map<string, Promise<void>>(), missing = new Se
 			for (const key of Object.keys(stubs)) delete (storageService as any)[key];
 		},
 	};
+}
+
+/**
+ * Project writes to storage: records each write's project id and agent ids; `fail` returns an error to
+ * throw for a project, `wait` a promise the write waits for (or that rejects).
+ */
+function projectWrites({ fail, wait }: { fail?: (id: string) => string | null; wait?: (id: string) => Promise<void> | undefined } = {}) {
+	const writes: { id: string; agentIds: string[] }[] = [];
+	(storageService as any).saveProject = async ({ project }: { project: TProject }) => {
+		const id = project.metadata.id;
+		writes.push({ id, agentIds: project.scenes.flatMap(all).flatMap((e) => (e.agentId ? [e.agentId] : [])) });
+		await wait?.(id);
+		const error = fail?.(id);
+		if (error) throw new Error(error);
+	};
+	return { writes, restore: () => delete (storageService as any).saveProject };
 }
 
 let restore = () => {};
@@ -298,24 +314,74 @@ describe("drafts belong to the project session they were queued in", () => {
 		expect(backend.state.deleted).toEqual(backend.state.saved);
 	});
 
-	test("committed imports are promoted on disk once the timeline is saved, not before", async () => {
+	test("committed imports are promoted on disk once a write containing them is saved, also a later one", async () => {
 		const editor = setup();
 		const backend = fakeBackend();
-		restore = backend.restore;
-		// Saving paused (setup): the commit is not on disk, so nothing is promoted.
-		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("first.png", "first") }]));
-		expect(backend.state.results[0]).toMatchObject({ applied: true, saved: false });
-		expect(backend.state.promoted).toEqual([]);
-		// Saving works: promoted after the save.
-		editor.project.persistCurrentProject = async () => {
-			editor.save.recordPersisted({ projectId: "p", error: null });
-			return null;
+		const disk = projectWrites();
+		restore = () => {
+			backend.restore();
+			disk.restore();
 		};
-		(editor.project as any).isLoading = false;
-		editor.save.resume();
+		// Saving is off (setup): the commit is not on disk, so nothing is promoted.
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("first.png", "first") }]));
+		expect(backend.state.results[0]).toMatchObject({ applied: true, saved: false, saveError: "saving is off" });
+		expect(backend.state.promoted).toEqual([]);
+		// Saving works: the next write contains both drafts, so both imports are promoted.
+		editor.save.start();
 		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("second.png", "second") }]));
 		expect(backend.state.results[1]).toMatchObject({ applied: true, saved: true });
-		expect(backend.state.promoted).toEqual([backend.state.saved[1]]);
+		expect([...backend.state.promoted].sort()).toEqual([...backend.state.saved].sort());
+	});
+
+	test("the draft's write fails, another project opens, the background retry lands: its imports are promoted then", async () => {
+		const editor = setup();
+		(editor.save as any).retryDelaysMs = [10];
+		const backend = fakeBackend();
+		const disk = projectWrites({ fail: (id) => (id === "p" && failing ? "EIO: i/o error" : null) });
+		let failing = true;
+		restore = () => {
+			backend.restore();
+			disk.restore();
+		};
+		editor.save.start();
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("first.png", "first") }]));
+		expect(backend.state.results[0]).toMatchObject({ applied: true, saved: false, saveError: "EIO: i/o error" });
+		expect(backend.state.promoted).toEqual([]);
+		failing = false;
+		otherProject(editor);
+		expect(await editor.save.settleProject("p")).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(backend.state.promoted).toEqual(backend.state.saved);
+		// p was written from its own timeline (with the draft's clip), never q's.
+		expect(disk.writes.filter((w) => w.id === "p").at(-1)?.agentIds).toContain("first");
+		expect(disk.writes.filter((w) => w.id === "q").every((w) => !w.agentIds.includes("first"))).toBe(true);
+	});
+
+	test("the draft's write hangs while another project opens and saves: the draft is not reported saved", async () => {
+		const editor = setup();
+		(editor.save as any).retryDelaysMs = [10];
+		const backend = fakeBackend();
+		const hung = gate();
+		let pWrites = 0;
+		const disk = projectWrites({ wait: (id) => (id === "p" && ++pWrites === 1 ? hung.promise : undefined) });
+		restore = () => {
+			backend.restore();
+			disk.restore();
+		};
+		editor.save.start();
+		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("first.png", "first") }]));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		otherProject(editor);
+		// q saves at once and is clean: that says nothing about p.
+		expect(await editor.save.flush()).toBe(true);
+		hung.fail(new Error("EIO: i/o error"));
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: true, saved: false, saveError: "EIO: i/o error" });
+		expect(backend.state.promoted).toEqual([]);
+		// The retry from p's snapshot lands, and the import is promoted then.
+		expect(await editor.save.settleProject("p")).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(backend.state.promoted).toEqual(backend.state.saved);
 	});
 });
 

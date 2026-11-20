@@ -28,7 +28,6 @@ function setup() {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
 	editor.save.stop();
-	editor.save.pause();
 	editor.project.setActiveProject({
 		project: {
 			metadata: { id: "p", name: "p", createdAt: new Date(0), updatedAt: new Date(0) },

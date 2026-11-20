@@ -72,19 +72,74 @@ describe("missing media", () => {
 	});
 });
 
+/** Renames the main scene: an edit the save manager sees, and visible in what is written. */
+function edit(editor: ReturnType<typeof EditorCore.getInstance>, label: string) {
+	const scenes = editor.scenes.getScenes().map((scene) => (scene.isMain ? { ...scene, name: label } : scene));
+	editor.scenes.setScenes({ scenes, activeSceneId: editor.scenes.getActiveScene().id });
+}
+const mainName = (stored: TProject) => stored.scenes.find((scene) => scene.isMain)?.name;
+
+/**
+ * Storage held in memory: saveProject writes a copy, loadProject reads one. `writes` lists every write
+ * in order; the hooks can hold or fail a read, a media load or a write.
+ */
+function memoryDisk(stored: TProject[]) {
+	const files = new Map(stored.map((p) => [p.metadata.id, structuredClone(p)]));
+	const writes: { id: string; main: string | undefined; scenes: number }[] = [];
+	const hooks: {
+		read?: (id: string) => Promise<void> | void;
+		media?: (projectId: string) => Promise<void> | void;
+		write?: (project: TProject) => Promise<void> | void;
+	} = {};
+	stub({
+		ensureMigrations: async () => {},
+		loadProject: async ({ id }: { id: string }) => {
+			await hooks.read?.(id);
+			const file = files.get(id);
+			return file ? { project: structuredClone(file) } : null;
+		},
+		loadAllMediaAssets: async ({ projectId }: { projectId: string }) => {
+			await hooks.media?.(projectId);
+			return [];
+		},
+		saveProject: async ({ project: written }: { project: TProject }) => {
+			writes.push({ id: written.metadata.id, main: mainName(written), scenes: written.scenes.length });
+			await hooks.write?.(written);
+			files.set(written.metadata.id, structuredClone(written));
+		},
+	});
+	return { files, writes, hooks };
+}
+const gate = () => {
+	let open!: () => void;
+	let fail!: (error: Error) => void;
+	const promise = new Promise<void>((resolve, reject) => {
+		open = resolve;
+		fail = reject;
+	});
+	return { promise, open, fail };
+};
+/** Resolves once `check` holds, checking every few ms (test helper only). */
+async function until(check: () => boolean, timeoutMs = 2000) {
+	const deadline = Date.now() + timeoutMs;
+	while (!check()) {
+		if (Date.now() > deadline) throw new Error("condition not met in time");
+		await wait(2);
+	}
+}
+
 describe("failed saves", () => {
 	const dirty = async (failures: number) => {
 		const editor = await load(project("p", new Date(0)));
 		(editor.save as any).retryDelaysMs = [5, 10];
+		const disk = memoryDisk([project("p", new Date(0))]);
 		let calls = 0;
-		editor.project.persistCurrentProject = async () => {
+		disk.hooks.write = () => {
 			calls++;
-			const error = calls <= failures ? "EPERM: operation not permitted" : null;
-			editor.save.recordPersisted({ projectId: "p", error });
-			return error;
+			if (calls <= failures) throw new Error("EPERM: operation not permitted");
 		};
-		editor.save.markDirty();
-		await editor.save.flush();
+		edit(editor, "edited");
+		expect(await editor.save.flush()).toBe(false);
 		return { editor, calls: () => calls };
 	};
 
@@ -104,18 +159,36 @@ describe("failed saves", () => {
 		await wait(40);
 		expect(calls()).toBe(3);
 		expect(agentReadiness().ready).toBe(false);
-		await editor.save.retry();
+		editor.save.retry();
+		expect(await editor.save.settle()).toBe(true);
 		expect(calls()).toBe(4);
 		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
 	});
 
 	test("settle gives up at its deadline even while a save hangs", async () => {
 		const editor = await load(project("p", new Date(0)));
-		editor.project.persistCurrentProject = () => new Promise(() => {});
-		editor.save.markDirty();
+		const disk = memoryDisk([project("p", new Date(0))]);
+		disk.hooks.write = () => new Promise(() => {});
+		edit(editor, "edited");
 		const started = Date.now();
 		expect(await editor.save.settle({ timeoutMs: 40 })).toBe(false);
 		expect(Date.now() - started).toBeLessThan(500);
+	});
+
+	test("a save that fails after stop() schedules no retry", async () => {
+		const editor = await load(project("p", new Date(0)));
+		(editor.save as any).retryDelaysMs = [10];
+		const disk = memoryDisk([project("p", new Date(0))]);
+		const write = gate();
+		disk.hooks.write = () => write.promise;
+		edit(editor, "edited");
+		const saving = editor.save.flush();
+		await wait(5);
+		editor.save.stop();
+		write.fail(new Error("EPERM: operation not permitted"));
+		expect(await saving).toBe(false);
+		await wait(40);
+		expect(disk.writes.length).toBe(1);
 	});
 });
 
@@ -184,72 +257,190 @@ describe("media manifest cache", () => {
 	});
 });
 
-describe("saving while projects switch", () => {
-	test("a retry due while another project loads never writes the half-loaded timeline over the first one", async () => {
+describe("save sessions across project switches", () => {
+	test("A→B: an edit made just before the switch is written to A, from A's timeline, in the background", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const write = gate();
+		disk.hooks.write = (p) => (p.metadata.id === "a" ? write.promise : undefined);
+		edit(editor, "a: last edit");
+		// The edit is still waiting for its debounce when b opens; the switch does not wait for its write.
+		await editor.project.loadProject({ id: "b" });
+		expect(editor.project.getActive().metadata.id).toBe("b");
+		expect(editor.save.hasUnsavedChangesOf("a")).toBe(true);
+		expect(editor.save.hasUnsavedChanges()).toBe(true);
+		write.open();
+		expect(await editor.save.settleProject("a")).toBeNull();
+		expect(mainName(disk.files.get("a")!)).toBe("a: last edit");
+		// Nothing of a was written as b, and b (not edited) was not written at all.
+		expect(disk.writes.filter((w) => w.id === "b")).toEqual([]);
+		expect(editor.save.hasUnsavedChanges()).toBe(false);
+		// b's own state: nothing pending, ready for the agent.
+		expect(agentReadiness()).toMatchObject({ ready: true, pendingSave: false, saveError: null });
+	});
+
+	test("A→B→C where C cannot be read: B (still loading its media) stays, finishes, and autosaves", async () => {
+		const editor = await load(project("a", new Date(0)));
+		(editor.save as any).debounceMs = 5;
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const media = gate();
+		disk.hooks.media = (id) => (id === "b" ? media.promise : undefined);
+		const b = editor.project.loadProject({ id: "b" });
+		await until(() => editor.project.getActiveOrNull()?.metadata.id === "b");
+		await expect(editor.project.loadProject({ id: "c" })).rejects.toThrow("not found");
+		expect(editor.project.getActive().metadata.id).toBe("b");
+		expect(editor.project.getIsLoading()).toBe(true);
+		media.open();
+		await b;
+		expect(editor.project.getIsLoading()).toBe(false);
+		expect(editor.save.getCurrent()).toMatchObject({ projectId: "b" });
+		expect(editor.save.getCurrent()?.isLoading()).toBe(false);
+		edit(editor, "b: edited");
+		await until(() => !editor.save.getIsDirty());
+		expect(mainName(disk.files.get("b")!)).toBe("b: edited");
+		expect(agentReadiness()).toMatchObject({ ready: true });
+	});
+
+	test("A→A: reopening the open project writes its unsaved edit first, and the reopened timeline has it", async () => {
+		const editor = await load(project("a", new Date(0)));
+		memoryDisk([project("a", new Date(0))]);
+		edit(editor, "a: unsaved");
+		await editor.project.loadProject({ id: "a" });
+		expect(mainName({ scenes: editor.scenes.getScenes() } as TProject)).toBe("a: unsaved");
+		expect(editor.save.hasUnsavedChanges()).toBe(false);
+	});
+
+	test("A→B→A quickly: A opens again only after its background write, and has the edit", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const write = gate();
+		disk.hooks.write = (p) => (p.metadata.id === "a" ? write.promise : undefined);
+		edit(editor, "a: unsaved");
+		await editor.project.loadProject({ id: "b" });
+		const reopen = editor.project.loadProject({ id: "a" });
+		await wait(10);
+		expect(editor.project.getActive().metadata.id).toBe("b"); // waits for a's write
+		write.open();
+		await reopen;
+		expect(editor.project.getActive().metadata.id).toBe("a");
+		expect(mainName({ scenes: editor.scenes.getScenes() } as TProject)).toBe("a: unsaved");
+	});
+
+	test("A's write hangs across the switch: B opens and saves at once; A's later failure is retried from A's snapshot", async () => {
+		const editor = await load(project("a", new Date(0)));
+		(editor.save as any).retryDelaysMs = [5];
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const hung = gate();
+		let aWrites = 0;
+		disk.hooks.write = (p) => (p.metadata.id === "a" && ++aWrites === 1 ? hung.promise : undefined);
+		edit(editor, "a: first");
+		const firstSave = editor.save.flush();
+		await wait(5);
+		edit(editor, "a: second"); // after the hung write started
+		const started = Date.now();
+		await editor.project.loadProject({ id: "b" });
+		expect(Date.now() - started).toBeLessThan(500);
+		edit(editor, "b: edited");
+		expect(await editor.save.flush()).toBe(true);
+		expect(mainName(disk.files.get("b")!)).toBe("b: edited");
+		// A's hung write fails now: it never counted as saved (b's clean state says nothing about a).
+		hung.fail(new Error("EIO: i/o error"));
+		expect(await firstSave).toBe(false);
+		// Retried from the snapshot taken at the switch, which has a's second edit.
+		expect(await editor.save.settleProject("a")).toBeNull();
+		expect(mainName(disk.files.get("a")!)).toBe("a: second");
+		expect(disk.writes.filter((w) => w.id === "a").every((w) => w.main?.startsWith("a:"))).toBe(true);
+		expect(editor.save.getLastError("a")).toBeNull();
+	});
+
+	test("a retry due while another project is read writes the first project's full timeline", async () => {
 		const editor = await load(project("a", new Date(0)));
 		(editor.save as any).retryDelaysMs = [20];
-		const written: { id: string; elements: number }[] = [];
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
 		let fail = true;
-		editor.project.persistCurrentProject = async () => {
-			const active = editor.project.getActive();
-			written.push({ id: active.metadata.id, elements: editor.scenes.getScenes().length });
-			const error = fail ? "EBUSY: resource busy" : null;
-			editor.save.recordPersisted({ projectId: active.metadata.id, error });
-			return error;
+		disk.hooks.write = () => {
+			if (fail) throw new Error("EBUSY: resource busy");
 		};
-		editor.save.markDirty();
-		await editor.save.flush();
-		expect(written).toEqual([{ id: "a", elements: 1 }]);
-		// The retry is due in 20 ms, but project b takes longer to load.
-		let release!: () => void;
-		const slow = new Promise<void>((resolve) => { release = resolve; });
-		stub({ loadProject: async () => { await slow; return { project: structuredClone(project("b", new Date(0))) }; } });
+		edit(editor, "a: edited");
+		expect(await editor.save.flush()).toBe(false);
+		const read = gate();
+		disk.hooks.read = (id) => (id === "b" ? read.promise : undefined);
 		fail = false;
 		const loading = editor.project.loadProject({ id: "b" });
 		await wait(60);
-		// a's scenes are cleared and b is not in place yet: nothing may be written now.
-		expect(written.filter((w) => w.elements === 0)).toEqual([]);
-		release();
+		read.open();
 		await loading;
+		await editor.save.settleProject("a");
 		expect(editor.project.getActive().metadata.id).toBe("b");
-		expect(written.every((w) => w.elements > 0)).toBe(true);
+		expect(disk.writes.every((w) => w.scenes > 0)).toBe(true);
+		expect(mainName(disk.files.get("a")!)).toBe("a: edited");
 	});
 
-	test("a pause stops a pending timer; resume saves what is pending", async () => {
-		const editor = await load(project("p", new Date(0)));
-		let calls = 0;
-		editor.project.persistCurrentProject = async () => {
-			calls++;
-			editor.save.recordPersisted({ projectId: "p", error: null });
-			return null;
-		};
-		(editor.save as any).debounceMs = 10;
-		editor.save.markDirty();
-		editor.save.pause();
-		await wait(40);
-		expect(calls).toBe(0);
-		editor.save.resume();
-		await wait(40);
-		expect(calls).toBe(1);
+	test("while a project loads, only forced edits count, and they are written once the load is done", async () => {
+		const editor = await load(project("a", new Date(0)));
+		(editor.save as any).debounceMs = 5;
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const media = gate();
+		disk.hooks.media = (id) => (id === "b" ? media.promise : undefined);
+		const loading = editor.project.loadProject({ id: "b" });
+		await until(() => editor.project.getActiveOrNull()?.metadata.id === "b");
+		editor.save.markDirty(); // e.g. scene notifications while opening: not an edit
+		expect(editor.save.getIsDirty()).toBe(false);
+		await editor.project.updateThumbnail({ thumbnail: "rendered" }); // forced
+		await wait(20);
+		expect(disk.writes.filter((w) => w.id === "b")).toEqual([]);
+		media.open();
+		await loading;
+		await until(() => !editor.save.getIsDirty());
+		expect(disk.files.get("b")!.metadata.thumbnail).toBe("rendered");
 	});
 
-	test("a save that fails after stop() schedules no retry on the stopped manager", async () => {
-		const editor = await load(project("p", new Date(0)));
-		(editor.save as any).retryDelaysMs = [10];
-		let calls = 0;
-		let finish!: (error: string | null) => void;
-		editor.project.persistCurrentProject = () => {
-			calls++;
-			return new Promise((resolve) => { finish = (error) => { editor.save.recordPersisted({ projectId: "p", error }); resolve(error); }; });
-		};
-		editor.save.markDirty();
-		const saving = editor.save.flush();
+	test("of two overlapping loads, the newest one wins and the older one finishing late changes nothing", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0)), project("c", new Date(0))]);
+		const slowB = gate();
+		disk.hooks.read = (id) => (id === "b" ? slowB.promise : undefined);
+		const b = editor.project.loadProject({ id: "b" });
 		await wait(5);
-		editor.save.stop();
-		finish("EPERM: operation not permitted");
-		await saving;
-		await wait(40);
-		expect(calls).toBe(1);
+		await editor.project.loadProject({ id: "c" });
+		slowB.open();
+		await b;
+		expect(editor.project.getActive().metadata.id).toBe("c");
+		expect(editor.project.getIsLoading()).toBe(false);
+		expect(editor.save.getCurrent()).toMatchObject({ projectId: "c" });
+		expect(editor.save.getCurrent()?.isLoading()).toBe(false);
+	});
+
+	test("a project that cannot be read leaves the open one intact, and saving it goes on", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		disk.hooks.read = (id) => {
+			if (id === "b") throw new Error("disk gone");
+		};
+		await expect(editor.project.loadProject({ id: "b" })).rejects.toThrow("disk gone");
+		expect(editor.project.getActive().metadata.id).toBe("a");
+		expect(editor.scenes.getScenes().length).toBe(1);
+		edit(editor, "a: after");
+		expect(await editor.save.flush()).toBe(true);
+		expect(mainName(disk.files.get("a")!)).toBe("a: after");
+	});
+
+	test("closing a project writes its unsaved edit; deleting one drops it", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		edit(editor, "a: unsaved");
+		editor.project.closeProject();
+		expect(await editor.save.settleProject("a")).toBeNull();
+		expect(mainName(disk.files.get("a")!)).toBe("a: unsaved");
+
+		await editor.project.loadProject({ id: "a" });
+		stub({ deleteProjectMedia: async () => {}, deleteProject: async () => {} });
+		const writes = disk.writes.length;
+		edit(editor, "a: deleted");
+		await editor.project.deleteProjects({ ids: ["a"] });
+		await wait(20);
+		expect(disk.writes.length).toBe(writes);
+		expect(editor.save.hasUnsavedChanges()).toBe(false);
 	});
 });
 
@@ -287,75 +478,6 @@ describe("staged media on disk", () => {
 			globalThis.fetch = realFetch;
 		}
 	});
-});
-
-describe("project switches that fail or overlap", () => {
-	const withScenes = (editor: ReturnType<typeof EditorCore.getInstance>) => {
-		const written: { id: string; scenes: number }[] = [];
-		editor.project.persistCurrentProject = async () => {
-			const active = editor.project.getActive();
-			written.push({ id: active.metadata.id, scenes: editor.scenes.getScenes().length });
-			editor.save.recordPersisted({ projectId: active.metadata.id, error: null });
-			return null;
-		};
-		return written;
-	};
-
-	test("a project that cannot be read leaves the open one intact, and saving it goes on", async () => {
-		const editor = await load(project("a", new Date(0)));
-		const written = withScenes(editor);
-		stub({ loadProject: async () => { throw new Error("disk gone"); } });
-		await expect(editor.project.loadProject({ id: "b" })).rejects.toThrow("disk gone");
-		expect(editor.project.getActive().metadata.id).toBe("a");
-		expect(editor.scenes.getScenes().length).toBe(1);
-		editor.save.markDirty();
-		await editor.save.flush();
-		expect(written.at(-1)).toEqual({ id: "a", scenes: 1 });
-		expect(written.every((w) => w.scenes > 0)).toBe(true);
-	});
-
-	test("of two overlapping loads, the newest one wins and an older one finishing late changes nothing", async () => {
-		const editor = await load(project("a", new Date(0)));
-		withScenes(editor);
-		let releaseB!: () => void;
-		const slowB = new Promise<void>((resolve) => { releaseB = resolve; });
-		stub({ loadProject: async ({ id }: { id: string }) => {
-			if (id === "b") await slowB;
-			return { project: structuredClone(project(id, new Date(0))) };
-		} });
-		const b = editor.project.loadProject({ id: "b" });
-		await wait(5);
-		await editor.project.loadProject({ id: "c" });
-		releaseB();
-		await b;
-		expect(editor.project.getActive().metadata.id).toBe("c");
-		expect(editor.save.getIsPaused()).toBe(false);
-	});
-
-	test("a save of the old project that hangs does not block saving the new one", async () => {
-		const editor = await load(project("a", new Date(0)));
-		const written: string[] = [];
-		let hang = true;
-		editor.project.persistCurrentProject = () => {
-			const id = editor.project.getActive().metadata.id;
-			if (hang) return new Promise(() => {});
-			written.push(id);
-			editor.save.recordPersisted({ projectId: id, error: null });
-			return Promise.resolve(null);
-		};
-		editor.save.markDirty();
-		void editor.save.flush();
-		await wait(5);
-		stub({ loadProject: async () => ({ project: structuredClone(project("b", new Date(0))) }) });
-		// The switch waits for a's save at most a few seconds, then goes on.
-		const started = Date.now();
-		await editor.project.loadProject({ id: "b" });
-		expect(Date.now() - started).toBeLessThan(4500);
-		hang = false;
-		editor.save.markDirty();
-		await editor.save.flush();
-		expect(written).toEqual(["b"]);
-	}, 10000);
 });
 
 describe("staged media through the storage route", () => {

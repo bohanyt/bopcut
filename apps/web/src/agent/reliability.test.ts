@@ -32,7 +32,6 @@ function setup() {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
 	editor.save.stop();
-	editor.save.pause();
 	const scenes = timeline();
 	editor.project.setActiveProject({
 		project: {
@@ -121,28 +120,57 @@ describe("transactional drafts", () => {
 	test("without atomic, failed ops are skipped and the rest applies (unchanged contract)", async () => {
 		const editor = setup();
 		// Saving works in this test: the result reports the write.
-		editor.project.persistCurrentProject = async () => {
-			editor.save.recordPersisted({ projectId: editor.project.getActive().metadata.id, error: null });
-			return null;
-		};
-		(editor.project as any).isLoading = false;
-		editor.save.resume();
+		(storageService as any).saveProject = async () => {};
+		editor.save.start();
 		const result = await withAgentApi(() => applyDraft(draft([
 			{ op: "delete", match: { agentId: "clip-1" } },
 			{ op: "set", match: { agentId: "nope" }, start: 1 },
-		])));
+		]))).finally(() => delete (storageService as any).saveProject);
 		expect(find(editor, "clip-1")).toBeUndefined();
 		expect(result.applied).toBe(true);
 		expect(result.saved).toBe(true);
 		expect(result.results.map((r: any) => r.ok)).toEqual([true, false]);
 	});
 
-	test("a draft applied while saving is paused (a project opening) is reported as not saved", async () => {
+	test("a draft applied while saving is off is reported as not saved", async () => {
 		setup();
 		const result = await withAgentApi(() => applyDraft(draft([{ op: "delete", match: { agentId: "clip-1" } }])));
 		expect(result.applied).toBe(true);
 		expect(result.saved).toBe(false);
-		expect(result.saveError).toContain("paused");
+		expect(result.saveError).toBe("saving is off");
+	});
+
+	test("a draft applied while its project is still loading is written once the load is done", async () => {
+		EditorCore.reset();
+		const editor = EditorCore.getInstance();
+		const stored = {
+			metadata: { id: "p", name: "p", thumbnail: "t", createdAt: new Date(0), updatedAt: new Date(0) }, scenes: timeline(), currentSceneId: "main",
+			settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1920, height: 1080 } },
+		} as unknown as TProject;
+		let releaseMedia!: () => void;
+		const mediaGate = new Promise<void>((resolve) => { releaseMedia = resolve; });
+		const written: TProject[] = [];
+		const stubs = {
+			ensureMigrations: async () => {},
+			loadProject: async () => ({ project: structuredClone(stored) }),
+			loadAllMediaAssets: async () => { await mediaGate; return [asset("m-1")]; },
+			saveProject: async ({ project }: { project: TProject }) => { written.push(project); },
+		};
+		Object.assign(storageService, stubs);
+		try {
+			const loading = editor.project.loadProject({ id: "p" });
+			while (!editor.scenes.getActiveSceneOrNull()) await new Promise((resolve) => setTimeout(resolve, 1));
+			const posted = withAgentApi(() => applyDraft(draft([{ op: "delete", match: { agentId: "clip-1" } }])));
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(written).toEqual([]);
+			releaseMedia();
+			await loading;
+			expect(await posted).toMatchObject({ applied: true, saved: true });
+			const last = written.at(-1)!;
+			expect(last.scenes.flatMap(all).some((e) => e.agentId === "clip-1")).toBe(false);
+		} finally {
+			for (const key of Object.keys(stubs)) delete (storageService as any)[key];
+		}
 	});
 });
 
