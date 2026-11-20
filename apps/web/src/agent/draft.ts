@@ -112,7 +112,10 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				} else snapped = snapCutsToWords(el, words, fps);
 				if (!snapped) return el;
 				const next = { ...el, ...snapped };
-				assertRoomForEnd(track.elements, index, el.startTime + el.duration, next.startTime + next.duration);
+				// The clip was just placed in a free spot: its new span must not reach any other clip.
+				const end = next.startTime + next.duration;
+				const clash = track.elements.find((other: TimelineElement, j: number) => j !== index && other.startTime < end && other.startTime + other.duration > next.startTime);
+				if (clash) throw new Error(`the clip cut at its words would overlap ${clash.name || clash.id}; make room first`);
 				track.elements[index] = next;
 				return next;
 			}
@@ -187,6 +190,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		let words: SourceWord[] | undefined;
 		const atWords = element.startAtWord !== undefined || element.endAfterWord !== undefined;
 		if (atWords && cutWords) throw new Error("startAtWord/endAfterWord already cut at words (no cut needed)");
+		if (element.startAtWord !== undefined && element.trimStart !== undefined) throw new Error("startAtWord replaces trimStart");
+		if (element.endAfterWord !== undefined && element.duration !== undefined) throw new Error("endAfterWord replaces duration");
 		if (cutWords || atWords) {
 			const loaded = mediaFor(element);
 			if (!loaded || (loaded.type !== "video" && loaded.type !== "audio")) throw new Error('cut: "words" is for video and audio clips');

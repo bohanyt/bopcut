@@ -278,12 +278,52 @@ describe("cuts at named words", () => {
 		expect(run(scenesWith([clip(0, 5)]), [{ op: "set", match: { agentId: "clip" }, duration: 1, endAfterWord: "lands" }]).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("replace trimStart") });
 		expect(run(scenesWith([clip(0, 5)]), [{ op: "set", match: { agentId: "clip" }, startAtWord: "lands", endAfterWord: "so" }]).results[0]).toMatchObject({ ok: false });
 		const loaded = { id: "m1", type: "video" as const, duration: 10, words };
-		const added = computeAgentDraft({ scenes: scenesWith([]), rootSceneId: "main", ops: [{ op: "add", track: { name: "Main" }, element: { agent_id: "n", name: "n", mediaId: "m1", start: 20, duration: 5, startAtWord: "so", endAfterWord: "punchline" } }] as never, mediaFor: () => loaded, canvas: { width: 1920, height: 1080 }, fps, ripple: false });
+		const added = computeAgentDraft({ scenes: scenesWith([]), rootSceneId: "main", ops: [{ op: "add", track: { name: "Main" }, element: { agent_id: "n", name: "n", mediaId: "m1", start: 20, startAtWord: "so", endAfterWord: "punchline" } }] as never, mediaFor: () => loaded, canvas: { width: 1920, height: 1080 }, fps, ripple: false });
 		expect(added.results[0]).toMatchObject({ ok: true, startWord: { text: "so" }, endWord: { text: "punchline" } });
 	});
 
 	test("with basedOn, a named-word cut counts as touching trimStart and duration", () => {
 		const out = computeAgentDraft({ scenes: scenesWith([clip(0.8, 4)]), rootSceneId: "main", ops: [{ op: "set", match: { agentId: "clip" }, endAfterWord: "lands" }] as never, mediaFor: () => undefined, canvas: { width: 1920, height: 1080 }, fps, ripple: false, wordsOf: () => words, base: fieldsMapOf(scenesWith([clip(0, 5)])) });
 		expect(out.results[0]).toMatchObject({ ok: false, stale: true });
+	});
+});
+
+describe("cuts at named words: review fixes", () => {
+	const loaded = { id: "m1", type: "video" as const, duration: 10, words };
+	const add = (scenes: TScene[], element: Record<string, unknown>) =>
+		computeAgentDraft({ scenes, rootSceneId: "main", ops: [{ op: "add", track: { name: "Main" }, element: { agent_id: "n", name: "n", mediaId: "m1", ...element } }] as never, mediaFor: () => loaded, canvas: { width: 1920, height: 1080 }, fps, ripple: false });
+
+	test("an add cut at its words never overlaps a clip on its track", () => {
+		const occupied = scenesWith([{ ...clip(0, 2), id: "busy", agentId: "busy", startTime: T(20.5) } as unknown as VideoElement]);
+		expect(add(occupied, { start: 20, endAfterWord: "lands" }).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("overlap") });
+	});
+
+	test("a named word must play: one past the end of the media fails", () => {
+		const late = [...words, { text: "after", start: 10.1, end: 10.5 }];
+		const out = computeAgentDraft({ scenes: scenesWith([clip(0, 5)]), rootSceneId: "main", ops: [{ op: "set", match: { agentId: "clip" }, endAfterWord: "after" }] as never, mediaFor: () => undefined, canvas: { width: 1920, height: 1080 }, fps, ripple: false, wordsOf: () => late });
+		expect(out.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("past the end") });
+	});
+
+	test("on an add a named start replaces trimStart and a named end replaces duration", () => {
+		expect(add(scenesWith([]), { start: 20, trimStart: 1, startAtWord: "so" }).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("replaces trimStart") });
+		expect(add(scenesWith([]), { start: 20, duration: 3, endAfterWord: "lands" }).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("replaces duration") });
+	});
+
+	test("matching: punctuation around a word does not count, inside it does; a word just before the start does not count", () => {
+		const spoken = [{ text: "nggak,", start: 1.0, end: 1.2 }, { text: "Nggak?", start: 1.5, end: 1.7 }, { text: "3,5", start: 2, end: 2.4 }, { text: "😂", start: 3, end: 3.2 }];
+		expect(findWord(spoken, "nggak", 1.015)).toMatchObject({ start: 1.5 });
+		expect(findWord(spoken, "3,5", 0)).toMatchObject({ start: 2 });
+		expect(typeof findWord(spoken, "35", 0)).toBe("string");
+		expect(findWord(spoken, "😂", 0)).toMatchObject({ start: 3 });
+	});
+
+	test("a one-frame minimum never reaches into the next word", () => {
+		const tight = [{ text: "a", start: 1, end: 1.04 }, { text: "b", start: 1.04, end: 1.5 }];
+		const fast = clip(0.9, 1, { retime: { rate: 2 } });
+		const out = computeAgentDraft({ scenes: scenesWith([fast]), rootSceneId: "main", ops: [{ op: "set", match: { agentId: "clip" }, startAtWord: "a", endAfterWord: "a" }] as never, mediaFor: () => undefined, canvas: { width: 1920, height: 1080 }, fps, ripple: false, wordsOf: () => tight });
+		expect(out.results[0]).toMatchObject({ ok: true });
+		const after = main(out.scenes);
+		const end = after.trimStart / TICKS_PER_SECOND + (after.duration / TICKS_PER_SECOND) * 2;
+		expect(wordInside(tight, end)).toBeNull();
 	});
 });

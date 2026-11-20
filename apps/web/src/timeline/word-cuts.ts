@@ -98,8 +98,8 @@ function fitSpan(clip: Clip, words: SourceWord[], fps: FrameRate, newFrom: numbe
 	const fitsUp = within(up) && !wordInside(words, sourceAt(up));
 	const keepsWord = down > 0 && within(down) && sourceAt(down) >= target - WORD_TOLERANCE;
 	const seconds = fitsUp ? up : keepsWord ? down : exact;
-	// At least one frame, unless even that runs past the end of the source.
-	const atLeastFrame = within(frame) ? Math.max(frame, seconds) : seconds;
+	// At least one frame, unless even that runs past the end of the source or into the next word.
+	const atLeastFrame = seconds >= frame || (within(frame) && !wordInside(words, sourceAt(frame))) ? Math.max(frame, seconds) : seconds;
 	const trimStart = Math.round(newFrom * TICKS_PER_SECOND) as MediaTime;
 	const duration = Math.round(atLeastFrame * TICKS_PER_SECOND) as MediaTime;
 	const played = Math.round(getSourceTimeAtClipTime({ clipTime: sec(duration), retime: clip.retime }) * TICKS_PER_SECOND);
@@ -110,7 +110,11 @@ function fitSpan(clip: Clip, words: SourceWord[], fps: FrameRate, newFrom: numbe
 /** A word named in a draft: its text, and which occurrence (1 = the first after the clip's start). */
 export type WordRef = string | { text: string; occurrence?: number };
 
-const normalized = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+/** Lowercase, without punctuation around it ("Nggak?" = "nggak,"); inner characters stay ("3,5"). */
+const normalized = (text: string) => {
+	const lower = text.toLocaleLowerCase().trim();
+	return lower.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "") || lower;
+};
 
 /**
  * The word a reference names: matching text (case and punctuation aside), the `occurrence`-th that starts
@@ -119,12 +123,13 @@ const normalized = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p
 export function findWord(words: SourceWord[], ref: WordRef, after: number): SourceWord | string {
 	const text = typeof ref === "string" ? ref : ref?.text;
 	const occurrence = typeof ref === "string" ? 1 : (ref?.occurrence ?? 1);
-	if (typeof text !== "string" || !normalized(text)) return "a word reference needs text";
+	if (typeof text !== "string" || !text.trim()) return "a word reference needs text";
 	if (!Number.isInteger(occurrence) || occurrence < 1) return "occurrence must be 1 or more";
 	const wanted = normalized(text);
 	let seen = 0;
 	for (const word of words) {
-		if (word.start < after - WORD_TOLERANCE || normalized(word.text) !== wanted) continue;
+		// From the time on (a word just before it, even by a few milliseconds, does not count).
+		if (word.start < after - 1e-3 || normalized(word.text) !== wanted) continue;
 		if (++seen === occurrence) return word;
 	}
 	return `no ${occurrence > 1 ? `occurrence ${occurrence} of ` : ""}"${text}" after ${round(after)} s in the media's words`;
@@ -138,10 +143,17 @@ export function cutAtWords(clip: Clip, words: SourceWord[], fps: FrameRate, { st
 	const { from, to } = playedSpan(clip);
 	const start = startWord === undefined ? undefined : findWord(words, startWord, from);
 	if (typeof start === "string") return start;
-	const newFrom = start ? start.start : from;
+	let newFrom = start ? start.start : from;
+	for (let i = 0, word = wordInside(words, newFrom); word && i <= words.length; i++, word = wordInside(words, newFrom)) newFrom = word.start;
 	const end = endWord === undefined ? undefined : findWord(words, endWord, newFrom);
 	if (typeof end === "string") return end;
-	const target = Math.min(limit, end ? end.end : to);
+	// A named word must play whole: one that runs past the end of the media cannot.
+	for (const word of [start, end]) {
+		if (word && word.end > limit + WORD_TOLERANCE) return `"${word.text}" (${round(word.start)}–${round(word.end)} s) runs past the end of the media (${round(limit)} s)`;
+	}
+	let target = end ? end.end : to;
+	for (let i = 0, word = wordInside(words, target); word && i <= words.length; i++, word = wordInside(words, target)) target = word.end;
+	target = Math.min(limit, target);
 	if (target <= newFrom) return "the end word comes before the start";
 	return { patch: fitSpan(clip, words, fps, newFrom, target, limit), ...(start ? { start } : {}), ...(end ? { end } : {}) };
 }
