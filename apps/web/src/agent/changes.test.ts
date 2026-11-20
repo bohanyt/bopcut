@@ -5,7 +5,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { changesBetween, changesResult, keepAnswerState } = await import("./changes");
-const { draftHistory, snapshotHistory, withoutBuffers } = await import("./history");
+const { draftHistory, isForOtherProject, snapshotHistory, withoutBuffers } = await import("./history");
 const { framesStates, removedMedia } = await import("./frames");
 const { markAnswered, wasAnswered } = await import("./answered");
 const { EditorCore } = await import("@/core");
@@ -219,5 +219,29 @@ describe("review fixes", () => {
 		expect(draftHistory.get("b2", "only-in-b")).toBeDefined();
 		expect(draftHistory.get("a2", "a-3")).toBeUndefined();
 		expect(draftHistory.get("a2", "a-19")).toBeDefined();
+	});
+
+	test("whose request it is: projectId decides; otherwise a request naming only another project's states is left for it", () => {
+		snapshotHistory.record("of-a", timeline({}), { projectId: "pa", rootSceneId: "main" });
+		snapshotHistory.record("of-b", timeline({}), { projectId: "pb", rootSceneId: "main" });
+		expect(isForOtherProject({}, [{ syncedAt: "of-b" }], "pa")).toBe(true);
+		expect(isForOtherProject({}, [{ syncedAt: "of-a" }, { syncedAt: "of-b" }], "pa")).toBe(false); // mixed: answered (with an error) here
+		expect(isForOtherProject({ projectId: "pa" }, [{ syncedAt: "of-b" }], "pa")).toBe(false);
+		expect(isForOtherProject({ projectId: "pb" }, [], "pa")).toBe(true);
+		expect(isForOtherProject({}, [], "pa")).toBe(false);
+		// Named for this project but about another one's snapshot: answered with an error, not left waiting.
+		expect(changesResult({ rev: "own", projectId: "pa", since: "of-b" }, { now: state(timeline({}), "pa"), mediaName: media })).toMatchObject({ error: expect.stringContaining("unknown syncedAt") });
+	});
+
+	test("media on hidden tracks or in hidden clips do not block a frame", () => {
+		const editor = EditorCore.getInstance();
+		editor.media.setAssets({ assets: [] });
+		const [root] = timeline({ video: [clip(0)] });
+		const hiddenTrack = [{ ...root, tracks: { ...root.tracks, main: { ...root.tracks.main, hidden: true } } } as TScene];
+		expect(removedMedia({ projectId: "p", scenes: hiddenTrack, rootSceneId: "main", media })).toEqual([]);
+		const hiddenClip = [{ ...root, tracks: { ...root.tracks, main: { ...root.tracks.main, elements: [{ ...clip(0), hidden: true }] } } } as TScene];
+		expect(removedMedia({ projectId: "p", scenes: hiddenClip, rootSceneId: "main", media })).toEqual([]);
+		expect(removedMedia({ projectId: "p", scenes: [root], rootSceneId: "main", media })).toEqual(["interview.mp4"]);
+		EditorCore.reset();
 	});
 });

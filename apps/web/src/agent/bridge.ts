@@ -1,6 +1,6 @@
 // Every timeline change is written to AGENT_WORKSPACE/project.json (seconds, pixels),
 // so the agent can see each item's location, time, and position without opening the browser.
-import { draftHistory, snapshotHistory } from "./history";
+import { draftHistory, isForOtherProject, snapshotHistory } from "./history";
 import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
@@ -286,13 +286,16 @@ let refusedFramesRev: string | null = null;
 async function framesGate(): Promise<unknown | null> {
 	const { ready, missingMedia } = agentReadiness();
 	if (!ready) return null;
-	let request: { rev?: unknown; allowMissing?: unknown } | null = null;
+	let request: { rev?: unknown; allowMissing?: unknown; projectId?: unknown; state?: unknown; compare?: unknown } | null = null;
 	try {
 		request = await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json();
 	} catch {
 		return null;
 	}
 	if (!request || typeof request.rev !== "string") return null;
+	// Another project's request is left for it (this one must not answer it, also not with an error).
+	const openId = EditorCore.getInstance().project.getActiveOrNull()?.metadata.id;
+	if (!openId || isForOtherProject(request, [request.state, request.compare], openId)) return null;
 	if (missingMedia.length === 0 || request.allowMissing === true) return request;
 	if (refusedFramesRev !== request.rev) {
 		refusedFramesRev = request.rev;

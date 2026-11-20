@@ -70,6 +70,17 @@ export function parseStateRef(value: unknown): StateRef | null {
 	return null;
 }
 
+/**
+ * Whether a request is for another project (then it is left for that one): its `projectId` decides when
+ * it has one; otherwise it is another project's when it names that project's states and none of the
+ * open one's. A request mixing both is the open one's (and refused for the state it cannot find).
+ */
+export function isForOtherProject(request: { projectId?: unknown }, refs: unknown[], projectId: string): boolean {
+	if (typeof request.projectId === "string") return request.projectId !== projectId;
+	const parsed = refs.map((value) => (value === undefined ? null : parseStateRef(value))).filter((ref): ref is StateRef => ref !== null);
+	return parsed.some((ref) => isOtherProjects(ref, projectId)) && parsed.every((ref) => typeof resolveState(ref, projectId) === "string");
+}
+
 /** The reference names a state of another project: the request is not for the open one. */
 export function isOtherProjects(ref: StateRef, projectId: string): boolean {
 	if ("syncedAt" in ref) {

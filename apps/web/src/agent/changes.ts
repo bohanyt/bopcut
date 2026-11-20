@@ -1,7 +1,7 @@
 // What changed between two timeline states, as values: every element added, deleted or changed (timing,
 // trims, track, params, keyframes, caption data), inside compound clips too. Used for `changes-request.json`.
 import { type EditLine, type EditSnapshot, diffEdits } from "./edit-log";
-import { draftHistory, isOtherProjects, resolveState, snapshotHistory, type TimelineState } from "./history";
+import { draftHistory, isForOtherProject, resolveState, snapshotHistory, type TimelineState } from "./history";
 import { buildAllEditItems } from "./snapshot";
 
 /** One change: like an edit log line, without who made it (`agentMade` says whether the item is the agent's). */
@@ -43,11 +43,11 @@ export function keepAnswerState(now: TimelineState, at: string): void {
  * request is for another project (it is left for that one).
  */
 export function changesResult(request: ChangesRequest, { now, mediaName, at = new Date().toISOString() }: { now: TimelineState; mediaName: Map<string, string>; at?: string }) {
-	if (typeof request.projectId === "string" && request.projectId !== now.projectId) return null;
+	const refs = [typeof request.draft === "string" ? { draft: request.draft, side: "after" } : undefined, typeof request.since === "string" ? { syncedAt: request.since } : undefined];
+	if (isForOtherProject(request, refs, now.projectId)) return null;
 	const head = { rev: request.rev, projectId: now.projectId };
 	const answered = <T extends object>(body: T) => ({ ...head, syncedAt: at, ...body });
 	if (typeof request.draft === "string") {
-		if (isOtherProjects({ draft: request.draft, side: "after" }, now.projectId)) return null;
 		const draft = draftHistory.get(now.projectId, request.draft);
 		if (!draft) return { ...head, draft: request.draft, error: resolveState({ draft: request.draft, side: "after" }, now.projectId) as string };
 		const after = itemsOf(draft.after, mediaName);
@@ -60,7 +60,6 @@ export function changesResult(request: ChangesRequest, { now, mediaName, at = ne
 		});
 	}
 	if (typeof request.since === "string") {
-		if (isOtherProjects({ syncedAt: request.since }, now.projectId)) return null;
 		const then = resolveState({ syncedAt: request.since }, now.projectId);
 		if (typeof then === "string") return { ...head, since: request.since, error: then };
 		return answered({ since: request.since, ...capped(changesBetween({ before: then, after: now, mediaName })) });

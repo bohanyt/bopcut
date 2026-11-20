@@ -2,8 +2,7 @@ import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
 import { lastFrameMediaTime, mediaTimeFromSeconds } from "@/wasm";
 import { getRootScene } from "./scene-graph";
-import { isOtherProjects, parseStateRef, resolveState, type TimelineState } from "./history";
-import { getSceneInstances } from "./scene-graph";
+import { isForOtherProject, parseStateRef, resolveState, type TimelineState } from "./history";
 import { markAnswered, wasAnswered } from "./answered";
 
 /** At most this many frames per request (times, doubled with `compare`). */
@@ -45,12 +44,8 @@ export async function pollFrames(checked?: unknown) {
 		const refuse = async (error: string) => {
 			if ((await result({ files: [], error })).ok) markAnswered(key, request.rev);
 		};
-		// A request about another project (its snapshot or draft, or its projectId) is left for that project.
-		if (typeof request.projectId === "string" && request.projectId !== project.metadata.id) return;
-		for (const value of [request.state, request.compare]) {
-			const ref = value === undefined ? null : parseStateRef(value);
-			if (ref && isOtherProjects(ref, project.metadata.id)) return;
-		}
+		// A request for another project (its projectId, or only its snapshots or drafts) is left for it.
+		if (isForOtherProject(request, [request.state, request.compare], project.metadata.id)) return;
 		const states = framesStates(request, project.metadata.id);
 		if (typeof states === "string") return await refuse(states);
 		const passes = [[states.state, undefined], ...(states.compare ? [[states.compare, "compare"]] : [])] as [TimelineState | null, string | undefined][];
@@ -81,21 +76,30 @@ export async function pollFrames(checked?: unknown) {
 }
 
 /**
- * Media a past state shows that are no longer in the project (their names): visual tracks of its root
- * timeline and the compound clips in it (sounds and other scenes do not show in a frame).
+ * Media a past state shows that are no longer in the project (their names): what its root timeline shows
+ * on visible tracks, through visible compound clips (sounds, hidden tracks and other scenes do not show).
  */
 export function removedMedia(state: TimelineState): string[] {
 	const present = new Set(EditorCore.getInstance().media.getAssets().map((asset) => asset.id));
+	const byId = new Map(state.scenes.map((scene) => [scene.id, scene] as const));
 	const names = new Set<string>();
-	const shown = new Set([state.rootSceneId, ...getSceneInstances(state.scenes, state.rootSceneId, 1).keys()]);
-	for (const scene of state.scenes.filter((candidate) => shown.has(candidate.id))) {
+	const visited = new Set<string>();
+	const walk = (sceneId: string) => {
+		const scene = byId.get(sceneId);
+		if (!scene || visited.has(sceneId)) return;
+		visited.add(sceneId);
 		for (const track of [...scene.tracks.overlay, scene.tracks.main]) {
+			if ((track as { hidden?: boolean }).hidden) continue;
 			for (const element of track.elements) {
+				if ((element as { hidden?: boolean }).hidden) continue;
 				const mediaId = (element as { mediaId?: unknown }).mediaId;
 				if (typeof mediaId === "string" && !present.has(mediaId)) names.add(state.media?.get(mediaId) ?? mediaId);
+				const nested = (element as { sceneId?: unknown }).sceneId;
+				if (element.type === "compound" && typeof nested === "string") walk(nested);
 			}
 		}
-	}
+	};
+	walk(state.rootSceneId);
 	return [...names];
 }
 
