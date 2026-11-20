@@ -9,8 +9,7 @@ export type EditItem = {
 	startTime: number; duration: number; trimStart: number; trimEnd: number; rootStart?: number; rootEnd?: number;
 	params: Record<string, unknown>; animations: Record<string, unknown>;
 };
-/** `rootSceneId`: the root timeline the items are under (another root opened is not an edit). */
-export type EditSnapshot = { projectId: string; rootSceneId?: string; items: EditItem[] };
+export type EditSnapshot = { projectId: string; items: EditItem[] };
 /** `agentMade`: the item was made by an agent (it has an agentId); every element is logged either way. */
 export type EditLine = { t: string; projectId: string; actor: "user"; kind: "set" | "delete" | "add"; agentId: string | null; agentMade: boolean; elementId: string; name: string; track: string; sceneId: string; path: string[]; elementType: string; field: string; from: unknown; to: unknown };
 
@@ -22,8 +21,6 @@ const keyOf = (item: EditItem) => `${item.sceneId}\u0000${item.id}`;
  */
 export function diffEdits(before: EditSnapshot | null, after: EditSnapshot, t = new Date().toISOString(), { structural = false }: { structural?: boolean } = {}): EditLine[] {
 	if (!before || before.projectId !== after.projectId) return [];
-	// Another root scene was opened: its elements are not added, nor the other's deleted.
-	if (before.rootSceneId !== undefined && after.rootSceneId !== undefined && before.rootSceneId !== after.rootSceneId) return [];
 	const old = new Map(before.items.map((item) => [keyOf(item), item]));
 	const next = new Map(after.items.map((item) => [keyOf(item), item]));
 	// Grouping or ungrouping moves an element to another scene with the same id: one item, a `sceneId` change.

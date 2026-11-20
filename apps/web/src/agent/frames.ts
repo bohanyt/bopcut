@@ -2,7 +2,8 @@ import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
 import { lastFrameMediaTime, mediaTimeFromSeconds } from "@/wasm";
 import { getRootScene } from "./scene-graph";
-import { parseStateRef, resolveState, type TimelineState } from "./history";
+import { isOtherProjects, parseStateRef, resolveState, type TimelineState } from "./history";
+import { getSceneInstances } from "./scene-graph";
 import { markAnswered, wasAnswered } from "./answered";
 
 /** At most this many frames per request (times, doubled with `compare`). */
@@ -44,6 +45,12 @@ export async function pollFrames(checked?: unknown) {
 		const refuse = async (error: string) => {
 			if ((await result({ files: [], error })).ok) markAnswered(key, request.rev);
 		};
+		// A request about another project (its snapshot or draft, or its projectId) is left for that project.
+		if (typeof request.projectId === "string" && request.projectId !== project.metadata.id) return;
+		for (const value of [request.state, request.compare]) {
+			const ref = value === undefined ? null : parseStateRef(value);
+			if (ref && isOtherProjects(ref, project.metadata.id)) return;
+		}
 		const states = framesStates(request, project.metadata.id);
 		if (typeof states === "string") return await refuse(states);
 		const passes = [[states.state, undefined], ...(states.compare ? [[states.compare, "compare"]] : [])] as [TimelineState | null, string | undefined][];
@@ -73,12 +80,16 @@ export async function pollFrames(checked?: unknown) {
 	finally { busy = false; }
 }
 
-/** Media a past state uses that are no longer in the project (their names). */
+/**
+ * Media a past state shows that are no longer in the project (their names): visual tracks of its root
+ * timeline and the compound clips in it (sounds and other scenes do not show in a frame).
+ */
 export function removedMedia(state: TimelineState): string[] {
 	const present = new Set(EditorCore.getInstance().media.getAssets().map((asset) => asset.id));
 	const names = new Set<string>();
-	for (const scene of state.scenes) {
-		for (const track of [...scene.tracks.overlay, scene.tracks.main, ...scene.tracks.audio]) {
+	const shown = new Set([state.rootSceneId, ...getSceneInstances(state.scenes, state.rootSceneId, 1).keys()]);
+	for (const scene of state.scenes.filter((candidate) => shown.has(candidate.id))) {
+		for (const track of [...scene.tracks.overlay, scene.tracks.main]) {
 			for (const element of track.elements) {
 				const mediaId = (element as { mediaId?: unknown }).mediaId;
 				if (typeof mediaId === "string" && !present.has(mediaId)) names.add(state.media?.get(mediaId) ?? mediaId);
@@ -99,6 +110,10 @@ async function renderFrame({ request, time, state, variant }: { request: { rev: 
 	const ticks = mediaTimeFromSeconds({ seconds: time });
 	const duration = calculateTotalDuration({ tracks: root.tracks });
 	const fps = state?.settings?.fps ?? project.settings.fps;
+	// Checked right before each frame (the user can remove media during a long batch); the render reads
+	// the media list in the same task, so nothing can change in between.
+	const removed = state ? removedMedia(state) : [];
+	if (removed.length) throw new Error(`media used by that state were removed since, so the frame would not show them: ${removed.join(", ")}`);
 	if (duration === 0) throw new Error("The timeline of that state is empty");
 	if (ticks > lastFrameMediaTime({ duration, fps })) throw new Error(`Time outside timeline: ${time}`);
 	// A past state renders with the canvas, background and frame rate it had.

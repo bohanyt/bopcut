@@ -1,9 +1,8 @@
 // What changed between two timeline states, as values: every element added, deleted or changed (timing,
 // trims, track, params, keyframes, caption data), inside compound clips too. Used for `changes-request.json`.
-import { isCompoundScene } from "@/timeline/compound";
-import { type EditItem, type EditLine, type EditSnapshot, diffEdits } from "./edit-log";
+import { type EditLine, type EditSnapshot, diffEdits } from "./edit-log";
 import { draftHistory, isOtherProjects, resolveState, snapshotHistory, type TimelineState } from "./history";
-import { buildEditItems } from "./snapshot";
+import { buildAllEditItems } from "./snapshot";
 
 /** One change: like an edit log line, without who made it (`agentMade` says whether the item is the agent's). */
 export type Change = Omit<EditLine, "t" | "actor">;
@@ -13,14 +12,7 @@ export const MAX_CHANGES = 5000;
 
 /** Every element under every root scene of a state (switching the open scene is not a change). */
 function itemsOf(state: TimelineState, mediaName: Map<string, string>): EditSnapshot {
-	const seen = new Map<string, EditItem>();
-	for (const root of state.scenes.filter((scene) => !isCompoundScene(scene))) {
-		for (const item of buildEditItems({ scenes: state.scenes, rootSceneId: root.id, mediaName })) {
-			const key = `${item.sceneId}\u0000${item.id}`;
-			if (!seen.has(key)) seen.set(key, item);
-		}
-	}
-	return { projectId: state.projectId, items: [...seen.values()] };
+	return { projectId: state.projectId, items: buildAllEditItems({ scenes: state.scenes, mediaName }) };
 }
 
 function between(before: EditSnapshot, after: EditSnapshot): Change[] {
@@ -37,20 +29,23 @@ const capped = (changes: Change[]) => (changes.length > MAX_CHANGES ? { changes:
 export type ChangesRequest = { rev: string; projectId?: unknown; since?: unknown; draft?: unknown };
 
 /**
+ * The state of an answer, kept as a snapshot so its `syncedAt` can be the next `since` or `basedOn`. Call
+ * it once the answer is stored: a failed one must not push an older base out of the history.
+ */
+export function keepAnswerState(now: TimelineState, at: string): void {
+	snapshotHistory.record(at, now.scenes, { projectId: now.projectId, rootSceneId: now.rootSceneId, settings: now.settings, media: now.media });
+}
+
+/**
  * Answers a changes request against the timeline as it is now (`now`): since a snapshot (`since`, its
- * `syncedAt`), or for a draft (`draft`, its rev): what the draft changed and what changed after it. A
- * successful answer records the current state as a snapshot, so its `syncedAt` can be the next `since`
- * or `basedOn`. Null when the request is for another project (it is left for that one).
+ * `syncedAt`), or for a draft (`draft`, its rev): what the draft changed and what changed after it. An
+ * answer carries `syncedAt` (`at`); keep its state with keepAnswerState once it is stored. Null when the
+ * request is for another project (it is left for that one).
  */
 export function changesResult(request: ChangesRequest, { now, mediaName, at = new Date().toISOString() }: { now: TimelineState; mediaName: Map<string, string>; at?: string }) {
 	if (typeof request.projectId === "string" && request.projectId !== now.projectId) return null;
 	const head = { rev: request.rev, projectId: now.projectId };
-	// Recorded after the lookup (so the base is not pushed out of the history by its own answer), and only
-	// for an answer.
-	const answered = <T extends object>(body: T) => {
-		snapshotHistory.record(at, now.scenes, { projectId: now.projectId, rootSceneId: now.rootSceneId, settings: now.settings, media: now.media });
-		return { ...head, syncedAt: at, ...body };
-	};
+	const answered = <T extends object>(body: T) => ({ ...head, syncedAt: at, ...body });
 	if (typeof request.draft === "string") {
 		if (isOtherProjects({ draft: request.draft, side: "after" }, now.projectId)) return null;
 		const draft = draftHistory.get(now.projectId, request.draft);

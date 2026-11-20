@@ -26,5 +26,10 @@ describe("edit log", () => {
   // One action that changes three items (one timestamp) is one edit, and edits of the user's own items do not make rules.
   expect(summarizeEdits(lines.map((line) => ({ ...line, t: "same" })))[0]).toMatchObject({ count: 3, ruleCandidate: false });
   expect(summarizeEdits(lines.map((line) => ({ ...line, agentMade: false })))[0]).toMatchObject({ count: 3, ruleCandidate: false });
+  // The pattern comes from the agent-made edits; older lines without agentMade count by their agentId.
+  const user = [1, 2, 3, 4].map((n) => ({ ...lines[0], t: `u${n}`, agentMade: false, from: 0, to: 100 }));
+  expect(summarizeEdits([...lines, ...user])[0]).toMatchObject({ count: 7, medianDelta: 2, ruleCandidate: true });
+  const legacy = lines.map(({ agentMade: _agentMade, ...line }) => ({ ...line, agentId: null }));
+  expect(summarizeEdits(legacy as never)[0]).toMatchObject({ ruleCandidate: false });
  });
 });

@@ -2,7 +2,7 @@
 // content (`compounds`), with relative times, root-time visible intervals, and addresses.
 import type { CompoundElement, TScene, TimelineElement, TimelineTrack } from "@/timeline";
 import { calculateTotalDuration } from "@/timeline";
-import { isCompoundElement } from "@/timeline/compound";
+import { isCompoundElement, isCompoundScene } from "@/timeline/compound";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { EditItem } from "./edit-log";
 import { getSceneInstances, toRootInterval } from "./scene-graph";
@@ -72,6 +72,18 @@ export function buildSceneSnapshot({ scenes, rootSceneId, mediaName }: { scenes:
  * element's root-time span through its first path, so moving it between scenes can be told apart
  * from retiming it.
  */
+/** Edit items under every root scene of the project (each scene once): opening another scene is not an edit. */
+export function buildAllEditItems({ scenes, mediaName }: { scenes: TScene[]; mediaName: Map<string, string> }): EditItem[] {
+	const seen = new Map<string, EditItem>();
+	for (const root of scenes.filter((scene) => !isCompoundScene(scene))) {
+		for (const item of buildEditItems({ scenes, rootSceneId: root.id, mediaName })) {
+			const key = `${item.sceneId}\u0000${item.id}`;
+			if (!seen.has(key)) seen.set(key, item);
+		}
+	}
+	return [...seen.values()];
+}
+
 export function buildEditItems({ scenes, rootSceneId, mediaName }: { scenes: TScene[]; rootSceneId: string; mediaName: Map<string, string> }): EditItem[] {
 	const items: EditItem[] = [];
 	for (const [sceneId, { instances }] of getSceneInstances(scenes, rootSceneId, 1)) {

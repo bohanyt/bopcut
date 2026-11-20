@@ -38,15 +38,18 @@ export function withoutBuffers(scenes: TScene[]): TScene[] {
 	return changed ? out : scenes;
 }
 
-/** The last drafts applied in this editor session (per project): the timeline just before and after each. */
+/** The last drafts applied in this editor session, per project: the timeline just before and after each. */
 class DraftHistory {
 	private entries: { rev: string; before: TimelineState; after: TimelineState }[] = [];
-	constructor(private readonly size = 16) {}
+	/** `size` per project; `total` across projects. */
+	constructor(private readonly size = 16, private readonly total = 64) {}
 	record(rev: string, before: TimelineState, after: TimelineState) {
 		const projectId = before.projectId;
 		this.entries = this.entries.filter((entry) => !(entry.rev === rev && entry.before.projectId === projectId));
 		this.entries.push({ rev, before: { ...before, scenes: withoutBuffers(before.scenes) }, after: { ...after, scenes: withoutBuffers(after.scenes) } });
-		if (this.entries.length > this.size) this.entries.shift();
+		const own = this.entries.filter((entry) => entry.before.projectId === projectId);
+		if (own.length > this.size) this.entries.splice(this.entries.indexOf(own[0]), 1);
+		if (this.entries.length > this.total) this.entries.shift();
 	}
 	get(projectId: string, rev: string) {
 		return this.entries.find((entry) => entry.rev === rev && entry.before.projectId === projectId);

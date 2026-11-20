@@ -4,7 +4,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
-const { changesBetween, changesResult } = await import("./changes");
+const { changesBetween, changesResult, keepAnswerState } = await import("./changes");
 const { draftHistory, snapshotHistory, withoutBuffers } = await import("./history");
 const { framesStates, removedMedia } = await import("./frames");
 const { markAnswered, wasAnswered } = await import("./answered");
@@ -67,6 +67,9 @@ describe("changes requests", () => {
 		const result = changesResult({ rev: "q1", since: "s-1" }, { now, mediaName: media, at: "s-2" });
 		expect(result).toMatchObject({ rev: "q1", projectId: "p", since: "s-1", syncedAt: "s-2" });
 		expect((result as { changes: { field: string }[] }).changes.map((c) => c.field)).toEqual(["trimStart"]);
+		// Kept as a snapshot once the answer is stored (the bridge does it after the write).
+		expect(snapshotHistory.state("s-2")).toBeNull();
+		keepAnswerState(now, "s-2");
 		expect(snapshotHistory.state("s-2")?.scenes).toBe(now.scenes);
 		const nothing = changesResult({ rev: "q2", since: "s-2" }, { now, mediaName: media, at: "s-3" });
 		expect((nothing as { changes: unknown[] }).changes).toEqual([]);
@@ -144,7 +147,7 @@ describe("review fixes", () => {
 		expect(changesResult({ rev: "q8", since: "e-0" }, { now, mediaName: media, at: "e-64" })).toMatchObject({ since: "e-0", changes: [{ kind: "add" }] });
 		changesResult({ rev: "q9", since: "missing" }, { now, mediaName: media, at: "e-65" });
 		expect(snapshotHistory.state("e-65")).toBeNull();
-		expect(snapshotHistory.state("e-1")).not.toBeNull();
+		expect(snapshotHistory.state("e-0")).not.toBeNull();
 	});
 
 	test("drafts with the same rev in two projects are both kept", () => {
@@ -188,5 +191,33 @@ describe("review fixes", () => {
 		editor.media.setAssets({ assets: [{ id: "m1", name: "interview.mp4", type: "video", file: new File(["x"], "interview.mp4") } as never] });
 		expect(removedMedia(past)).toEqual([]);
 		EditorCore.reset();
+	});
+
+	test("frames only miss what the root timeline shows: sounds and other scenes do not block a frame", () => {
+		const editor = EditorCore.getInstance();
+		editor.media.setAssets({ assets: [] });
+		const [root] = timeline({});
+		const withSound = { ...root, tracks: { ...root.tracks, audio: [{ id: "t-a", name: "Audio", type: "audio", muted: false, elements: [{ ...clip(0), type: "audio", mediaId: "song" }] }] } } as unknown as TScene;
+		const other = { ...timeline({ video: [clip(0)] })[0], id: "other", isMain: false } as TScene;
+		expect(removedMedia({ projectId: "p", scenes: [withSound, other], rootSceneId: "main" })).toEqual([]);
+		expect(removedMedia({ projectId: "p", scenes: [withSound, other], rootSceneId: "other", media })).toEqual(["interview.mp4"]);
+		EditorCore.reset();
+	});
+
+	test("an edit in a scene that is not open is still a change, and deleting a scene deletes its elements", () => {
+		const second = (trim: number) => ({ ...timeline({ video: [{ ...clip(trim), id: "v2" } as VideoElement] })[0], id: "second", isMain: false }) as TScene;
+		const before = { projectId: "p", scenes: [...timeline({}), second(0)], rootSceneId: "main" };
+		const trimmed = changesBetween({ before, after: { ...before, scenes: [...timeline({}), second(1)] }, mediaName: media });
+		expect(trimmed.map((c) => [c.elementId, c.field])).toEqual([["v2", "trimStart"]]);
+		const removed = changesBetween({ before, after: { ...before, scenes: timeline({}) }, mediaName: media });
+		expect(removed.map((c) => [c.kind, c.elementId])).toEqual([["delete", "v2"]]);
+	});
+
+	test("drafts are capped per project: one busy project does not push out another's", () => {
+		draftHistory.record("only-in-b", state(timeline({}), "b2"), state(timeline({}), "b2"));
+		for (let i = 0; i < 20; i++) draftHistory.record(`a-${i}`, state(timeline({}), "a2"), state(timeline({}), "a2"));
+		expect(draftHistory.get("b2", "only-in-b")).toBeDefined();
+		expect(draftHistory.get("a2", "a-3")).toBeUndefined();
+		expect(draftHistory.get("a2", "a-19")).toBeDefined();
 	});
 });

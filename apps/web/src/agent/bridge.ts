@@ -1,7 +1,7 @@
 // Every timeline change is written to AGENT_WORKSPACE/project.json (seconds, pixels),
 // so the agent can see each item's location, time, and position without opening the browser.
 import { draftHistory, snapshotHistory } from "./history";
-import { changesResult } from "./changes";
+import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { EditorCore } from "@/core";
@@ -14,7 +14,7 @@ import { walkAgentElements } from "./compound-content";
 import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
 import { getRootScene, selectionInScene } from "./scene-graph";
-import { s, buildEditItems, buildSceneSnapshot } from "./snapshot";
+import { s, buildAllEditItems, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { NO_SELECTION } from "./selection-payload";
 import { mediaIdsInScenes } from "@/core/managers/media-manager";
 import type { SaveSession } from "@/core/managers/save-manager";
@@ -145,7 +145,8 @@ function editSnapshot(): EditSnapshot | null {
 	const project = editor.project.getActiveOrNull();
 	const scene = agentRootScene();
 	if (!project || !scene) return null;
-	return { projectId: project.metadata.id, rootSceneId: scene.id, items: buildEditItems({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames() }) };
+	// Every root scene: opening another scene is not an edit, and an edit made just before is still logged.
+	return { projectId: project.metadata.id, items: buildAllEditItems({ scenes: editor.scenes.getScenes(), mediaName: mediaNames() }) };
 }
 let editLogger: ReturnType<typeof createEditLogger> | undefined;
 /** Recent snapshots sent to the agent (by syncedAt), for drafts that say what they were based on. */
@@ -262,10 +263,13 @@ export async function pollChanges() {
 		const open = editor.project.getActiveOrNull();
 		const openRoot = agentRootScene();
 		if (!open || open.metadata.id !== project.metadata.id || !openRoot) return;
-		const result = changesResult({ ...request, rev: request.rev }, { now: { ...stateMeta(openRoot.id), scenes: editor.scenes.getScenes() }, mediaName: mediaNames() });
+		const now = { ...stateMeta(openRoot.id), scenes: editor.scenes.getScenes() };
+		const result = changesResult({ ...request, rev: request.rev }, { now, mediaName: mediaNames() });
 		if (!result) return; // for another project: left for it
 		const post = (body: unknown) => fetch("/api/agent/changes-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 		let response = await post(result);
+		// Stored: its state becomes a snapshot to chain from.
+		if (response.ok && "syncedAt" in result && !("error" in result)) keepAnswerState(now, result.syncedAt);
 		// Not stored (too large): answered with the reason instead of being worked out again every poll.
 		if (!response.ok) response = await post({ rev: request.rev, projectId: open.metadata.id, error: `the answer could not be stored (${response.status}); ask with a newer since` });
 		if (response.ok) markAnswered(key, request.rev);
