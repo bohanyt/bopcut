@@ -137,16 +137,8 @@ function EditorRuntimeBindings() {
 		editor.command.isRippleEnabled = rippleEditingEnabled;
 	}, [editor, rippleEditingEnabled]);
 
-	useEffect(() => {
-		const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-			if (!editor.save.getIsDirty()) return;
-			event.preventDefault();
-			(event as unknown as { returnValue: string }).returnValue = "";
-		};
-
-		window.addEventListener("beforeunload", handleBeforeUnload);
-		return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-	}, [editor]);
+	// Leaving the page with unsaved changes is guarded by the save manager itself (also after the editor
+	// page is gone, while a closed project's last changes are written).
 
 	useEditorActions();
 	useKeybindingsListener();

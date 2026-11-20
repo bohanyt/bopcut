@@ -22,21 +22,26 @@ export type AgentAsset = {
 	music?: string; musicSources?: MusicSource[];
 	type: "image" | "video" | "audio" | "model"; name: string;
 };
+/** Time in seconds relative to the element; `interpolation` of the segment that starts at this key. */
+export type AgentKeyframe = { path: string; time: number; value: number | string; interpolation?: "linear" | "hold" | "bezier" };
 export type AgentElement = {
 	agent_id?: string; name: string; start: number; duration: number; trimStart?: number;
 	/** Video only: play the video's own sound (off by default). */
 	sourceAudio?: boolean;
-	asset?: string | AgentAsset; model3d?: { params?: Record<string, number> }; effect?: string; effectParams?: Record<string, number>;
+	asset?: string | AgentAsset;
+	/** An existing media id of the project, used instead of `asset` (nothing is imported). */
+	mediaId?: string;
+	model3d?: { params?: Record<string, number> }; effect?: string; effectParams?: Record<string, number>;
 	graphic?: { definitionId: string; params?: ParamValues }; icon?: { name: string; color?: string; svg?: string }; text?: string; group?: string;
 	params?: ParamValues; size?: [number, number];
 	caption?: AgentCaption;
-	keyframes?: { path: string; time: number; value: number }[];
+	keyframes?: AgentKeyframe[];
 	/** Makes this element a compound clip holding these nested tracks (times relative to the clip's content). */
 	compound?: AgentCompoundContent;
 };
 export type AgentTrackType = "video" | "audio" | "effect" | "graphic" | "text";
 /** Where an element goes: a track by name (Main/Utama alias), created at `index` (0 = topmost overlay) if missing. */
-export type AgentTrackRef = { name: string; type?: AgentTrackType; index?: number };
+export type AgentTrackRef = { name: string; type?: AgentTrackType; index?: number; id?: string };
 /**
  * Nested tracks of a compound clip, bundle style (`main`, `overlay` with index 0 = topmost, `audio`)
  * and/or draft style (`elements`, each with its own `track`, placed like a draft `add`).
@@ -95,16 +100,15 @@ export async function retrieveAgentAsset(asset: AgentAsset): Promise<RetrievedAs
 	return body as RetrievedAsset;
 }
 /** Keyframe to add once the element is placed; time in seconds, relative to the element. */
-export type PendingKeyframe = { sceneId?: string; trackId: string; elementId: string; propertyPath: string; time: number; value: number };
+export type PendingKeyframe = { sceneId?: string; trackId: string; elementId: string; propertyPath: string; time: number; value: number | string; interpolation?: AgentKeyframe["interpolation"] };
 
 export const secs = (seconds: number) => mediaTimeFromSeconds({ seconds });
 
 /**
- * Register an asset as media in the active project: a file from AGENT_FILES_ROOT, or, for a `url` asset,
- * the section the retrieve endpoint fetched first, or, for an `sfx` asset, the best matching sound.
+ * Where an asset's file is and its processed media: a file from AGENT_FILES_ROOT, or, for a `url` asset,
+ * the section the retrieve endpoint fetched first, or, for an `sfx`/`music` asset, the best match.
  */
-export async function loadAgentAsset({ projectId, asset }: { projectId: string; asset: AgentAsset }): Promise<LoadedMedia> {
-	const editor = EditorCore.getInstance();
+async function readAgentAsset(asset: AgentAsset) {
 	if (!asset.path && !asset.url && !asset.sfx?.trim() && !asset.music?.trim()) throw new Error(`Asset "${asset.name}" needs a path, a url, an sfx name or a music name`);
 	const retrieved = asset.path || !asset.url ? undefined : await retrieveAgentAsset(asset);
 	const sfx = asset.path || asset.url || !asset.sfx?.trim() ? undefined : await findAgentSfx(asset);
@@ -116,14 +120,44 @@ export async function loadAgentAsset({ projectId, asset }: { projectId: string; 
 	const fileName = filePath.split("/").pop() ?? asset.name;
 	const [processed] = await processMediaAssets({ files: [new File([blob], fileName, { type: blob.type })] });
 	if (!processed) throw new Error("Failed to process asset: " + filePath);
-	const saved = await editor.media.addMediaAsset({ projectId, asset: { ...processed, name: asset.name || retrieved?.name || sfx?.name || music?.name || fileName } });
-	if (!saved) throw new Error("Failed to save asset: " + filePath);
-	return {
-		id: saved.id, type: asset.type === "model" ? "model" : processed.type as AgentAsset["type"], width: processed.width, height: processed.height, duration: processed.duration,
-		...(retrieved ? { retrieved } : {}),
-		...(sfx ? { sfx } : {}),
-		...(music ? { music } : {}),
-	};
+	return { processed, filePath, name: asset.name || retrieved?.name || sfx?.name || music?.name || fileName, retrieved, sfx, music };
+}
+
+const loadedMedia = (asset: AgentAsset, id: string, read: Awaited<ReturnType<typeof readAgentAsset>>): LoadedMedia => ({
+	id, type: asset.type === "model" ? "model" : read.processed.type as AgentAsset["type"], width: read.processed.width, height: read.processed.height, duration: read.processed.duration,
+	...(read.retrieved ? { retrieved: read.retrieved } : {}),
+	...(read.sfx ? { sfx: read.sfx } : {}),
+	...(read.music ? { music: read.music } : {}),
+});
+
+/** Register an asset as media in the active project (bundle import). */
+export async function loadAgentAsset({ projectId, asset }: { projectId: string; asset: AgentAsset }): Promise<LoadedMedia> {
+	const read = await readAgentAsset(asset);
+	// Agent imports never raise the project frame rate: the bundle (or the open project) decides it.
+	const saved = await EditorCore.getInstance().media.addMediaAsset({ projectId, asset: { ...read.processed, name: read.name }, ratchetFps: false });
+	if (!saved) throw new Error("Failed to save asset: " + read.filePath);
+	return loadedMedia(asset, saved.id, read);
+}
+
+/**
+ * Like loadAgentAsset, but the media stays private (staged) until the draft commits; `onId` gets
+ * its id before it is written, so a failed or cancelled draft can always remove it.
+ */
+export async function stageAgentAsset({ projectId, asset, onId }: { projectId: string; asset: AgentAsset; onId: (id: string) => void }): Promise<LoadedMedia> {
+	const read = await readAgentAsset(asset);
+	try {
+		const staged = await EditorCore.getInstance().media.stageMediaAsset({ projectId, asset: { ...read.processed, name: read.name }, onId });
+		return loadedMedia(asset, staged.id, read);
+	} catch (error) {
+		throw new Error(`Failed to save asset: ${read.filePath}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+/** Media already in the project, for an element with `mediaId` (`model3d` elements use it as a model). */
+export function existingAgentMedia(e: AgentElement): LoadedMedia {
+	const asset = EditorCore.getInstance().media.getAssets().find((m) => m.id === e.mediaId);
+	if (!asset) throw new Error(`Media not in project: ${e.mediaId}`);
+	return { id: asset.id, type: e.model3d ? "model" : asset.type, width: asset.width, height: asset.height, duration: asset.duration };
 }
 
 /** Track type an element goes on when the draft or bundle does not say. */
@@ -160,7 +194,7 @@ export function buildAgentElement({ e, media, trackId, sceneId, canvas, keyframe
 		Object.assign(el.params, e.params ?? {});
 		for (const k of e.keyframes ?? []) {
 			const paths = k.path === "scale" ? ["transform.scaleX", "transform.scaleY"] : [k.path];
-			for (const propertyPath of paths) keyframes.push({ trackId, elementId: el.id, propertyPath, time: k.time, value: k.value });
+			for (const propertyPath of paths) keyframes.push({ trackId, elementId: el.id, propertyPath, time: k.time, interpolation: k.interpolation, value: k.value });
 		}
 		return el;
 	}
@@ -179,7 +213,7 @@ export function buildAgentElement({ e, media, trackId, sceneId, canvas, keyframe
 		Object.assign(el.params, e.params ?? {});
 		for (const k of e.keyframes ?? []) {
 			const paths = k.path === "scale" ? ["transform.scaleX", "transform.scaleY"] : [definition.params.some((p) => p.key === k.path) ? `params.${k.path}` : k.path];
-			for (const propertyPath of paths) keyframes.push({ trackId, elementId: el.id, propertyPath, time: k.time, value: k.path === "scale" ? k.value * (el.params[propertyPath] as number) : k.value });
+			for (const propertyPath of paths) keyframes.push({ trackId, elementId: el.id, propertyPath, time: k.time, interpolation: k.interpolation, value: k.path === "scale" ? Number(k.value) * (el.params[propertyPath] as number) : k.value });
 		}
 		return el;
 	}
@@ -207,7 +241,7 @@ export function buildAgentElement({ e, media, trackId, sceneId, canvas, keyframe
 	for (const [k, v] of Object.entries(e.params ?? {})) el.params[k] = v;
 	for (const k of e.keyframes ?? []) {
 		const paths = k.path === "scale" ? ["transform.scaleX", "transform.scaleY"] : [k.path];
-		for (const propertyPath of paths) keyframes.push({ trackId, elementId: el.id, propertyPath, time: k.time, value: k.path === "scale" ? k.value * base : k.value });
+		for (const propertyPath of paths) keyframes.push({ trackId, elementId: el.id, propertyPath, time: k.time, interpolation: k.interpolation, value: k.path === "scale" ? Number(k.value) * base : k.value });
 	}
 	return el;
 }

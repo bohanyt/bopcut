@@ -15,6 +15,7 @@ import { handleDuck } from "@/sounds/duck-server";
 import { parseSelectionPayload } from "@/agent/selection-payload";
 import { consumeAppliedDraft } from "@/agent/draft-store";
 import { isForeignOrigin } from "@/agent/origin";
+import { atomicWrite } from "@/services/storage/server/files";
 
 const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -28,13 +29,8 @@ function inside(rel: string) {
 	return full;
 }
 
-async function writeAtomic(file: string, text: string) {
-	await fs.mkdir(path.dirname(file), { recursive: true });
-	// A temp name unique to this write, so overlapping writes (two tabs) never share or steal it.
-	const tmp = `${file}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.writeFile(tmp, text);
-	await fs.rename(tmp, file);
-}
+// Unique temp file, rename retried on transient Windows locks, writes to one file queued.
+const writeAtomic = atomicWrite;
 
 /**
  * Browser requests must come from the editor's own origin (same host and port). A page on another site,

@@ -29,6 +29,11 @@ export interface MediaAssetData {
 	hasAudio?: boolean;
 	ephemeral?: boolean;
 	thumbnailUrl?: string;
+	/**
+	 * Imported by a draft that has not committed yet. Loading a project skips staged media unless
+	 * the project's timeline uses them, so another tab never picks up a file a failed draft deletes.
+	 */
+	staged?: boolean;
 }
 
 export type SerializedScene = Omit<TScene, "createdAt" | "updatedAt"> & {

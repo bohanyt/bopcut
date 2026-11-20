@@ -4,13 +4,14 @@ import { lastFrameMediaTime, mediaTimeFromSeconds } from "@/wasm";
 import { getRootScene } from "./scene-graph";
 
 let busy = false;
-export async function pollFrames() {
+/** Renders a frames request: the one the readiness gate already read (`checked`), or else the current one. */
+export async function pollFrames(checked?: unknown) {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	if (!project || busy || editor.timeline.isPreviewActive()) return;
 	busy = true;
 	try {
-		const request = await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json();
+		const request = (checked ?? (await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json())) as any;
 		if (!request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev) || !Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0) || (request.width !== undefined && (!Number.isInteger(request.width) || request.width < 1 || request.width > 4096))) return;
 		const key = `agent-frames-${project.metadata.id}`;
 		if (localStorage.getItem(key) === request.rev) return;

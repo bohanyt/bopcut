@@ -6,6 +6,7 @@ import {
 	mediaResponse,
 	projectDir,
 	readJson,
+	removeMedia,
 	revision,
 	safeId,
 	saveMedia,
@@ -112,7 +113,26 @@ async function handle(
 			if (s.length === 2 && method === "DELETE")
 				return await withProjectLock(id, async () => {
 					await atomicWrite(marker(id), JSON.stringify({ deleted: true }));
-					await fs.rm(projectDir(id), { recursive: true, force: true });
+					// Moved out of the projects in one step first: if that fails (a file is held open), nothing of
+					// the project is removed, so a failed delete never leaves a timeline without its media.
+					const trash = path.join(dataRoot(), "trash", `${id}-${Date.now()}`);
+					await fs.mkdir(path.dirname(trash), { recursive: true });
+					try {
+						await fs.rename(projectDir(id), trash);
+					} catch (error) {
+						// Already gone is fine.
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					}
+					// What cannot be removed now stays in the trash folder (the project is gone either way) and is
+					// tried again on the next delete, with anything else left there.
+					const left = await fs.readdir(path.dirname(trash)).catch(() => [] as string[]);
+					await Promise.all(
+						left.map((name) =>
+							fs.rm(path.join(path.dirname(trash), name), { recursive: true, force: true }).catch((error) => {
+								console.error(`Deleted project files not removed yet (${name}):`, error);
+							}),
+						),
+					);
 					return Response.json({ ok: true });
 				});
 			if (s[2] === "migration" && s.length === 3 && method === "GET")
@@ -128,7 +148,12 @@ async function handle(
 						await Promise.all(
 							(await names(dir))
 								.filter((n) => /^[a-zA-Z0-9_-]{1,128}\.json$/.test(n))
-								.map((n) => readJson(path.join(dir, n))),
+								.map((n) =>
+									readJson(path.join(dir, n)).catch((error) => {
+										console.error(`Unreadable media metadata ${n}:`, error);
+										return null;
+									}),
+								),
 						)
 					).filter(
 						(meta) =>
@@ -175,18 +200,7 @@ async function handle(
 					});
 				if (method === "DELETE")
 					return await withProjectLock(id, async () => {
-						const dir = path.join(projectDir(id), "media");
-						const meta = await readJson(
-							path.join(dir, "_metadata", `${mediaId}.json`),
-						);
-						if (
-							meta &&
-							new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(meta.diskFile)
-						)
-							await fs.rm(path.join(dir, meta.diskFile), { force: true });
-						await fs.rm(path.join(dir, "_metadata", `${mediaId}.json`), {
-							force: true,
-						});
+						await removeMedia(id, mediaId);
 						return Response.json({ ok: true });
 					});
 			}

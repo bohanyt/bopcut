@@ -22,8 +22,9 @@ import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
 import { loadFonts } from "@/fonts/google-fonts";
 import { DEFAULTS } from "@/timeline/defaults";
 import { getElementFontFamilies } from "@/timeline/element-utils";
-import { getRaisedProjectFpsForImportedMedia } from "@/fps/utils";
+import { frameRateToFloat, getRaisedProjectFpsForImportedMedia } from "@/fps/utils";
 import type { MediaAsset } from "@/media/types";
+import { mediaIdsInScenes } from "./media-manager";
 
 export interface MigrationState {
 	isMigrating: boolean;
@@ -36,6 +37,20 @@ export class ProjectManager {
 	private active: TProject | null = null;
 	private savedProjects: TProjectMetadata[] = [];
 	private isLoading = true;
+	/**
+	 * Changes whenever another project is opened, created or closed (not when the open project's
+	 * settings change), so async work can tell it still runs in the project session it started in.
+	 */
+	private session = 0;
+	/** Bumped by every loadProject: a load that is no longer the newest one stops before it installs. */
+	private loadSequence = 0;
+	/** The load that put the open project in the editor and is still loading its media, or null. */
+	private installing: number | null = null;
+	/** Projects being deleted, and deleted, in this editor: they do not open. */
+	private deleting = new Set<string>();
+	private deleted = new Set<string>();
+	/** Renames of stored projects still being written: a load of that project waits for them. */
+	private renames = new Map<string, Promise<unknown>>();
 	private isInitialized = false;
 	private invalidProjectIds = new Set<string>();
 	private storageMigrationPromise: Promise<void> | null = null;
@@ -92,10 +107,16 @@ export class ProjectManager {
 			version: CURRENT_PROJECT_VERSION,
 		};
 
+		this.session++;
+		this.supersedeLoads();
+		// Opened before the editor's project changes: the open project's unsaved edits are kept (see SaveManager.open).
+		// Nothing is written for the new project until its first write below is done.
+		const saveSession = this.editor.save.open({ projectId: newProject.metadata.id, session: this.session, name, savedAt: null, loading: true });
 		this.active = newProject;
 		this.notify();
 
 		this.editor.media.clearAllAssets();
+		this.editor.media.markProjectMediaLoaded({ projectId: newProject.metadata.id });
 		this.editor.scenes.initializeScenes({
 			scenes: newProject.scenes,
 			currentSceneId: newProject.currentSceneId,
@@ -104,11 +125,16 @@ export class ProjectManager {
 		try {
 			await storageService.saveProject({ project: newProject });
 			this.updateMetadata(newProject);
+			saveSession.savedAt = new Date();
 
 			return newProject.metadata.id;
 		} catch (error) {
 			toast.error("Failed to save new project");
+			// Not on disk: the project counts as unsaved (not ready for the agent) and autosave retries.
+			saveSession.markDirty({ force: true });
 			throw error;
+		} finally {
+			saveSession.markReady();
 		}
 	}
 
@@ -118,19 +144,78 @@ export class ProjectManager {
 			this.notify();
 		}
 
-		this.editor.save.pause();
-		await this.ensureStorageMigrations();
+		const load = ++this.loadSequence;
+		const superseded = () => load !== this.loadSequence;
+		// The next project is read before anything of the open one changes: if reading fails, the open
+		// project stays as it was (timeline, media, saving).
+		let result: Awaited<ReturnType<typeof storageService.loadProject>>;
+		try {
+			const attempts = 5;
+			for (let attempt = 1; ; attempt++) {
+				this.assertOpenable(id);
+				// A rename being written: the copy read below has the new name, and the next saves keep it.
+				const rename = this.renames.get(id);
+				if (rename) {
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					const done = await Promise.race([
+						rename.then(() => true, () => true),
+						new Promise<boolean>((resolve) => {
+							timer = setTimeout(() => resolve(false), 15000);
+						}),
+					]);
+					clearTimeout(timer);
+					if (superseded()) return;
+					if (!done) throw new Error("A rename of this project is still being saved; try again in a moment");
+				}
+				// Changes of this project that are not on disk yet (it is open, or was closed a moment ago)
+				// are written first, so the read below has them.
+				const unsaved = await this.editor.save.settleProject(id);
+				if (superseded()) return;
+				if (unsaved) throw new Error(`Earlier changes of this project are not saved yet: ${unsaved}`);
+				if (this.editor.save.hasUnsavedChangesOf(id)) {
+					// Edited while it was being written: write that too.
+					if (attempt === attempts) throw new Error("The project kept changing while it was reopened");
+					continue;
+				}
+				// Every edit counted so far is on disk now. One counted after this mark can be missing from
+				// what is read (even if it is saved by the time the read returns): then it is read again.
+				const mark = this.editor.save.editsOf(id);
+				await this.ensureStorageMigrations();
+				result = await storageService.loadProject({ id });
+				if (!result) {
+					throw new Error(`Project with id ${id} not found`);
+				}
+				if (superseded()) return; // a newer load started meanwhile and takes over
+				this.assertOpenable(id);
+				if (this.editor.save.editsOf(id) === mark) break;
+				if (attempt === attempts) throw new Error("The project kept changing while it was reopened");
+			}
+		} catch (error) {
+			console.error("Failed to load project:", error);
+			// The open project (if any) stays; loading ends unless another load is still installing.
+			if (!superseded() && this.installing === null && this.isLoading) {
+				this.isLoading = false;
+				this.notify();
+			}
+			throw error;
+		}
+
+		const project = result.project;
+		this.session++;
+		// Opened before the editor's project changes: the open project's unsaved edits are taken now and
+		// written in the background (see SaveManager.open). The new session saves nothing but forced
+		// edits until this load is done.
+		const saveSession = this.editor.save.open({ projectId: id, session: this.session, name: project.metadata.name, savedAt: project.metadata.updatedAt, loading: true });
+		this.installing = load;
+		this.isLoading = true;
 		this.editor.media.clearAllAssets();
 		this.editor.scenes.clearScenes();
+		// After every await below: another project may have replaced this one; then nothing more of this
+		// load runs against it.
+		const installed = this.session;
+		const replaced = () => this.session !== installed;
 
 		try {
-			const result = await storageService.loadProject({ id });
-			if (!result) {
-				throw new Error(`Project with id ${id} not found`);
-			}
-
-			const project = result.project;
-
 			this.active = project;
 			this.notify();
 
@@ -142,6 +227,7 @@ export class ProjectManager {
 			}
 
 			await this.editor.media.loadProjectMedia({ projectId: id });
+			if (replaced()) return;
 
 			await loadFonts({
 				families: [
@@ -153,12 +239,12 @@ export class ProjectManager {
 				],
 			});
 
+			if (replaced()) return;
+
 			if (!project.metadata.thumbnail) {
 				try {
-					const didUpdateThumbnail = await this.updateThumbnailFromTimeline();
-					if (didUpdateThumbnail) {
-						await this.saveCurrentProject();
-					}
+					// Saved with the session once this load is done (a forced edit).
+					await this.updateThumbnailFromTimeline({ session: installed });
 				} catch (error) {
 					console.error("Failed to generate project thumbnail:", error);
 				}
@@ -167,33 +253,62 @@ export class ProjectManager {
 			console.error("Failed to load project:", error);
 			throw error;
 		} finally {
-			this.isLoading = false;
-			this.notify();
-			this.editor.save.resume();
+			// This load owns its session: it is ready now (a no-op once another project replaced it).
+			saveSession.markReady();
+			if (this.installing === load) {
+				this.installing = null;
+				this.isLoading = false;
+				this.notify();
+			}
 		}
 	}
 
-	async saveCurrentProject(): Promise<void> {
-		if (!this.active) return;
+	/** Writes the open project to storage now; false when it failed (a toast reports it). */
+	async saveCurrentProject(): Promise<boolean> {
+		return this.editor.save.flush();
+	}
 
+	/**
+	 * The open project as it is in the editor now (its scenes from the editor), for writing it; null
+	 * when none is open or its scenes are not in the editor (never write an empty timeline over it).
+	 */
+	snapshotActive(): TProject | null {
+		const active = this.active;
+		if (!active) return null;
+		const scenes = this.editor.scenes.getScenes();
+		if (scenes.length === 0 && (active.scenes?.length ?? 0) > 0) {
+			console.error(`Not saved: the scenes of ${active.metadata.name} are not in the editor`);
+			return null;
+		}
+		return {
+			...active,
+			scenes,
+			metadata: {
+				...active.metadata,
+				duration: getProjectDurationFromScenes({ scenes }),
+				updatedAt: new Date(),
+			},
+		};
+	}
+
+	/**
+	 * Writes a project (see snapshotActive) to storage. Returns null on success, else the error.
+	 *
+	 * The active project object is not replaced: every editor component that reads it would
+	 * re-render (seconds on a large project) although nothing it shows changed. Only the project
+	 * list, which the editor does not show, gets the new metadata.
+	 */
+	async persistProject(project: TProject): Promise<string | null> {
 		try {
-			const scenes = this.editor.scenes.getScenes();
-			const updatedProject = {
-				...this.active,
-				scenes,
-				metadata: {
-					...this.active.metadata,
-					duration: getProjectDurationFromScenes({ scenes }),
-					updatedAt: new Date(),
-				},
-			};
-
-			await storageService.saveProject({ project: updatedProject });
-			this.active = updatedProject;
-			this.updateMetadata(updatedProject);
+			await storageService.saveProject({ project });
+			this.updateSavedMetadata(project.metadata);
+			// A project no longer in the editor (written after it closed): the project list shows it, so it
+			// hears about it. The open one is not notified (see above).
+			if (this.active?.metadata.id !== project.metadata.id) this.notify();
+			return null;
 		} catch (error) {
 			console.error("Failed to save project:", error);
-			toast.error("Failed to save project", { description: error instanceof Error ? error.message : undefined });
+			return error instanceof Error ? error.message : String(error);
 		}
 	}
 
@@ -249,13 +364,14 @@ export class ProjectManager {
 			} catch (error) {
 				console.error("Failed to load projects:", error);
 			} finally {
-				this.isLoading = false;
+				// A project still loading its media keeps the loading state (its load ends it).
+				if (this.installing === null) this.isLoading = false;
 				this.isInitialized = true;
 				this.notify();
 			}
 		} catch (error) {
 			console.error("Failed to run migrations:", error);
-			this.isLoading = false;
+			if (this.installing === null) this.isLoading = false;
 			this.isInitialized = true;
 			this.notify();
 		}
@@ -265,37 +381,60 @@ export class ProjectManager {
 		const uniqueIds = Array.from(new Set(ids));
 		if (uniqueIds.length === 0) return;
 
+		for (const id of uniqueIds) this.deleting.add(id);
 		try {
-			await Promise.all(
-				uniqueIds.map((id) =>
-					Promise.all([
-						storageService.deleteProjectMedia({ projectId: id }),
-						storageService.deleteProject({ id }),
-					]),
-				),
+			const outcomes = await Promise.all(
+				uniqueIds.map(async (id): Promise<{ id: string; error: string | null }> => {
+					// No write of the project may land after the delete (it would bring it back): its writes are
+					// held, and one in progress is waited for.
+					if (!(await this.editor.save.holdProject(id))) {
+						this.editor.save.releaseProject(id);
+						return { id, error: "a save of it is still running; try again in a moment" };
+					}
+					try {
+						// The project first: if it cannot be deleted, its media stay, so nothing it uses is lost.
+						await storageService.deleteProject({ id });
+					} catch (error) {
+						// Not deleted: its saving goes on.
+						this.editor.save.releaseProject(id);
+						return { id, error: error instanceof Error ? error.message : String(error) };
+					}
+					// The storage delete removed the media too.
+					this.deleted.add(id);
+					this.editor.save.discardProject(id);
+					return { id, error: null };
+				}),
 			);
 
-			const idSet = new Set(uniqueIds);
+			const deletedIds = new Set(outcomes.filter((outcome) => outcome.error === null).map((outcome) => outcome.id));
 			this.savedProjects = this.savedProjects.filter(
-				(project) => !idSet.has(project.id),
+				(project) => !deletedIds.has(project.id),
 			);
-
-			const shouldClearActive =
-				this.active && idSet.has(this.active.metadata.id);
-
-			if (shouldClearActive) {
+			if (this.active && deletedIds.has(this.active.metadata.id)) {
+				this.session++;
 				this.active = null;
 				this.editor.media.clearAllAssets();
 				this.editor.scenes.clearScenes();
 			}
-
 			this.notify();
-		} catch (error) {
-			console.error("Failed to delete projects:", error);
+
+			const failed = outcomes.filter((outcome) => outcome.error !== null);
+			if (failed.length > 0) {
+				console.error("Failed to delete projects:", failed);
+				toast.error(failed.length === 1 ? "Failed to delete project" : `Failed to delete ${failed.length} projects`, { description: failed[0].error ?? undefined });
+			}
+		} finally {
+			for (const id of uniqueIds) this.deleting.delete(id);
 		}
 	}
 
 	closeProject(): void {
+		this.session++;
+		// A load still reading or loading media does not put its project in place after the close.
+		this.supersedeLoads();
+		// Unsaved edits are taken now and written in the background.
+		this.editor.save.closeCurrent();
+		if (this.active) storageService.forgetMediaManifest({ projectId: this.active.metadata.id });
 		this.active = null;
 		this.notify();
 
@@ -311,31 +450,33 @@ export class ProjectManager {
 		name: string;
 	}): Promise<void> {
 		try {
-			const result = await storageService.loadProject({ id });
-			if (!result) {
+			// The open project: renamed in the editor and saved by its session (its timeline is newer
+			// than the stored one).
+			if (this.renameActive({ id, name })) {
+				if (!(await this.editor.save.flush())) toast.error("Project renamed, but not saved yet", { description: this.editor.save.getLastError(id) ?? "Saving is retried" });
+				return;
+			}
+			// Changes of a project closed a moment ago are written first: a retry of its last write after
+			// the rename would bring the old name back.
+			const unsaved = await this.editor.save.settleProject(id);
+			if (unsaved) throw new Error(`Earlier changes of this project are not saved yet: ${unsaved}`);
+			// Renamed on the stored copy as it is when written: a write in between is read again, so the
+			// rename never puts an older timeline back. A load of the project waits for it.
+			const renaming = storageService.renameProject({ id, name });
+			this.renames.set(id, renaming);
+			const metadata = await renaming.finally(() => {
+				if (this.renames.get(id) === renaming) this.renames.delete(id);
+			});
+			if (!metadata) {
 				toast.error("Project not found", {
 					description: "Please try again",
 				});
 				return;
 			}
-
-			const updatedProject: TProject = {
-				...result.project,
-				metadata: {
-					...result.project.metadata,
-					name,
-					updatedAt: new Date(),
-				},
-			};
-
-			await storageService.saveProject({ project: updatedProject });
-
-			if (this.active?.metadata.id === id) {
-				this.active = updatedProject;
-				this.notify();
-			}
-
-			this.updateMetadata(updatedProject);
+			this.updateSavedMetadata(metadata);
+			this.notify();
+			// Opened meanwhile (from before the rename): renamed in the editor too, so its saves keep it.
+			this.renameActive({ id, name });
 		} catch (error) {
 			console.error("Failed to rename project:", error);
 			toast.error("Failed to rename project", {
@@ -440,9 +581,11 @@ export class ProjectManager {
 			);
 
 			await Promise.all(
-				duplicationPlans.map(async ({ sourceProjectId, newProjectId }) => {
+				duplicationPlans.map(async ({ sourceProjectId, newProjectId, newProject }) => {
+					// Media the timeline uses are copied even if their draft's promotion never finished.
 					const sourceMediaAssets = await storageService.loadAllMediaAssets({
 						projectId: sourceProjectId,
+						usedIds: mediaIdsInScenes(newProject.scenes ?? []),
 					});
 
 					await Promise.all(
@@ -502,7 +645,14 @@ export class ProjectManager {
 		});
 		if (nextFps === null) return null;
 
+		const previous = frameRateToFloat(this.active.settings.fps);
 		new UpdateProjectSettingsCommand({ fps: nextFps }).execute();
+		// Upstream behaviour (manual imports): the project follows the fastest footage. Say so,
+		// since frame-based timing changes with it.
+		const format = (fps: number) => Number(fps.toFixed(3)).toString();
+		toast.info(`Project frame rate raised to ${format(frameRateToFloat(nextFps))} fps`, {
+			description: `Imported media has a higher frame rate than the project (${format(previous)} fps). Change it in project settings if needed.`,
+		});
 		return nextFps;
 	}
 
@@ -516,17 +666,17 @@ export class ProjectManager {
 		this.active = updatedProject;
 		this.notify();
 		this.updateMetadata(updatedProject);
-		this.editor.save.markDirty();
+		// Forced: also saved when made while the project loads (see loadProject).
+		this.editor.save.markDirty({ force: true });
 	}
 
 	async prepareExit(): Promise<void> {
 		if (!this.active) return;
 
 		try {
-			const didUpdateThumbnail = await this.updateThumbnailFromTimeline();
-			if (didUpdateThumbnail) {
-				await this.editor.save.flush();
-			}
+			// A forced edit: written with the project's other changes when it closes, in the background
+			// (leaving does not wait for the write).
+			await this.updateThumbnailFromTimeline();
 		} catch (error) {
 			console.error("Failed to generate project thumbnail on exit:", error);
 		}
@@ -625,7 +775,19 @@ export class ProjectManager {
 		return this.migrationState;
 	}
 
+	/** The current project session (see `session`). */
+	getSession(): number {
+		return this.session;
+	}
+
 	setActiveProject({ project }: { project: TProject }): void {
+		if (this.active?.metadata.id !== project.metadata.id) {
+			// Another project put in place directly: it gets its own save session (the open one's unsaved
+			// edits are kept, see SaveManager.open).
+			this.session++;
+			this.supersedeLoads();
+			this.editor.save.open({ projectId: project.metadata.id, session: this.session, name: project.metadata.name, savedAt: project.metadata.updatedAt, loading: false });
+		}
 		this.active = project;
 		this.notify();
 	}
@@ -635,8 +797,38 @@ export class ProjectManager {
 		return () => this.listeners.delete(listener);
 	}
 
-	private async updateThumbnailFromTimeline(): Promise<boolean> {
-		if (!this.active) return false;
+	/** Throws when a project cannot be opened because it is being deleted (or was). */
+	private assertOpenable(id: string): void {
+		// Not "not found" while the delete runs: the editor would create a new project in its place,
+		// although the delete can still fail.
+		if (this.deleting.has(id)) throw new Error("This project is being deleted");
+		if (this.deleted.has(id)) throw new Error(`Project with id ${id} not found`);
+	}
+
+	/**
+	 * The editor's project was replaced or closed directly: a load still running no longer owns it (it
+	 * stops before it installs, or after its next step), and the editor is not loading any more.
+	 */
+	private supersedeLoads(): void {
+		this.loadSequence++;
+		this.installing = null;
+		this.isLoading = false;
+	}
+
+	/** Renames the open project in the editor (saved by its session); false when `id` is not open. */
+	private renameActive({ id, name }: { id: string; name: string }): boolean {
+		if (this.active?.metadata.id !== id) return false;
+		this.active = { ...this.active, metadata: { ...this.active.metadata, name, updatedAt: new Date() } };
+		this.notify();
+		this.updateMetadata(this.active);
+		this.editor.save.markDirty({ force: true });
+		return true;
+	}
+
+	/** `session`: the project session the thumbnail is for (default the current one). */
+	private async updateThumbnailFromTimeline({ session = this.session }: { session?: number } = {}): Promise<boolean> {
+		if (!this.active || this.session !== session) return false;
+		// Rendering takes a while: if another project is opened meanwhile, this image is not its thumbnail.
 
 		const tracks = this.editor.scenes.getActiveScene().tracks;
 		const mediaAssets = this.editor.media.getAssets();
@@ -669,10 +861,17 @@ export class ProjectManager {
 			targetCanvas: tempCanvas,
 		});
 
+		if (this.session !== session) return false;
 		const thumbnailDataUrl = tempCanvas.toDataURL("image/png");
 
 		await this.updateThumbnail({ thumbnail: thumbnailDataUrl });
 		return true;
+	}
+
+	/** Project list entry only, without notifying (the editor does not show the list). */
+	private updateSavedMetadata(metadata: TProjectMetadata): void {
+		const index = this.savedProjects.findIndex((p) => p.id === metadata.id);
+		this.savedProjects = index === -1 ? [metadata, ...this.savedProjects] : this.savedProjects.with(index, metadata);
 	}
 
 	private updateMetadata(project: TProject): void {

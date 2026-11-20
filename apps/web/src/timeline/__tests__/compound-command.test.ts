@@ -34,7 +34,6 @@ function setup(scenes: TScene[] = fixture()) {
 	const editor = EditorCore.getInstance();
 	// No autosave from these tests (it would write to storage after the test ends).
 	editor.save.stop();
-	editor.save.pause();
 	editor.project.setActiveProject({
 		project: {
 			metadata: { id: "p", name: "p", createdAt: new Date(0), updatedAt: new Date(0) },

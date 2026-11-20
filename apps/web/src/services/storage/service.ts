@@ -57,6 +57,14 @@ class StorageService {
 	private savedSoundsAdapter = new DiskSoundsAdapter<SavedSoundsData>();
 	private config: StorageConfig;
 	private migrationsPromise: Promise<void> | null = null;
+	/**
+	 * Media metadata lists by project, kept from the last full load and updated by this service's
+	 * own saves and deletes, so reading one asset does not refetch the whole list (it can be tens of
+	 * MB with thumbnails).
+	 */
+	private manifests = new Map<string, Map<string, MediaAssetData>>();
+	/** Manifests kept at once (the open project and the one before it); older ones are dropped. */
+	private static readonly MANIFEST_LIMIT = 2;
 
 	constructor() {
 		this.config = {
@@ -209,6 +217,27 @@ class StorageService {
 		});
 	}
 
+	/**
+	 * Renames a stored project on the copy that is on disk when it is written (a write in between is
+	 * re-read, not overwritten). The new metadata, or null when the project does not exist.
+	 */
+	async renameProject({ id, name }: { id: string; name: string }): Promise<TProjectMetadata | null> {
+		const updated = await this.projectsAdapter.update(id, (stored) => ({
+			...stored,
+			metadata: { ...stored.metadata, name, updatedAt: new Date().toISOString() },
+		}));
+		if (!updated) return null;
+		const { metadata } = updated;
+		return {
+			id: metadata.id,
+			name: metadata.name,
+			thumbnail: metadata.thumbnail,
+			duration: metadata.duration ?? 0,
+			createdAt: new Date(metadata.createdAt),
+			updatedAt: new Date(metadata.updatedAt),
+		} as TProjectMetadata;
+	}
+
 	async loadProject({
 		id,
 	}: {
@@ -326,14 +355,18 @@ class StorageService {
 
 	async deleteProject({ id }: { id: string }): Promise<void> {
 		await this.projectsAdapter.remove(id);
+		this.forgetMediaManifest({ projectId: id });
 	}
 
 	async saveMediaAsset({
 		projectId,
 		mediaAsset,
+		staged = false,
 	}: {
 		projectId: string;
 		mediaAsset: MediaAsset;
+		/** Saved for a draft that has not committed: hidden from loads until promoteMediaAssets. */
+		staged?: boolean;
 	}): Promise<void> {
 
 		const metadata: MediaAssetData = {
@@ -351,9 +384,24 @@ class StorageService {
 			hasAudio: mediaAsset.hasAudio,
 			thumbnailUrl: mediaAsset.thumbnailUrl,
 			ephemeral: mediaAsset.ephemeral,
+			...(staged ? { staged: true } : {}),
 		};
 
 		await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
+		this.manifests.get(projectId)?.set(metadata.id, metadata);
+	}
+
+	/** Clears the staged mark of media whose draft committed, so every later load includes them. */
+	async promoteMediaAssets({ projectId, ids }: { projectId: string; ids: string[] }): Promise<void> {
+		if (ids.length === 0) return;
+		const manifest = this.manifests.get(projectId) ?? (await this.fetchManifest({ projectId }));
+		for (const id of ids) {
+			const metadata = manifest.get(id);
+			if (!metadata?.staged) continue;
+			const { staged: _staged, ...promoted } = metadata;
+			await this.projectsAdapter.updateMediaMetadata(projectId, promoted);
+			manifest.set(id, promoted);
+		}
 	}
 
 	async loadMediaAsset({
@@ -363,21 +411,39 @@ class StorageService {
 		projectId: string;
 		id: string;
 	}): Promise<MediaAsset | null> {
-		const metadata = (await this.projectsAdapter.mediaList(projectId)).find((item) => item.id === id);
+		const metadata = this.manifests.get(projectId)?.get(id) ?? (await this.fetchManifest({ projectId })).get(id);
 		if (!metadata) return null;
 		return this.readMediaAsset({ projectId, metadata });
+	}
+
+	private async fetchManifest({ projectId }: { projectId: string }): Promise<Map<string, MediaAssetData>> {
+		const manifest = new Map((await this.projectsAdapter.mediaList(projectId)).map((item) => [item.id, item] as const));
+		this.manifests.delete(projectId);
+		this.manifests.set(projectId, manifest);
+		for (const id of this.manifests.keys()) {
+			if (this.manifests.size <= StorageService.MANIFEST_LIMIT) break;
+			this.manifests.delete(id);
+		}
+		return manifest;
+	}
+
+	/** Drops the cached media list of a project (closed or deleted). */
+	forgetMediaManifest({ projectId }: { projectId: string }): void {
+		this.manifests.delete(projectId);
 	}
 
 	private async readMediaAsset({
 		projectId,
 		metadata,
+		signal,
 	}: {
 		projectId: string;
 		metadata: MediaAssetData;
+		signal?: AbortSignal;
 	}): Promise<MediaAsset> {
 		const id = metadata.id;
 		const url = this.projectsAdapter.mediaUrl(projectId, id);
-		const response = await fetch(url);
+		const response = await fetch(url, { signal });
 		if (!response.ok) throw new Error(`Media ${id} cannot be read`);
 		const blob = await response.blob();
 		const file = new File([blob], metadata.fileName ?? metadata.name, { type: metadata.fileType ?? blob.type, lastModified: metadata.lastModified });
@@ -398,33 +464,50 @@ class StorageService {
 		};
 	}
 
-	/** Loads every media asset: the metadata list is fetched once and files are read with bounded concurrency. */
+	/**
+	 * Loads every media asset: the metadata list is fetched once (and cached) and files are read with
+	 * bounded concurrency. Aborting `signal` stops starting new reads and rejects. A file that cannot
+	 * be read is left out and reported through `onFailed`.
+	 */
 	async loadAllMediaAssets({
 		projectId,
 		concurrency = 8,
 		onProgress,
+		onFailed,
+		signal,
+		usedIds,
 	}: {
 		projectId: string;
 		concurrency?: number;
 		onProgress?: (progress: { loaded: number; total: number }) => void;
+		onFailed?: (failure: { id: string; name: string; error: string }) => void;
+		signal?: AbortSignal;
+		/** Media the project's timeline uses: staged media are loaded only when listed here. */
+		usedIds?: ReadonlySet<string>;
 	}): Promise<MediaAsset[]> {
-		const list = await this.projectsAdapter.mediaList(projectId);
+		// Staged media belong to a draft still loading (maybe in another tab): skipped unless the
+		// saved timeline already uses them (the draft committed but its promotion did not finish).
+		const list = [...(await this.fetchManifest({ projectId })).values()].filter((metadata) => !metadata.staged || usedIds?.has(metadata.id));
 		const items: (MediaAsset | null)[] = new Array(list.length).fill(null);
 		let next = 0;
 		let loaded = 0;
 		const worker = async () => {
 			while (next < list.length) {
+				signal?.throwIfAborted();
 				const index = next++;
 				try {
-					items[index] = await this.readMediaAsset({ projectId, metadata: list[index] });
+					items[index] = await this.readMediaAsset({ projectId, metadata: list[index], signal });
 				} catch (error) {
+					if (signal?.aborted) throw error;
 					console.error(`Failed to load media ${list[index].id}:`, error);
+					onFailed?.({ id: list[index].id, name: list[index].name, error: error instanceof Error ? error.message : String(error) });
 				}
 				loaded++;
 				onProgress?.({ loaded, total: list.length });
 			}
 		};
 		await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), list.length) }, worker));
+		signal?.throwIfAborted();
 		return items.filter((item): item is MediaAsset => item !== null);
 	}
 
@@ -436,6 +519,7 @@ class StorageService {
 		id: string;
 	}): Promise<void> {
 		await this.projectsAdapter.removeMedia(projectId, id);
+		this.manifests.get(projectId)?.delete(id);
 	}
 
 	async deleteProjectMedia({
@@ -444,6 +528,7 @@ class StorageService {
 		projectId: string;
 	}): Promise<void> {
 		await this.projectsAdapter.removeProjectMedia(projectId);
+		this.manifests.delete(projectId);
 	}
 
 	async clearAllData(): Promise<void> {

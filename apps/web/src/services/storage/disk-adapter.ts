@@ -14,15 +14,26 @@ async function checked(response: Response): Promise<Response> {
 export class DiskAdapter {
 	private revisions = new Map<string, string>();
 	private writes = new Map<string, Promise<void>>();
+	/**
+	 * Projects this adapter saw exist and then saw gone (deleted here or in another tab): a write never
+	 * creates them again. Ids are never reused, so a new project is never in here.
+	 */
+	private gone = new Set<string>();
 	async get(id: string): Promise<SerializedProject | null> {
+		return (await this.read(id))?.value ?? null;
+	}
+	/** Reads a project with the revision of that copy (the shared cache can move on meanwhile). */
+	private async read(id: string): Promise<{ value: SerializedProject; revision: string } | null> {
 		const response = await fetch(projectUrl(id), { cache: "no-store" });
 		if (response.status === 404) {
+			if (this.revisions.has(id)) this.gone.add(id);
 			this.revisions.delete(id);
 			return null;
 		}
 		await checked(response);
-		this.revisions.set(id, response.headers.get("etag") ?? "new");
-		return response.json();
+		const revision = response.headers.get("etag") ?? "new";
+		this.revisions.set(id, revision);
+		return { value: await response.json(), revision };
 	}
 	async getAll(): Promise<SerializedProject[]> {
 		return (await checked(await fetch(base, { cache: "no-store" }))).json();
@@ -37,10 +48,44 @@ export class DiskAdapter {
 		key: string;
 		value: SerializedProject;
 	}): Promise<void> {
+		await this.queued(key, () => this.writeProject(key, value));
+	}
+	/**
+	 * Changes the stored project with `change`, applied to the copy on disk at the moment of the write:
+	 * if another write lands in between, it is read again and changed again (never overwritten). Null
+	 * when the project does not exist.
+	 */
+	async update(
+		key: string,
+		change: (value: SerializedProject) => SerializedProject,
+	): Promise<SerializedProject | null> {
+		let result: SerializedProject | null = null;
+		await this.queued(key, async () => {
+			for (let attempt = 0; attempt < 5; attempt++) {
+				const current = await this.read(key);
+				if (!current) return;
+				const next = change(current.value);
+				// The revision of the copy that was changed, not the shared cache: another read may have moved
+				// that on (to a newer copy, or to "gone"), and the write must not pass on its strength.
+				const response = await fetch(projectUrl(key), {
+					method: "PUT",
+					headers: { "Content-Type": "application/json", "If-Match": current.revision },
+					body: JSON.stringify(next),
+				});
+				if (response.status === 409) continue;
+				await checked(response);
+				this.revisions.set(key, response.headers.get("etag") ?? "new");
+				result = next;
+				return;
+			}
+			throw new Error("The project kept changing; try again");
+		});
+		return result;
+	}
+	/** Writes of one project run one after another, in call order. */
+	private async queued(key: string, run: () => Promise<void>): Promise<void> {
 		const previous = this.writes.get(key) ?? Promise.resolve();
-		const current = previous
-			.catch(() => undefined)
-			.then(() => this.writeProject(key, value));
+		const current = previous.catch(() => undefined).then(run);
 		this.writes.set(key, current);
 		try {
 			await current;
@@ -52,6 +97,7 @@ export class DiskAdapter {
 		key: string,
 		value: SerializedProject,
 	): Promise<void> {
+		if (this.gone.has(key)) throw new Error("The project was deleted; not saved");
 		let expected = this.revisions.get(key);
 		if (!expected) {
 			await this.get(key);
@@ -69,7 +115,8 @@ export class DiskAdapter {
 				"The project was also changed in another browser; the latest save will overwrite those changes.",
 			);
 			for (let attempt = 0; attempt < 3 && response.status === 409; attempt++) {
-				await this.get(key);
+				// Deleted meanwhile: a write must not bring it back.
+				if (!(await this.get(key))) throw new Error("The project was deleted; not saved");
 				response = await write(this.revisions.get(key) ?? "new");
 			}
 		}
@@ -98,6 +145,7 @@ export class DiskAdapter {
 	async remove(id: string): Promise<void> {
 		await checked(await fetch(projectUrl(id), { method: "DELETE" }));
 		this.revisions.delete(id);
+		this.gone.add(id);
 	}
 	async clear(): Promise<void> {
 		for (const id of await this.list()) await this.remove(id);
@@ -134,6 +182,16 @@ export class DiskAdapter {
 		);
 		await checked(
 			await fetch(url, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(metadata),
+			}),
+		);
+	}
+	/** Replaces the metadata of stored media (its file stays). */
+	async updateMediaMetadata(id: string, metadata: MediaAssetData): Promise<void> {
+		await checked(
+			await fetch(this.mediaUrl(id, metadata.id), {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(metadata),
