@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { applyAnimationPresets, presetLayerAt, readAnimationPresets, readPresetSettings } from "./presets";
 import { buildTextElement } from "@/timeline/element-utils";
 import { splitElementAt } from "@/timeline/split";
+import { applyElementUpdate } from "@/timeline/update-pipeline";
+import { clipElementToRange } from "@/timeline/compound";
 import type { TextElement, TimelineElement } from "@/timeline";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 
@@ -21,7 +23,8 @@ describe("animation presets", () => {
 		expect(readAnimationPresets(replaced)).toEqual({ in: { type: "fade", duration: 0.3 }, out: { type: "fade", duration: 0.5 } });
 		const removed = applyAnimationPresets(replaced, { out: { type: "none" } });
 		expect(readAnimationPresets(removed)).toEqual({ in: { type: "fade", duration: 0.3 }, out: null });
-		expect(Object.keys(removed.params).filter((key) => key.startsWith("animation.out"))).toEqual([]);
+		// Written as "none" (element updates merge params, so a removed key would come back).
+		expect(removed.params["animation.out"]).toBe("none");
 	});
 
 	test("bad requests are refused", () => {
@@ -30,8 +33,9 @@ describe("animation presets", () => {
 		expect(() => applyAnimationPresets(text(), { out: { type: "fade", duration: 0.000001 } })).toThrow("0.05 to 10 seconds");
 		const video = { ...text(), type: "video" } as unknown as TextElement;
 		expect(() => applyAnimationPresets(video, { in: { type: "typewriter" } })).toThrow("typewriter is for text");
+		// Compound clips take the blur presets too (their layer is blurred like any clip's).
 		const compound = { ...text(), type: "compound" } as unknown as TextElement;
-		expect(() => applyAnimationPresets(compound, { out: { type: "dissolve" } })).toThrow("needs a clip that takes effects");
+		expect(readAnimationPresets(applyAnimationPresets(compound, { out: { type: "dissolve" } })).out?.type).toBe("dissolve");
 		// Unknown settings read as none.
 		expect(readAnimationPresets(text(2, { "animation.in": "spin" }))).toEqual({ in: null, out: null });
 	});
@@ -89,4 +93,29 @@ describe("animation presets", () => {
 		expect(readAnimationPresets(parts.left)).toEqual({ in: { type: "pop", duration: 0.35 }, out: null });
 		expect(readAnimationPresets(parts.right)).toEqual({ in: null, out: { type: "fall", duration: 0.5 } });
 	});
+
+	test("None through the editor's update (which merges params) removes the preset", () => {
+		const el = applyAnimationPresets(text(2), { in: { type: "pop" }, out: { type: "fade" } });
+		const none = applyAnimationPresets(el, { out: { type: "none" } });
+		const updated = applyElementUpdate({ element: el, patch: { params: none.params }, context: { tracks: { main: { id: "m", elements: [] }, overlay: [], audio: [] } as never, trackId: "t" } });
+		expect(readAnimationPresets(updated)).toEqual({ in: { type: "pop", duration: 0.35 }, out: null });
+	});
+
+	test("shortened to fit, an in preset is complete on the clip's last drawn frame", () => {
+		const el = applyAnimationPresets(text(0.5), { in: { type: "typewriter" } });
+		expect(layer(el, 0.5 - 1 / 30).typed).toBe(1);
+		const both = applyAnimationPresets(text(0.3), { in: { type: "fade" }, out: { type: "fade" } });
+		// A moment in the middle shows the clip whole.
+		expect(layer(both, 0.135).opacity).toBe(1);
+	});
+
+	test("ungrouping a trimmed compound drops the preset of a side that was cut off", () => {
+		const el = { ...applyAnimationPresets(text(2), { in: { type: "fade" }, out: { type: "fall" } }), startTime: T(0) } as TextElement;
+		const cutStart = clipElementToRange({ element: el, rangeStart: T(0.5), rangeEnd: T(5) })!;
+		expect(readAnimationPresets(cutStart)).toEqual({ in: null, out: { type: "fall", duration: 0.5 } });
+		const cutEnd = clipElementToRange({ element: el, rangeStart: T(0), rangeEnd: T(1.5) })!;
+		expect(readAnimationPresets(cutEnd)).toEqual({ in: { type: "fade", duration: 0.3 }, out: null });
+		expect(clipElementToRange({ element: el, rangeStart: T(0), rangeEnd: T(5) })).toBe(el);
+	});
 });
+

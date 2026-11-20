@@ -1,4 +1,5 @@
 // Agent elements (bundle/draft) -> native OpenCut timeline elements.
+import { checkPresetParams } from "@/animation/presets";
 import { animateAgentElement } from "./animate";
 import { EditorCore } from "@/core";
 import { processMediaAssets } from "@/media/processing";
@@ -195,6 +196,8 @@ export function buildAgentElement(args: {
 	e: AgentElement; media?: LoadedMedia; trackId: string; sceneId?: string; canvas: { width: number; height: number }; keyframes: PendingKeyframe[];
 }): any {
 	const element = buildAgentElementOnly(args);
+	// Animation presets written as raw params are checked like `animate`.
+	checkPresetParams(element, args.e.params);
 	return args.e.animate === undefined ? element : animateAgentElement(element, args.e.animate);
 }
 

@@ -1,5 +1,5 @@
 // Splitting one timeline element in two at a timeline time (pure).
-import { PRESET_PARAM } from "@/animation/presets";
+import { withoutPresetSide } from "@/animation/presets";
 import type { TimelineElement } from "@/timeline";
 import { isRetimableElement } from "@/timeline";
 import { splitAnimationsAtTime } from "@/animation";
@@ -34,13 +34,8 @@ export function splitElementAt({ element, splitTime, rightId }: { element: Timel
 			params[key] = 0;
 			changed = true;
 		}
-		for (const preset of key === "fadeIn" ? [PRESET_PARAM.in, PRESET_PARAM.inDuration] : [PRESET_PARAM.out, PRESET_PARAM.outDuration]) {
-			if (preset in params) {
-				delete params[preset];
-				changed = true;
-			}
-		}
-		return changed ? { params } : {};
+		const kept = withoutPresetSide(params, key === "fadeIn" ? "in" : "out");
+		return changed || kept !== params ? { params: kept } : {};
 	};
 	return {
 		left: {

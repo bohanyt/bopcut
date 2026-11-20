@@ -55,9 +55,7 @@ function PresetSide({
 	onApply: (request: AnimationPresetRequest) => void;
 }) {
 	const types = (side === "in" ? ANIMATION_IN_TYPES : ANIMATION_OUT_TYPES).filter(
-		(type) =>
-			(type !== "typewriter" || element.type === "text") &&
-			((type !== "blur" && type !== "dissolve") || element.type !== "compound"),
+		(type) => type !== "typewriter" || element.type === "text",
 	);
 	const type = current?.type ?? "none";
 	const [duration, setDuration] = useState(current ? String(current.duration) : "");

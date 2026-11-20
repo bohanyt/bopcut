@@ -63,4 +63,27 @@ describe("animate for agents", () => {
 		// The out side the user left alone can still be changed.
 		expect(run(changed, [{ op: "animate", match: { agentId: "A" }, out: "fall" }], base).results[0]).toMatchObject({ ok: true });
 	});
+
+	test("presets written as raw params are checked like animate", () => {
+		const scenes = scenesWith([video("A", 0, 2)]);
+		expect(run(scenes, [{ op: "set", match: { agentId: "A" }, params: { "animation.in": "spin" } }]).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("in animation must be one of") });
+		expect(run(scenes, [{ op: "set", match: { agentId: "A" }, params: { "animation.in": "typewriter" } }]).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("typewriter is for text") });
+		expect(run(scenes, [{ op: "set", match: { agentId: "A" }, params: { "animation.out": "fade", "animation.outDuration": 0 } }]).results[0]).toMatchObject({ ok: false });
+		const ok = run(scenes, [{ op: "set", match: { agentId: "A" }, params: { "animation.out": "fall", "animation.outDuration": 0.8 } }]);
+		expect(readAnimationPresets(ok.scenes[0].tracks.main.elements[0]).out).toEqual({ type: "fall", duration: 0.8 });
+		const added = run(scenesWith([]), [{ op: "add", track: { name: "Titles", type: "text" }, element: { agent_id: "T", name: "T", text: "Hi", start: 0, duration: 2, params: { "animation.inDuration": 99, "animation.in": "fade" } } }]);
+		expect(added.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("0.05 to 10 seconds") });
+	});
+
+	test("a transition's continuation starts as the clip looked at the cut and has no presets of its own", () => {
+		const scenes = scenesWith([video("A", 0, 2), video("B", 2, 2)]);
+		const faded = run(scenes, [{ op: "animate", match: { agentId: "A" }, in: "pop", out: "fade" }]).scenes;
+		const out = run(faded, [{ op: "transition", match: { agentId: "B" }, type: "crossfade", duration: 0.5 }]);
+		expect(out.results[0]).toMatchObject({ ok: true });
+		const tail = out.scenes[0].tracks.overlay.at(-1)!.elements[0];
+		expect(readAnimationPresets(tail)).toEqual({ in: null, out: null });
+		const keys = ((tail.animations?.opacity as { keys?: { value: number }[] } | undefined)?.keys ?? []).map((k) => k.value);
+		expect(keys[0]).toBeLessThan(0.1); // the fade out had nearly hidden the clip at its last frame
+	});
 });
+

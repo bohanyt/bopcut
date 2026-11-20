@@ -117,7 +117,7 @@ function buildAnimationTab({
 		id: "animation",
 		label: "Animation",
 		icon: <HugeiconsIcon icon={KeyframeAddIcon} size={16} />,
-		content: ({ trackId }) => <AnimationTab element={element} trackId={trackId} />,
+		content: ({ trackId }) => <AnimationTab key={element.id} element={element} trackId={trackId} />,
 	};
 }
 

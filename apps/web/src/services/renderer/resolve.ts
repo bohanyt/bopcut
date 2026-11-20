@@ -217,16 +217,18 @@ function resolveVisualState({
 		localTime,
 		transform,
 		opacity,
-		effectPasses: [
-			...resolveEffectPassGroups({
+		effectPasses: withPresetBlur(
+			resolveEffectPassGroups({
 				effects: params.effects,
 				animations: params.animations,
 				localTime,
 				width: passWidth,
 				height: passHeight,
 			}),
-			...presetBlurPasses(preset, passWidth, passHeight),
-		],
+			preset,
+			passWidth,
+			passHeight,
+		),
 	};
 }
 
@@ -242,14 +244,14 @@ function withPresetLayer(transform: Transform, preset: PresetLayer): Transform {
 	};
 }
 
-/** An animation preset's blur, as one more pass group (none while it blurs nothing). */
-function presetBlurPasses(preset: PresetLayer, width: number, height: number): EffectPass[][] {
-	if (preset.blur <= 0) return [];
+/** The clip's effect pass groups and an animation preset's blur after them (the same array while it blurs nothing). */
+function withPresetBlur(groups: EffectPass[][], preset: PresetLayer, width: number, height: number): EffectPass[][] {
+	if (preset.blur <= 0) return groups;
 	const passes = buildGaussianBlurPasses({
 		sigmaX: intensityToSigma({ intensity: preset.blur, resolution: width, reference: 1920 }),
 		sigmaY: intensityToSigma({ intensity: preset.blur, resolution: height, reference: 1080 }),
 	});
-	return passes.length ? [passes] : [];
+	return passes.length ? [...groups, passes] : groups;
 }
 
 // The nested scene is resolved at its own local time: t - startTime + trimStart.
@@ -480,21 +482,24 @@ function resolveTextNode({
 			propertyPath: "background.color",
 			localTime,
 		}),
-		effectPasses: [
-			...resolveEffectPassGroups({
+		effectPasses: withPresetBlur(
+			resolveEffectPassGroups({
 				effects: node.params.effects,
 				animations: node.params.animations,
 				localTime,
 				width: context.renderer.outputWidth,
 				height: context.renderer.outputHeight,
 			}),
-			...presetBlurPasses(preset, context.renderer.outputWidth, context.renderer.outputHeight),
-		],
+			preset,
+			context.renderer.outputWidth,
+			context.renderer.outputHeight,
+		),
 		measuredText: measureTextElement({
 			element: node.params,
 			canvasHeight: node.params.canvasHeight,
 			localTime,
 			ctx: getTextMeasurementContext(),
+			presetTyped: preset.typed,
 		}),
 	};
 }

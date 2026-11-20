@@ -33,7 +33,6 @@ export type AnimationPresetRequest = {
 export type PresetSettings = { in?: { type: AnimationInType; seconds: number }; out?: { type: AnimationOutType; seconds: number } };
 
 const BLUR_AMOUNT = 30;
-const usesBlur = (type: string | undefined) => type === "blur" || type === "dissolve";
 
 /** The presets in a clip's params (unknown or missing ones are none). */
 export function readPresetSettings(params: ParamValues | undefined): PresetSettings {
@@ -63,8 +62,7 @@ export function readAnimationPresets(element: TimelineElement): { in: { type: st
 
 /**
  * The clip with these presets (pure; the sides not asked about stay). Throws a message for a request the
- * clip cannot take: an unknown preset, a length out of range, typewriter on something other than text,
- * blur on a clip without effects (a compound clip).
+ * clip cannot take: an unknown preset, a length out of range, typewriter on something other than text.
  */
 export function applyAnimationPresets<T extends TimelineElement>(element: T, request: AnimationPresetRequest): T {
 	const params: ParamValues = { ...element.params };
@@ -74,21 +72,45 @@ export function applyAnimationPresets<T extends TimelineElement>(element: T, req
 		const types: readonly string[] = side === "in" ? ANIMATION_IN_TYPES : ANIMATION_OUT_TYPES;
 		if (spec.type !== "none" && !types.includes(spec.type)) throw new Error(`${side} animation must be one of ${types.join(", ")} or none`);
 		if (spec.type === "typewriter" && element.type !== "text") throw new Error("typewriter is for text");
-		if (usesBlur(spec.type) && element.type === "compound") throw new Error(`${spec.type} needs a clip that takes effects (not a compound clip)`);
 		if (spec.duration !== undefined && (typeof spec.duration !== "number" || !Number.isFinite(spec.duration) || spec.duration < MIN_PRESET_SECONDS || spec.duration > MAX_PRESET_SECONDS)) {
 			throw new Error(`${side} animation duration must be ${MIN_PRESET_SECONDS} to ${MAX_PRESET_SECONDS} seconds`);
 		}
 		const typeKey = side === "in" ? PRESET_PARAM.in : PRESET_PARAM.out;
 		const durationKey = side === "in" ? PRESET_PARAM.inDuration : PRESET_PARAM.outDuration;
 		if (spec.type === "none") {
-			delete params[typeKey];
-			delete params[durationKey];
+			// Written, not deleted: element updates merge params, so a deleted key would come back.
+			params[typeKey] = "none";
 			continue;
 		}
 		params[typeKey] = spec.type;
 		params[durationKey] = spec.duration ?? (side === "in" ? DEFAULT_IN_SECONDS[spec.type as AnimationInType] : DEFAULT_OUT_SECONDS[spec.type as AnimationOutType]);
 	}
 	return { ...element, params };
+}
+
+/**
+ * Checks preset values written as raw params (an agent's `params`), the same way as a request: throws a
+ * message for a value a preset cannot have.
+ */
+export function checkPresetParams(element: TimelineElement, params: ParamValues | undefined): void {
+	if (!params || !Object.values(PRESET_PARAM).some((key) => key in params)) return;
+	const merged = { ...element.params, ...params };
+	const side = (typeKey: string, durationKey: string) => {
+		if (!(typeKey in params) && !(durationKey in params)) return undefined;
+		const type = merged[typeKey] ?? "none";
+		const duration = merged[durationKey];
+		return { type, ...(duration === undefined || type === "none" ? {} : { duration }) };
+	};
+	applyAnimationPresets(element, {
+		in: side(PRESET_PARAM.in, PRESET_PARAM.inDuration),
+		out: side(PRESET_PARAM.out, PRESET_PARAM.outDuration),
+	} as AnimationPresetRequest);
+}
+
+/** The params of a clip whose start (`in`) or end (`out`) was cut off: that side's preset goes, like a split. */
+export function withoutPresetSide(params: ParamValues, side: "in" | "out"): ParamValues {
+	const key = side === "in" ? PRESET_PARAM.in : PRESET_PARAM.out;
+	return typeof params[key] === "string" && params[key] !== "none" ? { ...params, [key]: "none" } : params;
 }
 
 /** What the presets add at a moment: factors for opacity and scale, offsets for position and rotation, a blur and the share of letters typed. */
@@ -103,14 +125,17 @@ const lerp = (from: number, to: number, t: number) => from + (to - from) * t;
 
 /**
  * The presets' effect at `localTime` (ticks from the clip's start) of a clip `duration` ticks long. Both
- * sides are shortened alike when they would overlap.
+ * sides are shortened alike when they would not fit.
  */
 export function presetLayerAt(settings: PresetSettings, localTime: number, duration: number, canvasHeight: number): PresetLayer {
 	if (!settings.in && !settings.out) return NO_PRESET_LAYER;
 	let inTicks = (settings.in?.seconds ?? 0) * TICKS_PER_SECOND;
 	let outTicks = (settings.out?.seconds ?? 0) * TICKS_PER_SECOND;
-	if (inTicks + outTicks > duration && duration > 0) {
-		const fit = duration / (inTicks + outTicks);
+	// Shortened to fit, the presets leave the clip whole for a moment (a tenth, at least a frame at 30 fps),
+	// so an in preset is complete on a frame that is drawn (the clip's end itself is not).
+	const room = Math.max(0, duration - Math.max(duration * 0.1, TICKS_PER_SECOND / 30));
+	if (inTicks + outTicks > room && inTicks + outTicks > 0) {
+		const fit = room / (inTicks + outTicks);
 		inTicks *= fit;
 		outTicks *= fit;
 	}

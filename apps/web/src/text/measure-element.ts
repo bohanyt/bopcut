@@ -76,11 +76,14 @@ export function measureTextElement({
 	canvasHeight,
 	localTime,
 	ctx,
+	presetTyped,
 }: {
 	element: TextElement;
 	canvasHeight: number;
 	localTime: number;
 	ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+	/** The typewriter preset's share at this moment, when the caller has it (else read from the element). */
+	presetTyped?: number;
 }): MeasuredTextElement {
 	const text = buildTextLayoutParamsFromElement({ element });
 	text.fontSize = Math.max(
@@ -260,7 +263,7 @@ export function measureTextElement({
 		typed: Math.min(
 			1,
 			Math.max(0, textNumber(element, "typewriter", 1, localTime)),
-			presetLayerAt(readPresetSettings(element.params), localTime, element.duration, canvasHeight).typed,
+			presetTyped ?? presetLayerAt(readPresetSettings(element.params), localTime, element.duration, canvasHeight).typed,
 		),
 	};
 }
