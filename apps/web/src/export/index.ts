@@ -1,4 +1,5 @@
 import type { FrameRate } from "opencut-wasm";
+import type { MediaLoadFailure } from "@/media/types";
 import { EXPORT_MIME_TYPES } from "./mime-types";
 
 export const EXPORT_QUALITY_VALUES = [
@@ -18,6 +19,8 @@ export interface ExportOptions {
 	quality: ExportQuality;
 	fps?: FrameRate;
 	includeAudio?: boolean;
+	/** Explicitly allow export when referenced media are missing. */
+	allowMissing?: boolean;
 	/** Export this scene (for example the root timeline) instead of the open one. */
 	sceneId?: string;
 }
@@ -26,6 +29,7 @@ export interface ExportResult {
 	success: boolean;
 	buffer?: ArrayBuffer;
 	error?: string;
+	missingMedia?: MediaLoadFailure[];
 	cancelled?: boolean;
 }
 

@@ -13,7 +13,6 @@ import {
 	QUALITY_VERY_HIGH,
 } from "mediabunny";
 import type { FrameRate } from "opencut-wasm";
-import { mediaTimeToSeconds } from "opencut-wasm";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { frameRateToFloat } from "@/fps/utils";
 import type { RootNode } from "./nodes/root-node";
@@ -36,6 +35,9 @@ const qualityMap = {
 	high: QUALITY_HIGH,
 	very_high: QUALITY_VERY_HIGH,
 };
+
+// Mediabunny's MP4 timescale when no fixed frame rate metadata is supplied.
+const MP4_MIN_SAMPLE_DURATION = 1 / 57_600;
 
 export type SceneExporterEvents = {
 	progress: [progress: number];
@@ -87,10 +89,10 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 	}): Promise<ArrayBuffer | null> {
 		const fps = this.renderer.fps;
 		const fpsFloat = frameRateToFloat(fps);
-		const ticksPerFrame = Math.round(
-			(TICKS_PER_SECOND * fps.denominator) / fps.numerator,
-		);
-		const frameCount = Math.floor(rootNode.duration / ticksPerFrame);
+		const frameTicksNumerator = TICKS_PER_SECOND * fps.denominator;
+		const frameCount = Math.ceil((rootNode.duration * fps.numerator) / frameTicksNumerator);
+		const frameDuration = fps.denominator / fps.numerator;
+		const duration = rootNode.duration / TICKS_PER_SECOND;
 
 		const outputFormat =
 			this.format === "webm" ? new WebMOutputFormat() : new Mp4OutputFormat();
@@ -105,7 +107,9 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			bitrate: qualityMap[this.quality],
 		});
 
-		output.addVideoTrack(videoSource, { frameRate: fpsFloat });
+		// WebM writes a default duration for its blocks. MP4 can time a shorter last sample;
+		// omitting the fixed-rate metadata lets it use a finer timescale for that sample.
+		output.addVideoTrack(videoSource, this.format === "webm" ? { frameRate: fpsFloat } : {});
 
 		let audioSource: AudioBufferSource | null = null;
 		if (this.shouldIncludeAudio && this.audioBuffer) {
@@ -142,10 +146,13 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 				return null;
 			}
 
-			const timeTicks = i * ticksPerFrame;
-			const timeSeconds = mediaTimeToSeconds({ time: timeTicks });
+			const timeTicks = Math.min(rootNode.duration - 1, Math.round((i * frameTicksNumerator) / fps.numerator));
+			const timeSeconds = (i * fps.denominator) / fps.numerator;
+			const sampleDuration = this.format === "mp4" && i === frameCount - 1
+				? Math.max(MP4_MIN_SAMPLE_DURATION, Math.min(frameDuration, duration - timeSeconds))
+				: frameDuration;
 			await this.renderer.render({ node: rootNode, time: timeTicks });
-			await videoSource.add(timeSeconds, 1 / fpsFloat);
+			await videoSource.add(timeSeconds, sampleDuration);
 
 			this.emit("progress", i / frameCount);
 		}

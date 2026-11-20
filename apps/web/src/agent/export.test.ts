@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import type { TScene, VideoElement } from "@/timeline";
+import { ALL_FORMATS, BufferSource, CanvasSource, EncodedPacket, EncodedPacketSink, EncodedVideoPacketSource, Input, Output } from "mediabunny";
+import type { CompoundElement, TScene, VideoElement } from "@/timeline";
 import type { TProject } from "@/project/types";
+import type { ExportFormat } from "@/export";
+import type { MediaAsset } from "@/media/types";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
@@ -10,8 +13,119 @@ const { CLAIM_MS, handleExportFile, handleExportResult, readTextLimited, saveExp
 const { holdMediaUrls, revokeMediaUrl } = await import("@/media/url-release");
 const { EditorCore } = await import("@/core");
 const { pollExport } = await import("./bridge");
+const { storageService } = await import("@/services/storage/service");
+const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
+const { RootNode } = await import("@/services/renderer/nodes/root-node");
+const { SceneExporter } = await import("@/services/renderer/scene-exporter");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
+
+async function withCanvas(run: () => Promise<void>) {
+	class TestCanvas {
+		width = 0;
+		height = 0;
+	}
+	const globals = {
+		HTMLCanvasElement: TestCanvas,
+		document: { createElement: () => new TestCanvas() },
+	};
+	const previous = Object.getOwnPropertyDescriptors(globalThis);
+	for (const [key, value] of Object.entries(globals)) {
+		Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+	}
+	try {
+		await run();
+	} finally {
+		for (const key of Object.keys(globals)) {
+			if (previous[key]) Object.defineProperty(globalThis, key, previous[key]);
+			else Reflect.deleteProperty(globalThis, key);
+		}
+	}
+}
+
+describe("export frame timing", () => {
+	// A single black 16 × 16 keyframe in each codec, supplied in place of browser encoding.
+	const packets = {
+		mp4: "AAAAAWdkAAqs2V7ARAAAAwAEAAADAMg8SJZYAAAAAWjr48siwAAAAWWIhAAr//72c3wKa22xgQ==",
+		webm: "gkmDQgAA8AD2ADgkHBhKAAAwYAAAEL///UiMAA==",
+	};
+
+	test.each<{
+		format: ExportFormat; seconds: number; count: number; expectedDuration: number;
+	}>([
+		{ format: "mp4", seconds: 1 / 30, count: 1, expectedDuration: 1 / 30 },
+		{ format: "mp4", seconds: 0.099, count: 3, expectedDuration: 0.099 },
+		{ format: "webm", seconds: 0.099, count: 3, expectedDuration: 0.125 },
+	])("$format exports $count frame(s) from a $seconds-second timeline", ({ format, seconds, count, expectedDuration }) =>
+		withCanvas(async () => {
+			const render = spyOn(CanvasRenderer.prototype, "render").mockResolvedValue(undefined);
+			const track = new EncodedVideoPacketSource(format === "mp4" ? "avc" : "vp9");
+			const addVideoTrack = Output.prototype.addVideoTrack;
+			const addTrack = spyOn(Output.prototype, "addVideoTrack").mockImplementation(function (this: Output, _, metadata) {
+				return addVideoTrack.call(this, track, metadata);
+			});
+			const close = spyOn(CanvasSource.prototype, "close").mockImplementation(() => track.close());
+			const data = Uint8Array.from(atob(packets[format]), (byte) => byte.charCodeAt(0));
+			const add = spyOn(CanvasSource.prototype, "add").mockImplementation((timestamp, duration = 0) =>
+				track.add(new EncodedPacket(data, "key", timestamp, duration), {
+					decoderConfig: { codec: format === "mp4" ? "avc1.64000a" : "vp09.00.10.08", codedWidth: 16, codedHeight: 16 },
+				}),
+			);
+			try {
+				const exporter = new SceneExporter({ width: 16, height: 16, fps: { numerator: 24, denominator: 1 }, format, quality: "high" });
+				const buffer = await exporter.export({ rootNode: new RootNode({ duration: T(seconds) }) });
+				expect(render).toHaveBeenCalledTimes(count);
+				if (!buffer) throw new Error("Expected an exported video");
+				const input = new Input({ source: new BufferSource(buffer), formats: ALL_FORMATS });
+				try {
+					const video = await input.getPrimaryVideoTrack();
+					if (!video) throw new Error("Expected a video track");
+					const samples = await Array.fromAsync(new EncodedPacketSink(video).packets());
+					expect(samples).toHaveLength(count);
+					const tolerance = format === "mp4" ? 0.00002 : 0.001;
+					expect(Math.abs(await video.computeDuration() - expectedDuration)).toBeLessThanOrEqual(tolerance);
+				} finally {
+					input.dispose();
+				}
+			} finally {
+				add.mockRestore();
+				close.mockRestore();
+				addTrack.mockRestore();
+				render.mockRestore();
+			}
+		}));
+
+	test("a one-hour fractional-rate export rounds each render time independently", () =>
+		withCanvas(async () => {
+			let count = 0;
+			let lastRender = -1;
+			let lastSampleEnd = -1;
+			const render = spyOn(CanvasRenderer.prototype, "render").mockImplementation(async ({ time }) => {
+				lastRender = time;
+			});
+			const start = spyOn(Output.prototype, "start").mockResolvedValue(undefined);
+			const close = spyOn(CanvasSource.prototype, "close").mockImplementation(() => {});
+			const finalize = spyOn(Output.prototype, "finalize").mockResolvedValue(undefined);
+			const add = spyOn(CanvasSource.prototype, "add").mockImplementation(async (timestamp, duration = 0) => {
+				count++;
+				lastSampleEnd = timestamp + duration;
+			});
+			try {
+				const fps = { numerator: 2997, denominator: 100 };
+				const exporter = new SceneExporter({ width: 16, height: 16, fps, format: "mp4", quality: "high" });
+				await exporter.export({ rootNode: new RootNode({ duration: T(3600) }) });
+				expect(count).toBe(107_892);
+				expect(lastRender).toBe(431_995_996);
+				expect(lastSampleEnd).toBeCloseTo(3600, 8);
+			} finally {
+				add.mockRestore();
+				finalize.mockRestore();
+				close.mockRestore();
+				start.mockRestore();
+				render.mockRestore();
+			}
+		}));
+});
 
 describe("export requests", () => {
 	test("defaults and checks", () => {
@@ -223,20 +337,37 @@ describe("one export at a time", () => {
 describe("the export poller", () => {
 	afterEach(() => EditorCore.reset());
 
-	const clip = (seconds: number) => ({ id: "v", agentId: "v", type: "video", name: "v", mediaId: "m", startTime: T(0), duration: T(seconds), trimStart: T(0), trimEnd: T(0), params: {} }) as unknown as VideoElement;
-	const scenesWith = (seconds: number) => [{ id: "main", name: "Main", isMain: true, bookmarks: [], createdAt: new Date(0), updatedAt: new Date(0), tracks: { main: { id: "t", name: "Main", type: "video", muted: false, hidden: false, elements: [clip(seconds)] }, overlay: [], audio: [] } } as unknown as TScene];
-	const open = (id: string, seconds = 2) => {
+	const clip = (seconds: number): VideoElement => ({ id: "v", agentId: "v", type: "video", name: "Clip", mediaId: "m", startTime: T(0), duration: T(seconds), trimStart: T(0), trimEnd: T(0), params: {} });
+	const sceneWith = (id: string, element: VideoElement | CompoundElement): TScene => ({
+		id, name: id, isMain: id === "main", bookmarks: [], createdAt: new Date(0), updatedAt: new Date(0),
+		tracks: { main: { id: `track-${id}`, name: "Main", type: "video", muted: false, hidden: false, elements: [element] }, overlay: [], audio: [] },
+	});
+	const videoAsset: MediaAsset = { id: "m", name: "Clip", type: "video", file: new File(["video"], "clip.mp4"), url: "blob:video" };
+	const open = (id: string, seconds = 2, { width = 1080, missing = false, nested = false } = {}) => {
 		const editor = EditorCore.getInstance();
-		const scenes = scenesWith(seconds);
-		editor.project.setActiveProject({ project: { metadata: { id, name: "My clip", createdAt: new Date(0), updatedAt: new Date(0) }, scenes, currentSceneId: "main", settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1080, height: 1920 } } } as unknown as TProject });
+		const video = clip(seconds);
+		const compound = (sceneId: string): CompoundElement => ({
+			id: `to-${sceneId}`, name: sceneId, type: "compound", sceneId, params: {},
+			startTime: video.startTime, duration: video.duration, trimStart: video.trimStart, trimEnd: video.trimEnd,
+		});
+		const scenes: TScene[] = nested
+			? [sceneWith("main", compound("outer")), { ...sceneWith("outer", compound("inner")), kind: "compound" }, { ...sceneWith("inner", video), kind: "compound" }]
+			: [sceneWith("main", video)];
+		const project: TProject = {
+			metadata: { id, name: "My clip", duration: video.duration, createdAt: new Date(0), updatedAt: new Date(0) },
+			scenes, currentSceneId: "main", version: 1,
+			settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width, height: 1920 }, background: { type: "color", color: "#000000" } },
+		};
+		editor.project.setActiveProject({ project });
 		editor.scenes.setScenes({ scenes, activeSceneId: "main" });
 		(editor.project as any).isLoading = false;
-		(editor.media as any).loadedProjectId = id;
-		(editor.media as any).isLoading = false;
+		editor.media.setAssets({ assets: missing ? [] : [videoAsset] });
+		editor.media.markProjectMediaLoaded({ projectId: id });
+		return editor;
 	};
 
 	type Log = { exports: any[]; posts: any[]; uploads: number; gets: number; result: () => Promise<any> };
-	type Server = { request: unknown; onRequest?: () => void; onClaim?: () => void; result?: Record<string, unknown>; replyLost?: boolean; duringExport?: () => void };
+	type Server = { request: unknown; onRequest?: () => void; onClaim?: () => void; result?: Record<string, unknown>; replyLost?: boolean; duringExport?: () => void; useRenderer?: boolean };
 	/** A fresh editor with one project, a fake export, and the real server handlers on a temporary workspace. */
 	const withServer = (server: Server, run: (log: Log) => Promise<void>) =>
 		inTemp(async (workspace, fs, path) => {
@@ -258,7 +389,7 @@ describe("the export poller", () => {
 					}
 				},
 			};
-			(editor.renderer as any).exportProject = async ({ options, onProgress, onCancel }: { options: { sceneId: string }; onProgress: (p: { progress: number }) => void; onCancel: () => boolean }) => {
+			if (!server.useRenderer) (editor.renderer as any).exportProject = async ({ options, onProgress, onCancel }: { options: { sceneId: string }; onProgress: (p: { progress: number }) => void; onCancel: () => boolean }) => {
 				// What the real export reads at its start: the scene and its clip's length.
 				const scene = editor.scenes.getScenes().find((s) => s.id === options.sceneId);
 				log.exports.push({ options, duration: scene?.tracks.main.elements[0]?.duration });
@@ -298,6 +429,97 @@ describe("the export poller", () => {
 				(globalThis as any).localStorage = previousStorage;
 			}
 		});
+
+	test("browser export reports nested missing media and accepts an explicit override", () =>
+		withCanvas(async () => {
+			const editor = open("p", 2, { missing: true, nested: true });
+			editor.save.stop();
+			const encode = spyOn(SceneExporter.prototype, "export").mockResolvedValue(new ArrayBuffer(10));
+			const readMedia = spyOn(storageService, "loadMediaAsset").mockResolvedValue(videoAsset);
+			try {
+				const options = { format: "mp4", quality: "high" } as const;
+				const blocked = await editor.project.export({ options });
+				expect(blocked).toMatchObject({ success: false, missingMedia: [{ id: "m", name: "Clip" }] });
+				expect(encode).not.toHaveBeenCalled();
+				const allowed = await editor.project.export({ options: { ...options, allowMissing: true } });
+				expect(allowed.success).toBe(true);
+				expect(encode).toHaveBeenCalledTimes(1);
+				await editor.media.retryMissingMedia({ projectId: "p", failures: blocked.missingMedia });
+				expect(readMedia).toHaveBeenCalledWith({ projectId: "p", id: "m" });
+				expect((await editor.project.export({ options })).success).toBe(true);
+			} finally {
+				readMedia.mockRestore();
+				encode.mockRestore();
+			}
+		}));
+
+	test("browser export waits for a pending media load", () =>
+		withCanvas(async () => {
+			const editor = open("p", 2, { missing: true });
+			editor.save.stop();
+			const source = Promise.withResolvers<MediaAsset[]>();
+			const load = spyOn(storageService, "loadAllMediaAssets").mockReturnValue(source.promise);
+			const encode = spyOn(SceneExporter.prototype, "export").mockResolvedValue(new ArrayBuffer(10));
+			try {
+				const loading = editor.media.loadProjectMedia({ projectId: "p" });
+				const exporting = editor.project.export({ options: { format: "mp4", quality: "high" } });
+				await Promise.resolve();
+				expect(encode).not.toHaveBeenCalled();
+				source.resolve([videoAsset]);
+				await loading;
+				expect((await exporting).success).toBe(true);
+				expect(encode).toHaveBeenCalledTimes(1);
+			} finally {
+				source.resolve([videoAsset]);
+				encode.mockRestore();
+				load.mockRestore();
+			}
+		}));
+
+	test("folder export reports missing references before claiming the request, and honors an override", () =>
+		withCanvas(async () => {
+			const encode = spyOn(SceneExporter.prototype, "export").mockResolvedValue(new ArrayBuffer(10));
+			const server = { useRenderer: true, request: { rev: "e1", includeAudio: false, allowMissing: false } };
+			try {
+				await withServer(server, async (log) => {
+					open("p", 2, { missing: true, nested: true });
+					await pollExport();
+					expect(log.posts.map((post) => post.status)).toEqual(["error"]);
+					expect(await log.result()).toMatchObject({ status: "error", missingMedia: [{ id: "m" }] });
+					expect(encode).not.toHaveBeenCalled();
+					server.request = { ...server.request, rev: "e2", allowMissing: true };
+					await pollExport();
+					expect(await log.result()).toMatchObject({ status: "done", rev: "e2" });
+					expect(log.uploads).toBe(1);
+				});
+			} finally {
+				encode.mockRestore();
+			}
+		}));
+
+	test("both export entry points refuse odd MP4 canvas dimensions before audio preparation", () =>
+		withCanvas(async () => {
+			const encode = spyOn(SceneExporter.prototype, "export").mockResolvedValue(new ArrayBuffer(10));
+			const server = { request: { rev: "e1", format: "mp4", includeAudio: true }, useRenderer: true };
+			try {
+				await withServer(server, async (log) => {
+					const editor = open("p", 2, { width: 1081 });
+					const result = await editor.project.export({ options: { format: "mp4", quality: "high", includeAudio: true } });
+					expect(result).toMatchObject({ success: false, error: expect.stringContaining("Choose WebM") });
+					expect(editor.project.getExportState().progress).toBe(0);
+					await pollExport();
+					expect(log.posts.map((post) => post.status)).toEqual(["error"]);
+					expect(await log.result()).toMatchObject({ status: "error", error: result.error });
+					expect(log.uploads).toBe(0);
+					expect(encode).not.toHaveBeenCalled();
+					server.request = { rev: "e2", format: "webm", includeAudio: false };
+					await pollExport();
+					expect(await log.result()).toMatchObject({ status: "done", format: "webm", width: 1081 });
+				});
+			} finally {
+				encode.mockRestore();
+			}
+		}));
 
 	test("exports the root timeline once per rev; the file and its answer land in the workspace", () =>
 		withServer({ request: { rev: "e1", name: "final" } }, async (log) => {

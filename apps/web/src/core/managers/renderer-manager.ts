@@ -6,9 +6,10 @@ import { SceneExporter } from "@/services/renderer/scene-exporter";
 import { buildScene } from "@/services/renderer/scene-builder";
 import { createTimelineAudioBuffer } from "@/media/audio";
 import { formatTimecode } from "opencut-wasm";
-import { frameRateToFloat } from "@/fps/utils";
 import { downloadBlob } from "@/utils/browser";
-import { calculateTotalDuration } from "@/timeline";
+import { calculateTotalDuration, type TimelineElement, type TScene } from "@/timeline";
+import type { TCanvasSize } from "@/project/types";
+import { collectCompoundScenes } from "@/timeline/compound";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
 
@@ -166,9 +167,34 @@ export class RendererManager {
 		return this.exportRunning;
 	}
 
+	/** Checks a loaded scene before mixdown or rendering. */
+	checkExport({
+		format, allowMissing, scene, scenes, canvasSize,
+	}: Pick<ExportOptions, "format" | "allowMissing"> & {
+		scene: TScene;
+		scenes: TScene[];
+		canvasSize: TCanvasSize;
+	}): ExportResult | null {
+		if (format === "mp4" && (canvasSize.width % 2 !== 0 || canvasSize.height % 2 !== 0)) {
+			return {
+				success: false,
+				error: `MP4 needs even canvas dimensions (${canvasSize.width} × ${canvasSize.height}). Choose WebM or set both dimensions to even numbers in project settings.`,
+			};
+		}
+		if (allowMissing === true) return null;
+		const { tracks } = scene;
+		const elements = [tracks.main, ...tracks.overlay, ...tracks.audio].flatMap<TimelineElement>((track) => track.elements);
+		const nested = collectCompoundScenes({ scenes, elements });
+		const { media } = this.editor;
+		const missingMedia = media.getMissingSceneMedia({ scenes: [scene, ...nested], assets: media.getAssets() });
+		return missingMedia.length
+			? { success: false, error: "Some media used in this timeline are unavailable.", missingMedia }
+			: null;
+	}
+
 	/**
-	 * Exports the timeline as it is when this is called (read before the first wait, so later edits are
-	 * not mixed in). Refused while another export runs.
+	 * Exports the timeline as it is when this is called. If media are still loading, only the media
+	 * snapshot waits. Refused while another export runs.
 	 */
 	async exportProject(job: {
 		options: ExportOptions;
@@ -178,11 +204,15 @@ export class RendererManager {
 		if (this.exportRunning) {
 			return { success: false, error: "Another export is running; try again when it finishes" };
 		}
+		const session = this.editor.project.getSession();
 		this.exportRunning = true;
 		const releaseMedia = holdMediaUrls();
 		this.notify();
 		try {
-			return await this.runExport(job);
+			return await this.runExport({
+				...job,
+				onCancel: () => this.editor.project.getSession() !== session || job.onCancel?.() === true,
+			});
 		} finally {
 			releaseMedia();
 			this.exportRunning = false;
@@ -199,7 +229,7 @@ export class RendererManager {
 		onProgress?: ({ progress }: { progress: number }) => void;
 		onCancel?: () => boolean;
 	}): Promise<ExportResult> {
-		const { format, quality, fps, includeAudio, sceneId } = options;
+		const { format, quality, fps, includeAudio, sceneId, allowMissing } = options;
 
 		try {
 			const scenes = this.editor.scenes.getScenes();
@@ -209,7 +239,6 @@ export class RendererManager {
 				return { success: false, error: "Scene not found" };
 			}
 			const tracks = exported.tracks;
-			const mediaAssets = this.editor.media.getAssets();
 			const activeProject = this.editor.project.getActive();
 
 			if (!activeProject) {
@@ -222,7 +251,26 @@ export class RendererManager {
 			}
 
 			const exportFps = fps ?? activeProject.settings.fps;
-			const canvasSize = activeProject.settings.canvasSize;
+			const { canvasSize, background } = activeProject.settings;
+
+			const { media, project } = this.editor;
+			if (media.isLoadingMedia() && !onCancel?.()) {
+				await new Promise<void>((resolve) => {
+					const check = () => {
+						if (media.isLoadingMedia() && !onCancel?.()) return;
+						unsubscribeMedia();
+						unsubscribeProject();
+						resolve();
+					};
+					const unsubscribeMedia = media.subscribe(check);
+					const unsubscribeProject = project.subscribe(check);
+				});
+			}
+			if (onCancel?.()) return { success: false, cancelled: true };
+
+			const preflight = this.checkExport({ format, allowMissing, scene: exported, scenes, canvasSize });
+			if (preflight) return preflight;
+			const mediaAssets = media.getAssets();
 
 			let audioBuffer: AudioBuffer | null = null;
 			if (includeAudio) {
@@ -245,7 +293,7 @@ export class RendererManager {
 				mediaAssets,
 				duration,
 				canvasSize,
-				background: activeProject.settings.background,
+				background,
 				scenes,
 			});
 

@@ -1,7 +1,8 @@
 import { revokeMediaUrl } from "@/media/url-release";
 import type { EditorCore } from "@/core";
 import { toast } from "sonner";
-import type { MediaAsset } from "@/media/types";
+import type { MediaAsset, MediaLoadFailure } from "@/media/types";
+import type { TScene } from "@/timeline";
 import { storageService } from "@/services/storage/service";
 import { generateUUID } from "@/utils/id";
 import { videoCache } from "@/services/video-cache/service";
@@ -19,8 +20,6 @@ export function mediaIdsInScenes(scenes: readonly { tracks: { main: { elements: 
 	return ids;
 }
 
-/** A stored media file that could not be read when the project loaded. */
-export type MediaLoadFailure = { id: string; name: string; error: string };
 /** Outcome of discarding staged imports: ids removed from storage, and those that could not be. */
 export type DiscardResult = { removed: string[]; failed: { id: string; error: string }[] };
 
@@ -189,11 +188,32 @@ export class MediaManager {
 		return this.missing;
 	}
 
+	getMissingSceneMedia({ scenes, assets }: { scenes: TScene[]; assets: MediaAsset[] }): MediaLoadFailure[] {
+		const byId = new Map(assets.map((asset) => [asset.id, asset]));
+		const failures = new Map(this.missing.map((failure) => [failure.id, failure]));
+		const missing = new Map<string, MediaLoadFailure>();
+		for (const { tracks } of scenes) {
+			for (const track of [tracks.main, ...tracks.overlay, ...tracks.audio]) {
+				for (const element of track.elements) {
+					if (!("mediaId" in element)) continue;
+					const asset = byId.get(element.mediaId);
+					if (asset?.file && (element.type === "audio" || asset.url)) continue;
+					missing.set(element.mediaId, failures.get(element.mediaId) ?? {
+						id: element.mediaId,
+						name: element.name,
+						error: "Media file is unavailable",
+					});
+				}
+			}
+		}
+		return [...missing.values()];
+	}
+
 	/** Reads the missing media again; returns the ones still missing. */
-	async retryMissingMedia({ projectId }: { projectId: string }): Promise<MediaLoadFailure[]> {
-		if (this.loadedProjectId !== projectId || this.missing.length === 0) return this.missing;
+	async retryMissingMedia({ projectId, failures = this.missing }: { projectId: string; failures?: MediaLoadFailure[] }): Promise<MediaLoadFailure[]> {
+		if (this.editor.project.getActiveOrNull()?.metadata.id !== projectId || this.isLoading || failures.length === 0) return this.missing;
 		const generation = this.loadGeneration;
-		const results = await Promise.all(this.missing.map(async (failure) => {
+		const results = await Promise.all(failures.map(async (failure) => {
 			try {
 				const asset = await storageService.loadMediaAsset({ projectId, id: failure.id });
 				return asset ? { asset } : { failure: { ...failure, error: "not in storage" } };
@@ -201,9 +221,13 @@ export class MediaManager {
 				return { failure: { ...failure, error: error instanceof Error ? error.message : String(error) } };
 			}
 		}));
-		if (generation !== this.loadGeneration) return this.missing;
+		if (generation !== this.loadGeneration || this.editor.project.getActiveOrNull()?.metadata.id !== projectId) return this.missing;
 		this.mergeAssets(results.flatMap((r) => ("asset" in r && r.asset ? [r.asset] : [])));
-		this.missing = results.flatMap((r) => ("failure" in r && r.failure ? [r.failure] : []));
+		const retried = new Set(failures.map(({ id }) => id));
+		this.missing = [
+			...this.missing.filter(({ id }) => !retried.has(id)),
+			...results.flatMap((r) => ("failure" in r && r.failure ? [r.failure] : [])),
+		];
 		toast.dismiss(`missing-media-${projectId}`);
 		if (this.missing.length) this.reportMissing({ projectId });
 		this.notify();

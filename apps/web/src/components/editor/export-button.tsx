@@ -18,6 +18,7 @@ import {
 	getExportMimeType,
 	getExportFileExtension,
 	downloadBuffer,
+	type ExportResult,
 } from "@/export";
 import { Check, Copy, Download, RotateCcw } from "lucide-react";
 import {
@@ -114,8 +115,9 @@ function ExportPopover({
 	const [shouldIncludeAudio, setShouldIncludeAudio] = useState<boolean>(
 		DEFAULT_EXPORT_OPTIONS.includeAudio ?? true,
 	);
+	const [isRetrying, setIsRetrying] = useState(false);
 
-	const handleExport = async () => {
+	const handleExport = async (allowMissing = false) => {
 		if (!activeProject) return;
 
 		const result = await editor.project.export({
@@ -124,6 +126,7 @@ function ExportPopover({
 				quality,
 				fps: activeProject.settings.fps,
 				includeAudio: shouldIncludeAudio,
+				allowMissing,
 			},
 		});
 
@@ -144,6 +147,26 @@ function ExportPopover({
 		}
 	};
 
+	const handleRetry = async () => {
+		if (!exportResult?.missingMedia?.length) {
+			await handleExport();
+			return;
+		}
+		const session = editor.project.getSession();
+		setIsRetrying(true);
+		try {
+			await editor.media.retryMissingMedia({
+				projectId: activeProject.metadata.id,
+				failures: exportResult.missingMedia,
+			});
+			if (editor.project.getSession() === session && editor.project.getExportState().result === exportResult) {
+				await handleExport();
+			}
+		} finally {
+			setIsRetrying(false);
+		}
+	};
+
 	const handleCancel = () => {
 		editor.project.cancelExport();
 	};
@@ -152,8 +175,11 @@ function ExportPopover({
 		<PopoverContent className="bg-background mr-4 flex w-80 flex-col p-0">
 			{exportResult && !exportResult.success ? (
 				<ExportError
-					error={exportResult.error || "Unknown error occurred"}
-					onRetry={handleExport}
+					result={exportResult}
+					isRetrying={isRetrying}
+					onRetry={handleRetry}
+					onBack={() => editor.project.clearExportState()}
+					onAllowMissing={() => handleExport(true)}
 				/>
 			) : (
 				<>
@@ -263,7 +289,7 @@ function ExportPopover({
 										</p>
 									)}
 									<Button
-										onClick={handleExport}
+										onClick={() => handleExport()}
 										className="w-full gap-2"
 										disabled={otherExportRunning}
 									>
@@ -303,16 +329,24 @@ function ExportPopover({
 }
 
 function ExportError({
-	error,
+	result,
+	isRetrying,
 	onRetry,
+	onBack,
+	onAllowMissing,
 }: {
-	error: string;
+	result: ExportResult;
+	isRetrying: boolean;
 	onRetry: () => void;
+	onBack: () => void;
+	onAllowMissing: () => void;
 }) {
 	const [copied, setCopied] = useState(false);
+	const error = result.error || "Unknown error occurred";
+	const missingMedia = result.missingMedia ?? [];
 
 	const handleCopy = async () => {
-		await navigator.clipboard.writeText(error);
+		await navigator.clipboard.writeText([error, ...missingMedia.map(({ name, error }) => `${name}: ${error}`)].join("\n"));
 		setCopied(true);
 		setTimeout(() => setCopied(false), 1000);
 	};
@@ -322,6 +356,11 @@ function ExportError({
 			<div className="flex flex-col gap-1.5">
 				<p className="text-destructive text-sm font-medium">Export failed</p>
 				<p className="text-muted-foreground text-xs">{error}</p>
+				{missingMedia.length > 0 && (
+					<ul className="text-muted-foreground max-h-24 list-disc space-y-1 overflow-y-auto pl-4 text-xs">
+						{missingMedia.map(({ id, name }) => <li key={id}>{name}</li>)}
+					</ul>
+				)}
 			</div>
 
 			<div className="flex gap-2">
@@ -339,11 +378,20 @@ function ExportError({
 					size="sm"
 					className="h-8 flex-1 text-xs"
 					onClick={onRetry}
+					disabled={isRetrying}
 				>
 					<RotateCcw />
-					Retry
+					{isRetrying ? "Retrying…" : "Retry"}
 				</Button>
 			</div>
+			<Button variant="outline" size="sm" className="w-full text-xs" onClick={onBack}>
+				Change export settings
+			</Button>
+			{missingMedia.length > 0 && (
+				<Button variant="outline" size="sm" className="w-full text-xs" onClick={onAllowMissing} disabled={isRetrying}>
+					Export without missing media
+				</Button>
+			)}
 		</div>
 	);
 }
