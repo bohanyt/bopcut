@@ -3,7 +3,7 @@
 // when it touches several scenes (the root timeline and compound clip contents).
 import { type ElementRecord, StaleError, assertNoteNotStale, assertNotStale, assertRippleNotStale, fieldsMapOf, touchedFields } from "./stale";
 import type { Bookmark, SceneTracks, TScene, TimelineElement } from "@/timeline";
-import { TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
+import { type MediaTime, TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
 import { getFrameTime } from "@/timeline/bookmarks";
 import { buildCompoundFromElements, isCompoundElement, relocateVisualCompounds, syncCompoundDurations, ungroupCompoundElement } from "@/timeline/compound";
@@ -80,22 +80,22 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	const wordsFor = (mediaId: unknown) => (typeof mediaId === "string" ? draftWords.get(mediaId) ?? wordsOf?.(mediaId) : undefined);
 	const elementIn = (sceneId: string, elementId: string) =>
 		orderedTracks(sceneOf(sceneId).tracks).flatMap((track): TimelineElement[] => track.elements).find((e) => e.id === elementId);
-	/** Moves an element's cuts out of spoken words of its media (cut: "words"). */
-	const snapToWords = (sceneId: string, elementId: string, words: SourceWord[] | undefined) => {
-		if (!words) throw new Error('cut: "words" needs the media\'s words (asset.words or a words op)');
-		editTracks(sceneId, (tracks) => {
-			for (const track of orderedTracks(tracks) as any[]) {
-				const index = track.elements.findIndex((e: TimelineElement) => e.id === elementId);
-				if (index < 0) continue;
-				if (track.elements[index].type !== "video" && track.elements[index].type !== "audio") throw new Error('cut: "words" is for video and audio clips');
-				const patch = snapCutsToWords(track.elements[index], words, fps);
-				if (patch) track.elements[index] = { ...track.elements[index], ...patch };
-			}
-		});
-	};
 	const checkCut = (cut: unknown) => {
 		if (cut !== undefined && cut !== "words") throw new Error('cut must be "words"');
 		return cut === "words";
+	};
+	const needWords = (words: SourceWord[] | undefined) => {
+		if (!words) throw new Error('cut: "words" needs the media\'s words (asset.words or a words op)');
+		return words;
+	};
+	/** `cut` only on a top-level add or set (inside a compound it would not be applied). */
+	const refuseNestedCut = (elements: unknown[]) => {
+		for (const e of elements as AgentElement[]) {
+			if (!e || typeof e !== "object") continue;
+			if (e.cut !== undefined) throw new Error("cut works on a top-level add or set, not inside a compound or a replace");
+			const content = e.compound;
+			if (content) refuseNestedCut([...(content.main ?? []), ...(content.overlay ?? []).flatMap((t) => t.elements ?? []), ...(content.audio ?? []), ...(content.elements ?? [])]);
+		}
 	};
 	// The timeline before this draft: stale checks compare the snapshot with it, never with the draft's own edits.
 	const now = base ? fieldsMapOf(scenes) : undefined;
@@ -146,9 +146,19 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			sceneId = target.sceneId;
 		}
 		const cutWords = checkCut(element.cut);
+		const content = element.compound;
+		if (content) refuseNestedCut([...(content.main ?? []), ...(content.overlay ?? []).flatMap((t) => t.elements ?? []), ...(content.audio ?? []), ...(content.elements ?? [])]);
+		let placing = element;
+		if (cutWords) {
+			const loaded = mediaFor(element);
+			if (!loaded || (loaded.type !== "video" && loaded.type !== "audio")) throw new Error('cut: "words" is for video and audio clips');
+			const words = needWords(draftWords.get(loaded.id) ?? loaded.words ?? wordsOf?.(loaded.id));
+			const clip = { trimStart: secs(element.trimStart ?? 0), duration: secs(element.duration), trimEnd: 0 as MediaTime, ...(loaded.duration !== undefined ? { sourceDuration: secs(loaded.duration) } : {}) };
+			const patch = snapCutsToWords(clip, words, fps);
+			if (patch) placing = { ...element, trimStart: patch.trimStart / TICKS_PER_SECOND, duration: patch.duration / TICKS_PER_SECOND };
+		}
 		const ctx: BuildContext = { canvas, keyframes: [], mediaFor, existing: list, created: [] };
-		const placed = editTracks(sceneId, (tracks) => placeAgentElement({ tracks, sceneId, e: element, ref: track, ctx }));
-		if (cutWords) snapToWords(sceneId, placed.element.id, mediaFor(element)?.words ?? wordsFor(placed.element.mediaId));
+		const placed = editTracks(sceneId, (tracks) => placeAgentElement({ tracks, sceneId, e: placing, ref: track, ctx }));
 		placedElement(sceneId, track.name, placed, ctx, result);
 	};
 	/** Keyframes, nested scenes, selection, and result addresses of an element just placed. */
@@ -180,6 +190,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			case "set": {
 				const cutWords = checkCut(op.cut);
 				const hit = find(op.match);
+				let setWords: SourceWord[] | undefined;
+				if (cutWords) {
+					if (hit.element.type !== "video" && hit.element.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
+					setWords = needWords(wordsFor((hit.element as { mediaId?: unknown }).mediaId));
+				}
 				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: touchedFields(op), scenes: list });
 				editTracks(hit.sceneId, (tracks) => {
 					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
@@ -208,11 +223,22 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 							for (const target of keyframeTargets(next, k)) next = upsertAgentKeyframe(next, { ...target, time: k.time, interpolation: k.interpolation }, { strict: true });
 						}
 					}
+					if (setWords) {
+						const snapped = snapCutsToWords(next, setWords, fps);
+						if (snapped) {
+							const requestedEnd = next.startTime + next.duration;
+							next = { ...next, ...snapped };
+							const end = next.startTime + next.duration;
+							// A later clip on the track does not move for a longer clip (ripple only closes gaps): the
+							// snapped clip must not run into it.
+							const blocked = track.elements.find((other: TimelineElement, j: number) => j !== hit.index && other.startTime >= requestedEnd && other.startTime < end);
+							if (blocked) throw new Error(`snapping to the word's end would overlap ${blocked.name || blocked.id}; make room for the whole word first`);
+						}
+					}
 					track.elements[hit.index] = el.type === "text" && next.type === "text"
 						? op.caption ? updateAgentCaption(reconcileCaptionEdit(el, next), op.caption) : reconcileCaptionEdit(el, next)
 						: next;
 				});
-				if (cutWords) snapToWords(hit.sceneId, hit.element.id, wordsFor((hit.element as { mediaId?: unknown }).mediaId));
 				touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
 				address(result, "element", hit.sceneId, hit.element.id);
 				return;
@@ -231,6 +257,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all", scenes: list });
 				const given = op.element;
 				if (!given || typeof given !== "object") throw new Error("replace needs an element");
+				refuseNestedCut([given]);
 				if (op.track !== undefined && (typeof op.track?.name !== "string" || "compound" in op.track)) throw new Error("replace: track needs {name} and stays in the element's scene");
 				const old = hit.element;
 				// Unset fields keep the replaced element's agentId, name, and span.
@@ -351,7 +378,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			const warnings = touched.slice(saved.touched).flatMap(({ sceneId, elementId }) => {
 				const element = elementIn(sceneId, elementId) as (TimelineElement & { mediaId?: unknown }) | undefined;
 				if (!element || (element.type !== "video" && element.type !== "audio")) return [];
-				const words = wordsFor(element.mediaId) ?? (op?.op === "add" ? mediaFor(op.element)?.words : undefined);
+				const fromAsset = op?.op === "add" || op?.op === "replace" ? mediaFor(op.element as AgentElement)?.words : undefined;
+				const words = (typeof element.mediaId === "string" ? draftWords.get(element.mediaId) : undefined) ?? fromAsset ?? wordsFor(element.mediaId);
 				return words ? cutWarnings(element, words).map((warning) => ({ elementId, ...warning })) : [];
 			});
 			if (warnings.length) result.cutWarnings = warnings;

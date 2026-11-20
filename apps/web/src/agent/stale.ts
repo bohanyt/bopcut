@@ -184,8 +184,10 @@ export class StaleError extends Error {
  * Fields a set op touches: timing it sets, each param key, and keyframes. A caption update rewrites the
  * text, its words and timings and its style, so it counts as touching the whole element.
  */
-export function touchedFields(op: { start?: unknown; duration?: unknown; trimStart?: unknown; params?: Record<string, unknown>; keyframes?: unknown; keyframesMode?: unknown; caption?: unknown }): string[] {
+export function touchedFields(op: { start?: unknown; duration?: unknown; trimStart?: unknown; params?: Record<string, unknown>; keyframes?: unknown; keyframesMode?: unknown; caption?: unknown; cut?: unknown }): string[] {
 	const fields: string[] = [];
+	// Snapping cuts to words can move the start and change the length.
+	if (op.cut !== undefined) fields.push("trimStart", "duration");
 	if (op.caption !== undefined) fields.push("element");
 	if (op.start !== undefined) fields.push("start");
 	if (op.duration !== undefined) fields.push("duration");

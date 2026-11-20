@@ -5,6 +5,8 @@ import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { EditorCore } from "@/core";
+import { storageService } from "@/services/storage/service";
+import { parseSourceWords, type SourceWord } from "@/media/words";
 import { toast } from "sonner";
 import { pollFrames } from "./frames";
 import { loadIcon } from "@/stickers/providers/iconify";
@@ -24,9 +26,11 @@ import { resolveCaptionPreset } from "./captions";
 
 export type { Draft, DraftOp } from "./draft";
 
-/** Spoken words of a project media file, if it has them. */
-function mediaWords(mediaId: string) {
-	return EditorCore.getInstance().media.getAssets().find((asset) => asset.id === mediaId)?.words;
+/** Spoken words of the project's media files, looked up by id (built once per snapshot or draft). */
+function mediaWords(): (mediaId: string) => SourceWord[] | undefined {
+	const words = new Map<string, SourceWord[]>();
+	for (const asset of EditorCore.getInstance().media.getAssets()) if (asset.words) words.set(asset.id, asset.words);
+	return (mediaId) => words.get(mediaId);
 }
 
 function mediaNames() {
@@ -109,7 +113,7 @@ export function agentSnapshot() {
 	const active = editor.scenes.getActiveSceneOrNull();
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
-	const view = buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords });
+	const view = buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords() });
 	const { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt } = agentReadiness();
 	return {
 		schema: "opencut-agent-sync-1", projectId: project.metadata.id, projectName: project.metadata.name,
@@ -135,7 +139,7 @@ export function agentSelection(view?: ReturnType<typeof buildSceneSnapshot>) {
 	const active = editor.scenes.getActiveSceneOrNull();
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
-	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords });
+	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords() });
 	const lanes = active.id === scene.id ? snapshot.tracks : (snapshot.compounds.find((c) => c.sceneId === active.id)?.tracks ?? []);
 	const selected = editor.selection.getSelectedElements().flatMap(({ trackId, elementId }) => {
 		const lane = lanes.find((l) => l.id === trackId);
@@ -455,6 +459,20 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		const elements = opElements[i];
 		return elements instanceof Error ? [] : elements;
 	};
+	// A file used several times is imported once: words given on any of its references go with it.
+	const wordsByAsset = new Map<string, unknown>();
+	for (const walked of opElements) {
+		if (walked instanceof Error) continue;
+		for (const e of walked) {
+			if (e?.asset && typeof e.asset !== "string" && e.asset.words !== undefined && !wordsByAsset.has(assetKey(e.asset))) wordsByAsset.set(assetKey(e.asset), e.asset.words);
+		}
+	}
+	// `words` ops are stored before the timeline changes (then a draft never reports words it could not
+	// store); a draft that does not apply puts the previous words back.
+	const previousWords = new Map<string, SourceWord[] | undefined>();
+	const restoreWords = async () => {
+		for (const [id, words] of previousWords) await storageService.setMediaWords({ projectId, id, words }).catch((error) => console.error(`Words of ${id} not restored:`, error));
+	};
 	for (const [i, op] of ops.entries()) {
 		const errors: string[] = [];
 		const walked = opElements[i];
@@ -462,8 +480,19 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 			failures[i] = `invalid elements: ${walked.message}`;
 			continue;
 		}
-		if (op.op === "words" && !editor.media.getAssets().some((asset) => asset.id === op.mediaId)) {
-			failures[i] = `media not in project: ${String(op.mediaId)}`;
+		if (op.op === "words") {
+			const target = editor.media.getAssets().find((asset) => asset.id === op.mediaId);
+			const words = parseSourceWords(op.words);
+			if (!target) failures[i] = `media not in project: ${String(op.mediaId)}`;
+			else if (!words) failures[i] = "words must be a list of {text, start, end} in seconds";
+			else {
+				if (!previousWords.has(target.id)) previousWords.set(target.id, target.words);
+				try {
+					await storageService.setMediaWords({ projectId, id: target.id, words });
+				} catch (error) {
+					failures[i] = `words not stored: ${errorText(error)}`;
+				}
+			}
 			continue;
 		}
 		if (op.op === "set" && op.caption?.preset) {
@@ -487,7 +516,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 				} else if (e.asset && typeof e.asset !== "string") {
 					const asset = e.asset;
 					const key = assetKey(asset);
-					if (!byPath.has(key)) byPath.set(key, stageAgentAsset({ projectId, asset, onId: (id) => staged.push(id) }));
+					const withWords = wordsByAsset.has(key) ? { ...asset, words: wordsByAsset.get(key) as SourceWord[] } : asset;
+					if (!byPath.has(key)) byPath.set(key, stageAgentAsset({ projectId, asset: withWords, onId: (id) => staged.push(id) }));
 					media.set(e, await byPath.get(key)!);
 				}
 			} catch (error) {
@@ -496,9 +526,13 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		}
 		if (errors.length) failures[i] = errors.join("; ");
 	}
-	/** Removes staged imports (all, or those `keep` does not need) and reports what could not be removed. */
-	const discard = async (keep: Set<string> = new Set()) => {
-		const drop = staged.filter((id) => !keep.has(id));
+	/**
+	 * Removes staged imports (all, or those `keep` does not need) and reports what could not be removed.
+	 * Without `keep` the draft does not apply: stored words are put back too.
+	 */
+	const discard = async (keep?: Set<string>) => {
+		if (!keep) await restoreWords();
+		const drop = staged.filter((id) => !keep?.has(id));
 		if (drop.length === 0) return null;
 		const cleanup = await editor.media.discardStagedMediaAssets({ ids: drop });
 		return cleanup;
@@ -545,7 +579,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	const outcome = computeAgentDraft({
 		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true,
 		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled, base,
-		wordsOf: mediaWords,
+		wordsOf: mediaWords(),
 	});
 	// The open scene stays open unless the draft removed it (ungrouping the compound being edited): then the root opens.
 	const openAfter = outcome.scenes.some((scene) => scene.id === openScene.id) ? openScene.id : root.id;
@@ -599,12 +633,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		return;
 	}
 	const cleanup = await discard(new Set(publish));
-	// Words set by the draft are kept with their media (the timeline change is already committed).
-	const wordsErrors: { mediaId: string; error: string }[] = [];
-	for (const [mediaId, words] of outcome.words) {
-		const wordsError = await editor.media.setMediaWords({ projectId, id: mediaId, words });
-		if (wordsError) wordsErrors.push({ mediaId, error: wordsError });
-	}
+	// Words the draft set (already stored) are the media's words in the editor from now on.
+	for (const [mediaId, words] of outcome.words) editor.media.setMediaWords({ id: mediaId, words });
 
 	// Report where `url` and `sfx` assets were saved and their sources (for credits and reuse as `path`).
 	for (const [i, op] of ops.entries()) {
@@ -643,5 +673,5 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	if (!saved) toast.error(`Agent draft applied but not saved: ${draft.label ?? draft.rev}`, { description: saveError ?? undefined });
 	else if (failed) toast.warning(`Agent draft partly applied: ${draft.label ?? draft.rev}`, { description });
 	else toast(`Agent draft applied: ${draft.label ?? draft.rev}`, { description });
-	await report({ sceneId: root.id, applied: true, saved, savedAt: ownSession.savedAt?.toISOString() ?? null, ...(saved ? {} : { saveError }), ...(cleanup ? { cleanup } : {}), ...(wordsErrors.length ? { wordsErrors } : {}), results: outcome.results });
+	await report({ sceneId: root.id, applied: true, saved, savedAt: ownSession.savedAt?.toISOString() ?? null, ...(saved ? {} : { saveError }), ...(cleanup ? { cleanup } : {}), results: outcome.results });
 }

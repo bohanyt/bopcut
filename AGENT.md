@@ -212,12 +212,12 @@ Write `frames-request.json`: `{rev:"capture-1", times:[0,1,2], width:960}`. `rev
 
 ## Cuts that never chop a word
 
-A media file can carry its spoken words (from a transcript), in seconds of the file: `[{text, start, end}, ...]`.
-- Give them with the asset (`asset: {path, type, name, words:[...]}`) or attach them to project media with the draft op `{op:"words", mediaId, words}`. They are stored with the media; later ops of the same draft already use them. A `words` op for media that is not in the project fails the draft.
-- `cut:"words"` on an `add` element or a `set` op moves a start that falls inside a word back to the word's start, and an end inside a word on to its end, so the whole word plays. The duration is then rounded up to whole frames; the clip keeps its place on the timeline. It applies to video and audio clips whose media have words (otherwise the op fails and says why).
-- Every op result lists `cutWarnings:[{elementId, edge:"start"|"end", at, word}]` for a video or audio clip it touched whose cut still falls inside a word (`at` in source seconds). The sync snapshot lists the same `cutWarnings` on each such clip, also for cuts the user made.
+A media file can carry its spoken words (from a transcript), in seconds of the file: `[{text, start, end}, ...]` (at most 100,000 words of up to 200 characters).
+- Give them with the asset (`asset: {path, type, name, words:[...]}`; for a file used several times, words on any reference count) or attach them to project media with the draft op `{op:"words", mediaId, words}`. Words are stored with the media before the timeline changes and put back if the draft does not apply; Undo does not remove them (they describe the file). Later ops of the same draft already use them. A `words` op for media that is not in the project fails the draft.
+- `cut:"words"` on a top-level `add` element or a `set` op moves a start that falls inside a word back to the word's start, and an end inside a word on to its end, so the whole word plays. The clip keeps its place on the timeline. Its duration becomes whole frames, rounded up unless that reaches into the next word or past the end of the file, then down if the word still plays to within 20 ms, else left exact. It works on video and audio clips whose media have words, also retimed ones (a clip at 2× plays twice its duration of source). A snapped end that would run into the next clip on the track fails the op (ripple does not push clips): make room first. `cut` inside a compound or a `replace` is refused. With `basedOn`, a `cut:"words"` set counts as touching `trimStart` and `duration`.
+- Every op result lists `cutWarnings:[{elementId, edge:"start"|"end", at, word}]` for a video or audio clip it touched whose cut still falls inside a word (`at` in source seconds). The sync snapshot lists `cutWarnings:[{edge, at, word}]` on each such clip (no `elementId`: it is the clip's), also for cuts the user made.
 - A cut within 20 ms of a word's edge does not count (word timings are not that exact).
-- In the editor, resizing a clip whose media have words also snaps its edge to word edges (starts on the left, ends on the right).
+- In the editor, resizing a clip whose media have words also snaps its edge to word edges (starts on the left, ends on the right), rounded outwards to whole frames so the snapped edge never lands inside the word.
 
 ## Changes for agents
 

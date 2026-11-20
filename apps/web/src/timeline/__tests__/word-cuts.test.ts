@@ -4,7 +4,8 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
-const { cutWarnings, snapCutsToWords, wordInside } = await import("@/timeline/word-cuts");
+const { cutWarnings, snapCutsToWords, wordEdgeTimes, wordInside } = await import("@/timeline/word-cuts");
+const { fieldsMapOf } = await import("@/agent/stale");
 const { parseSourceWords } = await import("@/media/words");
 const { computeAgentDraft } = await import("@/agent/draft");
 const { buildSceneSnapshot } = await import("@/agent/snapshot");
@@ -122,5 +123,80 @@ describe("words stored with media", () => {
 		} finally {
 			globalThis.fetch = realFetch;
 		}
+	});
+});
+
+describe("review fixes", () => {
+	const ntsc = { numerator: 30000, denominator: 1001 };
+	test("rounding to frames never reaches into the next word or past the source", () => {
+		const tight = [{ text: "a", start: 0.5, end: 1.013 }, { text: "b", start: 1.014, end: 1.4 }];
+		const patch = snapCutsToWords(clip(0.6, 0.3), tight, ntsc)!;
+		const end = sec(patch.trimStart + patch.duration);
+		expect(end).toBeGreaterThanOrEqual(1.013 - 0.02);
+		expect(wordInside(tight, (patch.trimStart + patch.duration) / TICKS_PER_SECOND)).toBeNull();
+		const atEof = snapCutsToWords({ ...clip(0.6, 0.3), sourceDuration: T(1.013) }, tight, ntsc)!;
+		expect((atEof.trimStart + atEof.duration) / TICKS_PER_SECOND).toBeLessThanOrEqual(1.013 + 1e-6);
+	});
+
+	test("a retimed clip plays duration × rate of its source", () => {
+		const fast = clip(1, 1, { retime: { rate: 2 } });
+		expect(cutWarnings(fast, [{ text: "late", start: 2.8, end: 3.3 }])).toMatchObject([{ edge: "end", at: 3 }]);
+		const patch = snapCutsToWords(fast, [{ text: "late", start: 2.8, end: 3.3 }], fps)!;
+		// 1 s of source → 2.3 s plays in 1.15 s at 2x, rounded up to whole frames
+		expect(sec(patch.duration)).toBeCloseTo(1.167, 2);
+	});
+
+	test("overlapping words are found; a clip without sourceDuration never runs past what its trims leave", () => {
+		expect(wordInside([{ text: "long", start: 1, end: 2 }, { text: "short", start: 1.3, end: 1.4 }], 1.7)?.text).toBe("long");
+		const legacy = { trimStart: T(0), duration: T(0.9), trimEnd: T(0.113) } as never;
+		const patch = snapCutsToWords(legacy, [{ text: "w", start: 0.5, end: 1.5 }], fps)!;
+		expect((patch.trimStart + patch.duration) / TICKS_PER_SECOND).toBeLessThanOrEqual(1.013 + 1e-6);
+	});
+
+	test("word snap marks for resizing are rounded outwards to whole frames", () => {
+		const film = { numerator: 24, denominator: 1 };
+		const [right] = wordEdgeTimes({ clip: clip(0, 3), startTime: T(0), words: [{ text: "w", start: 1, end: 2.0205 }], side: "right", fps: film });
+		expect(right / TICKS_PER_SECOND).toBeGreaterThanOrEqual(2.0205);
+		const [left] = wordEdgeTimes({ clip: clip(0, 3), startTime: T(0), words: [{ text: "w", start: 1.0205, end: 2 }], side: "left", fps: film });
+		expect(left / TICKS_PER_SECOND).toBeLessThanOrEqual(1.0205);
+	});
+
+	test("snapping that would run into the next clip fails, with or without ripple (ripple only closes gaps)", () => {
+		// The clip ends (10.8 s) where the next one starts; its end cuts "punchline", which ends 0.15 s later.
+		const next = { ...clip(5, 2), id: "v2", agentId: "next", startTime: T(10.8) } as unknown as VideoElement;
+		const scenes = scenesWith([clip(1.1, 0.8), next]);
+		const set = [{ op: "set", match: { agentId: "clip" }, cut: "words" }];
+		expect(run(scenes, set).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("overlap") });
+		const rippled = computeAgentDraft({ scenes, rootSceneId: "main", ops: set as never, mediaFor: () => undefined, canvas: { width: 1920, height: 1080 }, fps, ripple: true, wordsOf: (id) => (id === "m1" ? words : undefined) });
+		expect(rippled.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("overlap") });
+		const [first, second] = rippled.scenes[0].tracks.main.elements;
+		expect(second.startTime).toBeGreaterThanOrEqual(first.startTime + first.duration);
+		// With room after it, the same op applies.
+		const roomy = run(scenesWith([clip(1.1, 0.8), { ...next, startTime: T(12) } as VideoElement]), set);
+		expect(roomy.results[0]).toMatchObject({ ok: true });
+	});
+
+	test("basedOn: a cut:\"words\" set counts as touching trimStart and duration", () => {
+		const snapshot = scenesWith([clip(0, 5)]);
+		const moved = scenesWith([clip(0.8, 4.2)]);
+		const out = computeAgentDraft({ scenes: moved, rootSceneId: "main", ops: [{ op: "set", match: { agentId: "clip" }, cut: "words" }] as never, mediaFor: () => undefined, canvas: { width: 1920, height: 1080 }, fps, ripple: false, wordsOf: () => words, base: fieldsMapOf(snapshot) });
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true });
+	});
+
+	test("an add after a words op of the same draft uses the new words; cut inside a compound or a replace is refused", () => {
+		const fresh = [{ text: "x", start: 0.5, end: 1.1 }];
+		const loaded = { id: "m1", type: "video" as const, duration: 10, words: [{ text: "x", start: 0.5, end: 0.9 }] };
+		const ops = [
+			{ op: "words", mediaId: "m1", words: fresh },
+			{ op: "add", track: { name: "Main" }, element: { agent_id: "new", name: "new", mediaId: "m1", start: 20, duration: 0.3, trimStart: 0.6, cut: "words" } },
+		];
+		const out = computeAgentDraft({ scenes: scenesWith([]), rootSceneId: "main", ops: ops as never, mediaFor: () => loaded, canvas: { width: 1920, height: 1080 }, fps, ripple: false });
+		expect(out.results.map((r) => r.ok)).toEqual([true, true]);
+		const added = out.scenes[0].tracks.main.elements[0];
+		expect((added.trimStart + added.duration) / TICKS_PER_SECOND).toBeGreaterThanOrEqual(1.1 - 0.02);
+		const nested = run(scenesWith([]), [{ op: "compound", name: "c", start: 0, main: [{ name: "x", mediaId: "m1", start: 0, duration: 1, cut: "words" }] }]);
+		expect(nested.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("top-level") });
+		const replaced = run(scenesWith([clip(0, 5)]), [{ op: "replace", match: { agentId: "clip" }, element: { name: "y", mediaId: "m1", start: 10, duration: 1, cut: "words" } }]);
+		expect(replaced.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("top-level") });
 	});
 });

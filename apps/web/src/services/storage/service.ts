@@ -394,11 +394,12 @@ class StorageService {
 	}
 
 	/** Sets (or replaces) the spoken words stored with a media file. */
-	async setMediaWords({ projectId, id, words }: { projectId: string; id: string; words: import("@/media/words").SourceWord[] }): Promise<void> {
+	async setMediaWords({ projectId, id, words }: { projectId: string; id: string; words: import("@/media/words").SourceWord[] | undefined }): Promise<void> {
 		const manifest = this.manifests.get(projectId) ?? (await this.fetchManifest({ projectId }));
 		const metadata = manifest.get(id);
 		if (!metadata) throw new Error(`Media ${id} is not stored`);
-		const updated = { ...metadata, words };
+		const { words: _old, ...rest } = metadata;
+		const updated = words ? { ...rest, words } : rest;
 		await this.projectsAdapter.updateMediaMetadata(projectId, updated);
 		manifest.set(id, updated);
 	}

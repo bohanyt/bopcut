@@ -641,4 +641,20 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(backend.state.results[1]).toMatchObject({ applied: false });
 		expect(stored.length).toBe(1);
 	});
+
+	test("words are stored before the timeline changes, and put back when the draft does not apply", async () => {
+		const editor = setup();
+		const backend = fakeBackend();
+		const calls: { id: string; words: unknown }[] = [];
+		(storageService as any).setMediaWords = async ({ id, words }: { id: string; words: unknown }) => { calls.push({ id, words }); };
+		restore = () => {
+			backend.restore();
+			delete (storageService as any).setMediaWords;
+		};
+		const words = [{ text: "hi", start: 0.2, end: 0.5 }];
+		await applyDraft(draft([{ op: "words", mediaId: "m-old", words }, { op: "set", match: { agentId: "missing" }, start: 1 }], { atomic: true }));
+		expect(backend.state.results[0]).toMatchObject({ applied: false });
+		expect(calls).toEqual([{ id: "m-old", words }, { id: "m-old", words: undefined }]);
+		expect(editor.media.getAssets().find((a) => a.id === "m-old")?.words).toBeUndefined();
+	});
 });

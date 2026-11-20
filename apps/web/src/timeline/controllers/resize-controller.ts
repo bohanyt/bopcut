@@ -34,6 +34,7 @@ import {
 import type { ElementRef } from "@/timeline/types";
 import type { FrameRate } from "opencut-wasm";
 import type { SourceWord } from "@/media/words";
+import { wordEdgeTimes } from "@/timeline/word-cuts";
 
 // --- Session ---
 
@@ -44,6 +45,8 @@ interface ResizeSession {
 	fps: FrameRate;
 	members: GroupResizeMember[];
 	result: GroupResizeResult | null;
+	/** Word edges each member's edge snaps to (worked out once, when the resize starts). */
+	wordPoints: Map<string, SnapPoint[]>;
 }
 
 type Session = { kind: "idle" } | ResizeSession;
@@ -240,6 +243,7 @@ export class ResizeController {
 			fps,
 			members,
 			result: null,
+			wordPoints: new Map(members.map((member) => [member.elementId, this.wordSnapPoints(member, side, fps)])),
 		};
 		this.activate();
 		this.notify();
@@ -308,7 +312,7 @@ export class ResizeController {
 					: addMediaTime({ a: member.startTime, b: member.duration });
 			const snapResult = resolveTimelineSnap({
 				targetTime: addMediaTime({ a: baseEdgeTime, b: rawDeltaTime }),
-				snapPoints: [...snapPoints, ...this.wordSnapPoints(member, session.side)],
+				snapPoints: [...snapPoints, ...(session.wordPoints.get(member.elementId) ?? [])],
 				maxSnapDistance,
 			});
 			if (
@@ -329,12 +333,11 @@ export class ResizeController {
 	 * Word edges of the member's media on the timeline: starts for its left edge, ends for its right edge
 	 * (the clip's own content does not move while one edge is resized).
 	 */
-	private wordSnapPoints(member: GroupResizeMember, side: ResizeSide): SnapPoint[] {
+	private wordSnapPoints(member: GroupResizeMember, side: ResizeSide, fps: FrameRate): SnapPoint[] {
 		const words = this.config.getWords?.(member);
 		if (!words?.length) return [];
-		const offset = member.startTime - member.trimStart;
-		return words.map((word) => ({
-			time: Math.round(offset + (side === "left" ? word.start : word.end) * TICKS_PER_SECOND) as MediaTime,
+		return wordEdgeTimes({ clip: member, startTime: member.startTime, words, side, fps }).map((time) => ({
+			time,
 			type: "word" as const,
 			elementId: member.elementId,
 			trackId: member.trackId,
