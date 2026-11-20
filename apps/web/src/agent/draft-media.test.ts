@@ -357,6 +357,28 @@ describe("drafts belong to the project session they were queued in", () => {
 		expect(disk.writes.filter((w) => w.id === "q").every((w) => !w.agentIds.includes("first"))).toBe(true);
 	});
 
+	test("a draft undone before its first successful write: the retry saves without it, and its import stays staged", async () => {
+		const editor = setup();
+		(editor.save as any).retryDelaysMs = [10];
+		let failing = true;
+		const backend = fakeBackend();
+		const disk = projectWrites({ fail: (id) => (id === "p" && failing ? "EIO: i/o error" : null) });
+		restore = () => {
+			backend.restore();
+			disk.restore();
+		};
+		editor.save.start();
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("first.png", "first") }]));
+		expect(backend.state.results[0]).toMatchObject({ applied: true, saved: false });
+		editor.command.undo();
+		expect(elements(editor).some((e) => e.agentId === "first")).toBe(false);
+		failing = false;
+		expect(await editor.save.settle()).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(disk.writes.at(-1)?.agentIds).not.toContain("first");
+		expect(backend.state.promoted).toEqual([]);
+	});
+
 	test("the draft's write hangs while another project opens and saves: the draft is not reported saved", async () => {
 		const editor = setup();
 		(editor.save as any).retryDelaysMs = [10];

@@ -94,9 +94,11 @@ function memoryDisk(stored: TProject[]) {
 	stub({
 		ensureMigrations: async () => {},
 		loadProject: async ({ id }: { id: string }) => {
-			await hooks.read?.(id);
+			// What a slow read returns is the file as it was when the read started.
 			const file = files.get(id);
-			return file ? { project: structuredClone(file) } : null;
+			const copy = file ? structuredClone(file) : null;
+			await hooks.read?.(id);
+			return copy ? { project: copy } : null;
 		},
 		loadAllMediaAssets: async ({ projectId }: { projectId: string }) => {
 			await hooks.media?.(projectId);
@@ -368,12 +370,13 @@ describe("save sessions across project switches", () => {
 		fail = false;
 		const loading = editor.project.loadProject({ id: "b" });
 		await wait(60);
+		// The retry ran while b was being read, from a's full timeline.
+		expect(mainName(disk.files.get("a")!)).toBe("a: edited");
+		expect(editor.save.hasUnsavedChangesOf("a")).toBe(false);
 		read.open();
 		await loading;
-		await editor.save.settleProject("a");
 		expect(editor.project.getActive().metadata.id).toBe("b");
 		expect(disk.writes.every((w) => w.scenes > 0)).toBe(true);
-		expect(mainName(disk.files.get("a")!)).toBe("a: edited");
 	});
 
 	test("while a project loads, only forced edits count, and they are written once the load is done", async () => {
@@ -505,6 +508,197 @@ describe("staged media through the storage route", () => {
 			if (previous === undefined) delete process.env.BOPENCUT_DATA;
 			else process.env.BOPENCUT_DATA = previous;
 			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("save sessions: reads, renames, deletes and the page guard", () => {
+	test("A→A where A is edited and saved while it is read: the stale read is not installed", async () => {
+		const editor = await load(project("a", new Date(0)));
+		(editor.save as any).debounceMs = 1;
+		const disk = memoryDisk([project("a", new Date(0))]);
+		const read = gate();
+		let reads = 0;
+		disk.hooks.read = () => (++reads === 1 ? read.promise : undefined);
+		const reopen = editor.project.loadProject({ id: "a" });
+		await wait(5);
+		edit(editor, "a: edited during the read");
+		await until(() => !editor.save.getIsDirty());
+		expect(mainName(disk.files.get("a")!)).toBe("a: edited during the read");
+		read.open(); // returns the copy from before the edit
+		await reopen;
+		expect(reads).toBe(2);
+		expect(mainName({ scenes: editor.scenes.getScenes() } as TProject)).toBe("a: edited during the read");
+		expect(mainName(disk.files.get("a")!)).toBe("a: edited during the read");
+	});
+
+	test("renaming a project closed a moment ago waits for its last write, and keeps both", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		const write = gate();
+		let aWrites = 0;
+		disk.hooks.write = () => (++aWrites === 1 ? write.promise : undefined);
+		edit(editor, "a: unsaved");
+		editor.project.closeProject();
+		const rename = editor.project.renameProject({ id: "a", name: "renamed" });
+		await wait(10);
+		expect(disk.files.get("a")!.metadata.name).toBe("a");
+		write.open();
+		await rename;
+		expect(disk.files.get("a")!.metadata.name).toBe("renamed");
+		expect(mainName(disk.files.get("a")!)).toBe("a: unsaved");
+	});
+
+	test("renaming the open project renames it in the editor and saves it with its newer timeline", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		edit(editor, "a: unsaved");
+		await editor.project.renameProject({ id: "a", name: "renamed" });
+		expect(editor.project.getActive().metadata.name).toBe("renamed");
+		expect(disk.files.get("a")!.metadata.name).toBe("renamed");
+		expect(mainName(disk.files.get("a")!)).toBe("a: unsaved");
+	});
+
+	test("delete waits for a write in progress and nothing is written after it", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		const write = gate();
+		disk.hooks.write = () => write.promise;
+		let deletedAt = -1;
+		stub({ deleteProjectMedia: async () => {}, deleteProject: async () => { deletedAt = disk.writes.length; } });
+		edit(editor, "a: saving");
+		void editor.save.flush();
+		await wait(5);
+		const deleting = editor.project.deleteProjects({ ids: ["a"] });
+		await wait(10);
+		expect(deletedAt).toBe(-1); // still waiting for the write
+		edit(editor, "a: after the delete started");
+		write.open();
+		await deleting;
+		expect(deletedAt).toBe(1);
+		await wait(20);
+		expect(disk.writes.length).toBe(1);
+		expect(editor.save.hasUnsavedChanges()).toBe(false);
+	});
+
+	test("a delete that fails leaves the project saving as before", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		stub({ deleteProjectMedia: async () => {}, deleteProject: async () => { throw new Error("EBUSY"); } });
+		edit(editor, "a: kept");
+		await editor.project.deleteProjects({ ids: ["a"] });
+		expect(editor.project.getActive().metadata.id).toBe("a");
+		expect(editor.save.getIsDirty()).toBe(true);
+		expect(await editor.save.flush()).toBe(true);
+		expect(mainName(disk.files.get("a")!)).toBe("a: kept");
+	});
+
+	test("a write that hits a conflict after the project was deleted does not bring it back", async () => {
+		const { DiskAdapter } = await import("@/services/storage/disk-adapter");
+		const adapter = new DiskAdapter();
+		(adapter as any).revisions.set("gone", "r1");
+		const puts: string[] = [];
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (_url: string, init?: { method?: string; headers?: Record<string, string> }) => {
+			if (init?.method === "PUT") {
+				puts.push(init.headers?.["If-Match"] ?? "");
+				return new Response("conflict", { status: 409 });
+			}
+			return new Response("missing", { status: 404 });
+		}) as typeof fetch;
+		try {
+			await expect(adapter.set({ key: "gone", value: project("gone", new Date(0)) as any })).rejects.toThrow("deleted");
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+		expect(puts).toEqual(["r1"]);
+	});
+
+	test("closing the editor while another project is read: it does not open after the close", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0)), project("b", new Date(0))]);
+		const read = gate();
+		disk.hooks.read = (id) => (id === "b" ? read.promise : undefined);
+		const loading = editor.project.loadProject({ id: "b" });
+		await wait(5);
+		editor.project.closeProject();
+		read.open();
+		await loading;
+		expect(editor.project.getActiveOrNull()).toBeNull();
+		expect(editor.project.getIsLoading()).toBe(false);
+	});
+
+	test("a load replaced while it loads media stops there: no thumbnail is rendered into the next project", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const noThumbnail = { ...project("b", new Date(0)), metadata: { ...project("b", new Date(0)).metadata, thumbnail: undefined } } as TProject;
+		const disk = memoryDisk([project("a", new Date(0)), noThumbnail, project("c", new Date(0))]);
+		const media = gate();
+		disk.hooks.media = (id) => (id === "b" ? media.promise : undefined);
+		let renders = 0;
+		(editor.project as any).updateThumbnailFromTimeline = async () => {
+			renders++;
+			return false;
+		};
+		const b = editor.project.loadProject({ id: "b" });
+		await until(() => editor.project.getActiveOrNull()?.metadata.id === "b");
+		await editor.project.loadProject({ id: "c" });
+		media.open();
+		await b;
+		expect(renders).toBe(0);
+		expect(editor.project.getActive().metadata.id).toBe("c");
+		expect(disk.files.get("c")!.metadata.thumbnail).toBe("t");
+	});
+
+	test("a new project is not ready for the agent until its first write is done", async () => {
+		const editor = EditorCore.getInstance();
+		(editor.project as any).isLoading = false; // no load runs in this test: only the session decides
+		const write = gate();
+		stub({ saveProject: () => write.promise });
+		const creating = editor.project.createNewProject({ name: "new" });
+		await wait(5);
+		expect(agentReadiness()).toMatchObject({ ready: false, mediaLoaded: true, pendingSave: false });
+		write.open();
+		await creating;
+		expect(agentReadiness().ready).toBe(true);
+	});
+
+	test("settles that time out on a hung write leave no waiters behind", async () => {
+		const editor = await load(project("a", new Date(0)));
+		const disk = memoryDisk([project("a", new Date(0))]);
+		disk.hooks.write = () => new Promise(() => {});
+		edit(editor, "a: hung");
+		for (let i = 0; i < 3; i++) expect(await editor.save.settle({ timeoutMs: 5 })).toBe(false);
+		const session = editor.save.getCurrent() as any;
+		expect(session.savedWaiters.length).toBe(0);
+		expect(session.failureWaiters.size).toBe(0);
+	});
+
+	test("the page asks before it is left while any project has unsaved changes, also after its editor closed", async () => {
+		const listeners = new Set<(event: any) => void>();
+		const previous = (globalThis as any).window;
+		(globalThis as any).window = {
+			addEventListener: (type: string, listener: (event: any) => void) => type === "beforeunload" && listeners.add(listener),
+			removeEventListener: (type: string, listener: (event: any) => void) => type === "beforeunload" && listeners.delete(listener),
+		};
+		try {
+			const editor = await load(project("a", new Date(0)));
+			const disk = memoryDisk([project("a", new Date(0))]);
+			const write = gate();
+			disk.hooks.write = () => write.promise;
+			expect(listeners.size).toBe(0);
+			edit(editor, "a: unsaved");
+			expect(listeners.size).toBe(1);
+			editor.project.closeProject();
+			let prevented = false;
+			for (const listener of listeners) listener({ preventDefault: () => { prevented = true; } });
+			expect(prevented).toBe(true);
+			write.open();
+			expect(await editor.save.settleProject("a")).toBeNull();
+			expect(listeners.size).toBe(0);
+		} finally {
+			EditorCore.reset();
+			if (previous === undefined) delete (globalThis as any).window;
+			else (globalThis as any).window = previous;
 		}
 	});
 });

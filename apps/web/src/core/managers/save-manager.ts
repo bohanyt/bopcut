@@ -21,6 +21,8 @@ type SaveHost = {
 	/** Writes a project to storage: null on success, else the error. */
 	persist(project: TProject): Promise<string | null>;
 	changed(session: SaveSession): void;
+	/** An edit was counted (see SaveManager.editsOf). */
+	edited(session: SaveSession): void;
 	/** A closed session has nothing left to write. */
 	finished(session: SaveSession): void;
 };
@@ -54,13 +56,16 @@ export class SaveSession {
 	private closed = false;
 	/** Discarded (project deleted, manager stopped): nothing more happens. */
 	private detached = false;
+	/** Writes wait (a delete of the project is running, see hold). */
+	private held = false;
 	private snapshot: TProject | null = null;
 	private writing: Promise<void> | null = null;
 	/** Someone waits for the write after the one in progress: it starts right away. */
 	private urgent = false;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private failures = 0;
-	private savedWaiters: { revision: number; resolve: (saved: boolean) => void }[] = [];
+	/** Resolved with the project as written by the first write that contains their revision (null: discarded). */
+	private savedWaiters: { revision: number; resolve: (written: TProject | null) => void }[] = [];
 	private failureWaiters = new Set<() => void>();
 
 	constructor(
@@ -96,6 +101,7 @@ export class SaveSession {
 		if (this.closed || this.detached || (this.loading && !force)) return this.revision;
 		const wasDirty = this.isDirty();
 		this.revision++;
+		this.host.edited(this);
 		this.schedule(this.host.debounceMs());
 		if (!wasDirty) this.host.changed(this);
 		return this.revision;
@@ -140,15 +146,32 @@ export class SaveSession {
 		this.loading = false;
 		this.snapshot = null;
 		this.clearTimer();
-		for (const waiter of this.savedWaiters.splice(0)) waiter.resolve(false);
+		for (const waiter of this.savedWaiters.splice(0)) waiter.resolve(null);
 		for (const fail of [...this.failureWaiters]) fail();
 	}
 
-	/** Resolves true once a write containing `revision` succeeded (whenever that is), false if discarded. */
-	whenSaved(revision = this.revision): Promise<boolean> {
-		if (this.savedRevision >= revision) return Promise.resolve(true);
-		if (this.detached) return Promise.resolve(false);
+	/**
+	 * Resolves with the project as written by the first successful write that contains `revision`
+	 * (whenever that is; it can hold later edits too, such as an undo). Null if the session is discarded,
+	 * or if `revision` was already on disk when this was called (call it right after the edit).
+	 */
+	whenSaved(revision = this.revision): Promise<TProject | null> {
+		if (this.savedRevision >= revision || this.detached) return Promise.resolve(null);
 		return new Promise((resolve) => this.savedWaiters.push({ revision, resolve }));
+	}
+
+	/** Stops writes (the project is being deleted); resolves once the write in progress, if any, is done. */
+	hold(): Promise<void> {
+		this.held = true;
+		this.clearTimer();
+		return this.writing ?? Promise.resolve();
+	}
+
+	/** Writes go on after hold (the delete failed). */
+	release(): void {
+		if (!this.held) return;
+		this.held = false;
+		if (this.isDirty()) this.schedule(this.host.debounceMs());
 	}
 
 	/**
@@ -160,17 +183,21 @@ export class SaveSession {
 		if (this.detached || !this.host.isRunning() || (this.closed && !this.snapshot)) return Promise.resolve(false);
 		return new Promise((resolve) => {
 			let done = false;
+			// Removed again however this ends, so repeated settles on a hung write keep nothing behind.
+			const waiter = { revision, resolve: (written: TProject | null) => finish(written !== null) };
 			const finish = (saved: boolean) => {
 				if (done) return;
 				done = true;
 				clearTimeout(timer);
 				this.failureWaiters.delete(fail);
+				const index = this.savedWaiters.indexOf(waiter);
+				if (index !== -1) this.savedWaiters.splice(index, 1);
 				resolve(saved);
 			};
 			const fail = () => finish(false);
 			const timer = setTimeout(fail, timeoutMs);
 			this.failureWaiters.add(fail);
-			void this.whenSaved(revision).then(finish);
+			this.savedWaiters.push(waiter);
 			this.writeNow();
 		});
 	}
@@ -193,7 +220,7 @@ export class SaveSession {
 	}
 
 	private schedule(delayMs: number): void {
-		if (this.writing || this.detached || this.loading || !this.host.isRunning()) return;
+		if (this.writing || this.detached || this.loading || this.held || !this.host.isRunning()) return;
 		this.clearTimer();
 		this.timer = setTimeout(() => {
 			this.timer = null;
@@ -202,7 +229,7 @@ export class SaveSession {
 	}
 
 	private async write(): Promise<void> {
-		if (this.writing || this.detached || this.loading || !this.host.isRunning() || !this.isDirty()) return;
+		if (this.writing || this.detached || this.loading || this.held || !this.host.isRunning() || !this.isDirty()) return;
 		if (!this.host.canWrite()) {
 			this.schedule(this.host.debounceMs());
 			return;
@@ -226,7 +253,7 @@ export class SaveSession {
 				this.savedRevision = Math.max(this.savedRevision, target);
 				const due = this.savedWaiters.filter((waiter) => waiter.revision <= this.savedRevision);
 				this.savedWaiters = this.savedWaiters.filter((waiter) => waiter.revision > this.savedRevision);
-				for (const waiter of due) waiter.resolve(true);
+				for (const waiter of due) waiter.resolve(project);
 			} else {
 				// Not on disk: stays dirty (readiness reports it) and is retried with backoff, whether or not
 				// anything else changes.
@@ -278,6 +305,10 @@ export class SaveManager {
 	private closing = new Set<SaveSession>();
 	/** Last known save state per project (also after its session closed). */
 	private projects = new Map<string, { savedAt: Date | null; error: string | null }>();
+	/** Edits counted per project, across its sessions (only grows). */
+	private edits = new Map<string, number>();
+	/** Registered while anything is unsaved: the browser asks before the page is left. */
+	private unloadGuard: ((event: BeforeUnloadEvent) => void) | null = null;
 	private listeners = new Set<() => void>();
 	private host: SaveHost;
 
@@ -308,6 +339,9 @@ export class SaveManager {
 			changed: (session) => {
 				this.projects.set(session.projectId, { savedAt: session.savedAt, error: session.lastError });
 				this.notify();
+			},
+			edited: (session) => {
+				this.edits.set(session.projectId, (this.edits.get(session.projectId) ?? 0) + 1);
 			},
 			finished: (session) => {
 				if (this.closing.delete(session)) this.notify();
@@ -343,6 +377,7 @@ export class SaveManager {
 		this.current = null;
 		for (const session of this.closing) session.discard();
 		this.closing.clear();
+		this.updateUnloadGuard();
 	}
 
 	/**
@@ -381,6 +416,37 @@ export class SaveManager {
 		}
 		this.projects.delete(projectId);
 		this.notify();
+	}
+
+	/**
+	 * Holds the writes of a project that is about to be deleted, and waits (at most `timeoutMs`) for a
+	 * write in progress: a write landing after the delete would bring the project back. True once
+	 * nothing is being written; call releaseProject if the delete does not happen.
+	 */
+	async holdProject(projectId: string, { timeoutMs = 15000 }: { timeoutMs?: number } = {}): Promise<boolean> {
+		const writes = Promise.all(this.sessionsOf(projectId).map((session) => session.hold()));
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const done = await Promise.race([
+			writes.then(() => true),
+			new Promise<boolean>((resolve) => {
+				timer = setTimeout(() => resolve(false), timeoutMs);
+			}),
+		]);
+		clearTimeout(timer);
+		return done;
+	}
+
+	/** Lets the writes of a held project go on (its delete failed). */
+	releaseProject(projectId: string): void {
+		for (const session of this.sessionsOf(projectId)) session.release();
+	}
+
+	/**
+	 * How many edits of a project were counted so far (only grows): a reader compares it before and
+	 * after reading the project, to know whether what it read can be older than the editor's state.
+	 */
+	editsOf(projectId: string): number {
+		return this.edits.get(projectId) ?? 0;
 	}
 
 	/**
@@ -467,6 +533,23 @@ export class SaveManager {
 	}
 
 	private notify(): void {
+		this.updateUnloadGuard();
 		for (const listener of this.listeners) listener();
+	}
+
+	/** Also covers a project closed a moment ago, after the editor page itself is gone. */
+	private updateUnloadGuard(): void {
+		if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+		const needed = this.running && this.hasUnsavedChanges();
+		if (needed && !this.unloadGuard) {
+			this.unloadGuard = (event) => {
+				event.preventDefault();
+				(event as unknown as { returnValue: string }).returnValue = "";
+			};
+			window.addEventListener("beforeunload", this.unloadGuard);
+		} else if (!needed && this.unloadGuard) {
+			window.removeEventListener("beforeunload", this.unloadGuard);
+			this.unloadGuard = null;
+		}
 	}
 }

@@ -69,7 +69,8 @@ export class DiskAdapter {
 				"The project was also changed in another browser; the latest save will overwrite those changes.",
 			);
 			for (let attempt = 0; attempt < 3 && response.status === 409; attempt++) {
-				await this.get(key);
+				// Deleted meanwhile: a write must not bring it back.
+				if (!(await this.get(key))) throw new Error("The project was deleted; not saved");
 				response = await write(this.revisions.get(key) ?? "new");
 			}
 		}

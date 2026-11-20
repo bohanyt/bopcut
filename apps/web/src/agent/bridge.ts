@@ -47,7 +47,8 @@ export function agentReadiness() {
 	const pendingSave = !!own?.isDirty();
 	const saveError = own?.lastError ?? null;
 	const savedAt = own?.savedAt?.toISOString() ?? null;
-	const ready = !!project && !editor.project.getIsLoading() && mediaLoaded && !pendingSave && !saveError;
+	// A session still loading (a project opening, or a new one before its first write) is not ready.
+	const ready = !!project && !editor.project.getIsLoading() && !own?.isLoading() && mediaLoaded && !pendingSave && !saveError;
 	return { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt };
 }
 
@@ -477,9 +478,13 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	const ownSession: SaveSession = saveSession;
 	// Promoted once a write that contains the commit is on disk, also if that is a later retry: before
 	// that, another tab loading the project would see media its saved timeline does not use yet.
-	const promotion = ownSession.whenSaved(revision).then(async (saved) => {
-		if (!saved || publish.length === 0) return;
-		const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids: publish });
+	// Only imports the written timeline uses: one undone before the write stays staged.
+	const promotion = ownSession.whenSaved(revision).then(async (written) => {
+		if (!written || publish.length === 0) return;
+		const inUse = usedMediaIds(written.scenes ?? []);
+		const ids = publish.filter((id) => inUse.has(id));
+		if (ids.length === 0) return;
+		const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids });
 		if (promoteError) console.warn("Staged media not promoted (they still load because the timeline uses them):", promoteError);
 	});
 	const saved = await ownSession.settle(revision);
