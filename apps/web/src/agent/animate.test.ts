@@ -5,6 +5,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { computeAgentDraft } = await import("./draft");
+const { fieldsMapOf } = await import("./stale");
 const { buildBundleScenes } = await import("./importer");
 const { readAnimationPresets } = await import("@/animation/presets");
 const { resolveAnimationPathValueAtTime } = await import("@/animation/resolve");
@@ -16,8 +17,8 @@ const scenesWith = (main: TimelineElement[], audio: unknown[] = []): TScene[] =>
 	id: "main", name: "main", isMain: true, bookmarks: [], createdAt: new Date(0), updatedAt: new Date(0),
 	tracks: { main: { id: "t-main", name: "Main", type: "video", muted: false, hidden: false, elements: main }, overlay: [], audio } as unknown as SceneTracks,
 } as TScene];
-const run = (scenes: TScene[], ops: unknown[]) =>
-	computeAgentDraft({ scenes, rootSceneId: "main", ops: ops as never, mediaFor: () => undefined, canvas: { width: 1080, height: 1920 }, fps: { numerator: 30, denominator: 1 }, ripple: false });
+const run = (scenes: TScene[], ops: unknown[], base?: ReturnType<typeof fieldsMapOf>) =>
+	computeAgentDraft({ scenes, rootSceneId: "main", ops: ops as never, mediaFor: () => undefined, canvas: { width: 1080, height: 1920 }, fps: { numerator: 30, denominator: 1 }, ripple: false, base });
 const opacity = (element: TimelineElement, seconds: number) =>
 	resolveAnimationPathValueAtTime({ animations: element.animations, propertyPath: "opacity", localTime: T(seconds), fallbackValue: 1 }) as number;
 
@@ -67,5 +68,25 @@ describe("animate for agents", () => {
 		});
 		const title = tracks.overlay[0].elements[0];
 		expect(readAnimationPresets(title).in?.type).toBe("impact");
+	});
+
+	test("a draft based on an old snapshot does not redo blur after the user changed its effect", () => {
+		const blurred = run(scenesWith([video("A", 0, 2)]), [{ op: "animate", match: { agentId: "A" }, in: "blur" }]).scenes;
+		const base = fieldsMapOf(blurred);
+		// The user turns the preset's blur off afterwards.
+		const clip = blurred[0].tracks.main.elements[0] as TimelineElement & { effects: { id: string; enabled: boolean }[] };
+		const off = scenesWith([{ ...clip, effects: clip.effects.map((e) => ({ ...e, enabled: false })) } as TimelineElement]);
+		expect(run(off, [{ op: "animate", match: { agentId: "A" }, in: { type: "blur", duration: 1 } }], base).results[0]).toMatchObject({ ok: false, stale: true });
+		// A fade only changes keyframes: not stale for that.
+		const fade = run(scenesWith([video("A", 0, 2)]), [{ op: "animate", match: { agentId: "A" }, in: "fade" }], fieldsMapOf(scenesWith([video("A", 0, 2)])));
+		expect(fade.results[0]).toMatchObject({ ok: true });
+	});
+
+	test("an out preset stays at the end when the agent changes the clip's length", () => {
+		const animated = run(scenesWith([video("A", 0, 2)]), [{ op: "animate", match: { agentId: "A" }, out: "fade" }]).scenes;
+		const longer = run(animated, [{ op: "set", match: { agentId: "A" }, duration: 3 }]);
+		const clip = longer.scenes[0].tracks.main.elements[0];
+		expect(opacity(clip, 2)).toBeCloseTo(1, 6);
+		expect(opacity(clip, 3)).toBe(0);
 	});
 });

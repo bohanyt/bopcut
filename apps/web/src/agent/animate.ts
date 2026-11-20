@@ -34,7 +34,7 @@ export function parseAgentAnimate(value: unknown): AnimationPresetRequest {
 	return request;
 }
 
-/** Applies an agent's animate request to an element (pure); only visual clips animate. */
+/** Applies an agent's animate request (raw or parsed) to an element (pure); only visual clips animate. */
 export function animateAgentElement<T extends TimelineElement>(element: T, value: unknown, canvasHeight: number): T {
 	if (element.type === "audio" || element.type === "effect") throw new Error(`animate is for visual clips, not ${element.type}`);
 	return applyAnimationPresets(element, parseAgentAnimate(value), { canvasHeight });

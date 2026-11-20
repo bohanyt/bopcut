@@ -21,7 +21,8 @@ import { reconcileCaptionEdit } from "@/text/caption";
 import { parseSourceWords, type SourceWord } from "@/media/words";
 import { type WordRef, cutAtWords, cutWarnings, snapCutsToWords, sourceEnd } from "@/timeline/word-cuts";
 import { cutRange, cutRangeBookmarks } from "@/timeline/range-cut";
-import { type AgentAnimateSide, animateAgentElement, readAnimationPresets } from "./animate";
+import { type AgentAnimateSide, animateAgentElement, parseAgentAnimate, readAnimationPresets } from "./animate";
+import { reanchorOutPreset, touchesPresetBlur } from "@/animation/presets";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
@@ -301,6 +302,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 							assertRoomForEnd(track.elements, hit.index, requestedEnd, next.startTime + next.duration);
 						}
 					}
+					// An out animation preset stays at the clip's end.
+					if (next.duration !== el.duration) next = reanchorOutPreset(next, el.duration);
 					track.elements[hit.index] = el.type === "text" && next.type === "text"
 						? op.caption ? updateAgentCaption(reconcileCaptionEdit(el, next), op.caption) : reconcileCaptionEdit(el, next)
 						: next;
@@ -311,9 +314,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "animate": {
 				const hit = find(op.match);
-				// Both sides depend on the clip's keyframes and length.
-				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: ["keyframes", "duration"], scenes: list });
-				const animated = animateAgentElement(hit.element, { in: op.in, out: op.out }, canvas.height);
+				const request = parseAgentAnimate({ in: op.in, out: op.out });
+				// Both sides depend on the clip's keyframes and length; the blur presets also on its effects.
+				const fields = ["keyframes", "duration", ...(touchesPresetBlur(hit.element, request) ? ["element"] : [])];
+				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields, scenes: list });
+				const animated = animateAgentElement(hit.element, request, canvas.height);
 				editTracks(hit.sceneId, (tracks) => {
 					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
 					track.elements[hit.index] = animated;

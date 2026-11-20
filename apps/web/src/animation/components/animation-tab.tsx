@@ -1,6 +1,7 @@
 // In and out animation presets for a clip. They are written as ordinary keyframes, so the result can be
 // edited on the timeline afterwards; choosing a preset again replaces only the preset's own keyframes.
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
 import { NumberField } from "@/components/ui/number-field";
 import {
@@ -83,7 +84,8 @@ function PresetSide({
 						onBlur={() => {
 							const seconds = Number.parseFloat(duration);
 							if (Number.isFinite(seconds) && seconds > 0 && seconds <= 10 && seconds !== current.duration) apply(type, seconds);
-							else setDuration(String(current.duration));
+							// Shows the length the clip has now (a length that does not fit is shortened).
+							setDuration(String(current.duration));
 						}}
 						onReset={() =>
 							apply(type, side === "in" ? DEFAULT_IN_SECONDS[type as keyof typeof DEFAULT_IN_SECONDS] : DEFAULT_OUT_SECONDS[type as keyof typeof DEFAULT_OUT_SECONDS])
@@ -107,7 +109,16 @@ export function AnimationTab({
 		(e) => e.project.getActiveOrNull()?.settings.canvasSize.height ?? 1080,
 	);
 	const onApply = (request: AnimationPresetRequest) => {
-		const next = applyAnimationPresets(element, request, { canvasHeight });
+		let next: TimelineElement;
+		try {
+			next = applyAnimationPresets(element, request, { canvasHeight });
+		} catch (error) {
+			toast.error("Animation not applied", { description: error instanceof Error ? error.message : String(error) });
+			return;
+		}
+		const effectsOf = (el: TimelineElement) => (el as { effects?: unknown }).effects;
+		// Nothing changed (for example a length that does not fit, shortened to the one it has): no undo step.
+		if (JSON.stringify(next.animations ?? null) === JSON.stringify(element.animations ?? null) && effectsOf(next) === effectsOf(element)) return;
 		// One edit, so one undo.
 		editor.timeline.updateElements({
 			updates: [

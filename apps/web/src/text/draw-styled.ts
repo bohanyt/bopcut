@@ -31,15 +31,16 @@ function drawGlyphs(
 	ctx.lineCap = "round";
 	setCanvasLetterSpacing({ ctx, letterSpacingPx: layout.letterSpacing });
 	const typing = (layout.typed ?? 1) < 1;
-	const lineRuns = layout.lines.map((text, index) => ({
-		text,
-		index: -1,
-		// While typing, each line is drawn from its left edge, so its letters stay where they are.
-		x: typing && layout.textAlign !== "left" ? -layout.lineMetrics[index].width / (layout.textAlign === "center" ? 2 : 1) : 0,
-		y: index * layout.lineHeightPx - layout.block.visualCenterOffset,
-		width: layout.lineMetrics[index].width,
-	}));
-	const runs = typing ? typedRuns(layout.wordRuns ?? lineRuns, layout.typed) : (layout.wordRuns ?? lineRuns);
+	const lineRuns = () =>
+		layout.lines.map((text, index) => ({
+			text,
+			index: -1,
+			// While typing, each line is drawn from its own edge, so its letters stay where they are.
+			x: typing && layout.textAlign !== "left" ? -layout.lineMetrics[index].width / (layout.textAlign === "center" ? 2 : 1) : 0,
+			y: index * layout.lineHeightPx - layout.block.visualCenterOffset,
+			width: layout.lineMetrics[index].width,
+		}));
+	const runs = typing ? typedRuns(layout.wordRuns ?? lineRuns(), layout.typed) : (layout.wordRuns ?? lineRuns());
 	ctx.textAlign = layout.wordRuns || typing ? "left" : layout.textAlign;
 	const draw = (stroke?: { color: string; width: number }) => {
 		for (const run of runs) {
@@ -51,7 +52,10 @@ function drawGlyphs(
 			const shown = run.index >= 0 ? (layout.wordReveal?.[run.index] ?? 1) : 1;
 			if (shown <= 0) continue;
 			ctx.save();
-			ctx.translate(run.x, run.y);
+			// A right-to-left run being typed grows from its right edge (where its first letters are).
+			const fromRight = typing && "rtl" in run && run.rtl;
+			ctx.translate(fromRight ? run.x + run.width : run.x, run.y);
+			if (fromRight) ctx.textAlign = "right";
 			let scale = active ? layout.style.activeScale : 1;
 			if (shown < 1) {
 				const eased = 1 - (1 - shown) ** 3;
@@ -59,9 +63,10 @@ function drawGlyphs(
 				scale *= layout.style.revealPop + (1 - layout.style.revealPop) * eased;
 			}
 			if (scale !== 1) {
-				ctx.translate(run.width / 2, 0);
+				const middle = fromRight ? -run.width / 2 : run.width / 2;
+				ctx.translate(middle, 0);
 				ctx.scale(scale, scale);
-				ctx.translate(-run.width / 2, 0);
+				ctx.translate(-middle, 0);
 			}
 			if (stroke) {
 				ctx.strokeStyle = stroke.color;
@@ -82,7 +87,8 @@ function drawGlyphs(
 	for (const stroke of layout.style.strokes) if (stroke.width > 0) draw(stroke);
 	draw();
 	ctx.fillStyle = color;
-	for (let i = 0; i < layout.lines.length; i++)
+	// Underlines and strikes come with the whole text, not before its letters.
+	if (!typing) for (let i = 0; i < layout.lines.length; i++)
 		drawTextDecoration({
 			ctx,
 			textDecoration: layout.textDecoration,
@@ -95,15 +101,23 @@ function drawGlyphs(
 	ctx.restore();
 }
 
-/** The runs cut to the first `typed` share of their characters (in reading order). */
-function typedRuns<T extends { text: string }>(runs: T[], typed: number): T[] {
+// The first strong letter of a text decides its direction (Hebrew, Arabic and nearby scripts are right to left).
+const STRONG = /[A-Za-zÀ-ʯͰ-ԯ֐-ࣿיִ-﷿ﹰ-﻿]/;
+const RTL = /[֐-ࣿיִ-﷿ﹰ-﻿]/;
+
+/**
+ * The runs cut to the first `typed` share of their characters (in reading order); a right-to-left run is
+ * marked so it is drawn from its right edge.
+ */
+function typedRuns<T extends { text: string }>(runs: T[], typed: number): (T & { rtl: boolean })[] {
 	const total = runs.reduce((sum, run) => sum + Array.from(run.text).length, 0);
 	let left = Math.floor(typed * total + 1e-9);
-	const shown: T[] = [];
+	const shown: (T & { rtl: boolean })[] = [];
 	for (const run of runs) {
 		if (left <= 0) break;
 		const chars = Array.from(run.text);
-		shown.push(chars.length <= left ? run : { ...run, text: chars.slice(0, left).join("") });
+		const rtl = RTL.test(STRONG.exec(run.text)?.[0] ?? "");
+		shown.push({ ...run, text: chars.length <= left ? run.text : chars.slice(0, left).join(""), rtl });
 		left -= chars.length;
 	}
 	return shown;

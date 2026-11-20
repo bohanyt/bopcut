@@ -1,13 +1,15 @@
 // In and out animation presets, written as ordinary keyframes (and, for blur, a blur effect) that stay
 // editable. Their keyframe ids start with `anim-in-` / `anim-out-`, so applying a preset again replaces
-// the earlier preset's keyframes and never the user's own.
-import type { ElementAnimations, NormalizedCubicBezier } from "@/animation/types";
+// the earlier preset's keyframes and never the user's own. Out presets stay at the clip's end when its
+// length changes (see reanchorOutPreset).
+import type { ElementAnimations, NormalizedCubicBezier, ScalarAnimationKey, ScalarSegmentType } from "@/animation/types";
 import { getCurveHandlesForNormalizedCubicBezier } from "@/animation/curve-bridge";
-import { getChannelsFromData } from "@/animation/channel-data";
+import { getChannelsFromData, isLeafChannelData } from "@/animation/channel-data";
 import { removeElementKeyframe, updateScalarKeyframeCurve, upsertPathKeyframe } from "@/animation/keyframes";
 import { resolveAnimationPathValueAtTime } from "@/animation/resolve";
 import { buildEffectParamPath } from "@/animation/effect-param-channel";
 import { resolveAnimationTarget } from "@/timeline/animation-targets";
+import { isVisualElement } from "@/timeline/element-utils";
 import type { TimelineElement } from "@/timeline";
 import { type MediaTime, TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
 
@@ -36,33 +38,41 @@ const EASE_IN: NormalizedCubicBezier = [0.32, 0, 0.67, 0];
 const EASE_IN_OUT: NormalizedCubicBezier = [0.65, 0, 0.35, 1];
 
 type Side = "in" | "out";
-/** One animated property of a preset: values at points of its window (0 = window start, 1 = end). */
-type Track = { path: string; points: { at: number; value: (edge: number) => number; ease?: NormalizedCubicBezier }[] };
+/**
+ * One animated property of a preset: points of its window (0 = window start, 1 = end). The `join` point is
+ * where it meets the rest of the clip: it takes the property's own value there (`edge`), which the other
+ * points scale from.
+ */
+type Point = { at: number; value?: (edge: number) => number; join?: true; ease?: NormalizedCubicBezier };
+type Track = { path: string; points: Point[] };
 
-const prefix = (side: Side) => `anim-${side}-`;
+export const presetPrefix = (side: Side) => `anim-${side}-`;
+/** Which side's preset a keyframe id belongs to, if any. */
+export function presetSideOf(id: string): Side | null {
+	return id.startsWith("anim-in-") ? "in" : id.startsWith("anim-out-") ? "out" : null;
+}
 
-/** The tracks of a preset. `edge` is the property's own value where the preset meets the rest of the clip. */
+/** The tracks of a preset. */
 function presetTracks(side: Side, type: string, canvasHeight: number): Track[] {
 	const to = (value: number) => () => value;
-	const own = (edge: number) => edge;
 	const times = (factor: number) => (edge: number) => edge * factor;
-	const opacityIn = (end: number): Track => ({ path: "opacity", points: [{ at: 0, value: to(0), ease: EASE_OUT }, { at: end, value: own }] });
-	const opacityOut = (start: number): Track => ({ path: "opacity", points: [{ at: start, value: own, ease: EASE_IN }, { at: 1, value: to(0) }] });
-	const scale = (points: Track["points"]): Track[] => ["transform.scaleX", "transform.scaleY"].map((path) => ({ path, points }));
+	const opacityIn = (end: number): Track => ({ path: "opacity", points: [{ at: 0, value: to(0), ease: EASE_OUT }, { at: end, join: true }] });
+	const opacityOut = (start: number): Track => ({ path: "opacity", points: [{ at: start, join: true, ease: EASE_IN }, { at: 1, value: to(0) }] });
+	const scale = (points: Point[]): Track[] => ["transform.scaleX", "transform.scaleY"].map((path) => ({ path, points }));
 	if (side === "in") {
 		switch (type) {
 			case "fade":
 				return [opacityIn(1)];
 			case "pop":
 				// Grows past its size, then settles.
-				return [opacityIn(0.4), ...scale([{ at: 0, value: times(0.5), ease: EASE_OUT }, { at: 0.65, value: times(1.1), ease: EASE_IN_OUT }, { at: 1, value: own }])];
+				return [opacityIn(0.4), ...scale([{ at: 0, value: times(0.5), ease: EASE_OUT }, { at: 0.65, value: times(1.1), ease: EASE_IN_OUT }, { at: 1, join: true }])];
 			case "impact":
 				// Comes down from large and lands hard.
-				return [opacityIn(0.3), ...scale([{ at: 0, value: times(1.6), ease: EASE_IN }, { at: 1, value: own }])];
+				return [opacityIn(0.3), ...scale([{ at: 0, value: times(1.6), ease: EASE_IN }, { at: 1, join: true }])];
 			case "blur":
-				return [opacityIn(0.5), { path: BLUR_PATH, points: [{ at: 0, value: to(BLUR_AMOUNT), ease: EASE_OUT }, { at: 1, value: own }] }];
+				return [opacityIn(0.5), { path: BLUR_PATH, points: [{ at: 0, value: to(BLUR_AMOUNT), ease: EASE_OUT }, { at: 1, join: true }] }];
 			case "typewriter":
-				return [{ path: "typewriter", points: [{ at: 0, value: to(0) }, { at: 1, value: own }] }];
+				return [{ path: "typewriter", points: [{ at: 0, value: to(0) }, { at: 1, join: true }] }];
 		}
 	} else {
 		switch (type) {
@@ -72,27 +82,29 @@ function presetTracks(side: Side, type: string, canvasHeight: number): Track[] {
 				// Drops and tips over while it fades.
 				return [
 					opacityOut(0.3),
-					{ path: "transform.positionY", points: [{ at: 0, value: own, ease: EASE_IN }, { at: 1, value: (edge) => edge + canvasHeight * 0.25 }] },
-					{ path: "transform.rotate", points: [{ at: 0, value: own, ease: EASE_IN }, { at: 1, value: (edge) => edge + 8 }] },
+					{ path: "transform.positionY", points: [{ at: 0, join: true, ease: EASE_IN }, { at: 1, value: (edge) => edge + canvasHeight * 0.25 }] },
+					{ path: "transform.rotate", points: [{ at: 0, join: true, ease: EASE_IN }, { at: 1, value: (edge) => edge + 8 }] },
 				];
 			case "dissolve":
 				return [
 					opacityOut(0),
-					{ path: BLUR_PATH, points: [{ at: 0, value: own, ease: EASE_IN }, { at: 1, value: to(BLUR_AMOUNT) }] },
-					...scale([{ at: 0, value: own, ease: EASE_OUT }, { at: 1, value: times(1.05) }]),
+					{ path: BLUR_PATH, points: [{ at: 0, join: true, ease: EASE_IN }, { at: 1, value: to(BLUR_AMOUNT) }] },
+					...scale([{ at: 0, join: true, ease: EASE_OUT }, { at: 1, value: times(1.05) }]),
 				];
 		}
 	}
 	throw new Error(`unknown ${side} animation: ${type}`);
 }
 
-/** Every keyframe of the element whose id marks it as one side's preset, as path and id. */
-function presetKeys(animations: ElementAnimations | undefined, side: Side): { path: string; id: string }[] {
-	const found: { path: string; id: string }[] = [];
+const usesBlur = (side: Side, type: string | undefined) => (side === "in" ? type === "blur" : type === "dissolve");
+
+/** Every keyframe of the element whose id marks it as one side's preset, with its path and time. */
+function presetKeys(animations: ElementAnimations | undefined, side: Side): { path: string; id: string; time: number }[] {
+	const found: { path: string; id: string; time: number }[] = [];
 	for (const [path, data] of Object.entries(animations ?? {})) {
 		if (!data) continue;
 		for (const channel of getChannelsFromData({ data })) {
-			for (const key of channel?.keys ?? []) if (key.id.startsWith(prefix(side)) && !found.some((f) => f.path === path && f.id === key.id)) found.push({ path, id: key.id });
+			for (const key of channel?.keys ?? []) if (presetSideOf(key.id) === side && !found.some((f) => f.path === path && f.id === key.id)) found.push({ path, id: key.id, time: key.time });
 		}
 	}
 	return found;
@@ -127,113 +139,163 @@ function valueAt(element: TimelineElement, path: string, time: number): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function writeTracks<T extends TimelineElement>(element: T, side: Side, tracks: Track[], window: { start: number; end: number }): T {
+const scalarKeys = (element: TimelineElement, path: string): ScalarAnimationKey[] => {
+	const data = element.animations?.[path];
+	return isLeafChannelData(data) ? ((data.keys ?? []) as ScalarAnimationKey[]) : [];
+};
+
+const seconds = (ticks: number) => Math.round((ticks / TICKS_PER_SECOND) * 1000) / 1000;
+
+function writeTracks<T extends TimelineElement>(element: T, side: Side, type: string, tracks: Track[], window: { start: number; end: number }): T {
 	let next = element;
 	const span = window.end - window.start;
-	// Each property's own value where the preset meets the rest of the clip (taken before anything is written).
-	const edges = new Map(tracks.map((track) => [track.path, valueAt(element, track.path, side === "in" ? window.end : window.start)]));
+	const timeOf = (point: Point) => roundMediaTime({ time: window.start + span * point.at }) as MediaTime;
 	let n = 0;
 	for (const track of tracks) {
 		const target = resolveAnimationTarget({ element: next, path: track.path });
-		if (!target) continue; // the element has no such property (for example typewriter on a video)
-		const edge = edges.get(track.path) ?? 0;
-		const ids: string[] = [];
+		if (!target) throw new Error(`${side} ${type}: this clip has no ${track.path} to animate`);
+		const join = track.points.find((point) => point.join)!;
+		const joinTime = timeOf(join);
+		// The property's own value where the preset meets the rest of the clip (before anything is written).
+		const edge = valueAt(next, track.path, joinTime);
+		const own = scalarKeys(next, track.path);
+		const ownAt = (time: number) => own.find((key) => Math.abs(key.time - time) < 1);
+		// The segment of the clip's own keys the join lands in keeps its kind (a hold stays a hold).
+		const before = own.filter((key) => key.time <= joinTime).pop();
+		const ids: (string | null)[] = [];
 		for (const point of track.points) {
-			const id = `${prefix(side)}${track.path}-${n++}`;
+			const time = timeOf(point);
+			const mine = ownAt(time);
+			if (mine) {
+				// A keyframe of the clip's own at the join is the join itself; anywhere else it would be written over.
+				if (point.join) {
+					ids.push(mine.id);
+					continue;
+				}
+				throw new Error(`${side} ${type}: ${track.path} has its own keyframe at ${seconds(time)} s, where the preset needs one; move or delete it first`);
+			}
+			const id = `${presetPrefix(side)}${track.path}-${n++}`;
 			ids.push(id);
-			const time = roundMediaTime({ time: window.start + span * point.at }) as MediaTime;
-			let animations = upsertPathKeyframe({
+			const animations = upsertPathKeyframe({
 				animations: next.animations, propertyPath: track.path, time,
-				value: point.value(edge), interpolation: point.ease ? "bezier" : "linear", keyframeId: id,
+				value: point.join ? edge : point.value!(edge), interpolation: point.ease ? "bezier" : "linear", keyframeId: id,
 				channelLayout: target.channelLayout, coerceValue: target.coerceValue,
 			});
-			// A keyframe of the user's at that very time was written over: it is the preset's now.
-			const channel = getChannelsFromData({ data: animations?.[track.path] as never })[0];
-			const taken = channel?.keys.find((key) => Math.abs(key.time - time) < 1 && key.id !== id && !key.id.startsWith("anim-"));
-			if (channel && taken && !channel.keys.some((key) => key.id === id)) {
-				animations = { ...animations, [track.path]: { ...channel, keys: channel.keys.map((key) => (key === taken ? { ...key, id } : key)) } as never };
-			}
 			next = { ...next, animations };
 		}
-		// Easing: the curve of each segment that has one.
+		const keyOf = (id: string | null) => (id ? scalarKeys(next, track.path).find((key) => key.id === id) : undefined);
 		track.points.forEach((point, index) => {
-			if (!point.ease || index + 1 >= track.points.length) return;
-			const channel = getChannelsFromData({ data: next.animations?.[track.path] as never })[0];
-			const left = channel?.keys.find((key) => key.id === ids[index]);
-			const right = channel?.keys.find((key) => key.id === ids[index + 1]);
-			if (!left || !right || typeof left.value !== "number" || typeof right.value !== "number") return;
-			const handles = getCurveHandlesForNormalizedCubicBezier({ leftKey: left as never, rightKey: right as never, cubicBezier: point.ease, referenceSpanValue: 1 });
+			const left = keyOf(ids[index]);
+			if (!left || presetSideOf(left.id) !== side) return; // the clip's own keys keep their curves
+			if (point.join && side === "in") {
+				// After the join the clip's own motion goes on as it did.
+				const kind: ScalarSegmentType = before?.segmentToNext === "step" ? "step" : "linear";
+				next = { ...next, animations: updateScalarKeyframeCurve({ animations: next.animations, propertyPath: track.path, componentKey: "value", keyframeId: left.id, patch: { segmentToNext: kind, rightHandle: null } }) };
+				return;
+			}
+			const right = keyOf(ids[index + 1]);
+			// Easing; a segment between equal values stays flat (no overshoot).
+			if (!point.ease || !right || left.value === right.value) return;
+			const handles = getCurveHandlesForNormalizedCubicBezier({ leftKey: left, rightKey: right, cubicBezier: point.ease });
 			if (!handles) return;
 			let animations = updateScalarKeyframeCurve({ animations: next.animations, propertyPath: track.path, componentKey: "value", keyframeId: left.id, patch: { rightHandle: handles.rightHandle, segmentToNext: "bezier", tangentMode: "broken" } });
-			animations = updateScalarKeyframeCurve({ animations, propertyPath: track.path, componentKey: "value", keyframeId: right.id, patch: { leftHandle: handles.leftHandle, tangentMode: "broken" } });
+			if (presetSideOf(right.id) === side) {
+				animations = updateScalarKeyframeCurve({ animations, propertyPath: track.path, componentKey: "value", keyframeId: right.id, patch: { leftHandle: handles.leftHandle, tangentMode: "broken" } });
+			}
 			next = { ...next, animations };
 		});
 	}
 	return next;
 }
 
+/** How long a side's preset is now, in ticks (0 without one). */
+function presetLength(element: TimelineElement, side: Side): number {
+	const keys = presetKeys(element.animations, side);
+	if (!keys.length) return 0;
+	return side === "in" ? Math.max(...keys.map((key) => key.time)) : element.duration - Math.min(...keys.map((key) => key.time));
+}
+
 /**
- * Applies in and out presets to an element (pure). Each side replaces that side's earlier preset; keyframes
- * of the user's own are kept, and the preset starts and ends at the values they give. If both sides would
- * overlap, they are shortened to fit the clip.
+ * Applies in and out presets to an element (pure). Each side asked for replaces that side's earlier preset;
+ * keyframes of the clip's own are kept, and the preset starts and ends at the values they give. Both sides
+ * asked for together are shortened to fit the clip; one side gets the room the other leaves.
  */
 export function applyAnimationPresets<T extends TimelineElement>(element: T, request: AnimationPresetRequest, { canvasHeight }: { canvasHeight: number }): T {
 	const duration = element.duration;
-	const seconds = (side: Side) => {
-		const spec = request[side];
-		if (!spec || spec.type === "none") return 0;
-		const fallback = side === "in" ? DEFAULT_IN_SECONDS[spec.type as AnimationInType] : DEFAULT_OUT_SECONDS[spec.type as AnimationOutType];
-		const wanted = spec.duration ?? fallback;
-		if (typeof wanted !== "number" || !Number.isFinite(wanted) || wanted <= 0 || wanted > 10) throw new Error(`${side} animation duration must be 0 to 10 seconds`);
-		return wanted * TICKS_PER_SECOND;
-	};
 	for (const side of ["in", "out"] as const) {
 		const spec = request[side];
 		if (!spec) continue;
 		const types: readonly string[] = side === "in" ? ANIMATION_IN_TYPES : ANIMATION_OUT_TYPES;
 		if (spec.type !== "none" && !types.includes(spec.type)) throw new Error(`${side} animation must be one of ${types.join(", ")} or none`);
-		if (side === "in" && spec.type === "typewriter" && element.type !== "text") throw new Error("typewriter is for text");
+		if (spec.type === "typewriter" && element.type !== "text") throw new Error("typewriter is for text");
+		if (usesBlur(side, spec.type) && !isVisualElement(element)) throw new Error(`${spec.type} needs a clip that takes effects (not a ${element.type} clip)`);
 	}
-	let inTicks = seconds("in");
-	let outTicks = seconds("out");
-	// The side not asked about keeps its preset; its length counts when the two would overlap.
-	const kept = (side: Side) => {
-		const keys = presetKeys(element.animations, side);
-		if (!keys.length) return 0;
-		const times = keys.flatMap(({ path, id }) => getChannelsFromData({ data: element.animations?.[path] as never }).flatMap((channel) => channel?.keys.filter((key) => key.id === id).map((key) => key.time) ?? []));
-		return side === "in" ? Math.max(...times) : duration - Math.min(...times);
+	const wanted = (side: Side) => {
+		const spec = request[side];
+		if (!spec || spec.type === "none") return 0;
+		const fallback = side === "in" ? DEFAULT_IN_SECONDS[spec.type as AnimationInType] : DEFAULT_OUT_SECONDS[spec.type as AnimationOutType];
+		const value = spec.duration ?? fallback;
+		if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 10) throw new Error(`${side} animation duration must be 0 to 10 seconds`);
+		return value * TICKS_PER_SECOND;
 	};
-	if (!request.in) inTicks = 0;
-	if (!request.out) outTicks = 0;
-	const otherIn = request.in ? inTicks : kept("in");
-	const otherOut = request.out ? outTicks : kept("out");
+	const asked = (side: Side) => !!request[side] && request[side]!.type !== "none";
+	let ticks = { in: wanted("in"), out: wanted("out") };
 	// The two sides never meet at one time (a channel has one keyframe per time): a tick stays between them.
 	const room = duration - 2;
-	if (otherIn + otherOut > room) {
-		if (request.in && request.out) {
-			const scale = Math.max(0, room) / (otherIn + otherOut);
-			inTicks *= scale;
-			outTicks *= scale;
-		} else if (request.in) {
-			// The out side keeps its preset; the new one gets the room left.
-			inTicks = Math.max(0, room - otherOut);
-		} else {
-			outTicks = Math.max(0, room - otherIn);
+	if (asked("in") && asked("out")) {
+		if (room < 2) throw new Error("the clip is too short for an in and an out animation");
+		if (ticks.in + ticks.out > room) {
+			const scale = room / (ticks.in + ticks.out);
+			ticks = { in: ticks.in * scale, out: ticks.out * scale };
+		}
+	} else {
+		for (const side of ["in", "out"] as const) {
+			if (!asked(side)) continue;
+			const other = side === "in" ? "out" : "in";
+			const free = room - (request[other] ? 0 : presetLength(element, other));
+			if (free < 1) throw new Error(`no room for the ${side} animation: the ${other} animation takes the whole clip (shorten it first)`);
+			ticks[side] = Math.min(ticks[side], free);
 		}
 	}
+	// Every side asked for is cleared first, so nothing new is measured from or lands on an old preset.
 	let next = element;
+	for (const side of ["in", "out"] as const) if (request[side]) next = withoutPreset(next, side);
 	for (const side of ["in", "out"] as const) {
 		const spec = request[side];
-		if (!spec) continue;
-		next = withoutPreset(next, side);
-		if (spec.type === "none") continue;
+		if (!spec || spec.type === "none") continue;
 		const tracks = presetTracks(side, spec.type, canvasHeight);
 		if (tracks.some((track) => track.path === BLUR_PATH)) next = withPresetBlur(next);
-		const ticks = side === "in" ? inTicks : outTicks;
-		if (ticks < 1) continue;
-		next = writeTracks(next, side, tracks, side === "in" ? { start: 0, end: ticks } : { start: duration - ticks, end: duration });
+		next = writeTracks(next, side, spec.type, tracks, side === "in" ? { start: 0, end: ticks.in } : { start: duration - ticks.out, end: duration });
 	}
 	return dropUnusedBlur(next);
+}
+
+/**
+ * After the clip's length changed (a trim at its end, a speed change), its out preset moves along so it
+ * still ends with the clip; squeezed into the room left after the in preset, or dropped without room.
+ * Keys are moved as they are (their values and curves stay).
+ */
+export function reanchorOutPreset<T extends TimelineElement>(element: T, previousDuration: number): T {
+	const delta = element.duration - previousDuration;
+	const keys = presetKeys(element.animations, "out");
+	if (!delta || !keys.length) return element;
+	const start = Math.min(...keys.map((key) => key.time));
+	const length = previousDuration - start;
+	const inEnd = presetLength(element, "in");
+	const free = element.duration - inEnd - 2;
+	if (free < 1) return dropUnusedBlur(withoutPreset(element, "out"));
+	const scale = length > free ? free / length : 1;
+	const newStart = element.duration - length * scale;
+	const move = (time: number) => roundMediaTime({ time: newStart + (time - start) * scale }) as MediaTime;
+	let animations = element.animations;
+	for (const path of new Set(keys.map((key) => key.path))) {
+		const data = animations?.[path];
+		if (!isLeafChannelData(data)) continue;
+		const moved = data.keys.map((key) => (presetSideOf(key.id) === "out" ? { ...key, time: move(key.time) } : key));
+		// A key of the clip's own the moved keys would now pass stays where it is; the order is kept by time.
+		animations = { ...animations, [path]: { ...data, keys: [...moved].sort((a, b) => a.time - b.time) } as never };
+	}
+	return { ...element, animations };
 }
 
 /** Which preset each side of an element has now (from its keyframe ids), with its length in seconds. */
@@ -242,22 +304,22 @@ export function readAnimationPresets(element: TimelineElement): { in: { type: st
 		const keys = presetKeys(element.animations, side);
 		if (!keys.length) return null;
 		const paths = new Set(keys.map((key) => key.path));
-		const times = keys.flatMap(({ path, id }) => getChannelsFromData({ data: element.animations?.[path] as never }).flatMap((channel) => channel?.keys.filter((key) => key.id === id).map((key) => key.time) ?? []));
-		const length = side === "in" ? Math.max(...times) : element.duration - Math.min(...times);
 		const type =
 			side === "in"
 				? paths.has("typewriter") ? "typewriter" : paths.has(BLUR_PATH) ? "blur" : paths.has("transform.scaleX") ? (presetScaleStartsLarge(element) ? "impact" : "pop") : "fade"
 				: paths.has(BLUR_PATH) ? "dissolve" : paths.has("transform.positionY") ? "fall" : "fade";
-		return { type, duration: Math.round((length / TICKS_PER_SECOND) * 100) / 100 };
+		return { type, duration: Math.round((presetLength(element, side) / TICKS_PER_SECOND) * 100) / 100 };
 	};
 	return { in: read("in"), out: read("out") };
 }
 
 function presetScaleStartsLarge(element: TimelineElement): boolean {
-	const channel = getChannelsFromData({ data: element.animations?.["transform.scaleX"] as never })[0];
-	const keys = (channel?.keys ?? []).filter((key) => key.id.startsWith(prefix("in")));
+	const keys = scalarKeys(element, "transform.scaleX").filter((key) => presetSideOf(key.id) === "in");
 	if (keys.length < 2) return false;
-	const first = keys.reduce((a, b) => (a.time <= b.time ? a : b));
-	const last = keys.reduce((a, b) => (a.time >= b.time ? a : b));
-	return Number(first.value) > Number(last.value);
+	return Number(keys[0].value) > Number(keys[keys.length - 1].value);
+}
+
+/** Whether a request (or the element) involves the preset blur effect (for stale-draft checks). */
+export function touchesPresetBlur(element: TimelineElement, request: AnimationPresetRequest): boolean {
+	return usesBlur("in", request.in?.type) || usesBlur("out", request.out?.type) || !!(element as { effects?: { id: string }[] }).effects?.some((effect) => effect.id === PRESET_BLUR_EFFECT_ID);
 }

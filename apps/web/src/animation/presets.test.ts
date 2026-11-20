@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { applyAnimationPresets, PRESET_BLUR_EFFECT_ID, readAnimationPresets } from "./presets";
+import { applyAnimationPresets, PRESET_BLUR_EFFECT_ID, readAnimationPresets, reanchorOutPreset } from "./presets";
 import { resolveAnimationPathValueAtTime } from "./resolve";
 import { getChannelsFromData } from "./channel-data";
-import { upsertPathKeyframe } from "./keyframes";
+import { cloneAnimations, splitAnimationsAtTime, updateScalarKeyframeCurve, upsertPathKeyframe } from "./keyframes";
+import { applyElementUpdate } from "@/timeline/update-pipeline";
 import { buildTextElement } from "@/timeline/element-utils";
 import { resolveAnimationTarget } from "@/timeline/animation-targets";
 import { buildEffectParamPath } from "./effect-param-channel";
@@ -101,5 +102,80 @@ describe("animation presets", () => {
 	test("bad requests are refused", () => {
 		expect(() => applyAnimationPresets(text(), { in: { type: "spin" as never } }, canvas)).toThrow("in animation must be one of");
 		expect(() => applyAnimationPresets(text(), { out: { type: "fade", duration: 0 } }, canvas)).toThrow("0 to 10 seconds");
+	});
+
+	const own = (element: TextElement, path: string, seconds: number, value: number, id = `mine-${seconds}`) => {
+		const target = resolveAnimationTarget({ element, path })!;
+		return { ...element, animations: upsertPathKeyframe({ animations: element.animations, propertyPath: path, time: T(seconds), value, keyframeId: id, channelLayout: target.channelLayout, coerceValue: target.coerceValue }) };
+	};
+
+	test("a keyframe of the clip's own is never written over: refused where the preset needs one, kept at the join", () => {
+		expect(() => applyAnimationPresets(own(text(2), "opacity", 0, 0.7), { in: { type: "fade" } }, canvas)).toThrow("has its own keyframe at 0 s");
+		const atJoin = applyAnimationPresets(own(text(2), "opacity", 0.3, 0.7), { in: { type: "fade" } }, canvas);
+		expect(at(atJoin, "opacity", 0.3)).toBeCloseTo(0.7, 6);
+		const removed = applyAnimationPresets(atJoin, { in: { type: "none" } }, canvas);
+		expect(keyIds(removed, "opacity")).toEqual(["mine-0.3"]);
+		expect(at(removed, "opacity", 0.3)).toBeCloseTo(0.7, 6);
+	});
+
+	test("both sides at once are cleared before either is written (no opacity left at 0)", () => {
+		const longOut = applyAnimationPresets(text(2), { out: { type: "fade", duration: 1.5 } }, canvas);
+		const both = applyAnimationPresets(longOut, { in: { type: "fade", duration: 0.5 }, out: { type: "fade", duration: 0.3 } }, canvas);
+		expect(at(both, "opacity", 0.5)).toBeCloseTo(1, 6);
+		expect(at(both, "opacity", 1.2)).toBeCloseTo(1, 6);
+		expect(readAnimationPresets(both)).toEqual({ in: { type: "fade", duration: 0.5 }, out: { type: "fade", duration: 0.3 } });
+	});
+
+	test("where a preset joins the clip's own motion, that motion goes on as it was", () => {
+		// A hold from 0.2 s to 1 s stays a hold after a fade in that ends inside it.
+		let held = own(own(text(2), "opacity", 0.2, 0.8, "a"), "opacity", 1, 0.4, "b");
+		held = { ...held, animations: updateScalarKeyframeCurve({ animations: held.animations, propertyPath: "opacity", componentKey: "value", keyframeId: "a", patch: { segmentToNext: "step" } }) };
+		const faded = applyAnimationPresets(held, { in: { type: "fade", duration: 0.5 } }, canvas);
+		expect(at(faded, "opacity", 0.9)).toBeCloseTo(0.8, 6);
+		expect(at(faded, "opacity", 1)).toBeCloseTo(0.4, 6);
+		// Pop's opacity joins at 40% of its window: measured there, not at the window's end.
+		const ramp = own(own(text(2), "opacity", 0.1, 1, "c"), "opacity", 0.5, 0, "d");
+		const pop = applyAnimationPresets(ramp, { in: { type: "pop" } }, canvas);
+		expect(at(pop, "opacity", 0.14)).toBeCloseTo(0.9, 2);
+		expect(at(pop, "opacity", 0.3)).toBeCloseTo(0.5, 6);
+	});
+
+	test("a fade between equal values stays flat", () => {
+		const hidden = applyAnimationPresets(text(2, { opacity: 0 }), { in: { type: "fade" } }, canvas);
+		for (const s of [0.05, 0.1, 0.2, 0.3]) expect(at(hidden, "opacity", s)).toBe(0);
+	});
+
+	test("blur presets need a clip that takes effects; a side without room is refused, not dropped", () => {
+		const compound = { ...text(), type: "compound", sceneId: "s" } as unknown as TextElement;
+		expect(() => applyAnimationPresets(compound, { in: { type: "blur" } }, canvas)).toThrow("needs a clip that takes effects");
+		const short = applyAnimationPresets(text(0.2), { in: { type: "fade" } }, canvas);
+		expect(() => applyAnimationPresets(short, { out: { type: "fade" } }, canvas)).toThrow("no room for the out animation");
+	});
+
+	test("the out preset stays at the clip's end when its length changes, squeezed or dropped without room", () => {
+		const el = applyAnimationPresets(text(2), { in: { type: "fade" }, out: { type: "fade", duration: 0.5 } }, canvas);
+		const longer = applyElementUpdate({ element: el, patch: { duration: T(3) }, context: { tracks: { main: { id: "m", elements: [] }, overlay: [], audio: [] } as never, trackId: "t" } }) as TextElement;
+		expect(at(longer, "opacity", 2)).toBeCloseTo(1, 6);
+		expect(at(longer, "opacity", 2.5)).toBeCloseTo(1, 6);
+		expect(at(longer, "opacity", 3)).toBe(0);
+		expect(readAnimationPresets(longer)).toEqual({ in: { type: "fade", duration: 0.3 }, out: { type: "fade", duration: 0.5 } });
+		const squeezed = reanchorOutPreset({ ...el, duration: T(0.5) }, el.duration);
+		expect(readAnimationPresets(squeezed).out?.duration).toBeCloseTo(0.2, 2);
+		const gone = reanchorOutPreset({ ...el, duration: T(0.3) }, el.duration);
+		expect(readAnimationPresets(gone).out).toBeNull();
+	});
+
+	test("copies and splits keep keyframes in their preset", () => {
+		const el = applyAnimationPresets(text(2), { in: { type: "pop" }, out: { type: "fade", duration: 1 } }, canvas);
+		const copy = { ...el, animations: cloneAnimations({ animations: el.animations, shouldRegenerateKeyframeIds: true }) };
+		expect(keyIds(copy, "opacity")).not.toEqual(keyIds(el, "opacity"));
+		expect(readAnimationPresets(copy)).toEqual(readAnimationPresets(el));
+		// Split in the middle of the fade out: both new boundary keys belong to it.
+		const { leftAnimations, rightAnimations } = splitAnimationsAtTime({ animations: el.animations, splitTime: T(1.5) });
+		const left = { ...el, duration: T(1.5), animations: leftAnimations };
+		const right = { ...el, duration: T(0.5), animations: rightAnimations };
+		expect(keyIds(left, "opacity").filter((id) => !id.startsWith("anim-"))).toEqual([]);
+		expect(keyIds(right, "opacity").every((id) => id.startsWith("anim-out-"))).toBe(true);
+		expect(Object.values(applyAnimationPresets(right, { out: { type: "none" } }, canvas).animations ?? {}).filter(Boolean)).toEqual([]);
 	});
 });

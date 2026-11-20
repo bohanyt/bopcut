@@ -313,3 +313,34 @@ test("an effect that changes nothing right now (a blur of 0) gives the composito
 	expect(groups.length).toBe(1);
 	expect(groups.every((passes) => passes.length > 0)).toBe(true);
 });
+
+test("typewriter: right-to-left text grows from its right edge; underlines come with the whole text", () => {
+	const hebrew = (typed: number, extra: Record<string, unknown> = {}): TextElement => ({
+		...element,
+		caption: undefined,
+		params: { content: "שלום עולם", fontFamily: FONT, fontSize: 15, textAlign: "center", "shadow.opacity": 0, typewriter: typed, ...extra },
+	});
+	const inked = (target: TextElement) => {
+		const { canvas, pixels } = render(1, 0.5, target);
+		let left = canvas.width;
+		let right = 0;
+		let count = 0;
+		for (let y = 0; y < canvas.height; y++)
+			for (let x = 0; x < canvas.width; x++)
+				if (pixels[(y * canvas.width + x) * 4 + 3] > 20) {
+					count++;
+					left = Math.min(left, x);
+					right = Math.max(right, x);
+				}
+		return { count, left, right };
+	};
+	const all = inked(hebrew(1));
+	const half = inked(hebrew(0.5));
+	expect(half.count).toBeGreaterThan(0);
+	expect(Math.abs(half.right - all.right)).toBeLessThanOrEqual(2);
+	expect(half.left).toBeGreaterThan(all.left + 20);
+	// An underline is not drawn before the letters it underlines.
+	const underlined = (typed: number) => inked({ ...hebrew(typed, { textDecoration: "underline" }), params: { ...hebrew(typed).params, content: "Hello world", textDecoration: "underline" } });
+	expect(underlined(0).count).toBe(0);
+	expect(underlined(1).count).toBeGreaterThan(inked({ ...hebrew(1), params: { ...hebrew(1).params, content: "Hello world" } }).count);
+});
