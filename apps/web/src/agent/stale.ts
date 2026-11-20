@@ -41,20 +41,50 @@ function digest(text: string): string {
 }
 
 // Elements are replaced, not mutated, on every edit: an unchanged element keeps its object and its record.
+// A changed element usually keeps its params and keyframes objects (a move or trim only replaces the
+// element), so those are serialized once per object and shared by every record that has them.
 const fieldsCache = new WeakMap<object, ElementFields>();
+const paramsCache = new WeakMap<object, { params: Record<string, string>; digest: string }>();
+const jsonCache = new WeakMap<object, { json: string; digest: string }>();
+const NO_PARAMS = { params: {} as Record<string, string>, digest: digest("{}") };
+
+function paramsOf(value: unknown): { params: Record<string, string>; digest: string } {
+	if (!value || typeof value !== "object") return NO_PARAMS;
+	const cached = paramsCache.get(value);
+	if (cached) return cached;
+	const params: Record<string, string> = {};
+	for (const [key, entry] of Object.entries(value)) params[key] = stableJson(entry);
+	const out = { params, digest: digest(Object.keys(params).sort().map((key) => `${key}=${params[key]}`).join("\u0000")) };
+	paramsCache.set(value, out);
+	return out;
+}
+
+function jsonOf(value: unknown): { json: string; digest: string } {
+	if (!value || typeof value !== "object") {
+		const json = stableJson(value ?? null);
+		return { json, digest: digest(json) };
+	}
+	const cached = jsonCache.get(value);
+	if (cached) return cached;
+	const json = stableJson(value);
+	const out = { json, digest: digest(json) };
+	jsonCache.set(value, out);
+	return out;
+}
 
 export function fieldsOf(element: TimelineElement): ElementFields {
 	const cached = fieldsCache.get(element);
 	if (cached) return cached;
-	const params: Record<string, string> = {};
-	for (const [key, value] of Object.entries(element.params ?? {})) params[key] = stableJson(value);
+	const { params: rawParams, animations: rawAnimations, ...rest } = element as TimelineElement & { animations?: unknown };
+	const params = paramsOf(rawParams);
+	const animations = jsonOf(rawAnimations ?? null);
 	const fields: ElementFields = {
 		start: sec(element.startTime),
 		duration: sec(element.duration),
 		trimStart: sec(element.trimStart),
-		params,
-		animations: stableJson((element as { animations?: unknown }).animations ?? null),
-		whole: digest(stableJson(element)),
+		params: params.params,
+		animations: animations.json,
+		whole: digest(`${stableJson(rest)}|${params.digest}|${animations.digest}`),
 	};
 	fieldsCache.set(element, fields);
 	return fields;
@@ -66,7 +96,8 @@ function contentOf(sceneId: string, scenes: Map<string, TScene>, seen = new Set<
 	seen.add(sceneId);
 	const scene = scenes.get(sceneId);
 	if (!scene) return "missing";
-	const parts: string[] = [];
+	// Notes inside a compound clip are part of what a delete would make unreachable.
+	const parts: string[] = [`bookmarks:${stableJson(scene.bookmarks ?? [])}`];
 	for (const track of orderedTracks(scene.tracks)) {
 		parts.push(`${track.id}:${stableJson({ ...track, elements: undefined })}`);
 		for (const element of track.elements) {
@@ -78,20 +109,33 @@ function contentOf(sceneId: string, scenes: Map<string, TScene>, seen = new Set<
 	return digest(parts.join("|"));
 }
 
-/** Every element of every scene, keyed `sceneId:elementId`. */
+/**
+ * Every element of every scene, keyed `sceneId:elementId`, and also `#elementId` when that id is in one
+ * scene only: an element an earlier op of the draft moved into another scene (group) is still found.
+ */
 export function fieldsMapOf(scenes: TScene[]): Map<string, ElementRecord> {
 	const byId = new Map(scenes.map((scene) => [scene.id, scene] as const));
 	const map = new Map<string, ElementRecord>();
+	const seen = new Map<string, number>();
 	for (const scene of scenes) {
 		for (const track of orderedTracks(scene.tracks)) {
 			for (const element of track.elements) {
 				const nested = (element as { sceneId?: unknown }).sceneId;
 				const content = element.type === "compound" && typeof nested === "string" ? contentOf(nested, byId) : null;
-				map.set(`${scene.id}:${element.id}`, { fields: fieldsOf(element), trackId: track.id, content });
+				const record = { fields: fieldsOf(element), trackId: track.id, content };
+				map.set(`${scene.id}:${element.id}`, record);
+				seen.set(element.id, (seen.get(element.id) ?? 0) + 1);
+				map.set(`#${element.id}`, record);
 			}
 		}
 	}
+	for (const [id, count] of seen) if (count > 1) map.delete(`#${id}`);
 	return map;
+}
+
+/** The record of an element in its scene, else by its id alone (it was moved to another scene). */
+function recordOf(map: Map<string, ElementRecord>, sceneId: string, elementId: string): ElementRecord | undefined {
+	return map.get(`${sceneId}:${elementId}`) ?? map.get(`#${elementId}`);
 }
 
 /** A bounded history of snapshots the editor sent, so a draft's `basedOn` can be compared with now. */
@@ -114,9 +158,13 @@ export class StaleError extends Error {
 	}
 }
 
-/** Fields a set op touches: timing it sets, each param key, and keyframes. */
-export function touchedFields(op: { start?: unknown; duration?: unknown; trimStart?: unknown; params?: Record<string, unknown>; keyframes?: unknown; keyframesMode?: unknown }): string[] {
+/**
+ * Fields a set op touches: timing it sets, each param key, and keyframes. A caption update rewrites the
+ * text, its words and timings and its style, so it counts as touching the whole element.
+ */
+export function touchedFields(op: { start?: unknown; duration?: unknown; trimStart?: unknown; params?: Record<string, unknown>; keyframes?: unknown; keyframesMode?: unknown; caption?: unknown }): string[] {
 	const fields: string[] = [];
+	if (op.caption !== undefined) fields.push("element");
 	if (op.start !== undefined) fields.push("start");
 	if (op.duration !== undefined) fields.push("duration");
 	if (op.trimStart !== undefined) fields.push("trimStart");
@@ -155,10 +203,9 @@ function currentValues(fields: string[], element: TimelineElement, record: Eleme
  */
 export function assertNotStale({ base, now, sceneId, element, fields }: { base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; sceneId: string; element: TimelineElement; fields: string[] | "all" }) {
 	if (!base || !now) return;
-	const key = `${sceneId}:${element.id}`;
-	const current = now.get(key);
+	const current = recordOf(now, sceneId, element.id);
 	if (!current) return;
-	const then = base.get(key);
+	const then = recordOf(base, sceneId, element.id);
 	if (!then) throw new StaleError(["the element (added after basedOn)"], { id: element.id });
 	const list = fields === "all" ? ["element", "track", ...(then.content !== null || current.content !== null ? ["content"] : [])] : fields;
 	const changed = list.filter((field) => differs(field, then, current));
@@ -178,9 +225,8 @@ export function assertRippleNotStale({ base, now, sceneId, before, after }: { ba
 		for (const element of track.elements) {
 			const was = startOf.get(element.id);
 			if (was === undefined || was === element.startTime) continue;
-			const key = `${sceneId}:${element.id}`;
-			const then = base.get(key);
-			const current = now.get(key);
+			const then = recordOf(base, sceneId, element.id);
+			const current = recordOf(now, sceneId, element.id);
 			if (!current) continue;
 			if (!then || then.fields.start !== current.fields.start) {
 				throw new StaleError([`start of ${element.name || element.id} (moved by ripple)`], { id: element.id, start: current.fields.start });

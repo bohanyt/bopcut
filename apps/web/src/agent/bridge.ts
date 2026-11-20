@@ -446,6 +446,11 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	// Select changed or added items so they are visible on the timeline (inside history, so redo selects them again).
 	const selection = selectionInScene(outcome.scenes, openAfter, outcome.touched);
 	let error: string | null = outcome.applied ? null : "an op of this atomic draft failed; nothing was applied";
+	// Every op failed (for example all were stale): nothing changed, so nothing is applied or saved.
+	const stale = outcome.results.some((result) => result?.stale === true);
+	if (!error && outcome.results.length > 0 && !outcome.results.some((result) => result?.ok)) {
+		error = stale ? "every op was stale; nothing was applied (re-read the snapshot and resend)" : "no op could be applied; nothing was applied";
+	}
 	// Media reused by `mediaId` must still be in the project (the human may have deleted it while assets loaded).
 	const present = new Set(editor.media.getAssets().map((asset) => asset.id));
 	const gone = [...media.entries()].filter(([e, loaded]) => e.mediaId !== undefined && !present.has(loaded.id)).map(([e]) => e.mediaId);
@@ -482,7 +487,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	if (error) {
 		const cleanup = await discard();
 		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: error + cleanupNote(cleanup) });
-		await report({ sceneId: root.id, ok: false, applied: false, error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
+		await report({ sceneId: root.id, ok: false, applied: false, ...(stale ? { stale: true } : {}), error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
 		return;
 	}
 	const cleanup = await discard(new Set(publish));

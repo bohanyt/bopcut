@@ -5,7 +5,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { computeAgentDraft } = await import("./draft");
-const { SnapshotHistory, fieldsMapOf, stableJson } = await import("./stale");
+const { SnapshotHistory, fieldsMapOf, fieldsOf: fieldOf, stableJson } = await import("./stale");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
 const text = (id: string, agentId: string, params: Record<string, unknown>) =>
@@ -129,5 +129,43 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		const first = fieldsMapOf(scenes).get("main:a1")?.fields;
 		const second = fieldsMapOf(scenes).get("main:a1")?.fields;
 		expect(second).toBe(first);
+	});
+
+	test("a caption update on a caption the user corrected is refused as stale", () => {
+		const snapshot = scenesWith([text("c1", "cap-1", { content: "Helo" })]);
+		const corrected = scenesWith([text("c1", "cap-1", { content: "Hello" })]);
+		const out = run(corrected, [{ op: "set", match: { agentId: "cap-1" }, caption: { text: "Helo!" } }], fieldsMapOf(snapshot));
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true, fields: ["element"] });
+		expect(paramOf(out.scenes, "c1", "content")).toBe("Hello");
+	});
+
+	test("an element grouped by an earlier op of the draft is still checked", () => {
+		const snapshot = scenesWith([text("c1", "cap-1", { content: "Helo" }), text("c2", "cap-2", {})]);
+		const corrected = scenesWith([text("c1", "cap-1", { content: "Hello" }), text("c2", "cap-2", {})]);
+		const out = run(corrected, [
+			{ op: "group", match: [{ agentId: "cap-1" }, { agentId: "cap-2" }] },
+			{ op: "set", match: { agentId: "cap-1" }, params: { content: "Helo!" } },
+		], fieldsMapOf(snapshot));
+		expect(out.results[0]).toMatchObject({ ok: true });
+		expect(out.results[1]).toMatchObject({ ok: false, stale: true, fields: ["params.content"] });
+	});
+
+	test("a note the user added inside a compound clip makes its delete stale", () => {
+		const content = (notes: unknown[]): TScene => ({
+			id: "inner", name: "inner", isMain: false, bookmarks: notes, createdAt: new Date(0), updatedAt: new Date(0),
+			tracks: { main: { id: "t-in", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, overlay: [], audio: [] } as unknown as SceneTracks,
+		}) as TScene;
+		const compound = { id: "box", agentId: "box", type: "compound", name: "box", sceneId: "inner", startTime: T(0), duration: T(3), trimStart: T(0), trimEnd: T(0), params: {} } as unknown as TimelineElement;
+		const withNotes = (notes: unknown[]) => [scenesWith([compound])[0], content(notes)];
+		const out = run(withNotes([{ time: 0, note: "fix this" }]), [{ op: "delete", match: { agentId: "box" } }], fieldsMapOf(withNotes([])));
+		expect(out.results[0]).toMatchObject({ ok: false, stale: true, fields: ["content"] });
+	});
+
+	test("a moved element shares the serialized params of the element it replaced", () => {
+		const element = text("m1", "m1", { svg: "x".repeat(2000) });
+		const moved = { ...element, startTime: T(1) } as TimelineElement;
+		expect(fieldOf(moved)).not.toBe(fieldOf(element));
+		expect(fieldOf(moved).params).toBe(fieldOf(element).params);
+		expect(fieldOf(moved).whole).not.toBe(fieldOf(element).whole);
 	});
 });

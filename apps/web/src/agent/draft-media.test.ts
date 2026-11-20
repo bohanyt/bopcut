@@ -505,4 +505,30 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(malformed.error).toContain("syncedAt");
 		expect(backend.state.saved).toEqual([]);
 	});
+
+	test("a draft whose every op is stale is not applied and not saved", async () => {
+		const editor = setup();
+		const backend = fakeBackend();
+		const disk = projectWrites();
+		restore = () => {
+			backend.restore();
+			disk.restore();
+		};
+		editor.save.start();
+		const { snapshotHistory } = await import("./bridge");
+		snapshotHistory.record("before-the-user-edit", editor.scenes.getScenes());
+		// The user moves "old" after the agent read the snapshot.
+		const scenes = editor.scenes.getScenes().map((scene) => ({
+			...scene,
+			tracks: { ...scene.tracks, main: { ...scene.tracks.main, elements: scene.tracks.main.elements.map((e) => ({ ...e, startTime: T(1) })) } },
+		})) as TScene[];
+		editor.scenes.setScenes({ scenes, activeSceneId: "main" });
+		await editor.save.settle();
+		const writes = disk.writes.length;
+		await applyDraft(draft([{ op: "set", match: { agentId: "old" }, start: 3 }], { basedOn: "before-the-user-edit" }));
+		expect(backend.state.results[0]).toMatchObject({ applied: false, stale: true });
+		expect(backend.state.results[0].results[0]).toMatchObject({ ok: false, stale: true, fields: ["start"] });
+		expect(disk.writes.length).toBe(writes);
+		expect(editor.save.getIsDirty()).toBe(false);
+	});
 });

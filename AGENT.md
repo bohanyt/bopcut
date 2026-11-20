@@ -31,11 +31,11 @@ BOPENCUT_DATA can point outside the repository; do not commit private data. Use 
 
 **Editing on top of the user's edits (`basedOn`).** Put the `syncedAt` of the snapshot you read into the draft as `basedOn` (a snapshot from `window.agent.snapshot()` in the console counts too).
 - If the user changed a field that an op touches after that snapshot, the op is refused: `ok:false`, `stale:true`, `fields`, and `current` holding the current values. Re-read the snapshot and apply your change on top.
-- For `set`, the touched fields are the given `start`/`duration`/`trimStart`, each `params` key, and the keyframes.
-- `delete` and `replace` are refused if the element changed at all (`element`), moved to another track (`track`), or, for a compound clip, if anything inside it changed (`content`). They are also refused if the element appeared after the snapshot.
+- For `set`, the touched fields are the given `start`/`duration`/`trimStart`, each `params` key, and the keyframes. A `caption` update rewrites text, words and style, so it counts as touching the whole element (`element`): it is refused if the user changed that caption in any way.
+- `delete` and `replace` are refused if the element changed at all (`element`), moved to another track (`track`), or, for a compound clip, if anything inside it changed, including its notes (`content`). They are also refused if the element appeared after the snapshot.
 - With ripple editing on, an op that would move a clip the user moved after the snapshot is refused (`start of … (moved by ripple)`).
-- Checks compare the snapshot with the timeline as it was before the draft, so two ops of one draft never trip over each other, and an element added by an earlier op can be changed by a later one.
-- Fields the user did not touch apply as usual, and nothing is ever locked. Without `atomic`, the other ops still apply; with `atomic:true`, one stale op cancels the whole draft.
+- Checks compare the snapshot with the timeline as it was before the draft, so two ops of one draft never trip over each other, and an element added by an earlier op can be changed by a later one. An element an earlier op moved into a compound (`group`) is still checked.
+- Fields the user did not touch apply as usual, and nothing is ever locked. Without `atomic`, the other ops still apply; with `atomic:true`, one stale op cancels the whole draft. If every op of a draft fails (for example all are stale), nothing is applied or saved, and the draft result has `applied:false` (and `stale:true` when an op was stale).
 - The editor remembers its last 64 snapshots. An unknown or malformed `basedOn` (after a reload, or a very old snapshot) refuses the whole draft as stale (`stale:true` on the draft) before anything is imported.
 - Use a snapshot taken after your previous draft applied.
 - Drafts without `basedOn` are not checked.
