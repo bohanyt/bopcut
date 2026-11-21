@@ -412,13 +412,14 @@ describe("the export poller", () => {
 					}
 				},
 			};
-			if (!server.useRenderer) (editor.renderer as any).exportProject = async ({ options, onProgress, onCancel }: { options: { sceneId: string }; onProgress: (p: { progress: number }) => void; onCancel: () => boolean }) => {
+			if (!server.useRenderer) (editor.renderer as any).exportProject = async ({ options, onProgress, signal }: { options: { sceneId: string }; onProgress: (p: { progress: number }) => void; signal?: AbortSignal }) => {
 				// What the real export reads at its start: the scene and its clip's length.
 				const scene = editor.scenes.getScenes().find((s) => s.id === options.sceneId);
 				log.exports.push({ options, duration: scene?.tracks.main.elements[0]?.duration });
 				onProgress({ progress: 0.5 });
+				const sessionSignal = editor.project.getSessionSignal();
 				server.duringExport?.();
-				if (onCancel()) return { success: false, cancelled: true };
+				if (signal?.aborted || sessionSignal.aborted) return { success: false, cancelled: true };
 				return { success: true, buffer: new ArrayBuffer(10) };
 			};
 			const store = new Map<string, string>();
@@ -521,6 +522,50 @@ describe("the export poller", () => {
 		}
 	});
 
+	test("export cancellation uses the caller signal without starting an interval", async () => {
+		const editor = open("p");
+		editor.save.stop();
+		const pending = Promise.withResolvers<MediaAsset[]>();
+		const load = spyOn(storageService, "loadAllMediaAssets").mockReturnValue(pending.promise);
+		const loading = editor.media.loadProjectMedia({ projectId: "p" });
+		const interval = spyOn(globalThis, "setInterval");
+		const controller = new AbortController();
+		const exporting = editor.renderer.exportProject({
+			options: { format: "mp4", quality: "high" },
+			signal: controller.signal,
+		});
+		try {
+			expect(interval).not.toHaveBeenCalled();
+			controller.abort();
+			const result = await Promise.race([exporting, Bun.sleep(0).then(() => "waiting for media")]);
+			expect(result).toEqual({ success: false, cancelled: true });
+		} finally {
+			controller.abort();
+			pending.resolve([]);
+			await loading;
+			await exporting;
+			interval.mockRestore();
+			load.mockRestore();
+		}
+	});
+
+	test("a throwing renderer listener resets the browser export state", async () => {
+		const editor = open("p");
+		editor.save.stop();
+		const unsubscribe = editor.renderer.subscribe(() => {
+			if (editor.renderer.isExportRunning()) throw new Error("Listener failed");
+		});
+		try {
+			const result = await editor.project.export({ options: { format: "mp4", quality: "high" } }).catch(() => null);
+			expect(editor.project.getExportState().isExporting).toBe(false);
+			expect(editor.renderer.isExportRunning()).toBe(false);
+			expect(result).toEqual({ success: false, error: "Listener failed" });
+			expect(editor.project.getExportState().result).toBe(result);
+		} finally {
+			unsubscribe();
+		}
+	});
+
 	test("an unavailable library sound is reported before encoding unless explicitly allowed", () =>
 		withCanvas(async () => {
 			const editor = open("p");
@@ -600,6 +645,32 @@ describe("the export poller", () => {
 		expect(editor.renderer.checkExport({ ...request, includeAudio: true })).toBeNull();
 	});
 
+	test("missing video marked silent in storage is excluded from audio preflight", async () => {
+		const editor = open("silent", 2, { missing: true });
+		editor.save.stop();
+		const scenes = editor.scenes.getScenes();
+		const [scene] = scenes;
+		scene.tracks.main.hidden = true;
+		scene.tracks.main.elements = [{ ...clip(2), isSourceAudioEnabled: true }];
+		const fetchMedia = spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(Response.json([{
+				id: videoAsset.id, name: videoAsset.name, type: "video", hasAudio: false,
+				fileName: "clip.mp4", fileType: "video/mp4", size: 10, lastModified: 0,
+			}]))
+			.mockResolvedValue(new Response(null, { status: 404 }));
+		try {
+			await editor.media.loadProjectMedia({ projectId: "silent" });
+			const request = { format: "mp4", includeAudio: true, scene, scenes, canvasSize: { width: 1080, height: 1920 } } as const;
+			expect(editor.renderer.checkExport(request)).toBeNull();
+			scene.tracks.main.hidden = false;
+			expect(editor.renderer.checkExport(request)).toMatchObject({
+				missingMedia: [{ id: videoAsset.id, hasAudio: false }],
+			});
+		} finally {
+			fetchMedia.mockRestore();
+		}
+	});
+
 	test.each(["upload", "video"] as const)("an unreadable %s audio source requires an explicit override", (source) =>
 		withCanvas(async () => {
 			const editor = open("p");
@@ -647,24 +718,42 @@ describe("the export poller", () => {
 		})).toMatchObject({ missingMedia: [{ id: videoAsset.id }] });
 	});
 
+	/** Resolve real scene nodes while substituting the compositor and browser encoder. */
+	const withFrameResolution = (
+		run: (stubs: { cancel: typeof Output.prototype.cancel; finalize: typeof Output.prototype.finalize }) => Promise<void>,
+		extraGlobals?: Record<string, unknown>,
+	) => withCanvas(async () => {
+		const render = spyOn(CanvasRenderer.prototype, "render").mockImplementation(function (this: InstanceType<typeof CanvasRenderer>, { node, time, signal }) {
+			return resolveRenderTree({ node, time, signal, renderer: this });
+		});
+		const start = spyOn(Output.prototype, "start").mockResolvedValue(undefined);
+		const cancel = spyOn(Output.prototype, "cancel").mockResolvedValue(undefined);
+		const finalize = spyOn(Output.prototype, "finalize").mockImplementation(async function (this: Output) {
+			Object.defineProperty(this.target, "buffer", { value: new ArrayBuffer(10) });
+		});
+		const add = spyOn(CanvasSource.prototype, "add").mockResolvedValue(undefined);
+		const close = spyOn(CanvasSource.prototype, "close").mockImplementation(() => {});
+		try {
+			await run({ cancel, finalize });
+		} finally {
+			close.mockRestore();
+			add.mockRestore();
+			finalize.mockRestore();
+			cancel.mockRestore();
+			start.mockRestore();
+			render.mockRestore();
+		}
+	}, extraGlobals);
+
 	test("a video decoder failure reports the asset and requires an override", () =>
-		withCanvas(async () => {
+		withFrameResolution(async ({ cancel, finalize }) => {
 			const editor = open("p", 0.1);
 			editor.save.stop();
 			const decode = spyOn(videoCache, "getFrameAt").mockImplementation(async ({ throwOnSeekError }) => {
 				if (throwOnSeekError) throw new Error("Invalid video packet");
 				return null;
 			});
-			const render = spyOn(CanvasRenderer.prototype, "render").mockImplementation(function (this: InstanceType<typeof CanvasRenderer>, { node, time }) {
-				return resolveRenderTree({ node, time, renderer: this });
-			});
-			const start = spyOn(Output.prototype, "start").mockResolvedValue(undefined);
-			const cancel = spyOn(Output.prototype, "cancel").mockResolvedValue(undefined);
-			const finalize = spyOn(Output.prototype, "finalize").mockImplementation(async function (this: Output) {
-				Object.defineProperty(this.target, "buffer", { value: new ArrayBuffer(10) });
-			});
-			const add = spyOn(CanvasSource.prototype, "add").mockResolvedValue(undefined);
-			const close = spyOn(CanvasSource.prototype, "close").mockImplementation(() => {});
+
 			try {
 				const options = { format: "mp4", quality: "high" } as const;
 				expect(await editor.project.export({ options })).toMatchObject({
@@ -676,15 +765,66 @@ describe("the export poller", () => {
 				expect((await editor.project.export({ options: { ...options, allowMissing: true } })).success).toBe(true);
 				expect(decode).toHaveBeenCalledTimes(2);
 			} finally {
-				close.mockRestore();
-				add.mockRestore();
-				finalize.mockRestore();
-				cancel.mockRestore();
-				start.mockRestore();
-				render.mockRestore();
 				decode.mockRestore();
 			}
 		}));
+
+	test("a cancelled frame read releases the slot before the decoder settles", () =>
+		withFrameResolution(async ({ cancel }) => {
+			const editor = open("p", 0.1);
+			editor.save.stop();
+			const pending = Promise.withResolvers<null>();
+			const reading = Promise.withResolvers<void>();
+			const decode = spyOn(videoCache, "getFrameAt").mockImplementationOnce(() => {
+				reading.resolve();
+				return pending.promise;
+			}).mockResolvedValue(null);
+			const options = { format: "mp4", quality: "high" } as const;
+			const exporting = editor.project.export({ options });
+			try {
+				await reading.promise;
+				editor.project.cancelExport();
+				const result = await Promise.race([exporting, Bun.sleep(0).then(() => "waiting for frame")]);
+				expect(result).toEqual({ success: false, cancelled: true });
+				expect(decode.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+				expect(cancel).toHaveBeenCalledTimes(1);
+				expect(editor.renderer.isExportRunning()).toBe(false);
+				expect((await editor.project.export({ options })).success).toBe(true);
+			} finally {
+				pending.resolve(null);
+				await exporting;
+				decode.mockRestore();
+			}
+		}));
+
+	class UnreadableImage {
+		onerror?: () => void;
+		set src(_url: string) {
+			queueMicrotask(() => this.onerror?.());
+		}
+	}
+
+	test.each(["color", "blur"] as const)("an unreadable image reports the asset and can be skipped with a %s background", (background) =>
+		withFrameResolution(async ({ cancel, finalize }) => {
+			const editor = open("p", 0.1);
+			editor.save.stop();
+			const [scene] = editor.scenes.getScenes();
+			const image: MediaAsset = { id: "image", name: "Unreadable image", type: "image", file: new File(["invalid"], "photo.png"), url: "blob:unreadable-" + background };
+			scene.tracks.main.elements = [{ ...clip(0.1), type: "image", mediaId: image.id }];
+			if (background === "blur") {
+				editor.project.getActive().settings.background = { type: "blur", blurIntensity: 5 };
+			}
+			editor.media.setAssets({ assets: [image] });
+			const options = { format: "mp4", quality: "high" } as const;
+			expect(await editor.project.export({ options })).toMatchObject({
+				success: false,
+				missingMedia: [{ id: image.id, name: image.name, error: "Image load failed", unreadable: true }],
+			});
+			expect(cancel).toHaveBeenCalledTimes(1);
+			expect(finalize).not.toHaveBeenCalled();
+			expect((await editor.project.export({ options: { ...options, allowMissing: true } })).success).toBe(true);
+			expect(finalize).toHaveBeenCalledTimes(1);
+		}, { Image: UnreadableImage }));
 
 	test("preflight checks only media used by the selected export", () =>
 		withCanvas(async () => {

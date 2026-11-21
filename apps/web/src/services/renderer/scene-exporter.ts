@@ -18,6 +18,7 @@ import { frameRateToFloat } from "@/fps/utils";
 import type { RootNode } from "./nodes/root-node";
 import type { ExportFormat, ExportQuality } from "@/export";
 import { CanvasRenderer } from "./canvas-renderer";
+import { waitWithAbort } from "@/utils/abort";
 
 type ExportParams = {
 	width: number;
@@ -27,7 +28,7 @@ type ExportParams = {
 	quality: ExportQuality;
 	shouldIncludeAudio?: boolean;
 	audioBuffer?: AudioBuffer;
-	onVideoFailure?: (mediaId: string, error: unknown) => void;
+	onMediaFailure?: (mediaId: string, error: unknown) => void;
 };
 
 const qualityMap = {
@@ -54,8 +55,6 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 	private shouldIncludeAudio: boolean;
 	private audioBuffer?: AudioBuffer;
 
-	private isCancelled = false;
-
 	constructor({
 		width,
 		height,
@@ -64,7 +63,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		quality,
 		shouldIncludeAudio,
 		audioBuffer,
-		onVideoFailure,
+		onMediaFailure,
 	}: ExportParams) {
 		super();
 		this.renderer = new CanvasRenderer({
@@ -72,7 +71,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			height,
 			fps,
 			exactFrames: true,
-			onVideoFailure,
+			onMediaFailure,
 		});
 
 		this.format = format;
@@ -81,15 +80,14 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		this.audioBuffer = audioBuffer;
 	}
 
-	cancel(): void {
-		this.isCancelled = true;
-	}
-
 	async export({
 		rootNode,
+		signal,
 	}: {
 		rootNode: RootNode;
+		signal?: AbortSignal;
 	}): Promise<ArrayBuffer | null> {
+		signal?.throwIfAborted();
 		const fps = this.renderer.fps;
 		const fpsFloat = frameRateToFloat(fps);
 		const frameTicksNumerator = TICKS_PER_SECOND * fps.denominator;
@@ -105,73 +103,80 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			target: new BufferTarget(),
 		});
 
-		const videoSource = new CanvasSource(this.renderer.getOutputCanvas(), {
-			codec: this.format === "webm" ? "vp9" : "avc",
-			bitrate: qualityMap[this.quality],
-		});
-
-		// WebM writes a default duration for its blocks. MP4 can time a shorter last sample;
-		// omitting the fixed-rate metadata lets it use a finer timescale for that sample.
-		output.addVideoTrack(videoSource, this.format === "webm" ? { frameRate: fpsFloat } : {});
-
-		let audioSource: AudioBufferSource | null = null;
-		if (this.shouldIncludeAudio && this.audioBuffer) {
-			let audioCodec: "aac" | "opus" = this.format === "webm" ? "opus" : "aac";
-
-			if (audioCodec === "aac" && typeof AudioEncoder !== "undefined") {
-				const { supported } = await AudioEncoder.isConfigSupported({
-					codec: "mp4a.40.2",
-					sampleRate: this.audioBuffer.sampleRate,
-					numberOfChannels: this.audioBuffer.numberOfChannels,
-					bitrate: 192000,
-				});
-				if (!supported) audioCodec = "opus";
-			}
-
-			audioSource = new AudioBufferSource({
-				codec: audioCodec,
+		try {
+			const videoSource = new CanvasSource(this.renderer.getOutputCanvas(), {
+				codec: this.format === "webm" ? "vp9" : "avc",
 				bitrate: qualityMap[this.quality],
 			});
-			output.addAudioTrack(audioSource);
-		}
 
-		await output.start();
+			// WebM writes a default duration for its blocks. MP4 can time a shorter last sample;
+			// omitting the fixed-rate metadata lets it use a finer timescale for that sample.
+			output.addVideoTrack(videoSource, this.format === "webm" ? { frameRate: fpsFloat } : {});
 
-		if (audioSource && this.audioBuffer) {
-			await audioSource.add(this.audioBuffer);
-			audioSource.close();
-		}
+			let audioSource: AudioBufferSource | null = null;
+			if (this.shouldIncludeAudio && this.audioBuffer) {
+				let audioCodec: "aac" | "opus" = this.format === "webm" ? "opus" : "aac";
 
-		for (let i = 0; i < frameCount && !this.isCancelled; i++) {
-			const timeTicks = Math.min(rootNode.duration - 1, Math.round((i * frameTicksNumerator) / fps.numerator));
-			const timeSeconds = (i * fps.denominator) / fps.numerator;
-			const sampleDuration = this.format === "mp4" && i === frameCount - 1
-				? Math.max(MP4_MIN_SAMPLE_DURATION, Math.min(frameDuration, duration - timeSeconds))
-				: frameDuration;
-			await this.renderer.render({ node: rootNode, time: timeTicks });
-			if (this.isCancelled) break;
-			await videoSource.add(timeSeconds, sampleDuration);
+				if (audioCodec === "aac" && typeof AudioEncoder !== "undefined") {
+					const { supported } = await waitWithAbort(AudioEncoder.isConfigSupported({
+						codec: "mp4a.40.2",
+						sampleRate: this.audioBuffer.sampleRate,
+						numberOfChannels: this.audioBuffer.numberOfChannels,
+						bitrate: 192000,
+					}), signal);
+					if (!supported) audioCodec = "opus";
+				}
 
-			this.emit("progress", i / frameCount);
-		}
+				audioSource = new AudioBufferSource({
+					codec: audioCodec,
+					bitrate: qualityMap[this.quality],
+				});
+				output.addAudioTrack(audioSource);
+			}
 
-		if (this.isCancelled) {
-			await output.cancel();
+			await waitWithAbort(output.start(), signal);
+
+			if (audioSource && this.audioBuffer) {
+				signal?.throwIfAborted();
+				await waitWithAbort(audioSource.add(this.audioBuffer), signal);
+				audioSource.close();
+			}
+
+			for (let i = 0; i < frameCount; i++) {
+				const timeTicks = Math.min(rootNode.duration - 1, Math.round((i * frameTicksNumerator) / fps.numerator));
+				const timeSeconds = (i * fps.denominator) / fps.numerator;
+				const sampleDuration = this.format === "mp4" && i === frameCount - 1
+					? Math.max(MP4_MIN_SAMPLE_DURATION, Math.min(frameDuration, duration - timeSeconds))
+					: frameDuration;
+				signal?.throwIfAborted();
+				await this.renderer.render({ node: rootNode, time: timeTicks, signal });
+				signal?.throwIfAborted();
+				await waitWithAbort(videoSource.add(timeSeconds, sampleDuration), signal);
+
+				this.emit("progress", i / frameCount);
+			}
+
+			signal?.throwIfAborted();
+			videoSource.close();
+			await waitWithAbort(output.finalize(), signal);
+			signal?.throwIfAborted();
+			this.emit("progress", 1);
+
+			const buffer = output.target.buffer;
+			if (!buffer) {
+				this.emit("error", new Error("Failed to export video"));
+				return null;
+			}
+
+			this.emit("complete", buffer);
+			return buffer;
+		} catch (error) {
+			if (output.state === "pending" || output.state === "started") {
+				void output.cancel().catch((cleanup) => console.warn("Failed to cancel export output:", cleanup));
+			}
+			if (!signal?.aborted) throw error;
 			this.emit("cancelled");
 			return null;
 		}
-
-		videoSource.close();
-		await output.finalize();
-		this.emit("progress", 1);
-
-		const buffer = output.target.buffer;
-		if (!buffer) {
-			this.emit("error", new Error("Failed to export video"));
-			return null;
-		}
-
-		this.emit("complete", buffer);
-		return buffer;
 	}
 }

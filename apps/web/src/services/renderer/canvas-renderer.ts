@@ -4,6 +4,7 @@ import { renderTargetSize } from "./scale";
 import { buildFrameDescriptor } from "./compositor/frame-descriptor";
 import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
+import { waitWithAbort } from "@/utils/abort";
 import {
 	measureSpanAsync,
 	measureSpanSync,
@@ -22,7 +23,7 @@ export type CanvasRendererParams = {
 	 */
 	exactFrames?: boolean;
 	/** Export reports source decode failures in its missing-media result. */
-	onVideoFailure?: (mediaId: string, error: unknown) => void;
+	onMediaFailure?: (mediaId: string, error: unknown) => void;
 };
 
 // The WASM compositor and its textures are shared by all renderers.
@@ -38,12 +39,12 @@ export class CanvasRenderer {
 	private outputCanvas: HTMLCanvasElement;
 
 	readonly exactFrames: boolean;
-	readonly onVideoFailure?: CanvasRendererParams["onVideoFailure"];
-	readonly failedVideoIds = new Set<string>();
+	readonly onMediaFailure?: CanvasRendererParams["onMediaFailure"];
+	readonly failedMediaIds = new Set<string>();
 
-	constructor({ width, height, fps, renderScale = 1, exactFrames = false, onVideoFailure }: CanvasRendererParams) {
+	constructor({ width, height, fps, renderScale = 1, exactFrames = false, onMediaFailure }: CanvasRendererParams) {
 		this.exactFrames = exactFrames;
-		this.onVideoFailure = onVideoFailure;
+		this.onMediaFailure = onMediaFailure;
 		this.width = width;
 		this.height = height;
 		this.fps = fps;
@@ -60,25 +61,28 @@ export class CanvasRenderer {
 		return this.outputCanvas;
 	}
 
-	async render({ node, time }: { node: AnyBaseNode; time: number }) {
-		return this.renderToCanvas({ node, time, targetCanvas: this.outputCanvas });
+	async render({ node, time, signal }: { node: AnyBaseNode; time: number; signal?: AbortSignal }) {
+		return this.renderToCanvas({ node, time, signal, targetCanvas: this.outputCanvas });
 	}
 
 	private async renderFrame({
 		node,
 		time,
+		signal,
 	}: {
 		node: AnyBaseNode;
 		time: number;
+		signal?: AbortSignal;
 	}) {
 		await measureSpanAsync({
 			name: "resolve",
-			fn: () => resolveRenderTree({ node, renderer: this, time }),
+			fn: () => resolveRenderTree({ node, renderer: this, time, signal }),
 		});
 		const { frame, textures } = await measureSpanAsync({
 			name: "buildFrame",
 			fn: () => buildFrameDescriptor({ node, renderer: this }),
 		});
+		signal?.throwIfAborted();
 		wasmCompositor.ensureInitialized({
 			width: this.outputWidth,
 			height: this.outputHeight,
@@ -97,13 +101,17 @@ export class CanvasRenderer {
 		node,
 		time,
 		targetCanvas,
+		signal,
 	}: {
 		node: AnyBaseNode;
 		time: number;
 		targetCanvas: HTMLCanvasElement;
+		signal?: AbortSignal;
 	}) {
 		const task = renderQueue.then(async () => {
-			await this.renderFrame({ node, time });
+			signal?.throwIfAborted();
+			await this.renderFrame({ node, time, signal });
+			signal?.throwIfAborted();
 
 			const ctx = targetCanvas.getContext("2d");
 			if (!ctx) {
@@ -124,6 +132,6 @@ export class CanvasRenderer {
 			onRenderPerfFrameComplete();
 		});
 		renderQueue = task.catch(() => {});
-		return task;
+		return waitWithAbort(task, signal);
 	}
 }

@@ -36,14 +36,18 @@ export class VideoCache {
 		time,
 		exact = false,
 		throwOnSeekError = false,
+		signal,
 	}: {
 		mediaId: string;
 		file: File;
 		time: number;
 		exact?: boolean;
 		throwOnSeekError?: boolean;
+		signal?: AbortSignal;
 	}): Promise<WrappedCanvas | null> {
+		signal?.throwIfAborted();
 		await this.ensureSink({ mediaId, file });
+		signal?.throwIfAborted();
 
 		const sinkData = this.sinks.get(mediaId);
 		if (!sinkData) return null;
@@ -55,6 +59,7 @@ export class VideoCache {
 
 		const previous = this.frameChain.get(mediaId) ?? Promise.resolve();
 		const current = previous.then(() => {
+			signal?.throwIfAborted();
 			if (generation !== null && this.seekGenerations.get(mediaId) !== generation) {
 				return sinkData.currentFrame ?? null;
 			}

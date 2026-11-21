@@ -7,6 +7,8 @@ export type MediaLoadFailure = {
 	id: string;
 	name: string;
 	error: string;
+	/** Audio presence recorded in the stored video metadata. */
+	hasAudio?: boolean;
 	/** Library audio is fetched by URL during mixdown. */
 	sourceUrl?: string;
 	/** A stored asset was present but could not be decoded. Retry by reading it again. */

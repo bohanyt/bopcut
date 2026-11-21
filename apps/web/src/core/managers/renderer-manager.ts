@@ -13,6 +13,7 @@ import { isElementMuted } from "@/timeline/audio-state";
 import type { TCanvasSize } from "@/project/types";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
+import { waitWithAbort } from "@/utils/abort";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
@@ -194,6 +195,7 @@ export class RendererManager {
 			.map(({ mediaId, name, type }) => ({ id: mediaId, name, requiresUrl: true, types: [type] }));
 		const audio = includeAudio ? collectAudibleCandidates({
 			tracks, scenes, duration, mediaAssets: media.getAssets(), includeMissingVideo: true,
+			silentMissingVideoIds: new Set(media.getMissingMedia().filter(({ hasAudio }) => hasAudio === false).map(({ id }) => id)),
 		}).flatMap(({ element }) => {
 			if (isElementMuted({ element })) return [];
 			if (element.type === "audio" && element.sourceType !== "upload") return [];
@@ -211,32 +213,19 @@ export class RendererManager {
 	async exportProject(job: {
 		options: ExportOptions;
 		onProgress?: ({ progress }: { progress: number }) => void;
-		onCancel?: () => boolean;
+		signal?: AbortSignal;
 	}): Promise<ExportResult> {
 		if (this.exportRunning) {
 			return { success: false, error: "Another export is running; try again when it finishes" };
 		}
-		const { project } = this.editor;
-		const session = project.getSession();
-		const controller = new AbortController();
-		const checkCancel = () => {
-			if (project.getSession() !== session || job.onCancel?.()) controller.abort();
-		};
+		const sessionSignal = this.editor.project.getSessionSignal();
+		const signal = job.signal ? AbortSignal.any([job.signal, sessionSignal]) : sessionSignal;
 		const releaseMedia = holdMediaUrls();
-		const unsubscribe = project.subscribe(checkCancel);
-		const interval = setInterval(checkCancel, 100);
 		this.exportRunning = true;
 		try {
 			this.notify();
-			checkCancel();
-			return await this.runExport({
-				...job,
-				signal: controller.signal,
-				checkCancel,
-			});
+			return await this.runExport({ ...job, signal });
 		} finally {
-			clearInterval(interval);
-			unsubscribe();
 			this.exportRunning = false;
 			try {
 				releaseMedia();
@@ -249,15 +238,16 @@ export class RendererManager {
 	private async runExport({
 		options,
 		onProgress,
-		signal,
-		checkCancel,
+		signal: callerSignal,
 	}: {
 		options: ExportOptions;
 		onProgress?: ({ progress }: { progress: number }) => void;
 		signal: AbortSignal;
-		checkCancel: () => void;
 	}): Promise<ExportResult> {
 		const { format, quality, fps, includeAudio, sceneId, allowMissing } = options;
+		const visualFailure = new AbortController();
+		const signal = AbortSignal.any([callerSignal, visualFailure.signal]);
+		const failures = new Map<string, MediaLoadFailure>();
 
 		try {
 			signal.throwIfAborted();
@@ -296,7 +286,6 @@ export class RendererManager {
 					signal.addEventListener("abort", finish, { once: true });
 				});
 			}
-			checkCancel();
 			signal.throwIfAborted();
 
 			const preflight = this.checkExport({ format, allowMissing, includeAudio, scene: exported, scenes, canvasSize, duration });
@@ -304,25 +293,15 @@ export class RendererManager {
 			const mediaAssets = media.getAssets();
 
 			let audioBuffer: AudioBuffer | null = null;
-			const failures = new Map<string, MediaLoadFailure>();
 			if (includeAudio) {
 				onProgress?.({ progress: 0.05 });
-				checkCancel();
 				signal.throwIfAborted();
-				const cancelled = Promise.withResolvers<null>();
-				const stopWaiting = () => cancelled.resolve(null);
-				signal.addEventListener("abort", stopWaiting, { once: true });
-				try {
-					audioBuffer = await Promise.race([cancelled.promise, createTimelineAudioBuffer({
-						tracks, mediaAssets, duration, scenes, signal,
-						onFailure: (failure) => failures.set(failure.id, failure),
-					})]);
-				} finally {
-					signal.removeEventListener("abort", stopWaiting);
-				}
+				audioBuffer = await waitWithAbort(createTimelineAudioBuffer({
+					tracks, mediaAssets, duration, scenes, signal,
+					onFailure: (failure) => failures.set(failure.id, failure),
+				}), signal);
 			}
 
-			checkCancel();
 			signal.throwIfAborted();
 			if (failures.size && allowMissing !== true) return unavailableMedia([...failures.values()]);
 
@@ -343,10 +322,10 @@ export class RendererManager {
 				quality,
 				shouldIncludeAudio: !!includeAudio,
 				audioBuffer: audioBuffer || undefined,
-				onVideoFailure: (id, error) => {
+				onMediaFailure: (id, error) => {
 					const name = mediaAssets.find((asset) => asset.id === id)?.name ?? id;
 					failures.set(id, { id, name, error: error instanceof Error ? error.message : String(error), unreadable: true });
-					if (allowMissing !== true) exporter.cancel();
+					if (allowMissing !== true) visualFailure.abort();
 				},
 			});
 
@@ -357,27 +336,17 @@ export class RendererManager {
 				onProgress?.({ progress: adjustedProgress });
 			});
 
-			const stopExport = () => exporter.cancel();
-			signal.addEventListener("abort", stopExport, { once: true });
-			try {
-				const buffer = await exporter.export({ rootNode: scene });
-				checkCancel();
-				signal.throwIfAborted();
-				if (failures.size && allowMissing !== true) return unavailableMedia([...failures.values()]);
+			const buffer = await exporter.export({ rootNode: scene, signal });
+			signal.throwIfAborted();
 
-				if (!buffer) {
-					return { success: false, error: "Export failed to produce buffer" };
-				}
-
-				return {
-					success: true,
-					buffer,
-				};
-			} finally {
-				signal.removeEventListener("abort", stopExport);
+			if (!buffer) {
+				return { success: false, error: "Export failed to produce buffer" };
 			}
+
+			return { success: true, buffer };
 		} catch (error) {
-			if (signal.aborted) return { success: false, cancelled: true };
+			if (callerSignal.aborted) return { success: false, cancelled: true };
+			if (visualFailure.signal.aborted) return unavailableMedia([...failures.values()]);
 			console.error("Export failed:", error);
 			return {
 				success: false,

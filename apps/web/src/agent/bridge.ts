@@ -353,7 +353,6 @@ async function answerExport() {
 	const now = exportable();
 	if (!now || now.project.metadata.id !== projectId) return; // taken again on the next poll
 	const { project, root } = now;
-	const session = editor.project.getSession();
 	const settings = project.settings;
 	const fps = request.fps ? { numerator: Math.round(request.fps * 1000), denominator: 1000 } : settings.fps;
 	const name = request.name ?? defaultExportName(project.metadata.name);
@@ -362,7 +361,7 @@ async function answerExport() {
 	// Progress: one post at a time, at most every 2 s, none once the export has ended. If the request was
 	// answered or taken meanwhile (another tab), this export stops.
 	let running = true;
-	let lost = false;
+	const claimController = new AbortController();
 	let lastPost = Date.now();
 	let posting: Promise<unknown> | null = null;
 	const progress = (value: number) => {
@@ -370,7 +369,7 @@ async function answerExport() {
 		lastPost = Date.now();
 		posting = sendExportResult({ rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000 })
 			.then((sent) => {
-				if (sent === "answered" || sent === "claimed") lost = true;
+				if (sent === "answered" || sent === "claimed") claimController.abort();
 			})
 			.finally(() => {
 				posting = null;
@@ -384,7 +383,7 @@ async function answerExport() {
 		result = await editor.renderer.exportProject({
 			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
 			onProgress: ({ progress: value }) => progress(value),
-			onCancel: () => lost || editor.project.getSession() !== session,
+			signal: claimController.signal,
 		});
 	} catch (error) {
 		result = { success: false, error: errorText(error) };
@@ -393,7 +392,7 @@ async function answerExport() {
 		await posting;
 		toast.dismiss(toastId);
 	}
-	if (lost) return;
+	if (claimController.signal.aborted) return;
 	if (!result.success || !result.buffer) {
 		return await reportFailure(result);
 	}

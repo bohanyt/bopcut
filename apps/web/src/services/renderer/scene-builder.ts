@@ -204,6 +204,7 @@ function buildTrackNodes({
 				} else if (element.type === "image" && mediaAsset.type === "image") {
 					nodes.push(
 						new ImageNode({
+							mediaId: mediaAsset.id,
 							url: mediaAsset.url,
 							duration: element.duration,
 							timeOffset: element.startTime,

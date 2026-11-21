@@ -99,6 +99,7 @@ export function collectAudibleCandidates({
 	scenes = [],
 	duration = Infinity,
 	includeMissingVideo = false,
+	silentMissingVideoIds,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
@@ -107,6 +108,7 @@ export function collectAudibleCandidates({
 	duration?: number;
 	/** Include enabled video audio even when its file is absent, for export preflight. */
 	includeMissingVideo?: boolean;
+	silentMissingVideoIds?: ReadonlySet<string>;
 }): AudibleElementCandidate[] {
 	const tracks = expandCompoundAudioTracks({ tracks: sceneTracks, scenes });
 	const allTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
@@ -124,7 +126,7 @@ export function collectAudibleCandidates({
 				? (mediaMap.get(element.mediaId) ?? null)
 				: null;
 			const enabled = element.type === "video" && mediaAsset?.type !== "video" && includeMissingVideo
-				? isSourceAudioEnabled({ element })
+				? !silentMissingVideoIds?.has(element.mediaId) && isSourceAudioEnabled({ element })
 				: doesElementHaveEnabledAudio({ element, mediaAsset });
 			if (!enabled) continue;
 

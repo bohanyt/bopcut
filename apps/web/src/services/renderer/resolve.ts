@@ -23,6 +23,7 @@ import { resolveTransformAtTime } from "@/rendering/animation-values";
 import type { Transform } from "@/rendering";
 import { applyShake, readShakeSettings } from "@/rendering/shake";
 import { videoCache } from "@/services/video-cache/service";
+import { waitWithAbort } from "@/utils/abort";
 import type { CanvasRenderer } from "./canvas-renderer";
 import type { AnyBaseNode } from "./nodes/base-node";
 import {
@@ -56,24 +57,21 @@ import type {
 type ResolveContext = {
 	renderer: CanvasRenderer;
 	time: number;
+	signal?: AbortSignal;
 };
 
 export async function resolveRenderTree({
 	node,
 	renderer,
 	time,
+	signal,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
 	time: number;
+	signal?: AbortSignal;
 }): Promise<void> {
-	await resolveNode({
-		node,
-		context: {
-			renderer,
-			time,
-		},
-	});
+	return waitWithAbort(resolveNode({ node, context: { renderer, time, signal } }), signal);
 }
 
 async function resolveNode({
@@ -83,6 +81,7 @@ async function resolveNode({
 	node: AnyBaseNode;
 	context: ResolveContext;
 }): Promise<void> {
+	context.signal?.throwIfAborted();
 	if (node instanceof CompoundNode) {
 		await resolveCompoundNode({ node, context });
 		return;
@@ -297,7 +296,7 @@ async function resolveVideoNode({
 			clipTime,
 			retime: node.params.retime,
 		});
-	const frame = await readVideoFrame(node.params, sourceTimeTicks, context.renderer);
+	const frame = await readVideoFrame(node.params, sourceTimeTicks, context);
 	if (!frame) {
 		return null;
 	}
@@ -321,19 +320,31 @@ async function resolveVideoNode({
 	};
 }
 
-async function readVideoFrame({ mediaId, file }: { mediaId: string; file: File }, time: number, renderer: CanvasRenderer) {
-	if (renderer.failedVideoIds.has(mediaId)) return null;
+function readVideoFrame({ mediaId, file }: { mediaId: string; file: File }, time: number, context: ResolveContext) {
+	return readMediaSource(mediaId, context, () => videoCache.getFrameAt({
+		mediaId, file,
+		time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
+		exact: context.renderer.exactFrames,
+		throwOnSeekError: !!context.renderer.onMediaFailure,
+		signal: context.signal,
+	}));
+}
+
+async function readMediaSource<T>(
+	mediaId: string,
+	{ renderer, signal }: ResolveContext,
+	read: () => Promise<T>,
+): Promise<T | null> {
+	if (renderer.failedMediaIds.has(mediaId)) return null;
+	signal?.throwIfAborted();
 	try {
-		return await videoCache.getFrameAt({
-			mediaId, file,
-			time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
-			exact: renderer.exactFrames,
-			throwOnSeekError: !!renderer.onVideoFailure,
-		});
+		return await read();
 	} catch (error) {
-		if (!renderer.onVideoFailure) throw error;
-		renderer.failedVideoIds.add(mediaId);
-		renderer.onVideoFailure(mediaId, error);
+		signal?.throwIfAborted();
+		if (!renderer.onMediaFailure) throw error;
+		if (renderer.failedMediaIds.has(mediaId)) return null;
+		renderer.failedMediaIds.add(mediaId);
+		renderer.onMediaFailure(mediaId, error);
 		return null;
 	}
 }
@@ -360,10 +371,11 @@ async function resolveImageNode({
 	node: ImageNode;
 	context: ResolveContext;
 }): Promise<ResolvedVisualSourceNodeState | null> {
-	const source = await loadImageSource({
-		url: node.params.url,
-		maxSourceSize: node.params.maxSourceSize,
-	});
+	const { mediaId, url, maxSourceSize, timeOffset, duration } = node.params;
+	if (context.time < timeOffset || context.time >= timeOffset + duration) return null;
+
+	const source = await readMediaSource(mediaId, context, () => loadImageSource({ url, maxSourceSize }));
+	if (!source) return null;
 	const visualState = resolveVisualState({
 		params: node.params,
 		context,
@@ -528,7 +540,7 @@ async function resolveBlurBackgroundNode({
 		return null;
 	}
 
-	const backdropSource = await resolveBackdropSource({ node, clipTime, renderer: context.renderer });
+	const backdropSource = await resolveBackdropSource({ node, clipTime, context });
 	if (!backdropSource) {
 		return null;
 	}
@@ -553,11 +565,11 @@ async function resolveBlurBackgroundNode({
 async function resolveBackdropSource({
 	node,
 	clipTime,
-	renderer,
+	context,
 }: {
 	node: BlurBackgroundNode;
 	clipTime: number;
-	renderer: CanvasRenderer;
+	context: ResolveContext;
 }): Promise<BackdropSource | null> {
 	if (node.params.mediaType === "video") {
 		const sourceTimeTicks =
@@ -566,7 +578,7 @@ async function resolveBackdropSource({
 				clipTime,
 				retime: node.params.retime,
 			});
-		const frame = await readVideoFrame(node.params, sourceTimeTicks, renderer);
+		const frame = await readVideoFrame(node.params, sourceTimeTicks, context);
 		if (!frame) {
 			return null;
 		}
@@ -579,7 +591,9 @@ async function resolveBackdropSource({
 		};
 	}
 
-	const source = await loadImageSource({ url: node.params.url });
+	const { mediaId, url } = node.params;
+	const source = await readMediaSource(mediaId, context, () => loadImageSource({ url }));
+	if (!source) return null;
 	return {
 		source: source.source,
 		width: source.width,
