@@ -1,7 +1,7 @@
 // What changed between two timeline states, as values: every element added, deleted or changed (timing,
 // trims, track, params, keyframes, caption data), inside compound clips too. Used for `changes-request.json`.
 import { type EditLine, type EditSnapshot, diffEdits } from "./edit-log";
-import { draftHistory, isForOtherProject, resolveState, snapshotHistory, type TimelineState } from "./history";
+import { draftHistory, isForOtherProject, nextSnapshotTime, resolveState, snapshotHistory, type TimelineState } from "./history";
 import { buildAllEditItems } from "./snapshot";
 
 /** One change: like an edit log line, without who made it (`agentMade` says whether the item is the agent's). */
@@ -42,7 +42,7 @@ export function keepAnswerState(now: TimelineState, at: string): void {
  * answer carries `syncedAt` (`at`); keep its state with keepAnswerState once it is stored. Null when the
  * request is for another project (it is left for that one).
  */
-export function changesResult(request: ChangesRequest, { now, mediaName, at = new Date().toISOString() }: { now: TimelineState; mediaName: Map<string, string>; at?: string }) {
+export function changesResult(request: ChangesRequest, { now, mediaName, at = nextSnapshotTime() }: { now: TimelineState; mediaName: Map<string, string>; at?: string }) {
 	const refs = [typeof request.draft === "string" ? { draft: request.draft, side: "after" } : undefined, typeof request.since === "string" ? { syncedAt: request.since } : undefined];
 	if (isForOtherProject(request, refs, now.projectId)) return null;
 	const head = { rev: request.rev, projectId: now.projectId };
