@@ -429,6 +429,130 @@ describe("media manifest cache", () => {
 	});
 });
 
+describe("project command history", () => {
+	test.each([
+		["after clearing history", false],
+		["with stale entries retained", true],
+	] as const)("keeps both saved timelines and media isolated %s", async (_scenario, keepStaleEntries) => {
+		const a = project("a", new Date(0));
+		const b = project("b", new Date(0));
+		b.scenes.push({ ...b.scenes[0], id: "b-secondary", name: "B secondary", isMain: false });
+		const editor = await load(a, { assets: [asset("shared-id")] });
+		const disk = memoryDisk([a, b]);
+		const deleteMedia = mock(async () => {});
+		const saveMedia = mock(async () => {});
+		const bAsset = { ...asset("shared-id"), name: "B file" };
+		stub({
+			deleteMediaAsset: deleteMedia,
+			saveMediaAsset: saveMedia,
+			loadAllMediaAssets: async () => [bAsset],
+		});
+
+		const sceneId = await editor.scenes.createScene({ name: "Secondary", isMain: false });
+		await editor.scenes.switchToScene({ sceneId });
+		await editor.scenes.deleteScene({ sceneId });
+		editor.media.removeMediaAsset({ projectId: "a", id: "shared-id" });
+		editor.command.undo();
+		expect(editor.command.canUndo()).toBe(true);
+		expect(editor.command.canRedo()).toBe(true);
+		expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["shared-id"]);
+
+		// Exercise the replay guard independently of the normal stack reset.
+		const clear = keepStaleEntries ? spyOn(editor.command, "clear").mockImplementation(() => {}) : null;
+		try {
+			await editor.project.loadProject({ id: "b" });
+		} finally {
+			clear?.mockRestore();
+		}
+
+		// Undo can restore the missing scene. Redo recognizes the shared main scene ID.
+		editor.command.undo();
+		expect(editor.scenes.getScenes().map(({ id }) => id)).toEqual(["main", "b-secondary"]);
+		editor.command.redo();
+		if (!keepStaleEntries) {
+			expect(editor.command.canUndo()).toBe(false);
+			expect(editor.command.canRedo()).toBe(false);
+		}
+		expect(editor.media.getAssets()).toEqual([bAsset]);
+		expect(deleteMedia).toHaveBeenCalledTimes(1);
+		expect(saveMedia).toHaveBeenCalledTimes(1);
+		expect(await editor.save.settleProject("a")).toBeNull();
+		// Persist a real edit in B after the replay attempts.
+		edit(editor, "b: edited");
+		expect(await editor.save.flush()).toBe(true);
+		expect(disk.files.get("a")?.scenes.map(({ id }) => id)).toEqual(["main"]);
+		expect(disk.files.get("b")?.scenes.map(({ id }) => id)).toEqual(["main", "b-secondary"]);
+	});
+
+	test.each([
+		["close", (editor: ReturnType<typeof EditorCore.getInstance>) => editor.project.closeProject()],
+		["create", (editor: ReturnType<typeof EditorCore.getInstance>) => editor.project.createNewProject({ name: "New" })],
+		["delete", (editor: ReturnType<typeof EditorCore.getInstance>) => editor.project.deleteProjects({ ids: ["a"] })],
+		["replace", (editor: ReturnType<typeof EditorCore.getInstance>) => editor.project.setActiveProject({ project: project("b", new Date(0)) })],
+		["reopen", (editor: ReturnType<typeof EditorCore.getInstance>) => editor.project.loadProject({ id: "a" })],
+	] as const)("%s drops both stacks from the previous session", async (_action, transition) => {
+		const a = project("a", new Date(0));
+		const editor = await load(a);
+		memoryDisk([a]);
+		stub({ deleteProject: async () => {} });
+		await editor.scenes.renameScene({ sceneId: "main", name: "First" });
+		await editor.scenes.renameScene({ sceneId: "main", name: "Second" });
+		editor.command.undo();
+		expect(editor.command.canUndo()).toBe(true);
+		expect(editor.command.canRedo()).toBe(true);
+
+		await transition(editor);
+
+		expect(editor.command.canUndo()).toBe(false);
+		expect(editor.command.canRedo()).toBe(false);
+		expect(await editor.save.settleProject("a")).toBeNull();
+	});
+
+	test("a failed load leaves Undo and Redo available in the open project", async () => {
+		const a = project("a", new Date(0));
+		const editor = await load(a);
+		memoryDisk([a]);
+		await editor.scenes.renameScene({ sceneId: "main", name: "Renamed" });
+
+		await expect(editor.project.loadProject({ id: "missing" })).rejects.toThrow("not found");
+
+		editor.command.undo();
+		expect(editor.scenes.getActiveScene().name).toBe("Main");
+		editor.command.redo();
+		expect(editor.scenes.getActiveScene().name).toBe("Renamed");
+	});
+
+	test("an unfinished preview cannot commit old tracks or create history after a switch", async () => {
+		const a = project("a", new Date(0));
+		const b = project("b", new Date(0));
+		const editor = await load(a);
+		memoryDisk([a, b]);
+		editor.timeline.insertElement({
+			element: {
+				type: "text", name: "Title", params: { content: "Title" },
+				startTime: roundMediaTime({ time: 0 }),
+				duration: roundMediaTime({ time: 480_000 }),
+				trimStart: roundMediaTime({ time: 0 }),
+				trimEnd: roundMediaTime({ time: 0 }),
+			},
+			placement: { mode: "auto" },
+		});
+		const [track] = editor.scenes.getActiveScene().tracks.overlay;
+		editor.timeline.previewElements({
+			updates: [{ trackId: track.id, elementId: track.elements[0].id, updates: { name: "Preview" } }],
+		});
+		expect(editor.timeline.isPreviewActive()).toBe(true);
+
+		await editor.project.loadProject({ id: "b" });
+		editor.timeline.commitPreview();
+
+		expect(editor.scenes.getActiveScene().tracks).toEqual(b.scenes[0].tracks);
+		expect(editor.timeline.getPreviewTracks()).toBe(editor.scenes.getActiveScene().tracks);
+		expect(editor.command.canUndo()).toBe(false);
+		expect(await editor.save.settleProject("a")).toBeNull();
+	});
+});
+
 describe("save sessions across project switches", () => {
 	test("A→B: an edit made just before the switch is written to A, from A's timeline, in the background", async () => {
 		const editor = await load(project("a", new Date(0)));

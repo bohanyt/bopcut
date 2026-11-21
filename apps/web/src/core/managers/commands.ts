@@ -8,6 +8,7 @@ import { toast } from "sonner";
 
 interface CommandHistoryEntry {
 	command: Command;
+	projectSession: number;
 	/** Scene the command ran in; undo and redo switch the editor to it first. */
 	sceneId: string | null;
 	/** Other scenes the scenes manager changed as a side effect (compound relocation). */
@@ -25,6 +26,7 @@ export class CommandManager {
 	constructor(private editor: EditorCore) {}
 
 	execute({ command }: { command: Command }): Command {
+		const projectSession = this.editor.project.getSession();
 		const sceneId = this.getActiveSceneId();
 		const beforeTracks =
 			this.isRippleEnabled && command.ripples
@@ -47,8 +49,10 @@ export class CommandManager {
 		const derived = this.editor.scenes.endDerivedLog();
 		const selectionOverride = this.applySelectionOverride(result);
 		this.runReactors();
+		if (projectSession !== this.editor.project.getSession()) return command;
 		this.history.push({
 			command,
+			projectSession,
 			sceneId,
 			derived,
 			previousSelection,
@@ -61,6 +65,7 @@ export class CommandManager {
 	push({ command }: { command: Command }): void {
 		this.history.push({
 			command,
+			projectSession: this.editor.project.getSession(),
 			sceneId: this.getActiveSceneId(),
 			derived: [],
 			previousSelection: this.getSelectionSnapshot(),
@@ -88,7 +93,9 @@ export class CommandManager {
 				snapshot: entry.previousSelection,
 			});
 		}
-		this.redoStack.push(entry);
+		if (entry.projectSession === this.editor.project.getSession()) {
+			this.redoStack.push(entry);
+		}
 	}
 
 	redo(): void {
@@ -106,6 +113,7 @@ export class CommandManager {
 		this.editor.scenes.applyDerivedChanges({ changes: entry.derived, side: "after" });
 		const selectionOverride = this.applySelectionOverride(result);
 		this.runReactors();
+		if (entry.projectSession !== this.editor.project.getSession()) return;
 
 		this.history.push({
 			...entry,
@@ -115,10 +123,9 @@ export class CommandManager {
 	}
 
 	/**
-	 * Undo/redo happen in the scene the command ran in: like an NLE jumping to the sequence being
-	 * undone, the editor switches to that scene first (its own playhead and selection). If that
-	 * scene is gone and this command does not bring it back, the step is refused and history is
-	 * left as it was.
+	 * Undo/redo only replay commands from the current project session. The editor switches to
+	 * the scene the command ran in first. If that scene is gone and the command cannot restore
+	 * it, the step is refused and history stays as it was.
 	 */
 	private showSceneOf({
 		entry,
@@ -127,6 +134,8 @@ export class CommandManager {
 		entry: CommandHistoryEntry;
 		direction: "undo" | "redo";
 	}): boolean {
+		if (entry.projectSession !== this.editor.project.getSession()) return false;
+
 		const blocked = entry.command.getBlockedReason({ direction });
 		if (blocked) {
 			toast.error(blocked);
@@ -136,7 +145,7 @@ export class CommandManager {
 		if (sceneId === null || sceneId === this.getActiveSceneId()) return true;
 		if (this.editor.scenes.getScenes().some((scene) => scene.id === sceneId)) {
 			void this.editor.scenes.switchToScene({ sceneId });
-			return true;
+			return entry.projectSession === this.editor.project.getSession();
 		}
 		if (entry.command.restoresScene({ sceneId, direction })) return true;
 		toast.error(`Cannot ${direction}: the scene this change was made in no longer exists`);
