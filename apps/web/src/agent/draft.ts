@@ -340,6 +340,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const incoming = hit.element;
 				const cut = incoming.startTime;
 				const lane = hit.track;
+				if ("hidden" in lane && lane.hidden) throw new Error("transition: the source is on a hidden track");
+				if ("hidden" in incoming && incoming.hidden) throw new Error("transition: the incoming clip is a hidden clip");
 				const id = incoming.agentId ?? incoming.id;
 				const tracksNow = sceneOf(hit.sceneId).tracks;
 				// The overlay position just above the clip's track (overlay index 0 = topmost).
@@ -387,7 +389,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					// The clip that shows at the cut and ends there (of overlapping ones, the one drawn on top), and
 					// its footage after its end.
 					const previous = lane.elements
-						.filter((e) => e.id !== incoming.id && Math.abs(e.startTime + e.duration - cut) <= frameTicks / 2)
+						.filter((e) =>
+							e.id !== incoming.id &&
+							!("hidden" in e && e.hidden) &&
+							Math.abs(e.startTime + e.duration - cut) <= frameTicks / 2
+						)
 						.sort((a, b) => a.startTime - b.startTime || a.id.localeCompare(b.id))
 						.at(-1);
 					if (!previous) throw new Error("transition: no clip ends where this one starts on its track");

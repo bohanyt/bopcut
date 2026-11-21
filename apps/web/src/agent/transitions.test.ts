@@ -22,6 +22,32 @@ const keys = (element: TimelineElement, path: string) =>
 const pair = () => scenesWith([video("A", 0, 2), video("B", 2, 2)]);
 
 describe("transitions", () => {
+	for (const type of ["flash", "dip", "crossfade", "slide-left"] as const) {
+		test(`${type} refuses a hidden source track without changing it`, () => {
+			const scenes = scenesWith([], [{
+				id: "hidden", name: "Hidden footage", type: "video", hidden: true,
+				elements: [video("A", 0, 2), video("B", 2, 2)],
+			}]);
+			const out = run(scenes, [{ op: "transition", match: { agentId: "B" }, type }]);
+			expect(out.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("hidden track") });
+			expect(out.scenes).toEqual(scenes);
+		});
+	}
+
+	test("refuses a transition into an individually hidden clip", () => {
+		const scenes = scenesWith([video("A", 0, 2), video("B", 2, 2, { hidden: true })]);
+		const out = run(scenes, [{ op: "transition", match: { agentId: "B" }, type: "crossfade" }]);
+		expect(out.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("hidden clip") });
+		expect(out.scenes).toEqual(scenes);
+	});
+
+	test("the continuation ignores an individually hidden clip above a visible clip", () => {
+		const scenes = scenesWith([video("A", 0, 2), video("H", 1, 1, { hidden: true }), video("B", 2, 2)]);
+		const out = run(scenes, [{ op: "transition", match: { agentId: "B" }, type: "crossfade" }]);
+		expect(out.results[0]).toMatchObject({ ok: true });
+		expect(out.scenes[0].tracks.overlay.at(-1)?.elements[0]).toMatchObject({ mediaId: "m-A" });
+	});
+
 	test("flash: a white full-canvas shape that fades in and out across the cut, on a track just above the clip", () => {
 		const out = run(pair(), [{ op: "transition", match: { agentId: "B" }, type: "flash", duration: 0.4 }]);
 		expect(out.results[0]).toMatchObject({ ok: true, type: "flash", duration: 0.4 });
