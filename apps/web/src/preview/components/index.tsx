@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useDeepCompareEffect from "use-deep-compare-effect";
 import { useEditor } from "@/editor/use-editor";
-import { useRafLoop } from "@/hooks/use-raf-loop";
+import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
@@ -20,6 +20,7 @@ import type {
 import { PreviewContextMenu } from "./context-menu";
 import { usePreviewStore } from "@/preview/preview-store";
 import { previewQualityScale } from "@/preview/quality";
+import { createPreviewFrameScheduler } from "@/preview/frame-scheduler";
 import { PreviewToolbar } from "./toolbar";
 import {
 	PreviewViewportProvider,
@@ -150,7 +151,7 @@ function PreviewCanvas({
 	const viewportRef = useRef<HTMLDivElement>(null);
 	const lastFrameRef = useRef(-1);
 	const lastSceneRef = useRef<RootNode | null>(null);
-	const renderingRef = useRef(false);
+	const schedulerRef = useRef<ReturnType<typeof createPreviewFrameScheduler> | null>(null);
 	const renderSignalRef = useRef<AbortSignal | null>(null);
 	const lastRendererRef = useRef<CanvasRenderer | null>(null);
 	const { width: nativeWidth, height: nativeHeight } = usePreviewSize();
@@ -215,7 +216,7 @@ function PreviewCanvas({
 	}, [renderer, sessionSignal]);
 
 	const render = useCallback(() => {
-		if (!renderTree || renderingRef.current) return;
+		if (!renderTree) return;
 		if (lastRendererRef.current !== renderer) {
 			lastRendererRef.current = renderer;
 			lastFrameRef.current = -1;
@@ -241,10 +242,9 @@ function PreviewCanvas({
 		if (!signal) return;
 		const task = editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
 		if (!task) return;
-		renderingRef.current = true;
 		lastSceneRef.current = renderTree;
 		lastFrameRef.current = frame;
-		task
+		return task
 			.then(() => {
 				// Keep the previous frame visible while the new render target is waiting.
 				const mount = canvasMountRef.current;
@@ -255,13 +255,31 @@ function PreviewCanvas({
 			})
 			.catch((error) => {
 				if (!signal.aborted) console.error("Preview render failed:", error);
-			})
-			.finally(() => {
-				renderingRef.current = false;
 			});
 	}, [renderer, renderTree, editor.playback, editor.renderer, editor.timeline]);
 
-	useRafLoop(render);
+	const renderRef = useCommittedRef(render);
+	useEffect(() => {
+		const scheduler = createPreviewFrameScheduler({
+			render: () => renderRef.current(),
+			requestFrame: requestAnimationFrame,
+			cancelFrame: cancelAnimationFrame,
+		});
+		schedulerRef.current = scheduler;
+		const unsubscribe = [
+			editor.playback.onUpdate(scheduler.playbackTick),
+			editor.playback.onSeek(scheduler.request),
+			editor.renderer.subscribe(scheduler.request),
+		];
+		return () => {
+			schedulerRef.current = null;
+			scheduler.dispose();
+			for (const remove of unsubscribe) remove();
+		};
+	}, [editor, renderRef]);
+	useEffect(() => {
+		schedulerRef.current?.request();
+	}, [render, sessionSignal]);
 
 	useEffect(() => {
 		const container = viewportRef.current;
