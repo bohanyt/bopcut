@@ -61,6 +61,35 @@ describe("cuts and spoken words", () => {
 		expect(main(snapped.scenes).duration).toBe(T(5));
 	});
 
+	test("a draft keeps the exact safe end when both adjacent frame ends cut a word", () => {
+		const transcript = [
+			{ text: "long", start: 0, end: 4.019 },
+			{ text: "first", start: 0, end: 0.5 },
+			...Array.from({ length: 8 }, (_, index) => ({
+				text: `short ${index}`,
+				start: 0.5 + index * 0.4,
+				end: 0.6 + index * 0.4,
+			})),
+			{ text: "middle", start: 3.995, end: 4.038 },
+			{ text: "last", start: 4.01, end: 4.2 },
+		];
+		const out = computeAgentDraft({
+			scenes: scenesWith([clip(0, 6)]),
+			rootSceneId: "main",
+			ops: [{ op: "set", match: { agentId: "clip" }, trimStart: 0.3, duration: 3.69, cut: "words" }],
+			mediaFor: () => undefined,
+			wordsOf: () => transcript,
+			canvas: { width: 1920, height: 1080 },
+			fps: { numerator: 60, denominator: 1 },
+			ripple: false,
+		});
+		expect(out.results[0]).toMatchObject({ ok: true });
+		expect(out.results[0].cutWarnings).toBeUndefined();
+		const after = main(out.scenes);
+		expect(after.trimStart).toBe(T(0));
+		expect(after.duration).toBe(T(4.019));
+	});
+
 	test("a time inside a word is found; the edges and gaps are not", () => {
 		expect(wordInside(words, 1.7)?.text).toBe("punchline");
 		expect(wordInside(words, 1.46)).toBeNull(); // within the tolerance of its start

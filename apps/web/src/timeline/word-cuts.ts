@@ -122,8 +122,10 @@ function fitSpan(clip: Clip, words: SourceWord[], fps: FrameRate, newFrom: numbe
 	const up = Math.ceil(exact / frame - 1e-9) * frame;
 	const down = Math.floor(exact / frame + 1e-9) * frame;
 	const fitsUp = within(up) && !wordInside(words, sourceAt(up));
-	const keepsWord = down > 0 && within(down) && sourceAt(down) >= target - WORD_TOLERANCE;
-	const seconds = fitsUp ? up : keepsWord ? down : exact;
+	const downSource = sourceAt(down);
+	const fitsDown = down > 0 && within(down) && downSource >= target - WORD_TOLERANCE &&
+		!wordInside(words, downSource);
+	const seconds = fitsUp ? up : fitsDown ? down : exact;
 	// At least one frame, unless even that runs past the end of the source or into the next word.
 	const atLeastFrame = seconds >= frame || (within(frame) && !wordInside(words, sourceAt(frame))) ? Math.max(frame, seconds) : seconds;
 	const trimStart = Math.round(newFrom * TICKS_PER_SECOND) as MediaTime;
