@@ -28,6 +28,7 @@ import {
 	type AnimationPresetRequest,
 	applyAnimationPresets,
 	readAnimationPresets,
+	readPresetSettings,
 } from "@/animation/presets";
 import { getPresetDurationRange } from "@/animation/duration-control";
 import type { TimelineElement } from "@/timeline";
@@ -117,7 +118,7 @@ function PresetDuration({
 	const value = clampDuration(duration);
 	const resetValue = clampDuration(defaultDuration);
 	const [draft, setDraft] = useState<string | null>(null);
-	const drag = useRef<{ pointerId: number; startDuration: number; previewing: boolean } | null>(null);
+	const drag = useRef<{ pointerId: number; previewing: boolean } | null>(null);
 	const label = side === "in" ? "In length" : "Out length";
 	const durationKey = side === "in" ? PRESET_PARAM.inDuration : PRESET_PARAM.outDuration;
 
@@ -154,7 +155,9 @@ function PresetDuration({
 					className="accent-primary min-w-0 flex-1 disabled:opacity-50"
 					onPointerDown={(event) => {
 						if (event.button === 0 && event.isPrimary) {
-							drag.current = { pointerId: event.pointerId, startDuration: duration, previewing: false };
+							// Commit a focused number field before the range input starts changing.
+							event.currentTarget.focus();
+							drag.current = { pointerId: event.pointerId, previewing: false };
 						}
 					}}
 					onChange={(event) => {
@@ -164,17 +167,22 @@ function PresetDuration({
 						const seconds = Math.abs(raw - max) < 1e-12
 							? max
 							: gesture ? clampDuration(Math.round(raw * 100) / 100) : raw;
-						if (gesture && seconds === gesture.startDuration) {
-							if (gesture.previewing) timeline.discardPreview();
-							gesture.previewing = false;
+						const committed = timeline.getTrackById({ trackId })?.elements.find(
+							(clip) => clip.id === element.id,
+						);
+						if (!committed) return;
+						if (seconds === readPresetSettings(committed.params)[side]?.seconds) {
+							if (gesture?.previewing) {
+								timeline.discardPreview();
+								gesture.previewing = false;
+							}
 							return;
 						}
-						if (seconds === duration) return;
 						timeline.previewElements({
 							updates: [{
 								trackId,
 								elementId: element.id,
-								updates: { params: { ...element.params, [durationKey]: seconds } },
+								updates: { params: { ...committed.params, [durationKey]: seconds } },
 							}],
 						});
 						if (gesture) gesture.previewing = true;
