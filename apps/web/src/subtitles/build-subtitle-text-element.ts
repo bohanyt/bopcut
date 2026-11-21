@@ -282,33 +282,38 @@ export function buildSubtitleTextElement({
 	let positionY = 0;
 
 	if (ctx) {
-		ctx.font = fontString;
-		setCanvasLetterSpacing({ ctx, letterSpacingPx: style.letterSpacing });
-		content = wrapSubtitleText({
-			ctx,
-			text: caption.text,
-			maxWidth,
-		});
-		const measurement = measureWrappedTextBlock({
-			ctx,
-			content,
-			canvasHeight: canvasSize.height,
-			textAlign: style.textAlign,
-			background: style.background,
-			fontSize: style.fontSize,
-			lineHeight: style.lineHeight,
-		});
-		positionX = resolvePositionX({
-			canvasWidth: canvasSize.width,
-			textAlign: style.textAlign,
-			placement: style.placement,
-			visualRect: measurement.visualRect,
-		});
-		positionY = resolvePositionY({
-			canvasHeight: canvasSize.height,
-			placement: style.placement,
-			visualRect: measurement.visualRect,
-		});
+		ctx.save();
+		try {
+			ctx.font = fontString;
+			setCanvasLetterSpacing({ ctx, letterSpacingPx: style.letterSpacing });
+			content = wrapSubtitleText({
+				ctx,
+				text: caption.text,
+				maxWidth,
+			});
+			const measurement = measureWrappedTextBlock({
+				ctx,
+				content,
+				canvasHeight: canvasSize.height,
+				textAlign: style.textAlign,
+				background: style.background,
+				fontSize: style.fontSize,
+				lineHeight: style.lineHeight,
+			});
+			positionX = resolvePositionX({
+				canvasWidth: canvasSize.width,
+				textAlign: style.textAlign,
+				placement: style.placement,
+				visualRect: measurement.visualRect,
+			});
+			positionY = resolvePositionY({
+				canvasHeight: canvasSize.height,
+				placement: style.placement,
+				visualRect: measurement.visualRect,
+			});
+		} finally {
+			ctx.restore();
+		}
 	}
 
 	return {
