@@ -147,7 +147,7 @@ export function fieldsMapOf(scenes: TScene[]): Map<string, ElementRecord> {
 const NO_FIELDS: ElementFields = { start: 0, duration: 0, trimStart: 0, params: {}, animations: "", caption: "", whole: "" };
 
 /** The record of an element in its scene, else by its id alone (it was moved to another scene). */
-function recordOf(map: Map<string, ElementRecord>, sceneId: string, elementId: string): ElementRecord | undefined {
+function recordOf(map: ReadonlyMap<string, ElementRecord>, sceneId: string, elementId: string): ElementRecord | undefined {
 	return map.get(`${sceneId}:${elementId}`) ?? map.get(`#${elementId}`);
 }
 
@@ -157,15 +157,20 @@ function recordOf(map: Map<string, ElementRecord>, sceneId: string, elementId: s
  */
 type SnapshotState = { projectId: string; rootSceneId: string; scenes: TScene[] } & Record<string, unknown>;
 export class SnapshotHistory {
-	private entries: { at: string; fields: Map<string, ElementRecord>; state: SnapshotState | null }[] = [];
+	private entries: { at: string; sceneKey: symbol; fields: ReadonlyMap<string, ElementRecord>; state: SnapshotState | null }[] = [];
+	// Keep identities weak. Only live snapshot entries should retain their element indexes.
+	private readonly sceneKeys = new WeakMap<TScene[], symbol>();
 	/** `keep`: what of the scenes a kept state holds (for example without decoded audio). */
 	constructor(private readonly size = 64, private readonly keep: (scenes: TScene[]) => TScene[] = (scenes) => scenes) {}
 	record(at: string, scenes: TScene[], meta?: { projectId: string; rootSceneId: string } & Record<string, unknown>) {
+		const sceneKey = this.sceneKeys.get(scenes) ?? Symbol();
+		this.sceneKeys.set(scenes, sceneKey);
+		const fields = this.entries.find((entry) => entry.sceneKey === sceneKey)?.fields ?? fieldsMapOf(scenes);
 		this.entries = this.entries.filter((entry) => entry.at !== at);
-		this.entries.push({ at, fields: fieldsMapOf(scenes), state: meta ? { ...meta, scenes: this.keep(scenes) } : null });
+		this.entries.push({ at, sceneKey, fields, state: meta ? { ...meta, scenes: this.keep(scenes) } : null });
 		if (this.entries.length > this.size) this.entries.shift();
 	}
-	get(at: string): Map<string, ElementRecord> | undefined {
+	get(at: string): ReadonlyMap<string, ElementRecord> | undefined {
 		return this.entries.find((entry) => entry.at === at)?.fields;
 	}
 	/** The timeline as that snapshot showed it, when it was recorded with its project. */
@@ -228,7 +233,7 @@ function currentValues(fields: string[], element: TimelineElement, record: Eleme
  * which is stale too; one in neither was added by this draft and is not checked.
  */
 export function assertNotStale({ base, now, sceneId, element, fields, scenes }: {
-	base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; sceneId: string; element: TimelineElement; fields: string[] | "all";
+	base: ReadonlyMap<string, ElementRecord> | undefined; now: ReadonlyMap<string, ElementRecord> | undefined; sceneId: string; element: TimelineElement; fields: string[] | "all";
 	/** The draft's scenes so far: what a compound this draft made (a `group` wrapper) holds is checked too. */
 	scenes?: TScene[];
 }) {
@@ -259,7 +264,7 @@ export function assertNotStale({ base, now, sceneId, element, fields, scenes }: 
 }
 
 /** Throws StaleError when a note changed (resolved, reopened, edited) between the snapshot and now. */
-export function assertNoteNotStale({ base, now, sceneId, noteId }: { base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; sceneId: string; noteId: string }) {
+export function assertNoteNotStale({ base, now, sceneId, noteId }: { base: ReadonlyMap<string, ElementRecord> | undefined; now: ReadonlyMap<string, ElementRecord> | undefined; sceneId: string; noteId: string }) {
 	if (!base || !now) return;
 	const current = now.get(`note:${sceneId}:${noteId}`);
 	if (!current) return;
@@ -273,7 +278,7 @@ export function assertNoteNotStale({ base, now, sceneId, noteId }: { base: Map<s
  * op based on that snapshot: throws StaleError for the first element of `after` whose start differs from
  * `before` (this op's own edit) and whose start the user changed since `base`.
  */
-export function assertRippleNotStale({ base, now, sceneId, before, after }: { base: Map<string, ElementRecord> | undefined; now: Map<string, ElementRecord> | undefined; sceneId: string; before: TScene["tracks"]; after: TScene["tracks"] }) {
+export function assertRippleNotStale({ base, now, sceneId, before, after }: { base: ReadonlyMap<string, ElementRecord> | undefined; now: ReadonlyMap<string, ElementRecord> | undefined; sceneId: string; before: TScene["tracks"]; after: TScene["tracks"] }) {
 	if (!base || !now) return;
 	const startOf = new Map<string, number>();
 	for (const track of orderedTracks(before)) for (const element of track.elements) startOf.set(element.id, element.startTime);

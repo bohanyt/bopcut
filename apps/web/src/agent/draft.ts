@@ -91,7 +91,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	scenes: TScene[]; rootSceneId: string; ops: DraftOp[]; mediaFor: (e: AgentElement) => LoadedMedia | undefined;
 	canvas: { width: number; height: number }; fps: FrameRate; ripple: boolean; atomic?: boolean; results?: any[];
 	/** Element state at the draft's `basedOn` snapshot: set/replace/delete on fields changed since then are stale. */
-	base?: Map<string, ElementRecord>;
+	base?: ReadonlyMap<string, ElementRecord>;
 	/** Spoken words of a project media file, if known. */
 	wordsOf?: (mediaId: string) => SourceWord[] | undefined;
 }): { scenes: TScene[]; results: any[]; touched: Touched[]; applied: boolean; words: Map<string, SourceWord[]> } {
