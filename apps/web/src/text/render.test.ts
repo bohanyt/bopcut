@@ -3,6 +3,7 @@ import { Canvas, createCanvas, GlobalFonts } from "@napi-rs/canvas";
 import { measureTextElement } from "./measure-element";
 import { drawStyledText } from "./draw-styled";
 import { makeCaption } from "./caption";
+import { buildSubtitleTextElement } from "@/subtitles/build-subtitle-text-element";
 import type { TextElement } from "@/timeline";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 import type { CanvasRenderer } from "@/services/renderer/canvas-renderer";
@@ -79,6 +80,38 @@ function render(scale: number, localTime = 0.5, target = element) {
 		pixels: ctx.getImageData(0, 0, canvas.width, canvas.height).data,
 	};
 }
+
+test("text measurement keeps generic families as CSS keywords and quotes named families", () => {
+	for (const [family, expected] of [
+		["serif", "serif, sans-serif"],
+		["monospace", "monospace, sans-serif"],
+		["sans-serif", "sans-serif"],
+		["Times New Roman", '"Times New Roman", sans-serif'],
+	]) {
+		const { layout } = render(1, 0.5, { ...element, params: { ...element.params, fontFamily: family } });
+		expect(layout.fontString).toBe(`normal normal 60px ${expected}`);
+	}
+});
+
+test("subtitle placement measures with the same generic font as canvas text", () => {
+	const ctx = createCanvas(1, 1).getContext("2d");
+	const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+	Object.defineProperty(globalThis, "document", {
+		configurable: true,
+		value: { createElement: () => ({ getContext: () => ctx }) },
+	});
+	try {
+		buildSubtitleTextElement({
+			index: 0,
+			caption: { text: "Caption", startTime: 0, duration: 1, style: { fontFamily: "monospace", fontSize: 15, fontWeight: "normal" } },
+			canvasSize: { width: 640, height: 360 },
+		});
+		expect(ctx.font).toBe("normal normal 60px monospace, sans-serif");
+	} finally {
+		if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+		else Reflect.deleteProperty(globalThis, "document");
+	}
+});
 
 test("raster shows both rings, one shadow, emphasis and the active-word fill", () => {
 	const { pixels } = render(1);

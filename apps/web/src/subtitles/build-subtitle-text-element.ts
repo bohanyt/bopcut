@@ -8,6 +8,7 @@ import { DEFAULTS } from "@/timeline/defaults";
 import { mediaTimeFromSeconds } from "@/wasm";
 import type { CreateTextElement } from "@/timeline";
 import type { TextBackground } from "@/text/background";
+import { buildTextFontString } from "@/text/primitives";
 import type {
 	TextAlign,
 	TextDecoration,
@@ -21,10 +22,6 @@ const SUBTITLE_MAX_WIDTH_RATIO = 0.8;
 const SUBTITLE_BOTTOM_MARGIN_RATIO = 0.05;
 const SUBTITLE_FONT_SIZE = 5;
 const MEASUREMENT_CANVAS_SIZE = 4096;
-
-function quoteFontFamily({ fontFamily }: { fontFamily: string }): string {
-	return `"${fontFamily.replace(/"/g, '\\"')}"`;
-}
 
 function createMeasurementContext(): CanvasRenderingContext2D | null {
 	const canvas = document.createElement("canvas");
@@ -266,14 +263,14 @@ export function buildSubtitleTextElement({
 	const style = resolveSubtitleStyle({
 		style: caption.style,
 	});
-	const fontFamily = quoteFontFamily({
-		fontFamily: style.fontFamily,
-	});
-	const fontWeight = style.fontWeight;
-	const fontStyle = style.fontStyle === "italic" ? "italic" : "normal";
 	const scaledFontSize =
 		style.fontSize * (canvasSize.height / FONT_SIZE_SCALE_REFERENCE);
-	const fontString = `${fontStyle} ${fontWeight} ${scaledFontSize}px ${fontFamily}, sans-serif`;
+	const fontString = buildTextFontString({
+		fontFamily: style.fontFamily,
+		fontWeight: style.fontWeight,
+		fontStyle: style.fontStyle,
+		scaledFontSize,
+	});
 	const maxWidth = resolveTargetWidth({
 		canvasWidth: canvasSize.width,
 		placement: style.placement,

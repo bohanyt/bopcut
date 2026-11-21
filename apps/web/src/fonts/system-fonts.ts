@@ -1,3 +1,5 @@
+export const GENERIC_FONT_FAMILIES = new Set(["monospace", "sans-serif", "serif"]);
+
 export const SYSTEM_FONTS = new Set([
 	"Arial",
 	"Helvetica",
@@ -5,7 +7,5 @@ export const SYSTEM_FONTS = new Set([
 	"Courier New",
 	"Verdana",
 	"Georgia",
-	"monospace",
-	"sans-serif",
-	"serif",
+	...GENERIC_FONT_FAMILIES,
 ]);
