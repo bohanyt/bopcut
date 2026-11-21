@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
+import type { ProjectNavigation } from "@/services/storage/types";
+import { ZoomController } from "@/timeline/controllers/zoom-controller";
+import { roundMediaTime } from "@/wasm";
 
 // Stub the GPU modules (unused here) before EditorCore pulls them in; see scene-history.test.ts.
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
@@ -8,13 +11,14 @@ mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initia
 const { EditorCore } = await import("@/core");
 const { agentReadiness } = await import("@/agent/bridge");
 const { StorageService, storageService } = await import("@/services/storage/service");
+const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
 
 const asset = (id: string) => ({ id, name: id, type: "image", file: new File([id], `${id}.png`) }) as MediaAsset;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const project = (id: string, updatedAt: Date) => ({
 	metadata: { id, name: id, thumbnail: "t", createdAt: new Date(0), updatedAt }, currentSceneId: "main",
 	scenes: [{ id: "main", name: "Main", isMain: true, tracks: { main: { id: "t-main", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, overlay: [], audio: [] }, bookmarks: [], createdAt: new Date(0), updatedAt: new Date(0) }],
-	settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1920, height: 1080 } },
+	settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1920, height: 1080 }, background: { type: "color", color: "#000" } },
 }) as unknown as TProject;
 
 const stubbed = new Set<string>();
@@ -127,11 +131,13 @@ const mainName = (stored: TProject) => stored.scenes.find((scene) => scene.isMai
 function memoryDisk(stored: TProject[]) {
 	const files = new Map(stored.map((p) => [p.metadata.id, structuredClone(p)]));
 	const writes: { id: string; main: string | undefined; scenes: number }[] = [];
+	const viewWrites: { id: string; navigation: ProjectNavigation }[] = [];
 	const hooks: {
 		read?: (id: string) => Promise<void> | void;
 		media?: (projectId: string) => Promise<void> | void;
 		write?: (project: TProject) => Promise<void> | void;
 		rename?: (id: string) => Promise<void> | void;
+		navigation?: () => Promise<void> | void;
 	} = {};
 	stub({
 		ensureMigrations: async () => {},
@@ -151,6 +157,10 @@ function memoryDisk(stored: TProject[]) {
 			await hooks.write?.(written);
 			files.set(written.metadata.id, structuredClone(written));
 		},
+		saveProjectNavigation: async ({ id, navigation }: { id: string; navigation: ProjectNavigation }) => {
+			viewWrites.push({ id, navigation });
+			await hooks.navigation?.();
+		},
 		// Applied to the stored copy at the moment it is written (see DiskAdapter.update).
 		renameProject: async ({ id, name }: { id: string; name: string }) => {
 			await hooks.rename?.(id);
@@ -160,7 +170,7 @@ function memoryDisk(stored: TProject[]) {
 			return file.metadata;
 		},
 	});
-	return { files, writes, hooks };
+	return { files, writes, viewWrites, hooks };
 }
 const gate = () => {
 	let open!: () => void;
@@ -249,8 +259,7 @@ describe("savedAt", () => {
 		const storedA = new Date("2026-01-01T00:00:00Z");
 		const editor = await load(project("a", storedA));
 		expect(agentReadiness().savedAt).toBe(storedA.toISOString());
-		// Metadata changes that are not written do not move it.
-		await editor.project.updateThumbnail({ thumbnail: "new" });
+		edit(editor, "unsaved");
 		expect(agentReadiness().savedAt).toBe(storedA.toISOString());
 		const before = Date.now();
 		expect(await editor.project.saveCurrentProject()).toBe(true);
@@ -277,6 +286,101 @@ describe("saving does not re-render the editor", () => {
 		unsubscribe();
 		expect(editor.project.getActive()).toBe(active);
 		expect(notified).toBe(0);
+	});
+});
+
+describe("navigation and thumbnails", () => {
+	const view = (scrollLeft: number) => ({ zoomLevel: 2, scrollLeft, playheadTime: roundMediaTime({ time: 0 }) });
+
+	test("coalesces navigation and writes it for the outgoing project without saving its timeline", async () => {
+		const a = project("a", new Date(0));
+		a.scenes.push({ ...a.scenes[0], id: "second", isMain: false });
+		const editor = await load(a);
+		const disk = memoryDisk([a, project("b", new Date(0))]);
+		await editor.scenes.switchToScene({ sceneId: "second" });
+		const scroller = { scrollLeft: 11 } as HTMLDivElement;
+		const zoom = new ZoomController({
+			initialZoom: 2,
+			configRef: { current: {
+				minZoom: 1,
+				getContainerEl: () => null,
+				getTracksScrollEl: () => scroller,
+				getRulerScrollEl: () => null,
+				getCurrentPlayheadTime: () => editor.playback.getCurrentTime(),
+				seek: () => {},
+				setTimelineViewState: (viewState) => editor.project.setTimelineViewState({ viewState }),
+			} },
+		});
+		zoom.saveScrollPosition();
+		scroller.scrollLeft = 23;
+		zoom.saveScrollPosition();
+		await editor.project.loadProject({ id: "b" });
+		expect(await editor.save.settleProject("a")).toBeNull();
+		expect(disk.writes).toEqual([]);
+		expect(disk.viewWrites).toEqual([{
+			id: "a", navigation: { currentSceneId: "second", timelineViewState: view(23) },
+		}]);
+
+		editor.project.setTimelineViewState({ viewState: view(23) });
+		expect(await editor.save.settle()).toBe(true);
+		editor.project.setTimelineViewState({ viewState: view(23) });
+		expect(await editor.save.settle()).toBe(true);
+		expect(disk.viewWrites.map(({ id }) => id)).toEqual(["a", "b"]);
+	});
+
+	test("a failed navigation write retries without serializing committed edits again", async () => {
+		const a = project("a", new Date(0));
+		const editor = await load(a);
+		const disk = memoryDisk([a]);
+		editor.project.setTimelineViewState({ viewState: view(23) });
+		edit(editor, "new content");
+		disk.hooks.navigation = () => { throw new Error("disk busy"); };
+		expect(await editor.save.settle()).toBe(false);
+		expect(mainName(disk.files.get("a")!)).toBe("new content");
+		disk.hooks.navigation = undefined;
+		editor.save.retry();
+		expect(await editor.save.settle()).toBe(true);
+		expect(disk.writes).toHaveLength(1);
+		expect(disk.viewWrites).toHaveLength(2);
+	});
+
+	test("opening a 4K project completes before the mounted editor renders its compact thumbnail", async () => {
+		const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+		const encode = mock((callback: BlobCallback, type?: string) => callback(new Blob(["image"], { type })));
+		Object.defineProperty(globalThis, "document", {
+			configurable: true,
+			value: { createElement: () => ({ width: 0, height: 0, toBlob: encode }) },
+		});
+		const rendering = gate();
+		const render = spyOn(CanvasRenderer.prototype, "renderToCanvas").mockImplementation(() => rendering.promise);
+		const saving = mock(async () => "/api/storage/projects/4k/thumbnail");
+		const stored = project("4k", new Date(0));
+		stored.metadata.thumbnail = undefined;
+		stored.settings.canvasSize = { width: 3840, height: 2160 };
+		const disk = memoryDisk([stored]);
+		stub({ saveProjectThumbnail: saving });
+		const editor = EditorCore.getInstance();
+		const opening = editor.project.loadProject({ id: "4k" });
+		try {
+			expect(await Promise.race([opening.then(() => true), wait(100).then(() => false)])).toBe(true);
+			expect(editor.project.getIsLoading()).toBe(false);
+			expect(render).not.toHaveBeenCalled();
+			const thumbnail = editor.project.ensureThumbnail();
+			expect(render.mock.calls[0]?.[0].targetCanvas).toMatchObject({ width: 480, height: 270 });
+			expect(saving).not.toHaveBeenCalled();
+			rendering.open();
+			await thumbnail;
+			expect(editor.project.getActive().metadata.thumbnail).toBe("/api/storage/projects/4k/thumbnail");
+			expect(encode).toHaveBeenCalledWith(expect.any(Function), "image/webp", 0.78);
+			expect(saving).toHaveBeenCalledWith({ id: "4k", thumbnail: expect.any(Blob) });
+			expect(disk.writes).toEqual([]);
+		} finally {
+			rendering.open();
+			await opening;
+			render.mockRestore();
+			if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+			else Reflect.deleteProperty(globalThis, "document");
+		}
 	});
 });
 
@@ -445,13 +549,14 @@ describe("save sessions across project switches", () => {
 		await until(() => editor.project.getActiveOrNull()?.metadata.id === "b");
 		editor.save.markDirty(); // e.g. scene notifications while opening: not an edit
 		expect(editor.save.getIsDirty()).toBe(false);
-		await editor.project.updateThumbnail({ thumbnail: "rendered" }); // forced
+		edit(editor, "forced edit");
+		editor.save.markDirty({ force: true });
 		await wait(20);
 		expect(disk.writes.filter((w) => w.id === "b")).toEqual([]);
 		media.open();
 		await loading;
 		await until(() => !editor.save.getIsDirty());
-		expect(disk.files.get("b")!.metadata.thumbnail).toBe("rendered");
+		expect(mainName(disk.files.get("b")!)).toBe("forced edit");
 	});
 
 	test("of two overlapping loads, the newest one wins and the older one finishing late changes nothing", async () => {
@@ -985,10 +1090,6 @@ describe("save sessions: storage edge cases", () => {
 		const editor = await load(project("a", new Date(0)));
 		const disk = memoryDisk([project("a", new Date(0))]);
 		disk.hooks.write = () => new Promise(() => {});
-		(editor.project as any).updateThumbnailFromTimeline = async () => {
-			await editor.project.updateThumbnail({ thumbnail: "exit" });
-			return true;
-		};
 		edit(editor, "a: saving");
 		void editor.save.flush();
 		await wait(5);

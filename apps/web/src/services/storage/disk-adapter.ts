@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import type { SerializedProject, MediaAssetData } from "./types";
+import type { SerializedProject, MediaAssetData, ProjectNavigation, ProjectSummary } from "./types";
 
 const base = "/api/storage/projects";
 const projectUrl = (id: string) => `${base}/${encodeURIComponent(id)}`;
@@ -35,11 +35,25 @@ export class DiskAdapter {
 		this.revisions.set(id, revision);
 		return { value: await response.json(), revision };
 	}
-	async getAll(): Promise<SerializedProject[]> {
+	async summaries(): Promise<ProjectSummary[]> {
 		return (await checked(await fetch(base, { cache: "no-store" }))).json();
 	}
 	async list(): Promise<string[]> {
-		return (await this.getAll()).map((project) => project.metadata.id);
+		return (await this.summaries()).map((project) => project.metadata.id);
+	}
+	async saveNavigation(id: string, value: ProjectNavigation): Promise<void> {
+		await this.queued(id, async () => {
+			await checked(await fetch(`${projectUrl(id)}/navigation`, {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(value),
+			}));
+		});
+	}
+	async saveThumbnail(id: string, thumbnail: Blob): Promise<string> {
+		const url = `${projectUrl(id)}/thumbnail`;
+		await checked(await fetch(url, { method: "PUT", body: thumbnail }));
+		return url;
 	}
 	async set({
 		key,
@@ -57,14 +71,18 @@ export class DiskAdapter {
 	 */
 	async update(
 		key: string,
-		change: (value: SerializedProject) => SerializedProject,
+		change: (value: SerializedProject) => SerializedProject | Promise<SerializedProject>,
 	): Promise<SerializedProject | null> {
 		let result: SerializedProject | null = null;
 		await this.queued(key, async () => {
 			for (let attempt = 0; attempt < 5; attempt++) {
 				const current = await this.read(key);
 				if (!current) return;
-				const next = change(current.value);
+				const next = await change(current.value);
+				if (next === current.value) {
+					result = current.value;
+					return;
+				}
 				// The revision of the copy that was changed, not the shared cache: another read may have moved
 				// that on (to a newer copy, or to "gone"), and the write must not pass on its strength.
 				const response = await fetch(projectUrl(key), {

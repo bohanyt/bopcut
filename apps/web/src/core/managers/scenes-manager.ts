@@ -145,10 +145,10 @@ export class ScenesManager {
 			parentTime: this.editor.playback.getCurrentTime(),
 		});
 		this.compoundParents.set(element.sceneId, host.id);
-		await this.switchToScene({ sceneId: element.sceneId });
-		if (nestedTime !== null) {
-			this.editor.playback.seek({ time: nestedTime });
-		}
+		const target = this.list.find((scene) => scene.id === element.sceneId);
+		if (!target) throw new Error("Scene not found");
+		this.enterScene(target, nestedTime ?? undefined);
+		this.notify();
 	}
 
 	/** Goes back to the scene the open compound was entered from. False when not inside one. */
@@ -183,7 +183,7 @@ export class ScenesManager {
 	 * playhead, and records it as the project's current scene. Callers notify afterwards, so
 	 * duration reconciliation only sees the destination's playhead against its own duration.
 	 */
-	private enterScene(target: TScene | null): void {
+	private enterScene(target: TScene | null, playhead?: MediaTime): void {
 		const previous = this.active;
 		if (!target || previous?.id === target.id) {
 			this.active = target;
@@ -199,18 +199,12 @@ export class ScenesManager {
 		}
 		this.active = target;
 		selection.clearSelection();
-		playback.seek({ time: this.playheads.get(target.id) ?? ZERO_MEDIA_TIME });
+		playback.seek({ time: playhead ?? this.playheads.get(target.id) ?? ZERO_MEDIA_TIME });
 
-		const activeProject = project.getActiveOrNull();
-		if (activeProject) {
-			project.setActiveProject({
-				project: {
-					...activeProject,
-					currentSceneId: target.id,
-					metadata: { ...activeProject.metadata, updatedAt: new Date() },
-				},
-			});
-		}
+		project.setTimelineViewState({
+			sceneId: target.id,
+			viewState: { ...project.getTimelineViewState(), playheadTime: playback.getCurrentTime() },
+		});
 	}
 
 	async toggleBookmark({ time }: { time: MediaTime }): Promise<void> {
@@ -339,6 +333,8 @@ export class ScenesManager {
 	clearScenes(): void {
 		this.list = [];
 		this.active = null;
+		this.playheads.clear();
+		this.compoundParents.clear();
 		this.notify();
 	}
 

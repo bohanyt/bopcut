@@ -17,9 +17,10 @@ type SaveHost = {
 	/** False while storage migrates: writes wait. */
 	canWrite(): boolean;
 	/** The project of an open session as it is in the editor now, or null when it is not the editor's. */
-	snapshotOf(session: SaveSession): TProject | null;
+	snapshotOf(session: SaveSession, content: boolean): TProject | null;
 	/** Writes a project to storage: null on success, else the error. */
 	persist(project: TProject): Promise<string | null>;
+	persistNavigation(project: TProject): Promise<string | null>;
 	changed(session: SaveSession): void;
 	/** An edit was counted (see SaveManager.editsOf). */
 	edited(session: SaveSession): void;
@@ -51,6 +52,9 @@ export class SaveSession {
 	lastError: string | null = null;
 	private revision = 0;
 	private savedRevision = 0;
+	private contentRevision = 0;
+	private savedContentRevision = 0;
+	private navigationRevision = 0;
 	/** The load that opened this session is still running: only forced edits count, nothing is written. */
 	private loading: boolean;
 	private closed = false;
@@ -99,10 +103,12 @@ export class SaveSession {
 	 * forced edits count (opening a project notifies changes that are not edits). A closed session takes
 	 * no edits.
 	 */
-	markDirty({ force = false }: { force?: boolean } = {}): number {
+	markDirty({ force = false, navigation = false }: { force?: boolean; navigation?: boolean } = {}): number {
 		if (this.closed || this.detached || (this.loading && !force)) return this.revision;
 		const wasDirty = this.isDirty();
 		this.revision++;
+		if (navigation) this.navigationRevision = this.revision;
+		else this.contentRevision = this.revision;
 		this.host.edited(this);
 		this.schedule(this.host.debounceMs());
 		if (!wasDirty) this.host.changed(this);
@@ -121,7 +127,7 @@ export class SaveSession {
 	 * Another project replaces this one (or it is closed): `snapshot` gives the project as it is in the
 	 * editor now, taken only if something is unsaved. Call it before the editor's project changes.
 	 */
-	close(snapshot: () => TProject | null): void {
+	close(snapshot: (content: boolean) => TProject | null): void {
 		if (this.closed) return;
 		this.closed = true;
 		this.loading = false;
@@ -131,7 +137,9 @@ export class SaveSession {
 			return;
 		}
 		// The write in progress already has every edit: its project is the snapshot (nothing recomputed).
-		this.snapshot = this.writing && this.inFlight?.target === this.revision ? this.inFlight.project : snapshot();
+		this.snapshot = this.writing && this.inFlight?.target === this.revision
+			? this.inFlight.project
+			: snapshot(this.contentRevision > this.savedContentRevision);
 		if (!this.snapshot) {
 			this.lastError = "the project could not be read from the editor to save it";
 			console.error(`Unsaved changes of ${this.name} could not be kept:`, this.lastError);
@@ -239,13 +247,26 @@ export class SaveSession {
 		}
 		// A closed session takes no edits, so its snapshot holds every revision.
 		const target = this.revision;
-		const project = this.closed ? this.snapshot : this.host.snapshotOf(this);
+		const content = this.contentRevision;
+		const saveContent = content > this.savedContentRevision;
+		const saveNavigation = this.navigationRevision > this.savedRevision;
+		const project = this.closed ? this.snapshot : this.host.snapshotOf(this, saveContent);
 		if (!project) return;
 		this.clearTimer();
 		this.urgent = false;
 		this.inFlight = { target, project };
 		const run = (async () => {
-			const error = await this.host.persist(project);
+			let error: string | null = null;
+			if (saveContent) {
+				error = await this.host.persist(project);
+				if (error === null) {
+					this.savedContentRevision = content;
+					this.savedAt = new Date();
+				}
+			}
+			// A newly opened scene can be part of the content edit. Commit content first, and
+			// retry just the small record if navigation fails after the timeline was saved.
+			if (error === null && saveNavigation && !this.detached) error = await this.host.persistNavigation(project);
 			this.writing = null;
 			this.inFlight = null;
 			if (this.detached) return;
@@ -254,7 +275,6 @@ export class SaveSession {
 				if (this.lastError) toast.dismiss(errorToastId(this.projectId));
 				this.failures = 0;
 				this.lastError = null;
-				this.savedAt = new Date();
 				this.savedRevision = Math.max(this.savedRevision, target);
 				const due = this.savedWaiters.filter((waiter) => waiter.revision <= this.savedRevision);
 				this.savedWaiters = this.savedWaiters.filter((waiter) => waiter.revision > this.savedRevision);
@@ -332,15 +352,16 @@ export class SaveManager {
 			retryDelaysMs: () => this.retryDelaysMs,
 			isRunning: () => this.running,
 			canWrite: () => !this.editor.project.getMigrationState().isMigrating,
-			snapshotOf: (session) => {
+			snapshotOf: (session, content) => {
 				const project = this.editor.project;
 				if (session !== this.current || project.getActiveOrNull()?.metadata.id !== session.projectId || project.getSession() !== session.session) {
 					console.error(`Not saved: ${session.name} is no longer the project in the editor`);
 					return null;
 				}
-				return project.snapshotActive();
+				return content ? project.snapshotActive() : project.getActive();
 			},
 			persist: (project) => this.editor.project.persistProject(project),
+			persistNavigation: (project) => this.editor.project.persistNavigation(project),
 			changed: (session) => {
 				this.projects.set(session.projectId, { savedAt: session.savedAt, error: session.lastError });
 				this.notify();
@@ -359,11 +380,12 @@ export class SaveManager {
 	start(): void {
 		if (this.running) return;
 		this.running = true;
+		let scenes = this.editor.scenes.getScenes();
 		this.unsubscribeHandlers = [
 			this.editor.scenes.subscribe(() => {
-				this.markDirty();
-			}),
-			this.editor.timeline.subscribe(() => {
+				const next = this.editor.scenes.getScenes();
+				if (next === scenes) return;
+				scenes = next;
 				this.markDirty();
 			}),
 		];
@@ -407,7 +429,7 @@ export class SaveManager {
 		if (!closing) return;
 		this.current = null;
 		this.closing.add(closing);
-		closing.close(() => this.editor.project.snapshotActive());
+		closing.close((content) => content ? this.editor.project.snapshotActive() : this.editor.project.getActiveOrNull());
 		this.notify();
 	}
 
@@ -488,6 +510,10 @@ export class SaveManager {
 
 	markDirty({ force = false }: { force?: boolean } = {}): void {
 		this.current?.markDirty({ force });
+	}
+
+	markNavigationDirty(): void {
+		this.current?.markDirty({ navigation: true });
 	}
 
 	/** Writes the open project now: true once it is on disk. */

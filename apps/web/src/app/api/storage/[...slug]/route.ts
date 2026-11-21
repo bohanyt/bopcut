@@ -10,8 +10,18 @@ import {
 	revision,
 	safeId,
 	saveMedia,
+	statFile,
 	withProjectLock,
 } from "@/services/storage/server/files";
+import {
+	projectFile,
+	readProject,
+	readProjectSummary,
+	readProjectThumbnail,
+	writeProject,
+	writeProjectNavigation,
+	writeProjectThumbnail,
+} from "@/services/storage/server/projects";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +36,6 @@ function allowed(req: Request): boolean {
 }
 const marker = (id: string) =>
 	path.join(dataRoot(), "migrated", `${safeId(id)}.json`);
-const projectFile = (id: string) => path.join(projectDir(id), "project.json");
 async function names(dir: string): Promise<string[]> {
 	try {
 		return await fs.readdir(dir);
@@ -72,19 +81,27 @@ async function handle(
 				});
 		}
 		if (s[0] === "projects" && s.length === 1 && method === "GET") {
-			const projects = await Promise.all(
-				(await names(path.join(dataRoot(), "projects")))
-					.filter((id) => /^[a-zA-Z0-9_-]{1,128}$/.test(id))
-					.map((id) => readJson(projectFile(id))),
-			);
-			return Response.json(projects.filter(Boolean));
+			const summaries = [];
+			const ids = (await names(path.join(dataRoot(), "projects")))
+				.filter((id) => /^[a-zA-Z0-9_-]{1,128}$/.test(id));
+			// Bound simultaneous legacy backfills, which each read a full timeline.
+			for (let i = 0; i < ids.length; i += 8) {
+				const batch = await Promise.all(ids.slice(i, i + 8).map((id) =>
+					readProjectSummary(id).catch((error) => {
+						console.error(`Unreadable project summary (${id}):`, error);
+						return null;
+					}),
+				));
+				for (const summary of batch) if (summary) summaries.push(summary);
+			}
+			return Response.json(summaries);
 		}
 		if (s[0] === "projects" && s[1]) {
 			const id = safeId(s[1]);
 			if (s.length === 2 && method === "GET") {
-				const project = await readJson(projectFile(id));
+				const project = await readProject(id);
 				return project
-					? Response.json(project, { headers: { ETag: revision(project) } })
+					? Response.json(project.value, { headers: { ETag: project.etag } })
 					: new Response(null, { status: 404 });
 			}
 			if (s.length === 2 && method === "PUT")
@@ -102,12 +119,12 @@ async function handle(
 					const expected = req.headers.get("if-match");
 					if (!migrating && expected !== (current ? revision(current) : "new"))
 						return Response.json({ error: "Project changed" }, { status: 409 });
-					await atomicWrite(projectFile(id), JSON.stringify(value));
+					const etag = await writeProject(id, value, current);
 					if (migrating)
 						await atomicWrite(marker(id), JSON.stringify({ migrated: true }));
 					return Response.json(
 						{ skipped: false },
-						{ headers: { ETag: revision(value) } },
+						{ headers: { ETag: etag } },
 					);
 				});
 			if (s.length === 2 && method === "DELETE")
@@ -138,9 +155,28 @@ async function handle(
 			if (s[2] === "migration" && s.length === 3 && method === "GET")
 				return Response.json({
 					exists:
-						!!(await readJson(projectFile(id))) ||
-						!!(await readJson(marker(id))),
+						!!(await statFile(projectFile(id))) ||
+						!!(await statFile(marker(id))),
 				});
+			if (s[2] === "navigation" && s.length === 3 && method === "PUT") {
+				const navigation = await req.json();
+				return await withProjectLock(id, async () =>
+					(await statFile(projectFile(id)))
+						? writeProjectNavigation(id, navigation)
+						: new Response(null, { status: 404 }),
+				);
+			}
+			if (s[2] === "thumbnail" && s.length === 3) {
+				if (method === "GET") return await readProjectThumbnail(id, req.headers.get("if-none-match"));
+				if (method === "PUT") {
+					const bytes = new Uint8Array(await req.arrayBuffer());
+					return await withProjectLock(id, async () =>
+						(await statFile(projectFile(id)))
+							? writeProjectThumbnail(id, bytes)
+							: new Response(null, { status: 404 }),
+					);
+				}
+			}
 			if (s[2] === "media" && s.length === 3 && method === "GET") {
 				const dir = path.join(projectDir(id), "media", "_metadata");
 				return Response.json(

@@ -19,25 +19,52 @@ export class IndexedDBAdapter<T> implements StorageAdapter<T> {
 		this.version = version;
 	}
 
-	private async getDB(): Promise<IDBDatabase> {
+	private getDB(existingOnly: true): Promise<IDBDatabase | null>;
+	private getDB(existingOnly?: false): Promise<IDBDatabase>;
+	private async getDB(existingOnly = false): Promise<IDBDatabase | null> {
 		return new Promise((resolve, reject) => {
-			const request = indexedDB.open(this.dbName, this.version);
+			const request = existingOnly
+				? indexedDB.open(this.dbName)
+				: indexedDB.open(this.dbName, this.version);
+			let missing = false;
 
-			request.onerror = () => reject(request.error);
+			request.onerror = () => missing ? resolve(null) : reject(request.error);
 			request.onsuccess = () => resolve(request.result);
 
-			request.onupgradeneeded = (event) => {
-				const db = (event.target as IDBOpenDBRequest).result;
-				if (!db.objectStoreNames.contains(this.storeName)) {
-					db.createObjectStore(this.storeName, { keyPath: "id" });
+			request.onupgradeneeded = () => {
+				if (existingOnly) {
+					// Abort initial creation so a new installation leaves no empty database.
+					missing = true;
+					request.transaction?.abort();
+				} else if (!request.result.objectStoreNames.contains(this.storeName)) {
+					request.result.createObjectStore(this.storeName, { keyPath: "id" });
 				}
 			};
 		});
 	}
 
-	async get(key: string): Promise<T | null> {
-		const db = await this.getDB();
-		const transaction = db.transaction([this.storeName], "readonly");
+	private transaction(db: IDBDatabase, mode: IDBTransactionMode): IDBTransaction {
+		try {
+			return db.transaction(this.storeName, mode);
+		} finally {
+			// Existing transactions can finish. Future calls open their own connection.
+			db.close();
+		}
+	}
+
+	private async readTransaction(existingOnly: boolean): Promise<IDBTransaction | null> {
+		const db = existingOnly ? await this.getDB(true) : await this.getDB();
+		if (!db) return null;
+		if (existingOnly && !db.objectStoreNames.contains(this.storeName)) {
+			db.close();
+			return null;
+		}
+		return this.transaction(db, "readonly");
+	}
+
+	async get(key: string, { existingOnly = false } = {}): Promise<T | null> {
+		const transaction = await this.readTransaction(existingOnly);
+		if (!transaction) return null;
 		const store = transaction.objectStore(this.storeName);
 
 		return new Promise((resolve, reject) => {
@@ -55,7 +82,7 @@ export class IndexedDBAdapter<T> implements StorageAdapter<T> {
 		value: T;
 	}): Promise<void> {
 		const db = await this.getDB();
-		const transaction = db.transaction([this.storeName], "readwrite");
+		const transaction = this.transaction(db, "readwrite");
 		const store = transaction.objectStore(this.storeName);
 
 		return new Promise((resolve, reject) => {
@@ -67,7 +94,7 @@ export class IndexedDBAdapter<T> implements StorageAdapter<T> {
 
 	async remove(key: string): Promise<void> {
 		const db = await this.getDB();
-		const transaction = db.transaction([this.storeName], "readwrite");
+		const transaction = this.transaction(db, "readwrite");
 		const store = transaction.objectStore(this.storeName);
 
 		return new Promise((resolve, reject) => {
@@ -79,7 +106,7 @@ export class IndexedDBAdapter<T> implements StorageAdapter<T> {
 
 	async list(): Promise<string[]> {
 		const db = await this.getDB();
-		const transaction = db.transaction([this.storeName], "readonly");
+		const transaction = this.transaction(db, "readonly");
 		const store = transaction.objectStore(this.storeName);
 
 		return new Promise((resolve, reject) => {
@@ -89,9 +116,9 @@ export class IndexedDBAdapter<T> implements StorageAdapter<T> {
 		});
 	}
 
-	async getAll(): Promise<T[]> {
-		const db = await this.getDB();
-		const transaction = db.transaction([this.storeName], "readonly");
+	async getAll({ existingOnly = false } = {}): Promise<T[]> {
+		const transaction = await this.readTransaction(existingOnly);
+		if (!transaction) return [];
 		const store = transaction.objectStore(this.storeName);
 
 		return new Promise((resolve, reject) => {
@@ -103,7 +130,7 @@ export class IndexedDBAdapter<T> implements StorageAdapter<T> {
 
 	async clear(): Promise<void> {
 		const db = await this.getDB();
-		const transaction = db.transaction([this.storeName], "readwrite");
+		const transaction = this.transaction(db, "readwrite");
 		const store = transaction.objectStore(this.storeName);
 
 		return new Promise((resolve, reject) => {

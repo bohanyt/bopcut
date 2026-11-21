@@ -54,7 +54,7 @@ export const renameWithRetry = (from: string, to: string) =>
 
 // Writes to one file run one after another (two renames onto the same target race on Windows).
 const fileQueues = new Map<string, Promise<void>>();
-export async function atomicWrite(file: string, data: string): Promise<void> {
+export async function atomicWrite(file: string, data: string | Uint8Array): Promise<void> {
 	const key = path.resolve(file).toLowerCase();
 	const previous = fileQueues.get(key) ?? Promise.resolve();
 	const current = previous.catch(() => undefined).then(async () => {
@@ -78,6 +78,16 @@ export async function atomicWrite(file: string, data: string): Promise<void> {
 export async function readJson(file: string): Promise<any | null> {
 	try {
 		return JSON.parse(await retryTransient(() => fs.readFile(file, "utf8")));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+}
+
+export async function statFile(file: string) {
+	try {
+		const stat = await retryTransient(() => fs.stat(file));
+		return stat.isFile() ? stat : null;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
 		throw error;

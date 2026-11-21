@@ -54,6 +54,17 @@ export type SerializedProjectMetadata = Omit<
 export type SerializedProject = Omit<TProject, "metadata" | "scenes"> & {
 	metadata: SerializedProjectMetadata;
 	scenes: SerializedScene[];
+	/** Overlay returned by disk storage. Older projects have view state inline. */
+	navigation?: ProjectNavigation;
+};
+
+export type ProjectSummary = {
+	metadata: Omit<SerializedProjectMetadata, "duration"> & { duration?: number };
+	version: number;
+};
+
+export type ProjectNavigation = {
+	currentSceneId: string;
 	timelineViewState?: TTimelineViewState;
 };
 
