@@ -117,7 +117,7 @@ function PresetDuration({
 	const value = clampDuration(duration);
 	const resetValue = clampDuration(defaultDuration);
 	const [draft, setDraft] = useState<string | null>(null);
-	const drag = useRef<{ pointerId: number; startValue: number; previewing: boolean } | null>(null);
+	const drag = useRef<{ pointerId: number; startDuration: number; previewing: boolean } | null>(null);
 	const label = side === "in" ? "In length" : "Out length";
 	const durationKey = side === "in" ? PRESET_PARAM.inDuration : PRESET_PARAM.outDuration;
 
@@ -154,7 +154,7 @@ function PresetDuration({
 					className="accent-primary min-w-0 flex-1 disabled:opacity-50"
 					onPointerDown={(event) => {
 						if (event.button === 0 && event.isPrimary) {
-							drag.current = { pointerId: event.pointerId, startValue: value, previewing: false };
+							drag.current = { pointerId: event.pointerId, startDuration: duration, previewing: false };
 						}
 					}}
 					onChange={(event) => {
@@ -164,12 +164,12 @@ function PresetDuration({
 						const seconds = Math.abs(raw - max) < 1e-12
 							? max
 							: gesture ? clampDuration(Math.round(raw * 100) / 100) : raw;
-						if (gesture && seconds === gesture.startValue) {
+						if (gesture && seconds === gesture.startDuration) {
 							if (gesture.previewing) timeline.discardPreview();
 							gesture.previewing = false;
 							return;
 						}
-						if (seconds === value) return;
+						if (seconds === duration) return;
 						timeline.previewElements({
 							updates: [{
 								trackId,
@@ -195,7 +195,7 @@ function PresetDuration({
 						setDraft(null);
 						if (!Number.isFinite(seconds)) return;
 						const next = clampDuration(seconds);
-						if (next !== value) onApply(next);
+						if (next !== duration) onApply(next);
 					}}
 					isDefault={duration === resetValue}
 					onReset={() => onApply(resetValue)}
