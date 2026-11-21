@@ -1008,7 +1008,7 @@ describe("media import lifecycle", () => {
 		expect(await editor.media.discardStagedMediaAssets({ ids: [staged.id] })).toEqual({ removed: [staged.id], failed: [] });
 	});
 
-	test("undo restores the removed item alongside a later import and orders delete before save", async () => {
+	test("undo restores the removed item alongside a later import", async () => {
 		const editor = setup();
 		const backend = fakeBackend();
 		const deleting = gate();
@@ -1024,46 +1024,71 @@ describe("media import lifecycle", () => {
 		await editor.media.settleBinWrites("p");
 		expect(backend.state.saved).toEqual([later!.id, "m-old"]);
 
-		const finishRedo = gate();
-		deletes.mockImplementationOnce(async () => finishRedo.promise);
 		editor.command.redo();
 		editor.command.undo();
-		await Promise.resolve();
-		expect(backend.state.saved).toEqual([later!.id, "m-old"]);
-		finishRedo.open();
 		await editor.media.settleBinWrites("p");
 		expect(backend.state.saved).toEqual([later!.id, "m-old", "m-old"]);
 	});
 
-	test("reopening recovers an undone bin entry while its restore is behind the delete", async () => {
+	test("undo persists the source for a fresh tab while the delete response is stalled", async () => {
 		const editor = setup();
 		const project = editor.project.getActive();
 		const removal = gate();
 		const started = gate();
+		const restored = gate();
+		const stored = new Map([["m-old", asset("m-old")], ["m-new", asset("m-new")]]);
 		const remove = spyOn(storageService, "deleteMediaAsset").mockImplementation(async () => {
+			stored.delete("m-new");
 			started.open();
 			await removal.promise;
 		});
-		const save = spyOn(storageService, "saveMediaAsset").mockResolvedValue();
-		const load = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([asset("m-old")]);
+		const save = spyOn(storageService, "saveMediaAsset").mockImplementation(async ({ mediaAsset }) => {
+			stored.set(mediaAsset.id, { ...mediaAsset, url: "/stored.png" });
+			restored.open();
+		});
+		const load = spyOn(storageService, "loadAllMediaAssets").mockImplementation(async () => [...stored.values()]);
 		restore = () => { remove.mockRestore(); save.mockRestore(); load.mockRestore(); };
 		editor.media.removeMediaAsset({ projectId: "p", id: "m-new" });
 		await started.promise;
 		editor.command.undo();
-		editor.project.closeProject();
-		editor.project.setActiveProject({ project });
-		editor.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
-		const reopening = editor.media.loadProjectMedia({ projectId: "p" });
 		try {
-			expect(await Promise.race([reopening.then(() => true), Bun.sleep(100).then(() => false)])).toBe(true);
-			const recovered = editor.media.getAssets().find(({ id }) => id === "m-new");
-			expect(await (await fetch(recovered!.url!)).text()).toBe("x");
-			expect(save).not.toHaveBeenCalled();
+			expect(await Promise.race([restored.promise.then(() => true), Bun.sleep(100).then(() => false)])).toBe(true);
+			const fresh = setup();
+			fresh.media.clearAllAssets();
+			fresh.project.setActiveProject({ project });
+			fresh.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+			await fresh.media.loadProjectMedia({ projectId: "p" });
+			expect(fresh.media.getAssets().map(({ id }) => id)).toEqual(["m-old", "m-new"]);
 		} finally {
 			removal.open();
-			await reopening;
 			await editor.media.settleBinWrites("p");
 		}
 		expect(save).toHaveBeenCalledTimes(1);
+	});
+
+	test.each([false, true])("a late upload does not duplicate or revive a loaded entry (removed: %s)", async (removed) => {
+		const editor = setup();
+		const file = new File(["png"], "upload.png", { type: "image/png" });
+		const url = URL.createObjectURL(file);
+		const started = Promise.withResolvers<MediaAsset>();
+		const finish = gate();
+		const save = spyOn(storageService, "saveMediaAsset").mockImplementation(async ({ mediaAsset }) => {
+			started.resolve(mediaAsset);
+			await finish.promise;
+		});
+		const remove = spyOn(storageService, "deleteMediaAsset").mockResolvedValue();
+		const load = spyOn(storageService, "loadAllMediaAssets");
+		const revoke = spyOn(URL, "revokeObjectURL");
+		restore = () => { save.mockRestore(); remove.mockRestore(); load.mockRestore(); revoke.mockRestore(); };
+		const pending = editor.media.addMediaAsset({ projectId: "p", asset: { name: file.name, type: "image", file, url } });
+		const written = await started.promise;
+		const loaded = { ...written, url: "/stored.png" };
+		load.mockResolvedValue([loaded]);
+		await editor.media.loadProjectMedia({ projectId: "p" });
+		if (removed) editor.media.removeMediaAsset({ projectId: "p", id: written.id });
+		finish.open();
+		expect(await pending).toBe(removed ? null : loaded);
+		expect(editor.media.getAssets().filter(({ id }) => id === written.id)).toEqual(removed ? [] : [loaded]);
+		expect(revoke).toHaveBeenCalledWith(url);
 	});
 });

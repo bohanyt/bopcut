@@ -70,10 +70,11 @@ export class MediaManager {
 		let writes = this.binWrites.get(projectId);
 		if (!writes) this.binWrites.set(projectId, writes = new Map());
 		const projectWrites = writes;
-		const previous = projectWrites.get(id)?.done;
-		const done = (previous?.catch(() => {}) ?? Promise.resolve()).then(() => asset
+		// Send immediately. The server coordinates disk access. A response taking longer than
+		// its disk operation must not hold up the next history action.
+		const done = (asset
 			? storageService.saveMediaAsset({ projectId, mediaAsset: asset })
-			: storageService.deleteMediaAsset({ projectId, id }),
+			: storageService.deleteMediaAsset({ projectId, id })
 		).finally(() => {
 			if (projectWrites.get(id)?.done === done) projectWrites.delete(id);
 			if (!projectWrites.size) this.binWrites.delete(projectId);
@@ -159,12 +160,17 @@ export class MediaManager {
 			this.pendingPublications.delete(newAsset.id);
 			session.signal.removeEventListener("abort", release);
 		}
-		this.assets = [...this.assets, newAsset];
-		if (ratchetFps) {
-			this.editor.project.ratchetFpsForImportedMedia({ importedAssets: [newAsset] });
+		if (pending.binChanged) {
+			release();
+			return null;
 		}
-		this.notify();
-		return newAsset;
+		const loaded = this.assets.find(({ id }) => id === newAsset.id);
+		if (loaded) release();
+		else this.assets = [...this.assets, newAsset];
+		const published = loaded ?? newAsset;
+		if (ratchetFps) this.editor.project.ratchetFpsForImportedMedia({ importedAssets: [published] });
+		if (!loaded) this.notify();
+		return published;
 	}
 
 	/** A write accepted before a switch can finish after its project reopens. */
