@@ -95,6 +95,12 @@ test("text measurement keeps generic families as CSS keywords and quotes named f
 
 test("subtitle placement measures with the same generic font as canvas text", () => {
 	const ctx = createCanvas(1, 1).getContext("2d");
+	const measureText = ctx.measureText.bind(ctx);
+	const measuredFonts = new Set<string>();
+	const measure = spyOn(ctx, "measureText").mockImplementation((text) => {
+		measuredFonts.add(ctx.font);
+		return measureText(text);
+	});
 	const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
 	Object.defineProperty(globalThis, "document", {
 		configurable: true,
@@ -106,11 +112,34 @@ test("subtitle placement measures with the same generic font as canvas text", ()
 			caption: { text: "Caption", startTime: 0, duration: 1, style: { fontFamily: "monospace", fontSize: 15, fontWeight: "normal" } },
 			canvasSize: { width: 640, height: 360 },
 		});
-		expect(ctx.font).toBe("normal normal 60px monospace, sans-serif");
+		expect([...measuredFonts]).toEqual(["normal normal 60px monospace, sans-serif"]);
 	} finally {
+		measure.mockRestore();
 		if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
 		else Reflect.deleteProperty(globalThis, "document");
 	}
+});
+
+test("a shared subtitle canvas restores the measurement state after each cue", () => {
+	const ctx = createCanvas(1, 1).getContext("2d") as unknown as CanvasRenderingContext2D;
+	const initialFont = ctx.font;
+	const canvasSize = { width: 640, height: 360 };
+	const build = (fontFamily: string, fontSize: number, letterSpacing: number) => buildSubtitleTextElement({
+		ctx,
+		index: 0,
+		caption: {
+			text: "A bottom-aligned subtitle with several words",
+			startTime: 0,
+			duration: 1,
+			style: { fontFamily, fontSize, letterSpacing },
+		},
+		canvasSize,
+	});
+	const unusualFamily = 'Example\\"Display';
+	const alone = build(unusualFamily, 10, 0);
+	build(FONT, 32, 10);
+	expect(ctx.font).toBe(initialFont);
+	expect(build(unusualFamily, 10, 0)).toEqual(alone);
 });
 
 test("raster shows both rings, one shadow, emphasis and the active-word fill", () => {

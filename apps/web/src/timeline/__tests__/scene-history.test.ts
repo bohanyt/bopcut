@@ -4,6 +4,7 @@ import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import { buildEffectParamPath, getKeyframeAtTime } from "@/animation";
 import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
+import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
 import { allElements, allTracks, fixture, getHost, refs, t, video } from "./compound-fixtures";
 
 // Another test file replaces opencut-wasm with a partial mock and Bun keeps that module shape,
@@ -84,6 +85,57 @@ function setupSplitHistory() {
 		});
 	return { editor, tracks, main, first, second, keyAt };
 }
+
+test("large subtitle imports publish one complete track and keep its IDs and selection in history", () => {
+	const editor = setup();
+	editor.command.isRippleEnabled = true;
+	const before = editor.scenes.getActiveScene().tracks;
+	editor.selection.setSelectedElements({ elements: [refs[0]] });
+	const captions = Array.from({ length: 128 }, (_, index) => ({
+		text: `Cue ${index + 1}`,
+		startTime: index * 1.5,
+		duration: 2,
+	}));
+	let measurements = 0;
+	let updates = 0;
+	const unsubscribe = editor.timeline.subscribe(() => updates++);
+	const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+	Object.defineProperty(globalThis, "document", {
+		configurable: true,
+		value: { createElement: () => {
+			measurements++;
+			return { getContext: () => null };
+		} },
+	});
+	try {
+		const trackId = insertCaptionChunksAsTextTrack({
+			editor,
+			captions: [...captions, { text: "", startTime: 256, duration: 2 }],
+		});
+		const tracks = editor.scenes.getActiveScene().tracks;
+		const imported = tracks.overlay[0];
+		expect(updates).toBe(1);
+		expect(measurements).toBe(1);
+		expect(trackId).toBe(imported.id);
+		expect(tracks.overlay.slice(1)).toEqual(before.overlay);
+		expect(imported.elements.map(({ startTime, duration }) => [startTime, duration]))
+			.toEqual(captions.map((cue) => [t(cue.startTime), t(cue.duration)]));
+		const selection = [{ trackId: imported.id, elementId: imported.elements.at(-1)!.id }];
+		expect(editor.selection.getSelectedElements()).toEqual(selection);
+
+		editor.command.undo();
+		expect(editor.scenes.getActiveScene().tracks).toBe(before);
+		expect(editor.selection.getSelectedElements()).toEqual([refs[0]]);
+		expect(editor.command.canUndo()).toBe(false);
+		editor.command.redo();
+		expect(editor.scenes.getActiveScene().tracks.overlay[0]).toBe(imported);
+		expect(editor.selection.getSelectedElements()).toEqual(selection);
+	} finally {
+		unsubscribe();
+		if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+		else Reflect.deleteProperty(globalThis, "document");
+	}
+});
 
 test("duration reads reuse the active track snapshot and refresh when tracks change", () => {
 	const scenes = fixture();

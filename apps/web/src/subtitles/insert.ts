@@ -1,10 +1,8 @@
 import type { EditorCore } from "@/core";
-import {
-	AddTrackCommand,
-	BatchCommand,
-	InsertElementCommand,
-} from "@/commands";
-import { buildSubtitleTextElement } from "./build-subtitle-text-element";
+import { TracksSnapshotCommand } from "@/commands";
+import { buildEmptyTrack } from "@/timeline/placement";
+import { generateUUID } from "@/utils/id";
+import { buildSubtitleTextElement, createSubtitleMeasurementContext } from "./build-subtitle-text-element";
 import type { SubtitleCue } from "./types";
 
 export function insertCaptionChunksAsTextTrack({
@@ -18,23 +16,25 @@ export function insertCaptionChunksAsTextTrack({
 		return null;
 	}
 
-	const addTrackCommand = new AddTrackCommand({ type: "text", index: 0 });
-	const trackId = addTrackCommand.getTrackId();
+	const track = buildEmptyTrack({ id: generateUUID(), type: "text" });
 	const canvasSize = editor.project.getActive().settings.canvasSize;
-	const insertCommands = captions.map(
-		(caption, index) =>
-			new InsertElementCommand({
-				placement: { mode: "explicit", trackId },
-				element: buildSubtitleTextElement({
-					index,
-					caption,
-					canvasSize,
-				}),
-			}),
-	);
-	editor.command.execute({
-		command: new BatchCommand([addTrackCommand, ...insertCommands]),
+	const ctx = createSubtitleMeasurementContext();
+	captions.forEach((caption, index) => {
+		if (!caption.text) return;
+		const element = buildSubtitleTextElement({ index, caption, canvasSize, ctx });
+		track.elements.push({ ...element, id: generateUUID() });
 	});
 
-	return trackId;
+	const before = editor.scenes.getActiveScene().tracks;
+	const after = { ...before, overlay: [track, ...before.overlay] };
+	const last = track.elements.at(-1);
+	editor.command.execute({
+		command: new TracksSnapshotCommand({
+			before,
+			after,
+			selectedElements: last ? [{ trackId: track.id, elementId: last.id }] : undefined,
+		}),
+	});
+
+	return track.id;
 }
