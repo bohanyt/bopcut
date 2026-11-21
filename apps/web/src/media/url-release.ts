@@ -20,6 +20,12 @@ export function holdMediaUrls(): () => void {
 
 /** Revokes a media URL now, or when the running export ends. */
 export function revokeMediaUrl(url: string): void {
+	if (!url.startsWith("blob:")) return;
 	if (holds > 0) pending.add(url);
 	else URL.revokeObjectURL(url);
+}
+
+export function releaseMediaAssetUrls({ url, thumbnailUrl }: { url?: string; thumbnailUrl?: string }): void {
+	if (url) revokeMediaUrl(url);
+	if (thumbnailUrl && thumbnailUrl !== url) revokeMediaUrl(thumbnailUrl);
 }

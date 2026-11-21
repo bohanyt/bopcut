@@ -1,11 +1,9 @@
 import { useEffect } from "react";
 import { useEditor } from "@/editor/use-editor";
-import { processMediaAssets } from "@/media/processing";
 import { showMediaUploadToast } from "@/media/upload-toast";
 import { buildElementFromMedia } from "@/timeline/element-utils";
-import { AddMediaAssetCommand } from "@/commands/media";
+import { AddMediaAssetCommand, BatchCommand } from "@/commands";
 import { InsertElementCommand } from "@/commands/timeline";
-import { BatchCommand } from "@/commands";
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { mediaTimeFromSeconds } from "@/wasm";
 import { isTypableDOMElement } from "@/utils/browser";
@@ -56,6 +54,9 @@ export function usePasteMedia() {
 				return;
 			}
 
+			const session = editor.media.startImport();
+			if (!session) return;
+
 			let files = extractMediaFilesFromClipboard({
 				clipboardData: event.clipboardData,
 			});
@@ -67,7 +68,8 @@ export function usePasteMedia() {
 					editor.clipboard.paste();
 					return;
 				}
-				const { file, error } = await fetchWebMedia(links);
+				const { file, error } = await fetchWebMedia(links, session.signal);
+				if (session.signal.aborted) return;
 				if (!file) {
 					toast.error(`Could not add the pasted link${error ? `: ${error}` : ""}`);
 					return;
@@ -77,22 +79,19 @@ export function usePasteMedia() {
 
 			event.preventDefault();
 
-			const activeProject = editor.project.getActive();
-			if (!activeProject) return;
-
 			try {
 				await showMediaUploadToast({
 					filesCount: files.length,
 					promise: async () => {
-						const processedAssets = await processMediaAssets({ files });
+						if (session.signal.aborted) return { uploadedCount: 0 };
 						const startTime = editor.playback.getCurrentTime();
+						const assetNames: string[] = [];
 
-						for (const asset of processedAssets) {
-							const addMediaCmd = new AddMediaAssetCommand({
-								projectId: activeProject.metadata.id,
-								asset,
-							});
-							const assetId = addMediaCmd.getAssetId();
+						for (const file of files) {
+							if (session.signal.aborted) break;
+							const asset = await editor.media.importFile({ session, file });
+							if (session.signal.aborted) break;
+							if (!asset || !editor.media.getAssets().some(({ id }) => id === asset.id)) continue;
 							const duration =
 								asset.duration != null
 									? mediaTimeFromSeconds({ seconds: asset.duration })
@@ -100,7 +99,7 @@ export function usePasteMedia() {
 							const trackType = asset.type === "audio" ? "audio" : "video";
 
 							const element = buildElementFromMedia({
-								mediaId: assetId,
+								mediaId: asset.id,
 								mediaType: asset.type,
 								name: asset.name,
 								duration,
@@ -115,14 +114,12 @@ export function usePasteMedia() {
 								element,
 								placement: { mode: "auto", trackType },
 							});
-							const batchCmd = new BatchCommand([addMediaCmd, insertCmd]);
-							editor.command.execute({ command: batchCmd });
+							const addMedia = new AddMediaAssetCommand({ projectId: session.projectId, assetId: asset.id });
+							editor.command.execute({ command: new BatchCommand([addMedia, insertCmd]) });
+							assetNames.push(asset.name);
 						}
 
-						return {
-							uploadedCount: processedAssets.length,
-							assetNames: processedAssets.map((asset) => asset.name),
-						};
+						return { uploadedCount: assetNames.length, assetNames };
 					},
 				});
 			} catch (error) {

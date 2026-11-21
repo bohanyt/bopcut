@@ -5,11 +5,9 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { BatchCommand } from "@/commands";
-import { AddMediaAssetCommand } from "@/commands/media";
+import { AddMediaAssetCommand, BatchCommand } from "@/commands";
 import { InsertElementCommand } from "@/commands/timeline";
 import { useEditor } from "@/editor/use-editor";
-import { processMediaAssets } from "@/media/processing";
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { buildElementFromMedia } from "@/timeline/element-utils";
 import { mediaTimeFromSeconds } from "@/wasm";
@@ -66,8 +64,8 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 
 	useEffect(() => () => audio.current?.pause(), []);
 
-	const post = async (body: unknown) => {
-		const res = await fetch(config.endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+	const post = async (body: unknown, signal?: AbortSignal) => {
+		const res = await fetch(config.endpoint, { method: "POST", signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 		const data = await res.json().catch(() => ({}));
 		if (!res.ok) throw new Error(data.error ?? `request failed (${res.status})`);
 		return data;
@@ -109,25 +107,22 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 	};
 
 	const add = async (result: Result) => {
-		const project = editor.project.getActive();
-		if (!project) return;
+		const session = editor.media.startImport();
+		if (!session) return;
 		setAdding(result.ref);
 		try {
-			const saved = (await post({ kind: "get", source: result.source, ref: result.ref, name: result.name, pageUrl: result.pageUrl })) as Saved;
-			const file = await fetch(`/api/agent/file?p=${encodeURIComponent(saved.path)}`);
+			const saved = (await post({ kind: "get", source: result.source, ref: result.ref, name: result.name, pageUrl: result.pageUrl }, session.signal)) as Saved;
+			if (session.signal.aborted) return;
+			const file = await fetch(`/api/agent/file?p=${encodeURIComponent(saved.path)}`, { signal: session.signal });
 			if (!file.ok) throw new Error("the saved file could not be read");
 			const blob = await file.blob();
 			const ext = saved.path.split(".").pop() ?? "m4a";
-			const [asset] = await processMediaAssets({ files: [new File([blob], `${saved.name}.${ext}`, { type: blob.type })] });
-			if (!asset) throw new Error("the sound could not be processed");
-			// The download may take a while: only insert into the project it was started for.
-			if (editor.project.getActive()?.metadata.id !== project.metadata.id) {
-				toast.error(`${saved.name} was not added: another project is open now`);
-				return;
-			}
-			const addMedia = new AddMediaAssetCommand({ projectId: project.metadata.id, asset });
+			if (session.signal.aborted) return;
+			const asset = await editor.media.importFile({ session, file: new File([blob], `${saved.name}.${ext}`, { type: blob.type }) });
+			if (session.signal.aborted || !asset) return;
+			if (!editor.media.getAssets().some(({ id }) => id === asset.id)) return;
 			const element = buildElementFromMedia({
-				mediaId: addMedia.getAssetId(),
+				mediaId: asset.id,
 				mediaType: asset.type,
 				name: saved.name,
 				duration: asset.duration != null ? mediaTimeFromSeconds({ seconds: asset.duration }) : DEFAULT_NEW_ELEMENT_DURATION,
@@ -135,10 +130,11 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 				buffer: new AudioBuffer({ length: 1, sampleRate: 44100 }),
 			});
 			const insert = new InsertElementCommand({ element, placement: { mode: "auto", trackType: "audio" } });
+			const addMedia = new AddMediaAssetCommand({ projectId: session.projectId, assetId: asset.id });
 			editor.command.execute({ command: new BatchCommand([addMedia, insert]) });
 			toast(`Added ${saved.name}`);
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : String(error));
+			if (!session.signal.aborted) toast.error(error instanceof Error ? error.message : String(error));
 		} finally {
 			setAdding(null);
 		}

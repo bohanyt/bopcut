@@ -32,6 +32,19 @@ const request = (
 	});
 
 describe("project adapter", () => {
+	test("a late media write cannot restore a deleted project", async () => {
+		const id = "deleted-with-media";
+		expect((await PUT(request(id, "PUT", { "if-match": "new" }, { metadata: { id, name: id } }), ctx(id))).status).toBe(200);
+		expect((await DELETE(request(id, "DELETE"), ctx(id))).status).toBe(200);
+		const metadata = { id: "late", fileName: "late.png", fileType: "image/png" };
+		const result = await PUT(
+			request(`${id}/media/late`, "PUT", { "x-media-metadata": encodeURIComponent(JSON.stringify(metadata)) }, "png"),
+			{ params: Promise.resolve({ slug: ["projects", id, "media", "late"] }) },
+		);
+		expect(result.status).toBe(404);
+		expect(await fs.readdir(path.join(root, "projects"))).not.toContain(id);
+	});
+
 	test("detects stale revisions and migration does not restore deleted projects", async () => {
 		const id = "test-project";
 		const first = { metadata: { id, name: "awal" } };

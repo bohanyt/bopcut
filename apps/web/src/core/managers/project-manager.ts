@@ -819,6 +819,10 @@ export class ProjectManager {
 		return this.sessionController.signal;
 	}
 
+	canImportMedia(projectId: string): boolean {
+		return this.active?.metadata.id === projectId && !this.deleting.has(projectId);
+	}
+
 	private advanceSession(): void {
 		if (this.editor.playback.getIsPlaying()) this.editor.playback.pause();
 		const previous = this.sessionController;

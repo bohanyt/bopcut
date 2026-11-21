@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { fetchWebMedia, hasWebMedia, mediaGroupsOf } from "@/media/web-drop";
 import { parseStickerId } from "@/stickers/sticker-id";
 import type { DragEvent } from "react";
-import { processMediaAssets } from "@/media/processing";
+import type { MediaImportSession, MediaManager } from "@/core/managers/media-manager";
 import { showMediaUploadToast } from "@/media/upload-toast";
 import {
 	DEFAULT_NEW_ELEMENT_DURATION,
@@ -33,7 +33,6 @@ import type {
 } from "@/timeline";
 import type { TimelineDragData } from "@/timeline/drag";
 import type { MediaAsset } from "@/media/types";
-import type { ProcessedMediaAsset } from "@/media/processing";
 import { roundFrameTime, type MediaTime } from "@/wasm";
 
 // --- Config ---
@@ -44,15 +43,12 @@ export interface DragDropConfig {
 	getHeaderEl: () => HTMLElement | null;
 	getTracksScrollEl: () => HTMLDivElement | null;
 	getActiveProjectFps: () => FrameRate | null;
-	getActiveProjectId: () => string | null;
+	startMediaImport: () => MediaImportSession | null;
 	getSceneTracks: () => SceneTracks;
 	getCurrentPlayheadTime: () => MediaTime;
 	getMediaAssets: () => MediaAsset[];
 	dragSource: TimelineDragSource;
-	addMediaAsset: (args: {
-		projectId: string;
-		asset: ProcessedMediaAsset;
-	}) => Promise<MediaAsset | null>;
+	importMediaFile: MediaManager["importFile"];
 	executeCommand: (command: Command) => void;
 	insertElement: (args: {
 		placement: { mode: "explicit"; trackId: string };
@@ -268,23 +264,27 @@ export class DragDropController {
 
 			const coords = this.getMouseTimelineCoords({ event });
 			if (!coords) return;
+			const session = this.config.startMediaImport();
+			if (!session) return;
 			if (!hasFiles) {
 				void (async () => {
 					const files: File[] = [];
 					let lastError: string | undefined;
 					for (const group of webGroups) {
-						const { file, error } = await fetchWebMedia(group);
+						const { file, error } = await fetchWebMedia(group, session.signal);
+						if (session.signal.aborted) return;
 						if (file) files.push(file);
 						else lastError = error;
 					}
 					if (files.length < webGroups.length) {
 						toast.error(`Could not add ${webGroups.length - files.length === 1 && webGroups.length === 1 ? "the dropped media" : `${webGroups.length - files.length} of ${webGroups.length} dropped items`}${lastError ? `: ${lastError}` : ""}`);
 					}
-					if (files.length) await this.executeFileDrop({ files, mouseX: coords.mouseX, mouseY: coords.mouseY });
+					if (files.length) await this.executeFileDrop({ session, files, mouseX: coords.mouseX, mouseY: coords.mouseY });
 				})().catch((error) => console.error("Failed to process web drop:", error));
 				return;
 			}
 			this.executeFileDrop({
+				session,
 				files: Array.from(event.dataTransfer.files),
 				mouseX: coords.mouseX,
 				mouseY: coords.mouseY,
@@ -521,31 +521,30 @@ export class DragDropController {
 	}
 
 	private async executeFileDrop({
+		session,
 		files,
 		mouseX,
 		mouseY,
 	}: {
+		session: MediaImportSession;
 		files: File[];
 		mouseX: number;
 		mouseY: number;
 	}): Promise<void> {
-		const projectId = this.config.getActiveProjectId();
-		if (!projectId) return;
-
 		await showMediaUploadToast({
 			filesCount: files.length,
 			promise: async () => {
-				const processedAssets = await processMediaAssets({ files });
+				const assetNames: string[] = [];
 
 				// Sequential on purpose: each iteration reads getSceneTracks()
 				// to decide placement (reuse empty main vs new track) and that
 				// decision depends on the effects of prior inserts.
-				for (const asset of processedAssets) {
-					const createdAsset = await this.config.addMediaAsset({
-						projectId,
-						asset,
-					});
-					if (!createdAsset) continue;
+				for (const file of files) {
+					if (session.signal.aborted) break;
+					const createdAsset = await this.config.importMediaFile({ session, file });
+					if (session.signal.aborted) break;
+					if (!createdAsset || !this.config.getMediaAssets().some(({ id }) => id === createdAsset.id)) continue;
+					assetNames.push(createdAsset.name);
 
 					const duration = toElementDurationTicks({
 						seconds: createdAsset.duration,
@@ -603,10 +602,7 @@ export class DragDropController {
 					});
 				}
 
-				return {
-					uploadedCount: processedAssets.length,
-					assetNames: processedAssets.map((asset) => asset.name),
-				};
+				return { uploadedCount: assetNames.length, assetNames };
 			},
 		});
 	}

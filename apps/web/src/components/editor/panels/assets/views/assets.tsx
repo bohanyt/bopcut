@@ -32,7 +32,7 @@ import { useEditor } from "@/editor/use-editor";
 import { useFileUpload } from "@/media/use-file-upload";
 import { invokeAction } from "@/actions";
 import { isModelFile } from "@/media/media-utils";
-import { processMediaAssets } from "@/media/processing";
+import type { MediaImportSession } from "@/core/managers/media-manager";
 import { showMediaUploadToast } from "@/media/upload-toast";
 import {
 	SelectableItem,
@@ -81,9 +81,9 @@ export function MediaView() {
 	const [progress, setProgress] = useState(0);
 	const [fromUrlOpen, setFromUrlOpen] = useState(false);
 
-	const processFiles = async ({ files }: { files: File[] }) => {
+	const processFiles = async (files: File[], session: MediaImportSession | null) => {
 		if (!files || files.length === 0) return;
-		if (!activeProject) {
+		if (!session) {
 			toast.error("No active project");
 			return;
 		}
@@ -94,21 +94,16 @@ export function MediaView() {
 			await showMediaUploadToast({
 				filesCount: files.length,
 				promise: async () => {
-					const processedAssets = await processMediaAssets({
-						files,
-						onProgress: (progress: { progress: number }) =>
-							setProgress(progress.progress),
-					});
-					for (const asset of processedAssets) {
-						await editor.media.addMediaAsset({
-							projectId: activeProject.metadata.id,
-							asset,
-						});
+					const assetNames: string[] = [];
+					for (const [index, file] of files.entries()) {
+						if (session.signal.aborted) break;
+						const result = await editor.media.importFile({ session, file });
+						if (session.signal.aborted) break;
+						setProgress(Math.round(((index + 1) / files.length) * 100));
+						if (!result) continue;
+						assetNames.push(result.name);
 					}
-					return {
-						uploadedCount: processedAssets.length,
-						assetNames: processedAssets.map((asset) => asset.name),
-					};
+					return { uploadedCount: assetNames.length, assetNames };
 				},
 			});
 		} catch (error) {
@@ -123,7 +118,7 @@ export function MediaView() {
 		useFileUpload({
 			accept: "image/*,video/*,audio/*,.glb,.gltf",
 			multiple: true,
-			onFilesSelected: (files) => processFiles({ files }),
+			onFilesSelected: processFiles,
 		});
 
 	const handleRemove = ({
@@ -197,7 +192,7 @@ export function MediaView() {
 			<FromUrlDialog
 				open={fromUrlOpen}
 				onOpenChange={setFromUrlOpen}
-				onFiles={(files) => processFiles({ files })}
+				onFiles={processFiles}
 			/>
 
 			<PanelView

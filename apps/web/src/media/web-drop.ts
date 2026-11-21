@@ -79,9 +79,10 @@ export function dataUrlToFile(dataUrl: string): File | null {
 }
 
 /** The first candidate that turns into a media file, or null (with the last error). */
-export async function fetchWebMedia(links: string[]): Promise<{ file: File | null; error?: string }> {
+export async function fetchWebMedia(links: string[], signal?: AbortSignal): Promise<{ file: File | null; error?: string }> {
 	let error: string | undefined;
 	for (const link of links.slice(0, 4)) {
+		if (signal?.aborted) return { file: null };
 		if (link.startsWith("data:")) {
 			const file = dataUrlToFile(link);
 			if (file) return { file };
@@ -90,6 +91,7 @@ export async function fetchWebMedia(links: string[]): Promise<{ file: File | nul
 		try {
 			const res = await fetch("/api/agent/retrieve", {
 				method: "POST",
+				signal,
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ kind: "file", url: link }),
 			});
@@ -98,7 +100,7 @@ export async function fetchWebMedia(links: string[]): Promise<{ file: File | nul
 				error = body.error ?? `request failed (${res.status})`;
 				continue;
 			}
-			const file = await fetch(`/api/agent/file?p=${encodeURIComponent(body.path)}`);
+			const file = await fetch(`/api/agent/file?p=${encodeURIComponent(body.path)}`, { signal });
 			if (!file.ok) continue;
 			const blob = await file.blob();
 			const ext = String(body.path).split(".").pop() ?? "jpg";

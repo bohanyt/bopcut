@@ -24,13 +24,18 @@ export type VideoFileData = {
 
 export async function readVideoFile({
 	file,
+	signal,
 }: {
 	file: File;
+	signal?: AbortSignal;
 }): Promise<VideoFileData> {
+	signal?.throwIfAborted();
 	const input = new Input({
 		source: new BlobSource(file),
 		formats: ALL_FORMATS,
 	});
+	const abort = () => input.dispose();
+	signal?.addEventListener("abort", abort, { once: true });
 
 	try {
 		const duration = await input.computeDuration();
@@ -74,6 +79,7 @@ export async function readVideoFile({
 			thumbnailUrl,
 		};
 	} finally {
+		signal?.removeEventListener("abort", abort);
 		input.dispose();
 	}
 }

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { useEditor } from "@/editor/use-editor";
+import type { MediaImportSession } from "@/core/managers/media-manager";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -29,8 +31,9 @@ export function FromUrlDialog({
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	onFiles: (files: File[]) => Promise<void> | void;
+	onFiles: (files: File[], session: MediaImportSession) => Promise<void> | void;
 }) {
+	const editor = useEditor();
 	const [url, setUrl] = useState("");
 	const [start, setStart] = useState("");
 	const [end, setEnd] = useState("");
@@ -44,27 +47,31 @@ export function FromUrlDialog({
 			setError(request.error);
 			return;
 		}
+		const session = editor.media.startImport();
+		if (!session) return;
 		setBusy(true);
 		setError(null);
 		try {
 			const res = await fetch("/api/agent/retrieve", {
 				method: "POST",
+				signal: session.signal,
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ kind: "section", ...request.value }),
 			});
 			const body = (await res.json().catch(() => ({}))) as Retrieved;
 			if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
-			const file = await fetch(`/api/agent/file?p=${encodeURIComponent(body.path)}`);
+			const file = await fetch(`/api/agent/file?p=${encodeURIComponent(body.path)}`, { signal: session.signal });
 			if (!file.ok) throw new Error("the fetched file could not be read");
 			const blob = await file.blob();
 			const ext = body.path.split(".").pop() ?? "mp4";
-			await onFiles([new File([blob], `${body.name}.${ext}`, { type: blob.type })]);
+			await onFiles([new File([blob], `${body.name}.${ext}`, { type: blob.type })], session);
+			if (session.signal.aborted) return;
 			onOpenChange(false);
 			setUrl("");
 			setStart("");
 			setEnd("");
 		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
+			if (!session.signal.aborted) setError(e instanceof Error ? e.message : String(e));
 		} finally {
 			setBusy(false);
 		}

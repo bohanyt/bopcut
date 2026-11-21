@@ -209,10 +209,24 @@ async function handle(
 				});
 			if (s[2] === "media" && s[3] && s.length === 4) {
 				const mediaId = safeId(s[3]);
+				if (method === "HEAD") {
+					const dir = path.join(projectDir(id), "media");
+					const metadata = await readJson(path.join(dir, "_metadata", `${mediaId}.json`));
+					if (!metadata || metadata.staged || typeof metadata.name !== "string" ||
+						typeof metadata.type !== "string" ||
+						!new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(metadata.diskFile) ||
+						!(await statFile(path.join(dir, metadata.diskFile)))) {
+						return new Response(null, { status: 404 });
+					}
+					return new Response(null, { status: 204 });
+				}
 				if (method === "GET")
 					return await mediaResponse(id, mediaId, req.headers.get("range"));
 				if (method === "PUT")
 					return await withProjectLock(id, async () => {
+						// A delayed upload or Undo write must not recreate a deleted project.
+						if (!(await statFile(projectFile(id))) && (await readJson(marker(id)))?.deleted)
+							return new Response(null, { status: 404 });
 						if (!req.body) return new Response(null, { status: 400 });
 						const metadata = JSON.parse(
 							decodeURIComponent(req.headers.get("x-media-metadata") ?? ""),
@@ -252,3 +266,4 @@ export const PUT = handle;
 export const DELETE = handle;
 
 export const POST = handle;
+export const HEAD = handle;

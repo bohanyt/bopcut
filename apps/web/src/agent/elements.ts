@@ -2,7 +2,8 @@
 import { checkPresetParams } from "@/animation/presets";
 import { animateAgentElement } from "./animate";
 import { EditorCore } from "@/core";
-import { processMediaAssets } from "@/media/processing";
+import type { MediaImportSession } from "@/core/managers/media-manager";
+import type { MediaAsset } from "@/media/types";
 import { buildElementFromMedia, buildEffectElement, buildGraphicElement, buildTextElement } from "@/timeline/element-utils";
 import { mediaTimeFromSeconds } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
@@ -76,9 +77,10 @@ export function assetKey(asset: AgentAsset): string {
 }
 
 /** Find a song by name (best match) and save it under AGENT_FILES_ROOT. */
-export async function findAgentMusic(asset: AgentAsset): Promise<MusicFile> {
+export async function findAgentMusic(asset: AgentAsset, signal?: AbortSignal): Promise<MusicFile> {
 	const res = await fetch("/api/agent/music", {
 		method: "POST",
+		signal,
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ kind: "find", query: asset.music, ...(asset.musicSources ? { sources: asset.musicSources } : {}) }),
 	});
@@ -88,9 +90,10 @@ export async function findAgentMusic(asset: AgentAsset): Promise<MusicFile> {
 }
 
 /** Find a sound effect by name (best match) and save it under AGENT_FILES_ROOT. */
-export async function findAgentSfx(asset: AgentAsset): Promise<SfxFile> {
+export async function findAgentSfx(asset: AgentAsset, signal?: AbortSignal): Promise<SfxFile> {
 	const res = await fetch("/api/agent/sfx", {
 		method: "POST",
+		signal,
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ kind: "find", query: asset.sfx, ...(asset.sfxSources ? { sources: asset.sfxSources } : {}) }),
 	});
@@ -100,9 +103,10 @@ export async function findAgentSfx(asset: AgentAsset): Promise<SfxFile> {
 }
 
 /** Fetch a `url` asset's section through the retrieve endpoint; returns where it was saved. */
-export async function retrieveAgentAsset(asset: AgentAsset): Promise<RetrievedAsset> {
+export async function retrieveAgentAsset(asset: AgentAsset, signal?: AbortSignal): Promise<RetrievedAsset> {
 	const res = await fetch("/api/agent/retrieve", {
 		method: "POST",
+		signal,
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ kind: "section", url: asset.url, start: asset.start, end: asset.end, duration: asset.duration, height: asset.height, audioOnly: asset.audioOnly }),
 	});
@@ -116,52 +120,49 @@ export type PendingKeyframe = { sceneId?: string; trackId: string; elementId: st
 export const secs = (seconds: number) => mediaTimeFromSeconds({ seconds });
 
 /**
- * Where an asset's file is and its processed media: a file from AGENT_FILES_ROOT, or, for a `url` asset,
+ * Where an asset's file is: a file from AGENT_FILES_ROOT, or, for a `url` asset,
  * the section the retrieve endpoint fetched first, or, for an `sfx`/`music` asset, the best match.
  */
-async function readAgentAsset(asset: AgentAsset) {
+async function readAgentAsset(asset: AgentAsset, signal: AbortSignal) {
 	if (!asset.path && !asset.url && !asset.sfx?.trim() && !asset.music?.trim()) throw new Error(`Asset "${asset.name}" needs a path, a url, an sfx name or a music name`);
 	const words = asset.words === undefined ? undefined : parseSourceWords(asset.words);
 	if (words === null) throw new Error(`Asset "${asset.name}": words must be a list of {text, start, end} in seconds`);
-	const retrieved = asset.path || !asset.url ? undefined : await retrieveAgentAsset(asset);
-	const sfx = asset.path || asset.url || !asset.sfx?.trim() ? undefined : await findAgentSfx(asset);
-	const music = asset.path || asset.url || sfx || !asset.music?.trim() ? undefined : await findAgentMusic(asset);
+	const retrieved = asset.path || !asset.url ? undefined : await retrieveAgentAsset(asset, signal);
+	const sfx = asset.path || asset.url || !asset.sfx?.trim() ? undefined : await findAgentSfx(asset, signal);
+	const music = asset.path || asset.url || sfx || !asset.music?.trim() ? undefined : await findAgentMusic(asset, signal);
 	const filePath = asset.path ?? retrieved?.path ?? sfx?.path ?? (music as MusicFile).path;
-	const res = await fetch(`/api/agent/file?p=${encodeURIComponent(filePath)}`);
+	signal.throwIfAborted();
+	const res = await fetch(`/api/agent/file?p=${encodeURIComponent(filePath)}`, { signal });
 	if (!res.ok) throw new Error("Cannot read asset: " + filePath);
 	const blob = await res.blob();
 	const fileName = filePath.split("/").pop() ?? asset.name;
-	const [processed] = await processMediaAssets({ files: [new File([blob], fileName, { type: blob.type })] });
-	if (!processed) throw new Error("Failed to process asset: " + filePath);
-	return { processed, filePath, name: asset.name || retrieved?.name || sfx?.name || music?.name || fileName, retrieved, sfx, music, words };
+	const file = new File([blob], fileName, { type: blob.type });
+	return { file, filePath, name: asset.name || retrieved?.name || sfx?.name || music?.name || fileName, retrieved, sfx, music, words };
 }
 
-const loadedMedia = (asset: AgentAsset, id: string, read: Awaited<ReturnType<typeof readAgentAsset>>): LoadedMedia => ({
-	id, type: asset.type === "model" ? "model" : read.processed.type as AgentAsset["type"], width: read.processed.width, height: read.processed.height, duration: read.processed.duration,
-	...(read.words ? { words: read.words } : {}),
+const loadedMedia = (asset: AgentAsset, media: MediaAsset, read: Awaited<ReturnType<typeof readAgentAsset>>): LoadedMedia => ({
+	id: media.id, type: asset.type === "model" ? "model" : media.type, width: media.width, height: media.height, duration: media.duration,
+	...(media.words ? { words: media.words } : {}),
 	...(read.retrieved ? { retrieved: read.retrieved } : {}),
 	...(read.sfx ? { sfx: read.sfx } : {}),
 	...(read.music ? { music: read.music } : {}),
 });
 
-/** Register an asset as media in the active project (bundle import). */
-export async function loadAgentAsset({ projectId, asset }: { projectId: string; asset: AgentAsset }): Promise<LoadedMedia> {
-	const read = await readAgentAsset(asset);
-	// Agent imports never raise the project frame rate: the bundle (or the open project) decides it.
-	const saved = await EditorCore.getInstance().media.addMediaAsset({ projectId, asset: { ...read.processed, name: read.name, ...(read.words ? { words: read.words } : {}) }, ratchetFps: false });
-	if (!saved) throw new Error("Failed to save asset: " + read.filePath);
-	return loadedMedia(asset, saved.id, read);
-}
-
-/**
- * Like loadAgentAsset, but the media stays private (staged) until the draft commits; `onId` gets
- * its id before it is written, so a failed or cancelled draft can always remove it.
- */
-export async function stageAgentAsset({ projectId, asset, onId }: { projectId: string; asset: AgentAsset; onId: (id: string) => void }): Promise<LoadedMedia> {
-	const read = await readAgentAsset(asset);
+/** Load an asset for the bundle or stage a new asset privately for the draft that requested it. */
+export async function loadAgentAsset({ session, asset, stagedIds }: {
+	session: MediaImportSession;
+	asset: AgentAsset;
+	stagedIds?: string[];
+}): Promise<LoadedMedia> {
+	session.signal.throwIfAborted();
+	const read = await readAgentAsset(asset, session.signal);
 	try {
-		const staged = await EditorCore.getInstance().media.stageMediaAsset({ projectId, asset: { ...read.processed, name: read.name, ...(read.words ? { words: read.words } : {}) }, onId });
-		return loadedMedia(asset, staged.id, read);
+		// The project or bundle decides the frame rate for these imports.
+		const imported = await EditorCore.getInstance().media.importFile({
+			session, file: read.file, name: read.name, words: read.words, ratchetFps: false, stagedIds,
+		});
+		if (!imported) throw new Error("media could not be imported");
+		return loadedMedia(asset, imported, read);
 	} catch (error) {
 		throw new Error(`Failed to save asset: ${read.filePath}: ${error instanceof Error ? error.message : String(error)}`);
 	}
