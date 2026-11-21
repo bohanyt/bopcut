@@ -84,6 +84,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 		return () => {
 			cancelled = true;
+			if (editor.playback.getIsPlaying()) editor.playback.pause();
 		};
 	}, [projectId, router]);
 

@@ -61,6 +61,23 @@ export interface DecodedAudio {
 	sampleRate: number;
 }
 
+export async function decodeAudioBuffer({
+	arrayBuffer,
+	sampleRate,
+}: {
+	arrayBuffer: ArrayBuffer;
+	sampleRate?: number;
+}): Promise<AudioBuffer> {
+	const audioContext = createAudioContext({ sampleRate });
+	try {
+		return await audioContext.decodeAudioData(arrayBuffer);
+	} finally {
+		await audioContext.close().catch((error) => {
+			console.warn("Failed to close audio context:", error);
+		});
+	}
+}
+
 export async function decodeAudioToFloat32({
 	audioBlob,
 	sampleRate,
@@ -68,9 +85,8 @@ export async function decodeAudioToFloat32({
 	audioBlob: Blob;
 	sampleRate?: number;
 }): Promise<DecodedAudio> {
-	const audioContext = createAudioContext({ sampleRate });
 	const arrayBuffer = await audioBlob.arrayBuffer();
-	const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+	const audioBuffer = await decodeAudioBuffer({ arrayBuffer, sampleRate });
 
 	// mix down to mono
 	const numChannels = audioBuffer.numberOfChannels;
@@ -356,12 +372,14 @@ export interface AudioClipSource {
 async function fetchLibraryAudioSource({
 	element,
 	volume,
+	signal,
 }: {
 	element: LibraryAudioElement;
 	volume: number;
+	signal?: AbortSignal;
 }): Promise<AudioMixSource | null> {
 	try {
-		const response = await fetch(element.sourceUrl);
+		const response = await fetch(element.sourceUrl, { signal });
 		if (!response.ok) {
 			throw new Error(`Library audio fetch failed: ${response.status}`);
 		}
@@ -382,7 +400,7 @@ async function fetchLibraryAudioSource({
 			retime: element.retime,
 		};
 	} catch (error) {
-		console.warn("Failed to fetch library audio:", error);
+		if (!signal?.aborted) console.warn("Failed to fetch library audio:", error);
 		return null;
 	}
 }
@@ -391,39 +409,15 @@ async function fetchLibraryAudioClip({
 	element,
 	muted,
 	volume,
+	signal,
 }: {
 	element: LibraryAudioElement;
 	muted: boolean;
 	volume: number;
+	signal?: AbortSignal;
 }): Promise<AudioClipSource | null> {
-	try {
-		const response = await fetch(element.sourceUrl);
-		if (!response.ok) {
-			throw new Error(`Library audio fetch failed: ${response.status}`);
-		}
-
-		const blob = await response.blob();
-		const file = new File([blob], `${element.name}.mp3`, {
-			type: "audio/mpeg",
-		});
-
-		return {
-			timelineElement: element,
-			id: element.id,
-			sourceKey: element.id,
-			file,
-			startTime: element.startTime,
-			duration: element.duration,
-			trimStart: element.trimStart,
-			trimEnd: element.trimEnd,
-			volume,
-			muted,
-			retime: element.retime,
-		};
-	} catch (error) {
-		console.warn("Failed to fetch library audio:", error);
-		return null;
-	}
+	const source = await fetchLibraryAudioSource({ element, volume, signal });
+	return source && { ...source, id: element.id, sourceKey: element.id, muted };
 }
 
 function collectMediaAudioSource({
@@ -459,17 +453,10 @@ function collectMediaAudioClip({
 	volume: number;
 }): AudioClipSource {
 	return {
-		timelineElement: element,
+		...collectMediaAudioSource({ element, mediaAsset, volume }),
 		id: element.id,
 		sourceKey: mediaAsset.id,
-		file: mediaAsset.file,
-		startTime: element.startTime / TICKS_PER_SECOND,
-		duration: element.duration / TICKS_PER_SECOND,
-		trimStart: element.trimStart / TICKS_PER_SECOND,
-		trimEnd: element.trimEnd / TICKS_PER_SECOND,
-		volume,
 		muted,
-		retime: element.retime,
 	};
 }
 
@@ -543,10 +530,12 @@ export async function collectAudioClips({
 	tracks: sceneTracks,
 	mediaAssets,
 	scenes = [],
+	signal,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
 	scenes?: TScene[];
+	signal?: AbortSignal;
 }): Promise<AudioClipSource[]> {
 	const tracks = expandCompoundAudioTracks({ tracks: sceneTracks, scenes });
 	const orderedTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
@@ -589,7 +578,7 @@ export async function collectAudioClips({
 					);
 				} else {
 					pendingLibraryClips.push(
-						fetchLibraryAudioClip({ element, muted, volume }),
+						fetchLibraryAudioClip({ element, muted, volume, signal }),
 					);
 				}
 				continue;

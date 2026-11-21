@@ -797,6 +797,7 @@ export class ProjectManager {
 	}
 
 	private advanceSession(): void {
+		if (this.editor.playback.getIsPlaying()) this.editor.playback.pause();
 		const previous = this.sessionController;
 		this.session++;
 		this.sessionController = new AbortController();
