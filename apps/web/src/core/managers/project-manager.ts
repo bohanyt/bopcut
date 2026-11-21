@@ -68,6 +68,7 @@ export class ProjectManager {
 		result: null,
 	};
 	private exportController: AbortController | null = null;
+	private exportTarget: { session: number; sceneId?: string } | null = null;
 	private thumbnailGeneration = 0;
 	private thumbnailUploads = new Map<string, Promise<void>>();
 
@@ -321,10 +322,24 @@ export class ProjectManager {
 		}
 	}
 
-	async export({ options }: { options: ExportOptions }): Promise<ExportResult> {
+	async export({
+		options,
+		retryResult,
+	}: {
+		options: ExportOptions;
+		retryResult?: ExportResult;
+	}): Promise<ExportResult> {
 		if (this.exportController) {
 			return { success: false, error: "Another export is running; try again when it finishes" };
 		}
+		const session = this.session;
+		if (retryResult && (this.exportState.result !== retryResult || this.exportTarget?.session !== session)) {
+			return { success: false, cancelled: true };
+		}
+		const sceneId = retryResult
+			? this.exportTarget?.sceneId
+			: options.sceneId ?? this.editor.scenes.getCompoundPath()[0]?.sceneId;
+		this.exportTarget = { session, sceneId };
 		const controller = new AbortController();
 		this.exportController = controller;
 		this.exportState = { isExporting: true, progress: 0, result: null };
@@ -332,14 +347,18 @@ export class ProjectManager {
 		let result: ExportResult;
 		try {
 			this.notify();
-			result = await this.editor.renderer.exportProject({
-				options,
-				signal: controller.signal,
-				onProgress: ({ progress }) => {
-					this.exportState = { ...this.exportState, progress };
-					this.notify();
-				},
-			});
+			if (session !== this.session) {
+				result = { success: false, cancelled: true };
+			} else {
+				result = await this.editor.renderer.exportProject({
+					options: { ...options, sceneId },
+					signal: controller.signal,
+					onProgress: ({ progress }) => {
+						this.exportState = { ...this.exportState, progress };
+						this.notify();
+					},
+				});
+			}
 		} catch (error) {
 			result = { success: false, error: error instanceof Error ? error.message : "Unknown export error" };
 		} finally {
@@ -361,6 +380,7 @@ export class ProjectManager {
 	}
 
 	clearExportState(): void {
+		this.exportTarget = null;
 		this.exportState = { isExporting: false, progress: 0, result: null };
 		this.notify();
 	}

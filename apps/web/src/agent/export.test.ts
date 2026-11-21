@@ -529,6 +529,59 @@ describe("the export poller", () => {
 			}
 		});
 
+	test("browser export uses the parent in the breadcrumb for nested compound clips", async () => {
+		const editor = open("p", 2, { nested: true });
+		editor.save.stop();
+		const [main, outer] = editor.scenes.getScenes();
+		const alternate = sceneWith("alternate", main.tracks.main.elements[0] as CompoundElement);
+		editor.scenes.setScenes({ scenes: [...editor.scenes.getScenes(), alternate], activeSceneId: alternate.id });
+		await editor.scenes.enterCompound({
+			trackId: alternate.tracks.main.id,
+			elementId: alternate.tracks.main.elements[0].id,
+		});
+		await editor.scenes.enterCompound({
+			trackId: outer.tracks.main.id,
+			elementId: outer.tracks.main.elements[0].id,
+		});
+		const render = spyOn(editor.renderer, "exportProject").mockResolvedValue({ success: true });
+		try {
+			await editor.project.export({ options: { format: "mp4", quality: "high" } });
+			expect(render.mock.calls[0][0].options.sceneId).toBe(alternate.id);
+		} finally {
+			render.mockRestore();
+		}
+	});
+
+	test("browser export retries the same scene after navigation and a new export uses the new scene", async () => {
+		const editor = open("p", 2, { nested: true });
+		editor.save.stop();
+		const [main] = editor.scenes.getScenes();
+		const alternate = sceneWith("alternate", { ...clip(3), id: "alternate-clip" });
+		editor.scenes.setScenes({ scenes: [...editor.scenes.getScenes(), alternate], activeSceneId: "main" });
+		await editor.scenes.switchToScene({ sceneId: "inner" });
+
+		const failure = { success: false, missingMedia: [{ id: "m", name: "Clip", error: "Missing" }] };
+		const render = spyOn(editor.renderer, "exportProject")
+			.mockResolvedValueOnce(failure)
+			.mockResolvedValueOnce({ success: true })
+			.mockResolvedValue({ success: true });
+		try {
+			const options = { format: "mp4", quality: "high" } as const;
+			const failed = await editor.project.export({ options });
+			await editor.scenes.switchToScene({ sceneId: alternate.id });
+			await editor.project.export({ options: { ...options, allowMissing: true }, retryResult: failed });
+			render.mockResolvedValueOnce({ ...failure });
+			const failedInAlternate = await editor.project.export({ options });
+			expect(render.mock.calls.map(([request]) => request.options.sceneId)).toEqual([main.id, main.id, alternate.id]);
+
+			open("other");
+			expect(await editor.project.export({ options, retryResult: failedInAlternate })).toEqual({ success: false, cancelled: true });
+			expect(render).toHaveBeenCalledTimes(3);
+		} finally {
+			render.mockRestore();
+		}
+	});
+
 	test("browser export reports nested missing media and accepts an explicit override", () =>
 		withCanvas(async () => {
 			const editor = open("p", 2, { missing: true, nested: true });
