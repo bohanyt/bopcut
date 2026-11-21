@@ -6,4 +6,9 @@ export const PANEL_CONFIG = {
 		mainContent: 50,
 		timeline: 50,
 	},
+	rightPanels: {
+		preview: 32,
+		tools: 50,
+		timeline: 50,
+	},
 } as const;

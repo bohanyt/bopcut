@@ -30,12 +30,18 @@ import type { MediaTime } from "@/wasm";
 import { TIMELINE_COMPOUND_THEME } from "@/timeline/components/theme";
 
 export function PreviewToolbar({
+	compact,
 	onToggleFullscreen,
 }: {
+	compact: boolean;
 	onToggleFullscreen: () => void;
 }) {
 	return (
-		<div className="grid grid-cols-[1fr_auto_1fr] items-center pb-3 pt-5 px-5">
+		<div className={
+			compact
+				? "flex flex-wrap items-center justify-between gap-2 px-2 pb-3 pt-3"
+				: "grid grid-cols-[1fr_auto_1fr] items-center pb-3 pt-5 px-5"
+		}>
 			<div className="flex min-w-0 items-center gap-3">
 				<TimecodeDisplay />
 				<CompoundSceneLabel />

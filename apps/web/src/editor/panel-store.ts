@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 import { PANEL_CONFIG } from "@/panels/layout";
 
 export interface PanelSizes {
@@ -11,18 +11,34 @@ export interface PanelSizes {
 }
 
 export type PanelId = keyof PanelSizes;
+type EditorPanelLayout = "classic" | "preview-right";
+type RightPanelSizes = Record<keyof typeof PANEL_CONFIG.rightPanels, number>;
 
 interface PanelState {
+	layout: EditorPanelLayout;
 	panels: PanelSizes;
+	rightPanels: RightPanelSizes;
+	setLayout: (layout: EditorPanelLayout) => void;
+	setRightPanel: (args: { panel: keyof RightPanelSizes; size: number }) => void;
 	setPanel: (args: { panel: PanelId; size: number }) => void;
 	setPanels: (sizes: Partial<PanelSizes>) => void;
 	resetPanels: () => void;
 }
 
-export const usePanelStore = create<PanelState>()(
+type PanelPreferences = Pick<PanelState, "layout" | "panels" | "rightPanels">;
+
+export const createPanelStore = (
+	getStorage: () => StateStorage = () => window.localStorage,
+) => create<PanelState>()(
 	persist(
 		(set) => ({
 			...PANEL_CONFIG,
+			layout: "classic",
+			setLayout: (layout) => set({ layout }),
+			setRightPanel: ({ panel, size }) =>
+				set((state) => ({
+					rightPanels: { ...state.rightPanels, [panel]: size },
+				})),
 			setPanel: ({ panel, size }) =>
 				set((state) => ({
 					panels: {
@@ -41,7 +57,8 @@ export const usePanelStore = create<PanelState>()(
 		}),
 		{
 			name: "panel-sizes",
-			version: 2,
+			storage: createJSONStorage<PanelPreferences>(getStorage),
+			version: 3,
 			migrate: (persistedState) => {
 				const state = persistedState as
 					| {
@@ -58,10 +75,12 @@ export const usePanelStore = create<PanelState>()(
 					| undefined
 					| null;
 
-				if (!state) return { panels: { ...PANEL_CONFIG.panels } };
+				const defaults = { ...PANEL_CONFIG, layout: "classic" as const };
+				if (!state) return defaults;
 
 				if (state.panels && typeof state.panels === "object") {
 					return {
+						...defaults,
 						panels: {
 							...PANEL_CONFIG.panels,
 							...state.panels,
@@ -70,6 +89,7 @@ export const usePanelStore = create<PanelState>()(
 				}
 
 				return {
+					...defaults,
 					panels: {
 						tools: state.tools ?? state.toolsPanel ?? PANEL_CONFIG.panels.tools,
 						preview:
@@ -86,8 +106,12 @@ export const usePanelStore = create<PanelState>()(
 				};
 			},
 			partialize: (state) => ({
+				layout: state.layout,
 				panels: state.panels,
+				rightPanels: state.rightPanels,
 			}),
 		},
 	),
 );
+
+export const usePanelStore = createPanelStore();
