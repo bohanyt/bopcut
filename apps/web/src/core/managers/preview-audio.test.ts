@@ -1,6 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { AudioBufferSink, Input, InputAudioTrack, type WrappedAudioBuffer } from "mediabunny";
 import { collectAudioClips, decodeAudioToFloat32 } from "@/media/audio";
+import { TestAudioBuffer } from "@/media/__tests__/audio-buffer";
 import type { AudioElement, LibraryAudioElement, UploadAudioElement } from "@/timeline";
 import { scene, t } from "@/timeline/__tests__/compound-fixtures";
 
@@ -19,7 +20,7 @@ function deferred<T>() {
 }
 
 function packet(timestamp: number, duration: number): WrappedAudioBuffer {
-	return { timestamp, duration, buffer: { duration } as AudioBuffer };
+	return { timestamp, duration, buffer: new TestAudioBuffer({ length: Math.round(duration * 8000), sampleRate: 8000 }) };
 }
 
 function libraryClip(overrides: Partial<LibraryAudioElement> = {}): LibraryAudioElement {
@@ -119,6 +120,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 	const wakes = new Map<EventTarget, number>();
 	const audio = {
 		currentTime: 10,
+		sampleRate: 8000,
 		state: "suspended",
 		destination: {},
 		resume: mock(async () => { audio.state = "running"; }),
@@ -171,6 +173,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 		},
 	};
 
+	stubGlobal("AudioBuffer", TestAudioBuffer);
 	stubGlobal("window", { AudioContext: class { constructor() { return audio; } }, setInterval, clearInterval });
 	if (withVisibility) stubGlobal("document", visibility);
 	stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
@@ -337,6 +340,29 @@ test("late retimed packets skip elapsed source seconds and discard expired packe
 	expect(starts[0].when).toBe(10.15);
 	expect(starts[0].offset).toBeCloseTo(0.1, 6);
 	expect(starts[0].duration).toBeCloseTo(0.3, 6);
+});
+
+test("pitch-preserved preview prepares short windows at a late trim and parks ahead of playback", async () => {
+	const { editor } = setup(uploadedClip({
+		duration: t(20), trimStart: t(7200), retime: { rate: 2, maintainPitch: true },
+	}));
+	const { starts } = fakeAudio();
+	const { decode, track } = stubDecoder(async function* (start) {
+		yield packet(Math.floor(start), 2);
+	});
+	Object.defineProperty(track, "sampleRate", { value: 8000 });
+
+	editor.playback.play();
+	await flush();
+
+	expect(starts.map(({ when, rate }) => [when, rate])).toEqual([[10, 1], [11, 1]]);
+	expect(decode.mock.calls[0][0]).toBeCloseTo(7200, 3);
+	expect(decode.mock.calls.every(([start = 0, end = Infinity]) => end - start < 1.01)).toBe(true);
+	expect(decode.mock.calls.at(-1)?.[1]).toBeLessThan(7207);
+
+	editor.playback.pause();
+	await flush();
+	expect(starts).toHaveLength(2);
 });
 
 test("rounding the preview frame to the end does not stop the last audio samples early", async () => {

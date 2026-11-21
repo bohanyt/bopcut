@@ -1,182 +1,73 @@
-import { PitchShifter } from "soundtouchjs";
-import { clampRetimeRate, shouldMaintainPitch } from "@/retime/rate";
-import type { RetimeConfig } from "@/timeline";
-import { getSourceTimeAtClipTime } from "./resolve";
+import { SoundTouch } from "soundtouchjs";
+import { createAudioCheckpoint, STEREO_CHANNELS, type DecodedAudioWindow } from "@/media/audio-window";
 
-const RATE_EPSILON = 1e-6;
+type ReadWindow = (start: number, end: number) => Promise<DecodedAudioWindow | null>;
 
-function sampleLinear({
-	channelData,
-	position,
+/** Pull bounded PCM blocks through one pitch processor so overlap state survives block boundaries. */
+export function createPitchReader({
+	readWindow, sourceStart, sourceEnd, rate, sampleRate, signal,
 }: {
-	channelData: Float32Array;
-	position: number;
-}): number {
-	if (position <= 0) {
-		return channelData[0] ?? 0;
-	}
-	const lower = Math.floor(position);
-	const upper = Math.min(channelData.length - 1, lower + 1);
-	if (lower >= channelData.length) {
-		return 0;
-	}
-	const fraction = position - lower;
-	return channelData[lower] * (1 - fraction) + channelData[upper] * fraction;
-}
-
-function buildResampledBuffer({
-	audioContext,
-	sourceBuffer,
-	trimStart,
-	clipDuration,
-	targetSampleRate,
-	retime,
-}: {
-	audioContext: BaseAudioContext;
-	sourceBuffer: AudioBuffer;
-	trimStart: number;
-	clipDuration: number;
-	targetSampleRate: number;
-	retime?: RetimeConfig;
-}): AudioBuffer {
-	const outputLength = Math.max(1, Math.ceil(clipDuration * targetSampleRate));
-	const numChannels = Math.max(1, Math.min(2, sourceBuffer.numberOfChannels));
-	const outputBuffer = audioContext.createBuffer(
-		numChannels,
-		outputLength,
-		targetSampleRate,
-	);
-
-	for (let channel = 0; channel < numChannels; channel++) {
-		const sourceData = sourceBuffer.getChannelData(
-			Math.min(channel, sourceBuffer.numberOfChannels - 1),
-		);
-		const outputData = outputBuffer.getChannelData(channel);
-
-		for (let i = 0; i < outputLength; i++) {
-			const clipTime = i / targetSampleRate;
-			const sourceTime =
-				trimStart + getSourceTimeAtClipTime({ clipTime, retime });
-			outputData[i] = sampleLinear({
-				channelData: sourceData,
-				position: sourceTime * sourceBuffer.sampleRate,
-			});
-		}
-	}
-
-	return outputBuffer;
-}
-
-async function buildPitchPreservedBuffer({
-	sourceBuffer,
-	trimStart,
-	clipDuration,
-	rate,
-	targetSampleRate,
-}: {
-	sourceBuffer: AudioBuffer;
-	trimStart: number;
-	clipDuration: number;
+	readWindow: ReadWindow;
+	sourceStart: number;
+	sourceEnd: number;
 	rate: number;
-	targetSampleRate: number;
-}): Promise<AudioBuffer> {
-	const nativeSampleRate = sourceBuffer.sampleRate;
-	const sourceDuration = clipDuration * rate;
-	const startSample = Math.max(0, Math.floor(trimStart * nativeSampleRate));
-	const numSourceSamples = Math.max(
-		1,
-		Math.ceil(sourceDuration * nativeSampleRate),
-	);
-	const available = Math.max(0, sourceBuffer.length - startSample);
-	const actualSamples = Math.max(1, Math.min(numSourceSamples, available));
-	const numChannels = Math.max(1, Math.min(2, sourceBuffer.numberOfChannels));
+	sampleRate: number;
+	signal?: AbortSignal;
+}): (length: number) => Promise<AudioBuffer> {
+	const processor = new SoundTouch();
+	processor.stretch.setParameters(sampleRate, 0, 0, 0);
+	processor.tempo = rate;
+	const inputFrames = Math.ceil((sourceEnd - sourceStart) * sampleRate);
+	const quantum = Math.ceil(sampleRate * Math.min(1, rate) / 8);
+	const scratch = new Float32Array(quantum * 2);
+	let inputFrame = 0;
+	let window: DecodedAudioWindow | null = null;
 
-	// Resample to targetSampleRate first — soundtouchjs reads raw channel data
-	// and does not respect the source buffer's native sample rate.
-	const resampledLength = Math.max(
-		1,
-		Math.ceil(sourceDuration * targetSampleRate),
-	);
-	const resampleCtx = new OfflineAudioContext(
-		numChannels,
-		resampledLength,
-		targetSampleRate,
-	);
-	const nativeBuffer = resampleCtx.createBuffer(
-		numChannels,
-		actualSamples,
-		nativeSampleRate,
-	);
-
-	for (let ch = 0; ch < numChannels; ch++) {
-		const src = sourceBuffer.getChannelData(
-			Math.min(ch, sourceBuffer.numberOfChannels - 1),
-		);
-		nativeBuffer.copyToChannel(
-			src.subarray(startSample, startSample + actualSamples),
-			ch,
-		);
-	}
-
-	const resampleSourceNode = resampleCtx.createBufferSource();
-	resampleSourceNode.buffer = nativeBuffer;
-	resampleSourceNode.connect(resampleCtx.destination);
-	resampleSourceNode.start(0);
-	const resampledBuffer = await resampleCtx.startRendering();
-
-	const outputSamples = Math.max(
-		1,
-		Math.ceil(clipDuration * targetSampleRate),
-	);
-	const stretchCtx = new OfflineAudioContext(
-		numChannels,
-		outputSamples,
-		targetSampleRate,
-	);
-	const shifter = new PitchShifter(stretchCtx, resampledBuffer, 4096);
-	shifter.tempo = rate;
-	shifter.pitch = 1;
-	shifter.connect(stretchCtx.destination);
-	return stretchCtx.startRendering();
-}
-
-export async function renderRetimedBuffer({
-	audioContext,
-	sourceBuffer,
-	trimStart,
-	clipDuration,
-	retime,
-	maintainPitch = false,
-}: {
-	audioContext: BaseAudioContext;
-	sourceBuffer: AudioBuffer;
-	trimStart: number;
-	clipDuration: number;
-	retime?: RetimeConfig;
-	maintainPitch?: boolean;
-}): Promise<AudioBuffer> {
-	const targetSampleRate = audioContext.sampleRate;
-	const rate = clampRetimeRate({ rate: retime?.rate ?? 1 });
-	const usePitchPreservation =
-		shouldMaintainPitch({ rate, maintainPitch }) &&
-		Math.abs(rate - 1) > RATE_EPSILON;
-
-	if (usePitchPreservation) {
-		return buildPitchPreservedBuffer({
-			sourceBuffer,
-			trimStart,
-			clipDuration,
-			rate,
-			targetSampleRate,
-		});
-	}
-
-	return buildResampledBuffer({
-		audioContext,
-		sourceBuffer,
-		trimStart,
-		clipDuration,
-		targetSampleRate,
-		retime,
-	});
+	return async (length) => {
+		const output = new AudioBuffer({ numberOfChannels: STEREO_CHANNELS, length, sampleRate });
+		const left = output.getChannelData(0);
+		const right = output.getChannelData(1);
+		let written = 0;
+		const checkpoint = createAudioCheckpoint(signal);
+		while (written < length) {
+			signal?.throwIfAborted();
+			const ready = Math.min(length - written, quantum, processor.outputBuffer.frameCount);
+			if (ready) {
+				processor.outputBuffer.receiveSamples(scratch, ready);
+				for (let i = 0; i < ready; i++) {
+					left[written + i] = scratch[i * 2];
+					right[written + i] = scratch[i * 2 + 1];
+				}
+				written += ready;
+			} else {
+				const frames = Math.max(0, Math.min(quantum, inputFrames - inputFrame));
+				scratch.fill(0);
+				if (frames) {
+					const start = sourceStart + inputFrame / sampleRate;
+					const end = sourceStart + (inputFrame + frames) / sampleRate;
+					if (!window || end + 1 / 8000 > window.start + window.buffer.duration) {
+						const windowEnd = sourceStart + Math.min(inputFrames, inputFrame + sampleRate) / sampleRate;
+						window = await readWindow(start, windowEnd + 1 / 8000);
+					}
+					if (!window) return output;
+					const nativeRate = window.buffer.sampleRate;
+					const inputLeft = window.buffer.getChannelData(0);
+					const inputRight = window.buffer.getChannelData(1);
+					for (let i = 0; i < frames; i++) {
+						const position = (start - window.start + i / sampleRate) * nativeRate;
+						const lower = Math.floor(position);
+						const fraction = position - lower;
+						scratch[i * 2] = (inputLeft[lower] ?? 0) * (1 - fraction) + (inputLeft[lower + 1] ?? 0) * fraction;
+						scratch[i * 2 + 1] = (inputRight[lower] ?? 0) * (1 - fraction) + (inputRight[lower + 1] ?? 0) * fraction;
+					}
+					inputFrame += frames;
+				}
+				// Continue with zero padding at the source end to drain the final overlap.
+				processor.inputBuffer.putSamples(scratch, 0, quantum);
+				processor.process();
+			}
+			await checkpoint();
+		}
+		return output;
+	};
 }

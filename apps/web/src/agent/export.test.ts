@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { ALL_FORMATS, BufferSource, CanvasSource, EncodedPacket, EncodedPacketSink, EncodedVideoPacketSource, Input, Output } from "mediabunny";
+import { ALL_FORMATS, AudioBufferSource, BufferSource, CanvasSource, EncodedPacket, EncodedPacketSink, EncodedVideoPacketSource, Input, Output } from "mediabunny";
 import type { CompoundElement, LibraryAudioElement, TScene, UploadAudioElement, VideoElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { ExportFormat } from "@/export";
 import type { MediaAsset } from "@/media/types";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 import { waitWithAbort } from "@/utils/abort";
+import { TestAudioBuffer } from "@/media/__tests__/audio-buffer";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
@@ -23,13 +24,6 @@ const { VideoCache } = await import("@/services/video-cache/service");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
 
-class TestAudioContext {
-	async close() {}
-	async decodeAudioData() {
-		throw new Error("Invalid audio");
-	}
-}
-
 async function withCanvas(run: () => Promise<void>, extraGlobals: Record<string, unknown> = {}) {
 	class TestCanvas {
 		width = 0;
@@ -37,6 +31,7 @@ async function withCanvas(run: () => Promise<void>, extraGlobals: Record<string,
 	}
 	const globals = {
 		HTMLCanvasElement: TestCanvas,
+		AudioBuffer: TestAudioBuffer,
 		document: { createElement: () => new TestCanvas() },
 		...extraGlobals,
 	};
@@ -137,6 +132,43 @@ describe("export frame timing", () => {
 			}
 		}));
 });
+
+test("abort during a later audio encoder write cancels the muxer without waiting for the write", () =>
+	withCanvas(async () => {
+		const started = Promise.withResolvers<void>();
+		const write = Promise.withResolvers<void>();
+		const controller = new AbortController();
+		const first = new AudioBuffer({ length: 44100, sampleRate: 44100, numberOfChannels: 2 });
+		async function* blocks() { yield first; }
+		const start = spyOn(Output.prototype, "start").mockResolvedValue(undefined);
+		const cancel = spyOn(Output.prototype, "cancel").mockResolvedValue(undefined);
+		const render = spyOn(CanvasRenderer.prototype, "render").mockResolvedValue(undefined);
+		const video = spyOn(CanvasSource.prototype, "add").mockResolvedValue(undefined);
+		const add = spyOn(AudioBufferSource.prototype, "add").mockResolvedValueOnce(undefined).mockImplementation(() => {
+			started.resolve();
+			return write.promise;
+		});
+		try {
+			const exporter = new SceneExporter({
+				width: 16, height: 16, fps: { numerator: 24, denominator: 1 }, format: "webm", quality: "high",
+				audio: { first, blocks: blocks() },
+			});
+			const exporting = exporter.export({ rootNode: new RootNode({ duration: T(2) }), signal: controller.signal });
+			await started.promise;
+			controller.abort();
+			expect(await exporting).toBeNull();
+			expect(cancel).toHaveBeenCalledTimes(1);
+			expect(add).toHaveBeenCalledTimes(2);
+			expect(video).toHaveBeenCalledTimes(24);
+		} finally {
+			write.resolve();
+			start.mockRestore();
+			cancel.mockRestore();
+			add.mockRestore();
+			video.mockRestore();
+			render.mockRestore();
+		}
+	}));
 
 describe("export requests", () => {
 	test("defaults and checks", () => {
@@ -594,12 +626,13 @@ describe("the export poller", () => {
 				encode.mockRestore();
 				fetchSound.mockRestore();
 			}
-		}, { window: { AudioContext: TestAudioContext } }));
+		}));
 
 	test("cancelling mixdown aborts a pending library fetch and releases the export slot", () =>
 		withCanvas(async () => {
 			const editor = open("p");
 			editor.save.stop();
+			editor.media.setAssets({ assets: [{ ...videoAsset, hasAudio: false }] });
 			const [scene] = editor.scenes.getScenes();
 			const sound: LibraryAudioElement = {
 				id: "sound", type: "audio", sourceType: "library", sourceUrl: "/library/pending.mp3", name: "Pending sound",
@@ -623,7 +656,7 @@ describe("the export poller", () => {
 				await exporting;
 				fetchSound.mockRestore();
 			}
-		}, { window: { AudioContext: TestAudioContext } }));
+		}));
 
 	test("preflight checks enabled source audio even when its video track is hidden", () => {
 		const editor = open("p", 2, { missing: true });
@@ -707,7 +740,7 @@ describe("the export poller", () => {
 			} finally {
 				encode.mockRestore();
 			}
-		}, { window: { AudioContext: TestAudioContext } }));
+		}));
 
 	test("visible references must resolve to a source of the correct type", () => {
 		const editor = open("p");

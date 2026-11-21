@@ -4,7 +4,8 @@ import type { ExportOptions, ExportResult } from "@/export";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { SceneExporter } from "@/services/renderer/scene-exporter";
 import { buildScene, collectVisibleMedia } from "@/services/renderer/scene-builder";
-import { collectAudibleCandidates, createTimelineAudioBuffer } from "@/media/audio";
+import { collectAudibleCandidates } from "@/media/audio";
+import { mixTimelineAudio } from "@/media/audio-mixdown";
 import type { MediaLoadFailure, MediaType } from "@/media/types";
 import { formatTimecode } from "opencut-wasm";
 import { downloadBlob } from "@/utils/browser";
@@ -13,7 +14,6 @@ import { isElementMuted } from "@/timeline/audio-state";
 import type { TCanvasSize } from "@/project/types";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
-import { waitWithAbort } from "@/utils/abort";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
@@ -265,8 +265,9 @@ export class RendererManager {
 		signal: AbortSignal;
 	}): Promise<ExportResult> {
 		const { format, quality, fps, includeAudio, sceneId, allowMissing } = options;
-		const visualFailure = new AbortController();
-		const signal = AbortSignal.any([callerSignal, visualFailure.signal]);
+		const mediaFailure = new AbortController();
+		const signal = AbortSignal.any([callerSignal, mediaFailure.signal]);
+		let audioBlocks: ReturnType<typeof mixTimelineAudio> | undefined;
 		const failures = new Map<string, MediaLoadFailure>();
 
 		try {
@@ -312,18 +313,23 @@ export class RendererManager {
 			if (preflight) return preflight;
 			const mediaAssets = media.getAssets();
 
-			let audioBuffer: AudioBuffer | null = null;
+			let firstAudioBlock: AudioBuffer | undefined;
 			if (includeAudio) {
 				onProgress?.({ progress: 0.05 });
 				signal.throwIfAborted();
-				audioBuffer = await waitWithAbort(createTimelineAudioBuffer({
+				audioBlocks = mixTimelineAudio({
 					tracks, mediaAssets, duration, scenes, signal,
-					onFailure: (failure) => failures.set(failure.id, failure),
-				}), signal);
+					onFailure: (failure) => {
+						failures.set(failure.id, failure);
+						if (allowMissing !== true) mediaFailure.abort();
+						signal.throwIfAborted();
+					},
+				});
+				const first = await audioBlocks.next();
+				if (!first.done) firstAudioBlock = first.value;
 			}
 
 			signal.throwIfAborted();
-			if (failures.size && allowMissing !== true) return unavailableMedia([...failures.values()]);
 
 			const scene = buildScene({
 				tracks,
@@ -340,12 +346,11 @@ export class RendererManager {
 				fps: exportFps,
 				format,
 				quality,
-				shouldIncludeAudio: !!includeAudio,
-				audioBuffer: audioBuffer || undefined,
+				audio: firstAudioBlock && audioBlocks ? { first: firstAudioBlock, blocks: audioBlocks } : undefined,
 				onMediaFailure: (id, error) => {
 					const name = mediaAssets.find((asset) => asset.id === id)?.name ?? id;
 					failures.set(id, { id, name, error: error instanceof Error ? error.message : String(error), unreadable: true });
-					if (allowMissing !== true) visualFailure.abort();
+					if (allowMissing !== true) mediaFailure.abort();
 				},
 			});
 
@@ -366,12 +371,14 @@ export class RendererManager {
 			return { success: true, buffer };
 		} catch (error) {
 			if (callerSignal.aborted) return { success: false, cancelled: true };
-			if (visualFailure.signal.aborted) return unavailableMedia([...failures.values()]);
+			if (mediaFailure.signal.aborted) return unavailableMedia([...failures.values()]);
 			console.error("Export failed:", error);
 			return {
 				success: false,
 				error: error instanceof Error ? error.message : "Unknown export error",
 			};
+		} finally {
+			await audioBlocks?.return();
 		}
 	}
 

@@ -7,12 +7,9 @@ import type {
 	TScene,
 } from "@/timeline";
 import { expandCompoundAudioTracks } from "@/timeline/compound";
-import { shouldMaintainPitch } from "@/retime/rate";
-import type { MediaAsset, MediaLoadFailure } from "@/media/types";
-import { applyAudioMasteringToBuffer } from "@/media/audio-mastering";
+import type { MediaAsset } from "@/media/types";
 import type { AudioCapableElement } from "@/timeline/audio-state";
 import {
-	hasAnimatedVolume,
 	isElementMuted,
 	resolveEffectiveAudioGain,
 } from "@/timeline/audio-state";
@@ -20,28 +17,11 @@ import { doesElementHaveEnabledAudio, isSourceAudioEnabled } from "@/timeline/au
 import { canElementHaveAudio, hasMediaId } from "@/timeline/element-utils";
 import { canTrackHaveAudio } from "@/timeline";
 import { mediaSupportsAudio } from "@/media/media-utils";
-import { getSourceTimeAtClipTime, renderRetimedBuffer } from "@/retime";
-import { Input, ALL_FORMATS, BlobSource, AudioBufferSink } from "mediabunny";
 import { TICKS_PER_SECOND } from "@/wasm";
 import {
 	computeRmsBuckets,
 	type SampleBucket,
 } from "@/media/waveform-summary";
-
-const MAX_AUDIO_CHANNELS = 2;
-const EXPORT_SAMPLE_RATE = 44100;
-
-export interface CollectedAudioElement {
-	timelineElement: AudioCapableElement;
-	buffer: AudioBuffer;
-	startTime: number;
-	duration: number;
-	trimStart: number;
-	trimEnd: number;
-	volume: number;
-	muted: boolean;
-	retime?: RetimeConfig;
-}
 
 export function createAudioContext({
 	sampleRate,
@@ -167,183 +147,6 @@ export function timelineHasAudio({
 	);
 }
 
-export async function collectAudioElements({
-	tracks,
-	mediaAssets,
-	audioContext,
-	scenes,
-	duration,
-	onFailure,
-	signal,
-}: {
-	tracks: SceneTracks;
-	mediaAssets: MediaAsset[];
-	audioContext: AudioContext;
-	scenes?: TScene[];
-	duration?: number;
-	onFailure?: (failure: MediaLoadFailure) => void;
-	signal?: AbortSignal;
-}): Promise<CollectedAudioElement[]> {
-	const candidates = collectAudibleCandidates({ tracks, mediaAssets, scenes, duration });
-	const resolved = await Promise.all(candidates.map(async ({ element, mediaAsset }) => {
-		signal?.throwIfAborted();
-		if (isElementMuted({ element })) return null;
-		const buffer = await resolveAudioBufferForElement({ element, mediaAsset, audioContext, onFailure, signal });
-		if (!buffer) return null;
-		return {
-			timelineElement: element,
-			buffer,
-			startTime: element.startTime / TICKS_PER_SECOND,
-			duration: element.duration / TICKS_PER_SECOND,
-			trimStart: element.trimStart / TICKS_PER_SECOND,
-			trimEnd: element.trimEnd / TICKS_PER_SECOND,
-			volume: resolveEffectiveAudioGain({ element, trackMuted: false, localTime: 0 }),
-			muted: false,
-			retime: element.retime,
-		};
-	}));
-	return resolved.filter((element): element is NonNullable<typeof element> => element !== null);
-}
-
-async function resolveAudioBufferForElement({
-	element,
-	mediaAsset,
-	audioContext,
-	onFailure,
-	signal,
-}: {
-	element: AudioElement | VideoElement;
-	mediaAsset: MediaAsset | null;
-	audioContext: AudioContext;
-	onFailure?: (failure: MediaLoadFailure) => void;
-	signal?: AbortSignal;
-}): Promise<AudioBuffer | null> {
-	const library = element.type === "audio" && element.sourceType === "library" ? element : null;
-	try {
-		if (!library) {
-			if (!mediaAsset?.file || !mediaSupportsAudio({ media: mediaAsset })) return null;
-			if (element.type === "video" && mediaAsset.type !== "video") return null;
-			return await resolveAudioBufferForAsset({
-				asset: mediaAsset, audioContext, signal,
-				requiresAudio: element.type === "audio" || mediaAsset.hasAudio === true,
-			});
-		}
-		if (library.buffer) return library.buffer;
-		const response = await fetch(library.sourceUrl, { signal });
-		if (!response.ok) {
-			throw new Error(`Library audio fetch failed: ${response.status}`);
-		}
-		const bytes = await response.arrayBuffer();
-		signal?.throwIfAborted();
-		return await audioContext.decodeAudioData(bytes);
-	} catch (error) {
-		signal?.throwIfAborted();
-		const message = error instanceof Error ? error.message : String(error);
-		if (!onFailure) console.warn("Failed to decode audio:", error);
-		else if (library) onFailure({ id: `library:${library.sourceUrl}`, name: library.name, error: message, sourceUrl: library.sourceUrl });
-		else if (mediaAsset) onFailure({ id: mediaAsset.id, name: mediaAsset.name, error: message, unreadable: true });
-		return null;
-	}
-}
-
-async function resolveAudioBufferForAsset({
-	asset,
-	audioContext,
-	requiresAudio,
-	signal,
-}: {
-	asset: MediaAsset;
-	audioContext: AudioContext;
-	requiresAudio: boolean;
-	signal?: AbortSignal;
-}): Promise<AudioBuffer | null> {
-	if (asset.type === "audio") {
-		const arrayBuffer = await asset.file.arrayBuffer();
-		signal?.throwIfAborted();
-		return await audioContext.decodeAudioData(arrayBuffer);
-	}
-
-	const input = new Input({
-		source: new BlobSource(asset.file),
-		formats: ALL_FORMATS,
-	});
-
-	const dispose = () => input.dispose();
-	signal?.addEventListener("abort", dispose, { once: true });
-	try {
-		const audioTrack = await input.getPrimaryAudioTrack();
-		signal?.throwIfAborted();
-		if (!audioTrack) {
-			if (requiresAudio) throw new Error("No audio track found");
-			return null;
-		}
-
-		const sink = new AudioBufferSink(audioTrack);
-		const targetSampleRate = audioContext.sampleRate;
-
-		const chunks: AudioBuffer[] = [];
-		let totalSamples = 0;
-
-		for await (const { buffer } of sink.buffers(0)) {
-			signal?.throwIfAborted();
-			chunks.push(buffer);
-			totalSamples += buffer.length;
-		}
-
-		if (totalSamples === 0) throw new Error("No audio samples could be decoded");
-
-		const nativeSampleRate = chunks[0].sampleRate;
-		const numChannels = Math.min(
-			MAX_AUDIO_CHANNELS,
-			chunks[0].numberOfChannels,
-		);
-
-		const nativeChannels = Array.from(
-			{ length: numChannels },
-			() => new Float32Array(totalSamples),
-		);
-		let offset = 0;
-		for (const chunk of chunks) {
-			for (let channel = 0; channel < numChannels; channel++) {
-				const sourceData = chunk.getChannelData(
-					Math.min(channel, chunk.numberOfChannels - 1),
-				);
-				nativeChannels[channel].set(sourceData, offset);
-			}
-			offset += chunk.length;
-		}
-
-		// use OfflineAudioContext for high-quality resampling to target rate
-		const outputSamples = Math.ceil(
-			totalSamples * (targetSampleRate / nativeSampleRate),
-		);
-		const offlineContext = new OfflineAudioContext(
-			numChannels,
-			outputSamples,
-			targetSampleRate,
-		);
-
-		const nativeBuffer = audioContext.createBuffer(
-			numChannels,
-			totalSamples,
-			nativeSampleRate,
-		);
-		for (let ch = 0; ch < numChannels; ch++) {
-			nativeBuffer.copyToChannel(nativeChannels[ch], ch);
-		}
-
-		const sourceNode = offlineContext.createBufferSource();
-		sourceNode.buffer = nativeBuffer;
-		sourceNode.connect(offlineContext.destination);
-		sourceNode.start(0);
-
-		return await offlineContext.startRendering();
-	} finally {
-		signal?.removeEventListener("abort", dispose);
-		dispose();
-	}
-}
-
 interface AudioMixSource {
 	timelineElement: AudioCapableElement;
 	file: File;
@@ -460,72 +263,6 @@ function collectMediaAudioClip({
 	};
 }
 
-export async function collectAudioMixSources({
-	tracks: sceneTracks,
-	mediaAssets,
-	scenes = [],
-}: {
-	tracks: SceneTracks;
-	mediaAssets: MediaAsset[];
-	scenes?: TScene[];
-}): Promise<AudioMixSource[]> {
-	const tracks = expandCompoundAudioTracks({ tracks: sceneTracks, scenes });
-	const orderedTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
-	const audioMixSources: AudioMixSource[] = [];
-	const mediaMap = new Map<string, MediaAsset>(
-		mediaAssets.map((asset) => [asset.id, asset]),
-	);
-	const pendingLibrarySources: Array<Promise<AudioMixSource | null>> = [];
-
-	for (const track of orderedTracks) {
-		if (canTrackHaveAudio(track) && track.muted) continue;
-
-		for (const element of track.elements) {
-			if (!canElementHaveAudio(element)) continue;
-			if (isElementMuted({ element })) continue;
-			const mediaAsset = hasMediaId(element)
-				? (mediaMap.get(element.mediaId) ?? null)
-				: null;
-			if (!doesElementHaveEnabledAudio({ element, mediaAsset })) continue;
-			const volume = resolveEffectiveAudioGain({
-				element,
-				localTime: 0,
-			});
-
-			if (element.type === "audio") {
-				if (element.sourceType === "upload") {
-					const mediaAsset = mediaMap.get(element.mediaId);
-					if (!mediaAsset) continue;
-
-					audioMixSources.push(
-						collectMediaAudioSource({ element, mediaAsset, volume }),
-					);
-				} else {
-					pendingLibrarySources.push(
-						fetchLibraryAudioSource({ element, volume }),
-					);
-				}
-				continue;
-			}
-
-			if (element.type === "video") {
-				if (mediaAsset && mediaSupportsAudio({ media: mediaAsset })) {
-					audioMixSources.push(
-						collectMediaAudioSource({ element, mediaAsset, volume }),
-					);
-				}
-			}
-		}
-	}
-
-	const resolvedLibrarySources = await Promise.all(pendingLibrarySources);
-	for (const source of resolvedLibrarySources) {
-		if (source) audioMixSources.push(source);
-	}
-
-	return audioMixSources;
-}
-
 export async function collectAudioClips({
 	tracks: sceneTracks,
 	mediaAssets,
@@ -605,78 +342,6 @@ export async function collectAudioClips({
 	}
 
 	return clips;
-}
-
-export async function createTimelineAudioBuffer({
-	tracks,
-	mediaAssets,
-	duration,
-	sampleRate = EXPORT_SAMPLE_RATE,
-	audioContext,
-	scenes,
-	onFailure,
-	signal,
-}: {
-	tracks: SceneTracks;
-	mediaAssets: MediaAsset[];
-	duration: number;
-	sampleRate?: number;
-	audioContext?: AudioContext;
-	scenes?: TScene[];
-	onFailure?: (failure: MediaLoadFailure) => void;
-	signal?: AbortSignal;
-}): Promise<AudioBuffer | null> {
-	signal?.throwIfAborted();
-	const context = audioContext ?? createAudioContext({ sampleRate });
-	const closeContext = () => {
-		if (!audioContext && context.state !== "closed") {
-			void context.close().catch((error) => console.warn("Failed to close audio context:", error));
-		}
-	};
-	signal?.addEventListener("abort", closeContext, { once: true });
-	try {
-		const audioElements = await collectAudioElements({
-			tracks, mediaAssets, audioContext: context, scenes, duration, onFailure, signal,
-		});
-		signal?.throwIfAborted();
-		if (audioElements.length === 0) return null;
-
-		const outputLength = Math.ceil((duration / TICKS_PER_SECOND) * sampleRate);
-		const outputBuffer = context.createBuffer(MAX_AUDIO_CHANNELS, outputLength, sampleRate);
-		for (const element of audioElements) {
-			signal?.throwIfAborted();
-			if (element.muted) continue;
-
-			const renderedBuffer = shouldMaintainPitch({
-				rate: element.retime?.rate ?? 1,
-				maintainPitch: element.retime?.maintainPitch,
-			})
-				? await renderRetimedBuffer({
-						audioContext: context,
-						sourceBuffer: element.buffer,
-						trimStart: element.trimStart,
-						clipDuration: element.duration,
-						retime: element.retime,
-						maintainPitch: true,
-					})
-				: undefined;
-			signal?.throwIfAborted();
-
-			mixAudioChannels({
-				element,
-				buffer: renderedBuffer ?? element.buffer,
-				trimStart: renderedBuffer ? 0 : element.trimStart,
-				retime: renderedBuffer ? undefined : element.retime,
-				outputBuffer,
-				outputLength,
-				sampleRate,
-			});
-		}
-		return await applyAudioMasteringToBuffer({ audioBuffer: outputBuffer });
-	} finally {
-		signal?.removeEventListener("abort", closeContext);
-		if (!signal?.aborted) closeContext();
-	}
 }
 
 function collectPeakRange({
@@ -803,59 +468,4 @@ export function extractRmsRange({
 			}),
 		),
 	});
-}
-
-function mixAudioChannels({
-	element,
-	buffer,
-	trimStart,
-	retime,
-	outputBuffer,
-	outputLength,
-	sampleRate,
-}: {
-	element: CollectedAudioElement;
-	buffer: AudioBuffer;
-	trimStart: number;
-	retime?: RetimeConfig;
-	outputBuffer: AudioBuffer;
-	outputLength: number;
-	sampleRate: number;
-}): void {
-	const { startTime, duration: elementDuration } = element;
-
-	const outputStartSample = Math.floor(startTime * sampleRate);
-	const renderedLength = Math.ceil(elementDuration * sampleRate);
-
-	const outputChannels = 2;
-	for (let channel = 0; channel < outputChannels; channel++) {
-		const outputData = outputBuffer.getChannelData(channel);
-		const sourceChannel = Math.min(channel, buffer.numberOfChannels - 1);
-		const sourceData = buffer.getChannelData(sourceChannel);
-
-		for (let i = 0; i < renderedLength; i++) {
-			const outputIndex = outputStartSample + i;
-			if (outputIndex >= outputLength) break;
-
-			const clipTime = i / sampleRate;
-			const sourceTime =
-				trimStart + getSourceTimeAtClipTime({ clipTime, retime });
-			const sourceIndex = sourceTime * buffer.sampleRate;
-			if (sourceIndex >= sourceData.length) break;
-
-			const lowerIndex = Math.floor(sourceIndex);
-			const upperIndex = Math.min(sourceData.length - 1, lowerIndex + 1);
-			const fraction = sourceIndex - lowerIndex;
-			const gain = hasAnimatedVolume({ element: element.timelineElement })
-				? resolveEffectiveAudioGain({
-						element: element.timelineElement,
-						localTime: clipTime,
-					})
-				: element.volume;
-			outputData[outputIndex] +=
-				(sourceData[lowerIndex] * (1 - fraction) +
-					sourceData[upperIndex] * fraction) *
-				gain;
-		}
-	}
 }
