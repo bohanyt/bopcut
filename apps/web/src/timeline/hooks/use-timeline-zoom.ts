@@ -75,17 +75,15 @@ export function useTimelineZoom({
 		controller.applyZoomLayout(zoomLevel);
 	}, [controller, zoomLevel]);
 
-	useEffect(() => {
+	useLayoutEffect(() => {
 		return controller.restoreInitialScrollIfNeeded(initialScrollLeft);
 	}, [controller, initialScrollLeft]);
 
-	useEffect(() => {
+	useLayoutEffect(() => {
 		controller.restoreInitialPlayheadIfNeeded(initialPlayheadTime);
 	}, [controller, initialPlayheadTime]);
 
 	useEffect(() => controller.bindPreventBrowserZoom(), [controller]);
-
-	useEffect(() => () => controller.destroy(), [controller]);
 
 	return {
 		zoomLevel,

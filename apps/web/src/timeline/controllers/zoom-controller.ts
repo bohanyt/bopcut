@@ -47,7 +47,6 @@ export class ZoomController {
 	private preZoomScrollLeft = 0;
 	private prePlayheadAnchorScrollLeft = 0;
 	private isInPlayheadAnchorMode = false;
-	private scrollSaveTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(deps: { configRef: ZoomConfigRef; initialZoom?: number }) {
 		this.configRef = deps.configRef;
@@ -76,13 +75,6 @@ export class ZoomController {
 	subscribe(fn: () => void): () => void {
 		this.subscribers.add(fn);
 		return () => this.subscribers.delete(fn);
-	}
-
-	destroy(): void {
-		if (this.scrollSaveTimeout) {
-			clearTimeout(this.scrollSaveTimeout);
-			this.scrollSaveTimeout = null;
-		}
 	}
 
 	setZoomLevel(zoomLevelOrUpdater: ZoomUpdater): void {
@@ -215,20 +207,14 @@ export class ZoomController {
 	}
 
 	saveScrollPosition(): void {
-		if (this.scrollSaveTimeout) {
-			clearTimeout(this.scrollSaveTimeout);
-		}
-
-		this.scrollSaveTimeout = setTimeout(() => {
-			const scrollElement = this.config.getTracksScrollEl();
-			if (!scrollElement) return;
-
-			this.config.setTimelineViewState({
-				zoomLevel: this.zoomLevelValue,
-				scrollLeft: scrollElement.scrollLeft,
-				playheadTime: this.config.getCurrentPlayheadTime(),
-			});
-		}, 300);
+		const scrollElement = this.config.getTracksScrollEl();
+		if (!scrollElement) return;
+		// Capture the view before the project can close. Its save session debounces disk writes.
+		this.config.setTimelineViewState({
+			zoomLevel: this.zoomLevelValue,
+			scrollLeft: scrollElement.scrollLeft,
+			playheadTime: this.config.getCurrentPlayheadTime(),
+		});
 	}
 
 	restoreInitialScrollIfNeeded(

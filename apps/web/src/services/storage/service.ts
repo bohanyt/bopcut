@@ -14,11 +14,41 @@ import type {
 	StorageConfig,
 	SerializedProject,
 	SerializedScene,
+	ProjectNavigation,
+	ProjectSummary,
 } from "./types";
 import type { SavedSoundsData, SavedSound, SoundEffect } from "@/sounds/types";
-import { migrations } from "@/services/storage/migrations";
-import type { Bookmark, SceneTracks, TScene } from "@/timeline";
-import { roundMediaTime } from "@/wasm";
+import { CURRENT_PROJECT_VERSION, migrations } from "@/services/storage/migrations";
+import type { Bookmark, SceneTracks } from "@/timeline";
+import { roundMediaTime, TICKS_PER_SECOND } from "@/wasm";
+
+const browserMigrationKey = "bopencut:browser-storage-copied";
+
+async function migrateProject(project: ProjectRecord, id: string, version: number) {
+	for (const migration of migrations) {
+		if (migration.from !== version) continue;
+		const result = await migration.run({ projectId: id, project });
+		if (result.skipped) throw new Error(`Project migration ${id}: ${result.reason ?? "failed"}`);
+		project = result.project;
+		version = migration.to;
+	}
+	return project as unknown as SerializedProject;
+}
+
+function deserializeMetadata(metadata: ProjectSummary["metadata"], duration = metadata.duration): TProjectMetadata {
+	return {
+		...metadata,
+		duration: roundMediaTime({ time: duration ?? 0 }),
+		createdAt: new Date(metadata.createdAt),
+		updatedAt: new Date(metadata.updatedAt),
+	};
+}
+
+function deserializeSummary({ metadata, version }: ProjectSummary): TProjectMetadata {
+	const duration = metadata.duration ?? 0;
+	// Before version 23 metadata used seconds. Listing must work before that project is opened.
+	return deserializeMetadata(metadata, version < 23 ? duration * TICKS_PER_SECOND : duration);
+}
 
 function normalizeBookmarks({ raw }: { raw: unknown }): Bookmark[] {
 	if (!Array.isArray(raw)) return [];
@@ -77,68 +107,56 @@ class StorageService {
 	}
 
 	async ensureMigrations(): Promise<void> {
-		if (!this.migrationsPromise) this.migrationsPromise = (async () => {
-			await this.migrateBrowserProjects();
-			await this.migrateDiskProjects();
-		})();
+		this.migrationsPromise ??= this.migrateBrowserProjects();
 		await this.migrationsPromise;
 	}
 
 	private async migrateBrowserProjects(): Promise<void> {
 		if (typeof indexedDB === "undefined") return;
+		try {
+			if (localStorage.getItem(browserMigrationKey) === "1") return;
+		} catch {
+			// Storage can be unavailable in some browser contexts. The disk markers still prevent copies.
+		}
 		const legacy = new IndexedDBAdapter<ProjectRecord>({ dbName: this.config.projectsDb, storeName: "projects", version: 1 });
 		let copied = 0, failed = 0;
 		try {
-			for (const source of await legacy.getAll()) {
+			for (const source of await legacy.getAll({ existingOnly: true })) {
 				const id = getProjectId({ project: source });
 				if (!id) { failed++; continue; }
 				try {
 					if (await this.projectsAdapter.migrationExists(id)) continue;
-					let project = source;
-					let version = typeof project.version === "number" ? project.version : (Array.isArray(project.scenes) && project.scenes.length ? 1 : 0);
-					for (const migration of migrations) {
-						if (migration.from !== version) continue;
-						const result = await migration.run({ projectId: id, project });
-						if (result.skipped) throw new Error(result.reason ?? "Version migration failed");
-						project = result.project;
-						version = migration.to;
-					}
+					const version = typeof source.version === "number" ? source.version : (Array.isArray(source.scenes) && source.scenes.length ? 1 : 0);
+					const project = await migrateProject(source, id, version);
 					const { mediaMetadataAdapter, mediaAssetsAdapter } = this.getProjectMediaAdapters({ projectId: id });
-					for (const metadata of await mediaMetadataAdapter.getAll()) {
+					for (const metadata of await mediaMetadataAdapter.getAll({ existingOnly: true })) {
 						const file = await mediaAssetsAdapter.get(metadata.id);
 						if (!file) throw new Error(`Media ${metadata.id} not found`);
 						await this.projectsAdapter.saveMedia(id, { ...metadata, fileName: metadata.fileName ?? file.name, fileType: metadata.fileType ?? file.type }, file);
 					}
-					if (await this.projectsAdapter.migrate(project as unknown as SerializedProject)) copied++;
+					if (await this.projectsAdapter.migrate(project)) copied++;
 				} catch (error) { failed++; console.error("Project migration failed:", id, error); }
 			}
 		} catch (error) { failed++; console.error("Browser migration failed:", error); }
+		let soundsFailed = false;
 		try {
 			const sounds = new IndexedDBAdapter<SavedSoundsData>({ dbName: this.config.savedSoundsDb, storeName: "saved-sounds", version: 1 });
-			const data = await sounds.get("user-sounds");
-			if (data && !(await this.savedSoundsAdapter.get("user-sounds"))) await this.savedSoundsAdapter.migrate(data);
-		} catch (error) { console.error("Sound migration failed:", error); toast.error("Failed to copy saved sounds; browser data remains."); }
+			const data = await sounds.get("user-sounds", { existingOnly: true });
+			if (data) await this.savedSoundsAdapter.migrate(data);
+		} catch (error) {
+			soundsFailed = true;
+			console.error("Sound migration failed:", error);
+			toast.error("Failed to copy saved sounds; browser data remains. Reload to retry.");
+		}
 
 		if (copied) toast.success(`${copied} browser projects copied to storage.`);
 		if (failed) toast.error(`${failed} browser projects failed to copy; browser data remains. Reload to retry.`);
-	}
-
-	private async migrateDiskProjects(): Promise<void> {
-		for (const entry of await this.projectsAdapter.getAll()) {
-			const id = entry?.metadata?.id;
-			if (!id || typeof entry.version !== "number" || entry.version >= (migrations.at(-1)?.to ?? entry.version)) continue;
-			const source = await this.projectsAdapter.get(id);
-			if (!source || typeof source.version !== "number") continue;
-			let project = source as unknown as ProjectRecord;
-			let version = source.version;
-			for (const migration of migrations) {
-				if (migration.from !== version) continue;
-				const result = await migration.run({ projectId: id, project });
-				if (result.skipped) throw new Error(`Project migration ${id}: ${result.reason ?? "failed"}`);
-				project = result.project;
-				version = migration.to;
+		if (!failed && !soundsFailed) {
+			try {
+				localStorage.setItem(browserMigrationKey, "1");
+			} catch {
+				// The next page load can still check the disk markers.
 			}
-			if (version !== source.version) await this.projectsAdapter.set({ key: id, value: project as unknown as SerializedProject });
 		}
 	}
 
@@ -180,7 +198,7 @@ class StorageService {
 		};
 	}
 
-	async saveProject({ project }: { project: TProject }): Promise<void> {
+	async saveProject({ project, includeView = false }: { project: TProject; includeView?: boolean }): Promise<void> {
 		const duration =
 			project.metadata.duration ??
 			getProjectDurationFromScenes({ scenes: project.scenes });
@@ -209,13 +227,21 @@ class StorageService {
 			currentSceneId: project.currentSceneId,
 			settings: project.settings,
 			version: project.version,
-			timelineViewState: project.timelineViewState,
+			...(includeView && { timelineViewState: project.timelineViewState }),
 		};
 
 		await this.projectsAdapter.set({
 			key: project.metadata.id,
 			value: serializedProject,
 		});
+	}
+
+	async saveProjectNavigation({ id, navigation }: { id: string; navigation: ProjectNavigation }): Promise<void> {
+		await this.projectsAdapter.saveNavigation(id, navigation);
+	}
+
+	async saveProjectThumbnail({ id, thumbnail }: { id: string; thumbnail: Blob }): Promise<string> {
+		return this.projectsAdapter.saveThumbnail(id, thumbnail);
 	}
 
 	/**
@@ -228,15 +254,7 @@ class StorageService {
 			metadata: { ...stored.metadata, name, updatedAt: new Date().toISOString() },
 		}));
 		if (!updated) return null;
-		const { metadata } = updated;
-		return {
-			id: metadata.id,
-			name: metadata.name,
-			thumbnail: metadata.thumbnail,
-			duration: metadata.duration ?? 0,
-			createdAt: new Date(metadata.createdAt),
-			updatedAt: new Date(metadata.updatedAt),
-		} as TProjectMetadata;
+		return deserializeSummary(updated);
 	}
 
 	async loadProject({
@@ -245,7 +263,16 @@ class StorageService {
 		id: string;
 	}): Promise<{ project: TProject } | null> {
 		await this.ensureMigrations();
-		const serializedProject = await this.projectsAdapter.get(id);
+		let serializedProject = await this.projectsAdapter.get(id);
+		if (serializedProject && typeof serializedProject.version === "number" && serializedProject.version < CURRENT_PROJECT_VERSION) {
+			// Transform the exact copy whose revision is checked by the write. On a conflict, retry
+			// against the latest copy, which may already have been migrated in another tab.
+			serializedProject = await this.projectsAdapter.update(id, (current) =>
+				current.version < CURRENT_PROJECT_VERSION
+					? migrateProject(current as unknown as ProjectRecord, id, current.version)
+					: current,
+			);
+		}
 
 		if (!serializedProject) return null;
 
@@ -275,30 +302,22 @@ class StorageService {
 				updatedAt: new Date(scene.updatedAt),
 			})) ?? [];
 
+		const { metadata, navigation } = serializedProject;
+		const validNavigation = navigation && scenes.some((scene) => scene.id === navigation.currentSceneId);
 		const project: TProject = {
-			metadata: {
-				id: serializedProject.metadata.id,
-				name: serializedProject.metadata.name,
-				thumbnail: serializedProject.metadata.thumbnail,
-				duration: roundMediaTime({
-					time:
-						serializedProject.metadata.duration ??
-						getProjectDurationFromScenes({ scenes }),
-				}),
-				createdAt: new Date(serializedProject.metadata.createdAt),
-				updatedAt: new Date(serializedProject.metadata.updatedAt),
-			},
+			metadata: deserializeMetadata(metadata, metadata.duration ?? getProjectDurationFromScenes({ scenes })),
 			scenes,
-			currentSceneId: serializedProject.currentSceneId || "",
+			currentSceneId: validNavigation ? navigation.currentSceneId : serializedProject.currentSceneId || "",
 			settings: serializedProject.settings,
 			version: serializedProject.version,
-			timelineViewState: serializedProject.timelineViewState,
+			timelineViewState: validNavigation ? navigation.timelineViewState : serializedProject.timelineViewState,
 		};
 
 		return { project };
 	}
 
 	async loadAllProjects(): Promise<TProject[]> {
+		await this.ensureMigrations();
 		const projectIds = await this.projectsAdapter.list();
 		const projects: TProject[] = [];
 
@@ -316,42 +335,9 @@ class StorageService {
 
 	async loadAllProjectsMetadata(): Promise<TProjectMetadata[]> {
 		await this.ensureMigrations();
-		const serializedProjects = await this.projectsAdapter.getAll();
-
-		const metadata: TProjectMetadata[] = [];
-		for (const serializedProject of serializedProjects) {
-			if (
-				typeof serializedProject !== "object" ||
-				serializedProject === null ||
-				typeof serializedProject.metadata !== "object" ||
-				serializedProject.metadata === null
-			) {
-				console.warn(
-					"[storage] Skipping malformed project entry (missing metadata):",
-					serializedProject,
-				);
-				continue;
-			}
-
-			metadata.push({
-				id: serializedProject.metadata.id,
-				name: serializedProject.metadata.name,
-				thumbnail: serializedProject.metadata.thumbnail,
-				duration: roundMediaTime({
-					time:
-						serializedProject.metadata.duration ??
-						getProjectDurationFromScenes({
-							scenes: (serializedProject.scenes ?? []) as unknown as TScene[],
-						}),
-				}),
-				createdAt: new Date(serializedProject.metadata.createdAt),
-				updatedAt: new Date(serializedProject.metadata.updatedAt),
-			});
-		}
-
-		return metadata.sort(
-			(a, b) => b.updatedAt.getTime() - a.updatedAt.getTime(),
-		);
+		const summaries = await this.projectsAdapter.summaries();
+		return summaries.map(deserializeSummary)
+			.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 	}
 
 	async deleteProject({ id }: { id: string }): Promise<void> {

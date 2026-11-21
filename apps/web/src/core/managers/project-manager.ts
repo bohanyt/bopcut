@@ -68,6 +68,8 @@ export class ProjectManager {
 		result: null,
 	};
 	private exportController: AbortController | null = null;
+	private thumbnailGeneration = 0;
+	private thumbnailUploads = new Map<string, Promise<void>>();
 
 	constructor(private editor: EditorCore) {}
 
@@ -242,14 +244,6 @@ export class ProjectManager {
 
 			if (replaced()) return;
 
-			if (!project.metadata.thumbnail) {
-				try {
-					// Saved with the session once this load is done (a forced edit).
-					await this.updateThumbnailFromTimeline({ session: installed });
-				} catch (error) {
-					console.error("Failed to generate project thumbnail:", error);
-				}
-			}
 		} catch (error) {
 			console.error("Failed to load project:", error);
 			throw error;
@@ -302,13 +296,27 @@ export class ProjectManager {
 	async persistProject(project: TProject): Promise<string | null> {
 		try {
 			await storageService.saveProject({ project });
-			this.updateSavedMetadata(project.metadata);
+			const thumbnail = this.savedProjects.find(({ id }) => id === project.metadata.id)?.thumbnail;
+			this.updateSavedMetadata({ ...project.metadata, thumbnail: thumbnail ?? project.metadata.thumbnail });
 			// A project no longer in the editor (written after it closed): the project list shows it, so it
 			// hears about it. The open one is not notified (see above).
 			if (this.active?.metadata.id !== project.metadata.id) this.notify();
 			return null;
 		} catch (error) {
 			console.error("Failed to save project:", error);
+			return error instanceof Error ? error.message : String(error);
+		}
+	}
+
+	async persistNavigation(project: TProject): Promise<string | null> {
+		try {
+			await storageService.saveProjectNavigation({
+				id: project.metadata.id,
+				navigation: { currentSceneId: project.currentSceneId, timelineViewState: project.timelineViewState },
+			});
+			return null;
+		} catch (error) {
+			console.error("Failed to save project navigation:", error);
 			return error instanceof Error ? error.message : String(error);
 		}
 	}
@@ -587,9 +595,22 @@ export class ProjectManager {
 			});
 
 			await Promise.all(
-				duplicationPlans.map(({ newProject }) =>
-					storageService.saveProject({ project: newProject }),
-				),
+				duplicationPlans.map(async ({ newProject, newProjectId }) => {
+					await storageService.saveProject({ project: newProject, includeView: true });
+					const { thumbnail } = newProject.metadata;
+					if (!thumbnail?.startsWith("/api/storage/projects/")) return;
+					newProject.metadata.thumbnail = undefined;
+					try {
+						const response = await fetch(thumbnail, { signal: AbortSignal.timeout(10_000) });
+						if (response.ok) {
+							newProject.metadata.thumbnail = await storageService.saveProjectThumbnail({
+								id: newProjectId, thumbnail: await response.blob(),
+							});
+						}
+					} catch (error) {
+						console.error("Failed to copy project thumbnail:", error);
+					}
+				}),
 			);
 
 			await Promise.all(
@@ -668,27 +689,20 @@ export class ProjectManager {
 		return nextFps;
 	}
 
-	async updateThumbnail({ thumbnail }: { thumbnail: string }): Promise<void> {
-		if (!this.active) return;
-
-		const updatedProject: TProject = {
-			...this.active,
-			metadata: { ...this.active.metadata, thumbnail, updatedAt: new Date() },
-		};
-		this.active = updatedProject;
-		this.notify();
-		this.updateMetadata(updatedProject);
-		// Forced: also saved when made while the project loads (see loadProject).
-		this.editor.save.markDirty({ force: true });
+	async ensureThumbnail({ session = this.session } = {}): Promise<void> {
+		if (session !== this.session || this.active?.metadata.thumbnail) return;
+		try {
+			await this.updateThumbnailFromTimeline();
+		} catch (error) {
+			console.error("Failed to generate project thumbnail:", error);
+		}
 	}
 
 	async prepareExit(): Promise<void> {
 		if (!this.active) return;
 
 		try {
-			// A forced edit: written with the project's other changes when it closes, in the background
-			// (leaving does not wait for the write).
-			await this.updateThumbnailFromTimeline();
+			await this.updateThumbnailFromTimeline({ backgroundUpload: true });
 		} catch (error) {
 			console.error("Failed to generate project thumbnail on exit:", error);
 		}
@@ -761,14 +775,23 @@ export class ProjectManager {
 		return this.active?.timelineViewState ?? DEFAULTS.timeline.viewState;
 	}
 
-	setTimelineViewState({ viewState }: { viewState: TTimelineViewState }): void {
+	setTimelineViewState({ viewState, sceneId = this.active?.currentSceneId }: { viewState: TTimelineViewState; sceneId?: string }): void {
 		if (!this.active) return;
+		const current = this.getTimelineViewState();
+		const sceneChanged = sceneId !== this.active.currentSceneId;
+		if (
+			!sceneChanged &&
+			current.zoomLevel === viewState.zoomLevel &&
+			current.scrollLeft === viewState.scrollLeft &&
+			current.playheadTime === viewState.playheadTime
+		) return;
 		this.active = {
 			...this.active,
-			timelineViewState: viewState ?? undefined,
+			currentSceneId: sceneId ?? this.active.currentSceneId,
+			timelineViewState: viewState,
 		};
-		this.editor.save.markDirty();
-		this.notify();
+		this.editor.save.markNavigationDirty();
+		if (sceneChanged) this.notify();
 	}
 
 	getSavedProjects(): TProjectMetadata[] {
@@ -849,12 +872,13 @@ export class ProjectManager {
 		return true;
 	}
 
-	/** `session`: the project session the thumbnail is for (default the current one). */
-	private async updateThumbnailFromTimeline({ session = this.session }: { session?: number } = {}): Promise<boolean> {
-		if (!this.active || this.session !== session) return false;
-		// Rendering takes a while: if another project is opened meanwhile, this image is not its thumbnail.
-
-		const tracks = this.editor.scenes.getActiveScene().tracks;
+	private async updateThumbnailFromTimeline({ backgroundUpload = false } = {}): Promise<boolean> {
+		const activeScene = this.editor.scenes.getActiveSceneOrNull();
+		if (!this.active || !activeScene || typeof document === "undefined") return false;
+		const id = this.active.metadata.id;
+		const generation = ++this.thumbnailGeneration;
+		const signal = this.getSessionSignal();
+		const { tracks } = activeScene;
 		const mediaAssets = this.editor.media.getAssets();
 		const duration = this.editor.timeline.getTotalDuration();
 		const { canvasSize, background } = this.active.settings;
@@ -872,24 +896,50 @@ export class ProjectManager {
 			width: canvasSize.width,
 			height: canvasSize.height,
 			fps: this.active.settings.fps,
+			renderScale: Math.min(1, 480 / Math.max(canvasSize.width, canvasSize.height)),
 			exactFrames: true,
 		});
-
-		const tempCanvas = document.createElement("canvas");
-		tempCanvas.width = canvasSize.width;
-		tempCanvas.height = canvasSize.height;
-
-		await renderer.renderToCanvas({
-			node: scene,
-			time: 0,
-			targetCanvas: tempCanvas,
-		});
-
-		if (this.session !== session) return false;
-		const thumbnailDataUrl = tempCanvas.toDataURL("image/png");
-
-		await this.updateThumbnail({ thumbnail: thumbnailDataUrl });
+		try {
+			await renderer.render({ node: scene, time: 0, signal });
+		} catch (error) {
+			if (signal.aborted) return false;
+			throw error;
+		}
+		const thumbnail = await new Promise<Blob | null>((resolve) =>
+			renderer.getOutputCanvas().toBlob(resolve, "image/webp", 0.78),
+		);
+		const metadata = this.active?.metadata;
+		if (!thumbnail || metadata?.id !== id || signal.aborted || generation !== this.thumbnailGeneration) return false;
+		const upload = this.publishThumbnail(metadata, thumbnail);
+		if (backgroundUpload) {
+			void upload.catch((error) => console.error("Failed to save project thumbnail on exit:", error));
+		} else {
+			await upload;
+		}
 		return true;
+	}
+
+	private async publishThumbnail(metadata: TProjectMetadata, thumbnail: Blob): Promise<void> {
+		const id = metadata.id;
+		const previous = this.thumbnailUploads.get(id) ?? Promise.resolve();
+		// An opening thumbnail still uploading must not replace a newer thumbnail from Exit.
+		const upload = previous.catch(() => {}).then(async () => {
+			if (this.deleted.has(id)) return;
+			const url = await storageService.saveProjectThumbnail({ id, thumbnail });
+			if (this.deleted.has(id)) return;
+			const saved = this.savedProjects.find((entry) => entry.id === id) ?? metadata;
+			this.updateSavedMetadata({ ...saved, thumbnail: url });
+			if (this.active?.metadata.id === id) {
+				this.active = { ...this.active, metadata: { ...this.active.metadata, thumbnail: url } };
+			}
+			this.notify();
+		});
+		this.thumbnailUploads.set(id, upload);
+		try {
+			await upload;
+		} finally {
+			if (this.thumbnailUploads.get(id) === upload) this.thumbnailUploads.delete(id);
+		}
 	}
 
 	/** Project list entry only, without notifying (the editor does not show the list). */

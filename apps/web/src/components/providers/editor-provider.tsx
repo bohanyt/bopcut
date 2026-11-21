@@ -130,6 +130,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 function EditorRuntimeBindings() {
 	const editor = useEditor();
+	const thumbnailSession = useEditor((e) => e.project.getIsLoading() ? null : e.project.getSession());
 	const rippleEditingEnabled = useTimelineStore(
 		(state) => state.rippleEditingEnabled,
 	);
@@ -137,6 +138,10 @@ function EditorRuntimeBindings() {
 	useEffect(() => {
 		editor.command.isRippleEnabled = rippleEditingEnabled;
 	}, [editor, rippleEditingEnabled]);
+
+	useEffect(() => {
+		if (thumbnailSession !== null) void editor.project.ensureThumbnail({ session: thumbnailSession });
+	}, [editor, thumbnailSession]);
 
 	// Leaving the page with unsaved changes is guarded by the save manager itself (also after the editor
 	// page is gone, while a closed project's last changes are written).

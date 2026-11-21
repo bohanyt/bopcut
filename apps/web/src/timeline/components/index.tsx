@@ -297,7 +297,6 @@ export function Timeline() {
 	useInitialScrollBottom({
 		tracksScrollRef,
 		trackLabelsScrollRef,
-		onAfterScroll: () => saveScrollPositionRef.current(),
 		isReady: tracks.length > 0,
 	});
 
