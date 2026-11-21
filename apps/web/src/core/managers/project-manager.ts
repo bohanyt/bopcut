@@ -824,6 +824,8 @@ export class ProjectManager {
 		const previous = this.sessionController;
 		this.session++;
 		this.sessionController = new AbortController();
+		this.editor.command.clear();
+		this.editor.timeline.discardPreview();
 		previous.abort();
 	}
 
