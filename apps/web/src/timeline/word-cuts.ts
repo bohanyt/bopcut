@@ -8,8 +8,19 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 /** A cut inside a word by less than this (seconds) does not count: word timings are not that exact. */
 export const WORD_TOLERANCE = 0.02;
-/** Words that start this many entries earlier are still checked for overlap. */
-const OVERLAP_LOOKBACK = 8;
+type WordEnds = { leaves: number; maximum: Float64Array };
+// Transcript arrays are sorted and replaced on update. Ordinary non-overlapping lists need no tree.
+const wordEndIndexes = new WeakMap<SourceWord[], WordEnds | null>();
+
+function buildWordEndIndex(words: SourceWord[]): WordEnds | null {
+	if (!words.some((word, index) => index > 0 && words[index - 1].end > word.start)) return null;
+	let leaves = 1;
+	while (leaves < words.length) leaves *= 2;
+	const maximum = new Float64Array(leaves * 2).fill(-Infinity);
+	for (let i = 0; i < words.length; i++) maximum[leaves + i] = words[i].end;
+	for (let i = leaves - 1; i > 0; i--) maximum[i] = Math.max(maximum[i * 2], maximum[i * 2 + 1]);
+	return { leaves, maximum };
+}
 
 type Clip = { trimStart: MediaTime; duration: MediaTime; trimEnd: MediaTime; sourceDuration?: MediaTime; retime?: RetimeConfig };
 const sec = (ticks: number) => ticks / TICKS_PER_SECOND;
@@ -35,17 +46,32 @@ export function wordInside(words: SourceWord[], time: number, tolerance = WORD_T
 	let found = -1;
 	while (lo <= hi) {
 		const mid = (lo + hi) >> 1;
-		if (words[mid].start <= time) {
+		if (words[mid].start <= time && time > words[mid].start + tolerance) {
 			found = mid;
 			lo = mid + 1;
 		} else hi = mid - 1;
 	}
-	// Words are sorted by start; a longer word that starts a little earlier can still span the time.
-	for (let i = found; i >= 0 && i > found - OVERLAP_LOOKBACK; i--) {
-		const word = words[i];
-		if (time > word.start + tolerance && time < word.end - tolerance) return word;
+	if (found < 0) return null;
+	if (time < words[found].end - tolerance) return words[found];
+	if (found === 0) return null;
+
+	let index = wordEndIndexes.get(words);
+	if (index === undefined) {
+		index = buildWordEndIndex(words);
+		wordEndIndexes.set(words, index);
 	}
-	return null;
+	if (!index) return null;
+
+	// A range whose latest end is before the cut cannot contain it. Search right first
+	// to keep preferring the latest-starting word when several cross the same cut.
+	const { leaves, maximum } = index;
+	const search = (node: number, from: number, to: number): SourceWord | null => {
+		if (from >= found || !(time < maximum[node] - tolerance)) return null;
+		if (to - from === 1) return words[from];
+		const mid = (from + to) >> 1;
+		return search(node * 2 + 1, mid, to) ?? search(node * 2, from, mid);
+	};
+	return search(1, 0, leaves);
 }
 
 /** A cut point of a clip that falls inside a word: which edge, where (source seconds), and the word. */
@@ -96,8 +122,10 @@ function fitSpan(clip: Clip, words: SourceWord[], fps: FrameRate, newFrom: numbe
 	const up = Math.ceil(exact / frame - 1e-9) * frame;
 	const down = Math.floor(exact / frame + 1e-9) * frame;
 	const fitsUp = within(up) && !wordInside(words, sourceAt(up));
-	const keepsWord = down > 0 && within(down) && sourceAt(down) >= target - WORD_TOLERANCE;
-	const seconds = fitsUp ? up : keepsWord ? down : exact;
+	const downSource = sourceAt(down);
+	const fitsDown = down > 0 && within(down) && downSource >= target - WORD_TOLERANCE &&
+		!wordInside(words, downSource);
+	const seconds = fitsUp ? up : fitsDown ? down : exact;
 	// At least one frame, unless even that runs past the end of the source or into the next word.
 	const atLeastFrame = seconds >= frame || (within(frame) && !wordInside(words, sourceAt(frame))) ? Math.max(frame, seconds) : seconds;
 	const trimStart = Math.round(newFrom * TICKS_PER_SECOND) as MediaTime;

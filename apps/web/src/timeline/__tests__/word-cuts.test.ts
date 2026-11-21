@@ -31,6 +31,65 @@ const run = (scenes: TScene[], ops: unknown[], wordsOf = (id: string) => (id ===
 const main = (scenes: TScene[]) => scenes[0].tracks.main.elements[0];
 
 describe("cuts and spoken words", () => {
+	const overlappingWords = [
+		{ text: "long", start: 0, end: 4 },
+		{ text: "later", start: 0.1, end: 3.2 },
+		...Array.from({ length: 12 }, (_, index) => ({
+			text: `short ${index}`,
+			start: 0.25 + index * 0.2,
+			end: 0.35 + index * 0.2,
+		})),
+	];
+
+	test("looks past later short words and prefers the latest containing word", () => {
+		expect(wordInside(overlappingWords, 3)?.text).toBe("later");
+		expect(wordInside(overlappingWords, 3.4)?.text).toBe("long");
+		expect(wordInside(overlappingWords, 3.98)).toBeNull();
+		expect(wordInside(overlappingWords, 4.1)).toBeNull();
+	});
+
+	test("a draft warns about a long overlapping word and moves the cut outside it on request", () => {
+		const scenes = scenesWith([clip(0, 6)]);
+		const op = { op: "set", match: { agentId: "clip" }, trimStart: 3.4, duration: 1.6 };
+		const plain = run(scenes, [op], () => overlappingWords);
+		expect(plain.results[0].cutWarnings).toMatchObject([
+			{ edge: "start", at: 3.4, word: { text: "long" } },
+		]);
+		const snapped = run(scenes, [{ ...op, cut: "words" }], () => overlappingWords);
+		expect(snapped.results[0]).toMatchObject({ ok: true });
+		expect(main(snapped.scenes).trimStart).toBe(T(0));
+		expect(main(snapped.scenes).duration).toBe(T(5));
+	});
+
+	test("a draft keeps the exact safe end when both adjacent frame ends cut a word", () => {
+		const transcript = [
+			{ text: "long", start: 0, end: 4.019 },
+			{ text: "first", start: 0, end: 0.5 },
+			...Array.from({ length: 8 }, (_, index) => ({
+				text: `short ${index}`,
+				start: 0.5 + index * 0.4,
+				end: 0.6 + index * 0.4,
+			})),
+			{ text: "middle", start: 3.995, end: 4.038 },
+			{ text: "last", start: 4.01, end: 4.2 },
+		];
+		const out = computeAgentDraft({
+			scenes: scenesWith([clip(0, 6)]),
+			rootSceneId: "main",
+			ops: [{ op: "set", match: { agentId: "clip" }, trimStart: 0.3, duration: 3.69, cut: "words" }],
+			mediaFor: () => undefined,
+			wordsOf: () => transcript,
+			canvas: { width: 1920, height: 1080 },
+			fps: { numerator: 60, denominator: 1 },
+			ripple: false,
+		});
+		expect(out.results[0]).toMatchObject({ ok: true });
+		expect(out.results[0].cutWarnings).toBeUndefined();
+		const after = main(out.scenes);
+		expect(after.trimStart).toBe(T(0));
+		expect(after.duration).toBe(T(4.019));
+	});
+
 	test("a time inside a word is found; the edges and gaps are not", () => {
 		expect(wordInside(words, 1.7)?.text).toBe("punchline");
 		expect(wordInside(words, 1.46)).toBeNull(); // within the tolerance of its start
