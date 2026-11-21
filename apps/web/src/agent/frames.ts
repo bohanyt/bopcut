@@ -71,18 +71,25 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const { rev, width } = request;
 		const key = `agent-frames-${projectId}`;
 		if (wasAnswered(key, rev) || isForOtherProject(request, [request.state, request.compare], projectId)) return;
-		// An unscoped request cancelled on a switch must not start over in the newly opened project.
-		const cancelKey = typeof request.projectId === "string" ? key : "agent-frames-cancelled";
-		if (cancelKey !== key && wasAnswered(cancelKey, rev)) return;
+		// An unscoped request answered across a switch must not start over in the newly opened project.
+		const switchKey = typeof request.projectId === "string" ? key : "agent-frames-answered-on-switch";
+		if (switchKey !== key && wasAnswered(switchKey, rev)) return;
 		const result = (body: Record<string, unknown>) => postFramesResult({ rev, projectId }, body);
-		// A request that cannot be rendered is answered once with the reason, not retried every poll.
-		const refuse = async (error: string) => {
-			if ((await result({ files: [], error })).ok) markAnswered(key, rev);
-		};
 		const cancel = () => {
-			pendingCancellation = { rev, projectId, key: cancelKey };
+			pendingCancellation = { rev, projectId, key: switchKey };
 			return postCancellation(pendingCancellation);
 		};
+		const finish = async (body: Record<string, unknown>) => {
+			try {
+				const response = await result(body);
+				if (!response.ok) throw new Error(await response.text());
+			} catch (error) {
+				if (signal.aborted) return await cancel();
+				throw error;
+			}
+			markAnswered(signal.aborted ? switchKey : key, rev);
+		};
+		const refuse = (error: string) => finish({ files: [], error });
 		if (missingMedia.length && request.allowMissing !== true) {
 			// The same request may run after the missing assets have been reloaded.
 			const missingKey = JSON.stringify([projectId, rev]);
@@ -135,9 +142,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			}
 		}
 		if (signal.aborted) return await cancel();
-		const response = await result({ files, ...(states.compare ? { compare: compared } : {}), ...(errors.length ? { errors } : {}) });
-		if (!response.ok) throw new Error(await response.text());
-		markAnswered(key, rev);
+		await finish({ files, ...(states.compare ? { compare: compared } : {}), ...(errors.length ? { errors } : {}) });
 	} catch (error) { console.error("Agent frame failed:", error); }
 	finally { busy = false; }
 }

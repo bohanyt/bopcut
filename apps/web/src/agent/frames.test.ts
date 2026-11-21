@@ -28,8 +28,9 @@ const settings: TProjectSettings = {
 	fps: { numerator: 30, denominator: 1 },
 };
 
-function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failCancellation = false }: {
+function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failCancellation = false, failResult }: {
 	compare?: { syncedAt: string }; times?: readonly number[]; pauseAt?: string; failCancellation?: boolean;
+	failResult?: "HTTP error" | "network error";
 } = {}) {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
@@ -66,6 +67,10 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 			}
 			if (url === "/api/agent/frames-result") {
 				const result = JSON.parse(init?.body as string);
+				if (result.files.length && failResult) {
+					if (failResult === "network error") throw new Error("Network error");
+					return new Response("Write failed", { status: 500 });
+				}
 				if (failCancellation && !failed && result.error?.startsWith("cancelled:")) {
 					failed = true;
 					return new Response(null, { status: 500 });
@@ -188,6 +193,25 @@ test("retries a failed cancellation for the original project", async () => {
 	await pollFrames(ready);
 	expect(render).toHaveBeenCalledTimes(1);
 	expect(results).toEqual([{ rev: "frame-test", projectId: "p", files: [], error: "cancelled: the project session changed during the frame request" }]);
+});
+
+test.each([
+	{ failResult: "HTTP error", expected: { files: [], error: "cancelled: the project session changed during the frame request" } },
+	{ failResult: "network error", expected: { files: [], error: "cancelled: the project session changed during the frame request" } },
+	{ failResult: undefined, expected: { files: ["frame-1.jpg"] } },
+] as const)("keeps a result post bound to its project during a switch ($failResult)", async ({ failResult, expected }) => {
+	const { open, render, results, entered, release } = setup({ pauseAt: "/api/agent/frames-result", times: [0], failResult });
+	const running = pollFrames(ready);
+	await entered;
+	try {
+		open("q");
+	} finally {
+		release();
+		await running;
+	}
+	await pollFrames(ready);
+	expect(render).toHaveBeenCalledTimes(1);
+	expect(results).toEqual([{ rev: "frame-test", projectId: "p", ...expected }]);
 });
 
 test("reports media removed between live frames instead of rendering without them", async () => {
