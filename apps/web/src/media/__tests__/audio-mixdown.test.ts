@@ -4,6 +4,7 @@ import { TestAudioBuffer } from "./audio-buffer";
 import { mixTimelineAudio } from "@/media/audio-mixdown";
 import { openAudioInput, decodeAudioWindow, sliceAudioWindow } from "@/media/audio-window";
 import { createBlockMastering } from "@/media/audio-mastering";
+import { createStereoSampler } from "@/media/audio-resample";
 import { createPitchReader } from "@/retime/audio-stretch";
 import { t } from "@/timeline/__tests__/compound-fixtures";
 import type { SceneTracks, UploadAudioElement } from "@/timeline";
@@ -263,4 +264,73 @@ test("pitch processing keeps the same samples across block boundaries and reads 
 	]);
 	expect(whole.getChannelData(0).some((sample) => Math.abs(sample) > 0.1)).toBe(true);
 	expect(whole.getChannelData(1)).toEqual(whole.getChannelData(0));
+});
+
+const resampleCases = [
+	{ nativeRate: 48_000, targetRate: 44_100 },
+	{ nativeRate: 44_100, targetRate: 48_000 },
+	{ nativeRate: 48_000, targetRate: 48_000 },
+];
+test.each(resampleCases.flatMap((rates) =>
+	(["leading", "trailing"] as const).map((edge) => ({ ...rates, edge })),
+))("resampling keeps a flat signal at the $edge cut ($nativeRate to $targetRate Hz)", ({ nativeRate, targetRate, edge }) => {
+	installBuffer();
+	const buffer = new AudioBuffer({ length: 256, sampleRate: nativeRate, numberOfChannels: 2 });
+	const start = 64;
+	const end = 192;
+	const left = buffer.getChannelData(0);
+	const right = buffer.getChannelData(1);
+	left.fill(-1);
+	right.fill(1);
+	left.fill(0.5, start, end);
+	right.fill(-0.25, start, end);
+	const step = nativeRate / targetRate;
+	const sample = createStereoSampler(buffer, step, { start, end });
+	const stereo = new Float64Array(2);
+	for (let offset = 0.25; offset < 20; offset += step) {
+		sample(edge === "leading" ? start - 1 + offset : end - offset, stereo);
+		expect(stereo[0]).toBeCloseTo(0.5, 6);
+		expect(stereo[1]).toBeCloseTo(-0.25, 6);
+	}
+});
+
+test.each(resampleCases)("resampling distinguishes cuts from window boundaries ($nativeRate to $targetRate Hz)", ({ nativeRate, targetRate }) => {
+	installBuffer();
+	const buffer = new AudioBuffer({ length: 64, sampleRate: nativeRate, numberOfChannels: 2 });
+	buffer.getChannelData(0).fill(0.5);
+	buffer.getChannelData(1).fill(-0.25);
+	const step = nativeRate / targetRate;
+	const stereo = new Float64Array(2);
+	const unbounded = createStereoSampler(buffer, step);
+	const insideTrim = createStereoSampler(buffer, step, { start: -64, end: 128 });
+	for (const position of [-0.25, 63.75]) {
+		unbounded(position, stereo);
+		const expected = stereo.slice();
+		insideTrim(position, stereo);
+		expect(stereo).toEqual(expected);
+	}
+
+	createStereoSampler(buffer, step, { start: 12, end: 13 })(11.75, stereo);
+	expect(stereo[0]).toBeCloseTo(0.5, 6);
+	expect(stereo[1]).toBeCloseTo(-0.25, 6);
+	createStereoSampler(buffer, step, { start: 12, end: 12 })(11.75, stereo);
+	expect([...stereo]).toEqual([0, 0]);
+});
+
+test.each([44_100, 48_000])("pitch retiming ignores loud samples outside a fractional trim at %d Hz", async (targetRate) => {
+	installBuffer();
+	const nativeRate = targetRate === 44_100 ? 48_000 : 44_100;
+	const source = new AudioBuffer({ length: 2 * nativeRate, sampleRate: nativeRate });
+	const start = 0.25 + 0.25 / nativeRate;
+	const end = start + 0.5;
+	const data = source.getChannelData(0);
+	data.fill(1, 0, Math.ceil(start * nativeRate));
+	data.fill(-1, Math.ceil(end * nativeRate));
+	const read = createPitchReader({
+		readWindow: async (from, to) => sliceAudioWindow(source, from, to),
+		sourceStart: start, sourceEnd: end, rate: 2, sampleRate: targetRate,
+	});
+	const result = await read(targetRate / 4);
+	expect(result.getChannelData(0).every((sample) => sample === 0)).toBe(true);
+	expect(result.getChannelData(1)).toEqual(result.getChannelData(0));
 });

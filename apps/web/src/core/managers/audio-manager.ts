@@ -2,7 +2,7 @@ import { toast } from "sonner";
 import type { EditorCore } from "@/core";
 import { clampRetimeRate, shouldMaintainPitch } from "@/retime/rate";
 import type { AudioClipSource } from "@/media/audio";
-import { createAudioContext, collectAudioClips } from "@/media/audio";
+import { createAudioContext, collectAudioClips, resolvePitchSourceEnd } from "@/media/audio";
 import { buildAudioGainAutomation, hasAnimatedVolume } from "@/timeline/audio-state";
 import { createAudioMasteringChain } from "@/media/audio-mastering";
 import { createPitchReader } from "@/retime";
@@ -340,8 +340,9 @@ export class AudioManager {
 		try {
 			const read = createPitchReader({
 				readWindow: (start, end) => decodeAudioWindow({ input, start, end, signal }),
-				sourceStart: clip.trimStart + firstFrame / sampleRate * rate,
-				sourceEnd: clip.trimStart + clip.duration * rate,
+				sourceStart: clip.trimStart,
+				...resolvePitchSourceEnd(clip.timelineElement, rate),
+				readStart: clip.trimStart + firstFrame / sampleRate * rate,
 				rate, sampleRate, signal,
 			});
 			for (let frame = firstFrame; frame < endFrame; frame += sampleRate) {

@@ -4,13 +4,15 @@ import { createAudioCheckpoint, STEREO_CHANNELS, type DecodedAudioWindow } from 
 
 type ReadWindow = (start: number, end: number) => Promise<DecodedAudioWindow | null>;
 
-/** Pull bounded PCM blocks through one pitch processor so overlap state survives block boundaries. */
+/** Pull bounded PCM blocks through one pitch processor, starting at readStart within the source trim. */
 export function createPitchReader({
-	readWindow, sourceStart, sourceEnd, rate, sampleRate, signal,
+	readWindow, sourceStart, sourceEnd, boundSourceEnd = true, readStart = sourceStart, rate, sampleRate, signal,
 }: {
 	readWindow: ReadWindow;
 	sourceStart: number;
 	sourceEnd: number;
+	boundSourceEnd?: boolean;
+	readStart?: number;
 	rate: number;
 	sampleRate: number;
 	signal?: AbortSignal;
@@ -18,7 +20,7 @@ export function createPitchReader({
 	const processor = new SoundTouch();
 	processor.stretch.setParameters(sampleRate, 0, 0, 0);
 	processor.tempo = rate;
-	const inputFrames = Math.ceil((sourceEnd - sourceStart) * sampleRate);
+	const inputFrames = Math.ceil((sourceEnd - readStart) * sampleRate);
 	const quantum = Math.ceil(sampleRate * Math.min(1, rate) / 8);
 	const scratch = new Float32Array(quantum * 2);
 	const padding = resamplePadding(sampleRate);
@@ -47,13 +49,19 @@ export function createPitchReader({
 				const frames = Math.max(0, Math.min(quantum, inputFrames - inputFrame));
 				scratch.fill(0);
 				if (frames) {
-					const start = sourceStart + inputFrame / sampleRate;
-					const end = sourceStart + (inputFrame + frames) / sampleRate;
+					const start = readStart + inputFrame / sampleRate;
+					const end = readStart + (inputFrame + frames) / sampleRate;
 					if (!window || end + padding > window.start + window.buffer.duration) {
-						const windowEnd = sourceStart + Math.min(inputFrames, inputFrame + sampleRate) / sampleRate;
+						const windowEnd = readStart + Math.min(inputFrames, inputFrame + sampleRate) / sampleRate;
 						window = await readWindow(start - padding, windowEnd + padding);
 						if (!window) return output;
-						sample = createStereoSampler(window.buffer, window.buffer.sampleRate / sampleRate);
+						const nativeRate = window.buffer.sampleRate;
+						const windowStart = Math.round(window.start * nativeRate);
+						// Convert the actual trim independently of the seek offset and decoder window.
+						sample = createStereoSampler(window.buffer, nativeRate / sampleRate, {
+							start: Math.ceil(sourceStart * nativeRate - 1e-7) - windowStart,
+							end: boundSourceEnd ? Math.ceil(sourceEnd * nativeRate - 1e-7) - windowStart : undefined,
+						});
 					}
 					if (!window) return output;
 					const nativeRate = window.buffer.sampleRate;

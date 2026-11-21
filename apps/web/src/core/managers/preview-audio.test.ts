@@ -1,9 +1,14 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { AudioBufferSink, Input, InputAudioTrack, type WrappedAudioBuffer } from "mediabunny";
 import { collectAudioClips, decodeAudioToFloat32 } from "@/media/audio";
+import { mixTimelineAudio } from "@/media/audio-mixdown";
 import { TestAudioBuffer } from "@/media/__tests__/audio-buffer";
 import type { AudioElement, LibraryAudioElement, UploadAudioElement } from "@/timeline";
+import { clipElementToRange } from "@/timeline/compound";
+import { computeGroupResize } from "@/timeline/group-resize/compute-resize";
+import { splitElementAt } from "@/timeline/split";
 import { scene, t } from "@/timeline/__tests__/compound-fixtures";
+import { subMediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({
@@ -107,10 +112,11 @@ afterEach(() => {
 	for (const restoreStub of restore.splice(0).reverse()) restoreStub();
 });
 
-function fakeAudio({ withVisibility = false } = {}) {
+function fakeAudio({ withVisibility = false, sampleRate = 8_000 } = {}) {
 	let raf: FrameRequestCallback | undefined;
 	let wallTimeMs = 1_000;
 	const starts: Array<{ when: number; offset?: number; duration?: number; rate: number }> = [];
+	const buffers: AudioBuffer[] = [];
 	const gains: Array<{ time: number; value: number }> = [];
 	const disconnect = mock(() => {});
 	const stops = mock(() => {});
@@ -120,7 +126,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 	const wakes = new Map<EventTarget, number>();
 	const audio = {
 		currentTime: 10,
-		sampleRate: 8000,
+		sampleRate,
 		state: "suspended",
 		destination: {},
 		resume: mock(async () => { audio.state = "running"; }),
@@ -161,6 +167,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 		createBufferSource: () => {
 			const playbackRate = { value: 1 };
 			return {
+				buffer: null as AudioBuffer | null,
 				playbackRate,
 				connect() {},
 				disconnect,
@@ -168,6 +175,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 				addEventListener() {},
 				start(when: number, offset?: number, duration?: number) {
 					starts.push({ when, offset, duration, rate: playbackRate.value });
+					if (this.buffer) buffers.push(this.buffer);
 				},
 			};
 		},
@@ -197,7 +205,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 			if (deadline <= time) source.dispatchEvent(new Event("ended"));
 		}
 	};
-	return { audio, starts, gains, frame, stops, disconnect, setInterval, wakes, setHidden, advanceAudio };
+	return { audio, starts, buffers, gains, frame, stops, disconnect, setInterval, wakes, setHidden, advanceAudio };
 }
 
 function stubFetch(...responses: Promise<Response>[]) {
@@ -363,6 +371,216 @@ test("pitch-preserved preview prepares short windows at a late trim and parks ah
 	editor.playback.pause();
 	await flush();
 	expect(starts).toHaveLength(2);
+});
+
+test("pitch-preserved preview seeks keep in-trim taps before the cursor", async () => {
+	const sampleRate = 44_100;
+	const nativeRate = 48_000;
+	const rate = 1.5;
+	const trim = 0.25;
+	const seek = 0.5;
+	const { editor } = setup(uploadedClip({
+		duration: t(1), trimStart: t(trim), retime: { rate, maintainPitch: true },
+	}));
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: 2 * nativeRate, sampleRate: nativeRate });
+	// Only the last native sample before the cursor carries this signal.
+	const cursor = (trim + seek * rate) * nativeRate;
+	buffer.getChannelData(0)[cursor - 1] = 0.5;
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.seek({ time: t(seek) });
+	editor.playback.play();
+	await flush();
+
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].length).toBe(sampleRate / 2);
+	expect(Math.max(...buffers[0].getChannelData(0).subarray(0, 16).map(Math.abs))).toBeGreaterThan(0.0001);
+});
+
+const roundedCutCases = [
+	{ nativeRate: 48_000, sampleRate: 44_100 },
+	{ nativeRate: 44_100, sampleRate: 48_000 },
+].flatMap((rates) => (["direct", "compound", "split", "frame split"] as const).map((edit) => ({ ...rates, edit })));
+test.each(roundedCutCases)(
+	"preview and export exclude the first native sample at a rounded cut ($nativeRate to $sampleRate Hz, $edit)", async ({
+	nativeRate, sampleRate, edit,
+}) => {
+	const rate = edit === "frame split" ? 1.15 : 0.85;
+	const end = edit === "frame split" ? 0.53375 : edit === "split" ? 0.4 : 0.1;
+	const original = uploadedClip({
+		duration: t(end / rate), sourceDuration: t(1), trimEnd: t(1 - end), retime: { rate, maintainPitch: true },
+	});
+	let element = original;
+	if (edit === "compound") {
+		const clipped = clipElementToRange({ element, rangeStart: t(0.000025), rangeEnd: element.duration });
+		if (!clipped) throw new Error("Expected a visible clip");
+		element = clipped;
+	}
+	if (edit === "split" || edit === "frame split") {
+		const splitCount = edit === "frame split" ? 5 : 3;
+		const step = edit === "frame split" ? 1001 / 30_000 : 0.000025;
+		for (let split = 1; split <= splitCount; split++) {
+			const parts = splitElementAt({ element, splitTime: t(split * step), rightId: `right-${split}` });
+			if (parts?.right.type !== "audio" || parts.right.sourceType !== "upload") throw new Error("Expected an audio split");
+			element = parts.right;
+		}
+	}
+	const { duration } = element;
+	const { editor, tracks } = setup({ ...element, startTime: t(0) });
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
+	buffer.getChannelData(0)[Math.ceil(nativeRate * end)] = 1;
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+	editor.playback.pause();
+
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].getChannelData(0).every((value) => value === 0)).toBe(true);
+	const blocks: AudioBuffer[] = [];
+	for await (const block of mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), duration, sampleRate })) {
+		blocks.push(block);
+	}
+	expect(blocks).toHaveLength(1);
+	expect(blocks[0].length).toBe(buffers[0].length);
+	expect(blocks[0].getChannelData(0)).toEqual(buffers[0].getChannelData(0));
+	expect(blocks[0].getChannelData(1)).toEqual(buffers[0].getChannelData(1));
+});
+
+test("right extension applies its delta to the stored cut after repeated 1.15x frame splits", () => {
+	const fps = { numerator: 30_000, denominator: 1001 };
+	const { updates: [{ patch }] } = computeGroupResize({
+		members: [{
+			elementId: "audio", trackId: "audio", startTime: t(5 * 1001 / 30_000),
+			duration: subMediaTime({ a: t(0.53375 / 1.15), b: t(5 * 1001 / 30_000) }),
+			trimStart: t(23_025 / TICKS_PER_SECOND), trimEnd: t(1 - 0.53375), sourceDuration: t(1),
+			retime: { rate: 1.15, maintainPitch: true }, leftNeighborBound: null, rightNeighborBound: null,
+		}],
+		side: "right", deltaTime: t(1001 / 30_000), fps,
+	});
+	expect(patch.trimEnd).toBe(t(51_345 / TICKS_PER_SECOND));
+});
+
+test("a legacy retimed clip with stale trim metadata keeps its visible source window", async () => {
+	const nativeRate = 48_000;
+	const sampleRate = 44_100;
+	const { editor } = setup(uploadedClip({
+		duration: t(0.25), trimStart: t(0.25), sourceDuration: t(1), retime: { rate: 2, maintainPitch: true },
+	}));
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
+	buffer.getChannelData(0).fill(0.5, nativeRate * 0.75);
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].getChannelData(0).every((value) => value === 0)).toBe(true);
+});
+
+test.each([0, 0.05])("a legacy duration-only edit retains its playable source at 2x after a %d s leading split", async (splitTime) => {
+	const sampleRate = 48_000;
+	let element = uploadedClip({
+		duration: t(0.25), sourceDuration: t(1), trimEnd: t(0.75), retime: { rate: 2, maintainPitch: true },
+	});
+	if (splitTime > 0) {
+		const parts = splitElementAt({ element, splitTime: t(splitTime), rightId: "legacy-right" });
+		if (parts?.right.type !== "audio" || parts.right.sourceType !== "upload") throw new Error("Expected an audio split");
+		element = parts.right;
+	}
+	const { editor } = setup({ ...element, startTime: t(0) });
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: sampleRate, sampleRate });
+	buffer.getChannelData(0).fill(0.5, sampleRate * 0.3, sampleRate * 0.5);
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].getChannelData(0).some((value) => value > 0.1)).toBe(true);
+});
+
+test("a right extension of a legacy 2x clip keeps its audible tail", async () => {
+	const sampleRate = 44_100;
+	const nativeRate = 48_000;
+	const element = uploadedClip({
+		duration: t(0.25), sourceDuration: t(1), trimEnd: t(0.75), retime: { rate: 2, maintainPitch: true },
+	});
+	const { updates: [{ patch }] } = computeGroupResize({
+		members: [{ ...element, elementId: element.id, trackId: "audio", leftNeighborBound: null, rightNeighborBound: null }],
+		side: "right", deltaTime: t(0.1), fps: { numerator: 30, denominator: 1 },
+	});
+	const duration = t(0.35);
+	expect(patch.duration).toBe(duration);
+	const { editor, tracks } = setup({ ...element, ...patch });
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
+	buffer.getChannelData(0).fill(0.5, nativeRate * 0.48, nativeRate * 0.65);
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+	editor.playback.pause();
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].getChannelData(0).some((value) => value > 0.4)).toBe(true);
+	const blocks: AudioBuffer[] = [];
+	for await (const block of mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), duration, sampleRate })) {
+		blocks.push(block);
+	}
+	expect(blocks).toHaveLength(1);
+	expect(blocks[0].getChannelData(0)).toEqual(buffers[0].getChannelData(0));
+});
+
+const pitchCases = [44_100, 48_000].flatMap((sampleRate) =>
+	[1, 2].flatMap((channels) => [0.5, 1.5, 2].map((rate) => ({ sampleRate, channels, rate }))),
+);
+test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $channels channel(s), $rate x", async ({
+	sampleRate, channels, rate,
+}) => {
+	const nativeRate = sampleRate === 44_100 ? 48_000 : 44_100;
+	const duration = 1.2;
+	const { editor, tracks } = setup(uploadedClip({
+		duration: t(duration), trimStart: t(0.25001), retime: { rate, maintainPitch: true },
+	}));
+	const { buffers, starts } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: 3 * nativeRate, sampleRate: nativeRate, numberOfChannels: channels });
+	for (let channel = 0; channel < channels; channel++) {
+		const samples = buffer.getChannelData(channel);
+		for (let frame = 0; frame < samples.length; frame++) {
+			samples[frame] = 0.5 * Math.sin(2 * Math.PI * (300 + channel * 100) * frame / nativeRate);
+		}
+	}
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+	expect(buffers.map((block) => block.length)).toEqual([sampleRate, sampleRate / 5]);
+	expect(starts[0]).toMatchObject({ offset: 0, duration: 1, rate: 1 });
+	expect(starts[1]).toMatchObject({ offset: 0, rate: 1 });
+	expect(starts[1].duration).toBeCloseTo(0.2, 10);
+	editor.playback.pause();
+
+	const blocks: AudioBuffer[] = [];
+	for await (const block of mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), duration: t(duration), sampleRate })) {
+		blocks.push(block);
+	}
+	expect(blocks).toHaveLength(1);
+	expect(blocks[0].length).toBe(duration * sampleRate);
+	for (let channel = 0; channel < 2; channel++) {
+		const samples = blocks[0].getChannelData(channel);
+		expect(buffers[0].getChannelData(channel)).toEqual(samples.subarray(0, sampleRate));
+		expect(buffers[1].getChannelData(channel)).toEqual(samples.subarray(sampleRate));
+		let crossings = 0;
+		for (let frame = sampleRate / 10 + 1; frame <= sampleRate * 0.4; frame++) {
+			if (samples[frame - 1] <= 0 && samples[frame] > 0) crossings++;
+		}
+		const frequency = channels === 2 && channel === 1 ? 400 : 300;
+		expect(Math.abs(crossings - frequency * 0.3)).toBeLessThanOrEqual(2);
+	}
 });
 
 test("rounding the preview frame to the end does not stop the last audio samples early", async () => {

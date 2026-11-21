@@ -147,6 +147,29 @@ export function timelineHasAudio({
 	);
 }
 
+export function resolvePitchSourceEnd(element: AudioCapableElement, rate: number): {
+	sourceEnd: number;
+	boundSourceEnd?: boolean;
+} {
+	const sourceSpan = element.duration * rate;
+	const projectedEnd = (element.trimStart + sourceSpan) / TICKS_PER_SECOND;
+	if (element.sourceDuration !== undefined) {
+		const storedEnd = element.sourceDuration - element.trimEnd;
+		const storedSpan = storedEnd - element.trimStart;
+		// Allow timeline and source tick rounding, or one 48 kHz frame for split drift.
+		const tolerance = Math.max(rate / 2 + 1, TICKS_PER_SECOND / 48_000);
+		if (sourceSpan - storedSpan > tolerance) {
+			// A short stored span can come from valid edits or stale duration metadata.
+			// Keep the original trailing reads until the timeline can distinguish them.
+			return { sourceEnd: projectedEnd, boundSourceEnd: false };
+		}
+		if (storedSpan > 0 && storedSpan <= sourceSpan + tolerance) {
+			return { sourceEnd: storedEnd / TICKS_PER_SECOND };
+		}
+	}
+	return { sourceEnd: projectedEnd };
+}
+
 interface AudioMixSource {
 	timelineElement: AudioCapableElement;
 	file: File;
