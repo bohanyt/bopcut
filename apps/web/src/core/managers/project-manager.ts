@@ -325,21 +325,30 @@ export class ProjectManager {
 	async export({
 		options,
 		retryResult,
+		restoreMissingMedia = false,
 	}: {
 		options: ExportOptions;
 		retryResult?: ExportResult;
+		restoreMissingMedia?: boolean;
 	}): Promise<ExportResult> {
 		if (this.exportController) {
 			return { success: false, error: "Another export is running; try again when it finishes" };
 		}
 		const session = this.session;
-		if (retryResult && (this.exportState.result !== retryResult || this.exportTarget?.session !== session)) {
-			return { success: false, cancelled: true };
+		const isCurrentRetry = () => this.exportState.result === retryResult && this.exportTarget?.session === session;
+		if (retryResult) {
+			if (!isCurrentRetry()) return { success: false, cancelled: true };
+			const projectId = this.active?.metadata.id;
+			if (restoreMissingMedia && projectId && retryResult.missingMedia?.length) {
+				await this.editor.media.retryMissingMedia({ projectId, failures: retryResult.missingMedia });
+				if (!isCurrentRetry()) return { success: false, cancelled: true };
+			}
 		}
 		const sceneId = retryResult
 			? this.exportTarget?.sceneId
 			: options.sceneId ?? this.editor.scenes.getCompoundPath()[0]?.sceneId;
-		this.exportTarget = { session, sceneId };
+		const target = { session, sceneId };
+		this.exportTarget = target;
 		const controller = new AbortController();
 		this.exportController = controller;
 		this.exportState = { isExporting: true, progress: 0, result: null };
@@ -347,13 +356,14 @@ export class ProjectManager {
 		let result: ExportResult;
 		try {
 			this.notify();
-			if (session !== this.session) {
+			if (this.exportTarget !== target) {
 				result = { success: false, cancelled: true };
 			} else {
 				result = await this.editor.renderer.exportProject({
 					options: { ...options, sceneId },
 					signal: controller.signal,
 					onProgress: ({ progress }) => {
+						if (this.exportTarget !== target) return;
 						this.exportState = { ...this.exportState, progress };
 						this.notify();
 					},
@@ -365,6 +375,7 @@ export class ProjectManager {
 			this.exportController = null;
 		}
 
+		if (this.exportTarget !== target) return { success: false, cancelled: true };
 		this.exportState = {
 			isExporting: false,
 			progress: this.exportState.progress,
@@ -380,9 +391,13 @@ export class ProjectManager {
 	}
 
 	clearExportState(): void {
+		this.resetExportState();
+		this.notify();
+	}
+
+	private resetExportState(): void {
 		this.exportTarget = null;
 		this.exportState = { isExporting: false, progress: 0, result: null };
-		this.notify();
 	}
 
 	getExportState(): ExportState {
@@ -848,6 +863,8 @@ export class ProjectManager {
 		const previous = this.sessionController;
 		this.session++;
 		this.sessionController = new AbortController();
+		this.cancelExport();
+		this.resetExportState();
 		this.editor.command.clear();
 		this.editor.timeline.discardPreview();
 		previous.abort();

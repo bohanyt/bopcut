@@ -582,6 +582,45 @@ describe("the export poller", () => {
 		}
 	});
 
+	test("a browser retry from a previous project never reads or marks its files missing in the new project", async () => {
+		const editor = open("p");
+		editor.save.stop();
+		const failure = { success: false, missingMedia: [{ id: "old-file", name: "Old file", error: "Missing" }] };
+		const render = spyOn(editor.renderer, "exportProject").mockResolvedValueOnce(failure);
+		const read = spyOn(storageService, "loadMediaAsset").mockResolvedValue(null);
+		try {
+			const options = { format: "mp4", quality: "high" } as const;
+			const failed = await editor.project.export({ options });
+			open("q");
+			const retry = await editor.project.export({ options, retryResult: failed, restoreMissingMedia: true });
+			expect(retry).toEqual({ success: false, cancelled: true });
+			expect(editor.project.getExportState().result).toBeNull();
+			expect(read).not.toHaveBeenCalled();
+			expect(editor.media.getMissingMedia()).toEqual([]);
+			expect(render).toHaveBeenCalledTimes(1);
+		} finally {
+			read.mockRestore();
+			render.mockRestore();
+		}
+	});
+
+	test("a stale export completion cannot restore a result after a project switch", async () => {
+		const editor = open("p");
+		editor.save.stop();
+		const render = spyOn(editor.renderer, "exportProject").mockImplementation(async ({ onProgress }) => {
+			open("q");
+			onProgress?.({ progress: 0.9 });
+			return { success: true, buffer: new ArrayBuffer(1) };
+		});
+		try {
+			const result = await editor.project.export({ options: { format: "mp4", quality: "high" } });
+			expect(result).toEqual({ success: false, cancelled: true });
+			expect(editor.project.getExportState()).toEqual({ result: null, progress: 0, isExporting: false });
+		} finally {
+			render.mockRestore();
+		}
+	});
+
 	test("browser export reports nested missing media and accepts an explicit override", () =>
 		withCanvas(async () => {
 			const editor = open("p", 2, { missing: true, nested: true });

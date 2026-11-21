@@ -120,14 +120,17 @@ function ExportPopover({
 	const handleExport = async ({
 		allowMissing = false,
 		retryResult,
+		restoreMissingMedia = false,
 	}: {
 		allowMissing?: boolean;
 		retryResult?: ExportResult;
+		restoreMissingMedia?: boolean;
 	} = {}) => {
 		if (!activeProject) return;
 
 		const result = await editor.project.export({
 			retryResult,
+			restoreMissingMedia,
 			options: {
 				format,
 				quality,
@@ -156,20 +159,9 @@ function ExportPopover({
 
 	const handleRetry = async () => {
 		if (!exportResult) return;
-		if (!exportResult.missingMedia?.length) {
-			await handleExport({ retryResult: exportResult });
-			return;
-		}
-		const session = editor.project.getSession();
 		setIsRetrying(true);
 		try {
-			await editor.media.retryMissingMedia({
-				projectId: activeProject.metadata.id,
-				failures: exportResult.missingMedia,
-			});
-			if (editor.project.getSession() === session && editor.project.getExportState().result === exportResult) {
-				await handleExport({ retryResult: exportResult });
-			}
+			await handleExport({ retryResult: exportResult, restoreMissingMedia: true });
 		} finally {
 			setIsRetrying(false);
 		}
