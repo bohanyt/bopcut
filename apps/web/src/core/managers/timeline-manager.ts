@@ -73,6 +73,7 @@ export class TimelineManager {
 	private listeners = new Set<() => void>();
 	private previewOverlay = new Map<string, Partial<TimelineElement>>();
 	private previewTracks: SceneTracks | null = null;
+	private durations = new WeakMap<SceneTracks, MediaTime>();
 	public readonly dragSource = new TimelineDragSource();
 
 	constructor(private editor: EditorCore) {}
@@ -241,7 +242,12 @@ export class TimelineManager {
 			return ZERO_MEDIA_TIME;
 		}
 
-		return calculateTotalDuration({ tracks: activeScene.tracks });
+		const { tracks } = activeScene;
+		const cached = this.durations.get(tracks);
+		if (cached !== undefined) return cached;
+		const duration = calculateTotalDuration({ tracks });
+		this.durations.set(tracks, duration);
+		return duration;
 	}
 
 	getLastFrameTime(): MediaTime {

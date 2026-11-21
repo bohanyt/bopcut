@@ -85,6 +85,35 @@ function setupSplitHistory() {
 	return { editor, tracks, main, first, second, keyAt };
 }
 
+test("duration reads reuse the active track snapshot and refresh when tracks change", () => {
+	const scenes = fixture();
+	const clip = video("duration-probe", 0, 2);
+	let durationReads = 0;
+	Object.defineProperty(clip, "duration", {
+		enumerable: true,
+		get: () => {
+			durationReads++;
+			return t(2);
+		},
+	});
+	const host = getHost(scenes);
+	host.tracks.main.elements = [clip];
+	host.tracks.overlay = [];
+	host.tracks.audio = [];
+	const editor = setup(scenes);
+	expect(editor.timeline.getTotalDuration()).toBe(t(2));
+	const reads = durationReads;
+	for (let frame = 0; frame < 10; frame++) {
+		expect(editor.timeline.getTotalDuration()).toBe(t(2));
+	}
+	expect(durationReads).toBe(reads);
+
+	editor.timeline.updateElements({ updates: [{ trackId: host.tracks.main.id, elementId: clip.id, patch: { duration: t(1) } }] });
+	expect(editor.timeline.getTotalDuration()).toBe(t(1));
+	editor.command.undo();
+	expect(editor.timeline.getTotalDuration()).toBe(t(2));
+});
+
 describe("split and ripple replay", () => {
 	for (const retainSide of ["both", "right"] as const) {
 		test(`redo restores the same right segment after a ${retainSide} split`, () => {
