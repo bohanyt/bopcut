@@ -7,6 +7,7 @@ import {
 } from "mediabunny";
 
 interface VideoSinkData {
+	file: File;
 	input: Input;
 	sink: CanvasSink;
 	iterator: AsyncGenerator<WrappedCanvas, void, unknown> | null;
@@ -34,13 +35,19 @@ export class VideoCache {
 		file,
 		time,
 		exact = false,
+		throwOnSeekError = false,
+		signal,
 	}: {
 		mediaId: string;
 		file: File;
 		time: number;
 		exact?: boolean;
+		throwOnSeekError?: boolean;
+		signal?: AbortSignal;
 	}): Promise<WrappedCanvas | null> {
+		signal?.throwIfAborted();
 		await this.ensureSink({ mediaId, file });
+		signal?.throwIfAborted();
 
 		const sinkData = this.sinks.get(mediaId);
 		if (!sinkData) return null;
@@ -52,10 +59,11 @@ export class VideoCache {
 
 		const previous = this.frameChain.get(mediaId) ?? Promise.resolve();
 		const current = previous.then(() => {
+			signal?.throwIfAborted();
 			if (generation !== null && this.seekGenerations.get(mediaId) !== generation) {
 				return sinkData.currentFrame ?? null;
 			}
-			return this.resolveFrame({ sinkData, time });
+			return this.resolveFrame({ sinkData, time, throwOnSeekError });
 		});
 		this.frameChain.set(
 			mediaId,
@@ -67,9 +75,11 @@ export class VideoCache {
 	private async resolveFrame({
 		sinkData,
 		time,
+		throwOnSeekError,
 	}: {
 		sinkData: VideoSinkData;
 		time: number;
+		throwOnSeekError: boolean;
 	}): Promise<WrappedCanvas | null> {
 		if (sinkData.nextFrame && sinkData.nextFrame.timestamp <= time) {
 			sinkData.currentFrame = sinkData.nextFrame;
@@ -102,7 +112,7 @@ export class VideoCache {
 			}
 		}
 
-		const frame = await this.seekToTime({ sinkData, time });
+		const frame = await this.seekToTime({ sinkData, time, throwOnSeekError });
 		if (frame && !sinkData.nextFrame && !sinkData.prefetching) {
 			this.startPrefetch({ sinkData });
 		}
@@ -170,9 +180,11 @@ export class VideoCache {
 	private async seekToTime({
 		sinkData,
 		time,
+		throwOnSeekError,
 	}: {
 		sinkData: VideoSinkData;
 		time: number;
+		throwOnSeekError: boolean;
 	}): Promise<WrappedCanvas | null> {
 		try {
 			if (sinkData.prefetching && sinkData.prefetchPromise) {
@@ -196,7 +208,9 @@ export class VideoCache {
 				this.startPrefetch({ sinkData });
 				return frame;
 			}
+			if (throwOnSeekError) throw new Error("No video frames could be decoded");
 		} catch (error) {
+			if (throwOnSeekError) throw error;
 			console.warn("Failed to seek video:", error);
 		}
 
@@ -249,7 +263,9 @@ export class VideoCache {
 		mediaId: string;
 		file: File;
 	}): Promise<void> {
-		if (this.sinks.has(mediaId)) return;
+		const existing = this.sinks.get(mediaId);
+		if (existing?.file === file) return;
+		if (existing) this.clearVideo({ mediaId });
 
 		if (this.initPromises.has(mediaId)) {
 			await this.initPromises.get(mediaId);
@@ -294,6 +310,7 @@ export class VideoCache {
 			});
 
 			this.sinks.set(mediaId, {
+				file,
 				input,
 				sink,
 				iterator: null,

@@ -1,5 +1,5 @@
 import { readPresetSettings } from "@/animation/presets";
-import type { CompoundElement, SceneTracks, TScene, TimelineTrack } from "@/timeline";
+import type { CompoundElement, ImageElement, SceneTracks, TScene, TimelineTrack, VideoElement } from "@/timeline";
 import { readShakeSettings } from "@/rendering/shake";
 import {
 	CompoundCycleError,
@@ -29,10 +29,12 @@ import {
 
 const PREVIEW_MAX_IMAGE_SIZE = 2048;
 
+function getVisibleElements(track: TimelineTrack) {
+	return track.elements.filter((element) => !("hidden" in element && element.hidden));
+}
+
 function getVisibleSortedElements({ track }: { track: TimelineTrack }) {
-	return track.elements
-		.filter((element) => !("hidden" in element && element.hidden))
-		.slice()
+	return getVisibleElements(track)
 		.sort((a, b) => {
 			if (a.startTime !== b.startTime) return a.startTime - b.startTime;
 			return a.id.localeCompare(b.id);
@@ -54,6 +56,40 @@ function getVisualTracksBottomToTop(tracks: SceneTracks): TimelineTrack[] {
 		...(!tracks.main.hidden ? [tracks.main] : []),
 	];
 	return visibleTracks.slice().reverse();
+}
+
+/** The visual media intersecting the export window, in each compound's local time. */
+export function collectVisibleMedia({ tracks, scenes, duration }: {
+	tracks: SceneTracks;
+	scenes: TScene[];
+	duration: number;
+}): (VideoElement | ImageElement)[] {
+	const byId = new Map(scenes.map((scene) => [scene.id, scene]));
+	const media: (VideoElement | ImageElement)[] = [];
+	const stack = new Set<string>();
+
+	function visit(tracks: SceneTracks, start: number, end: number) {
+		for (const track of getVisualTracksBottomToTop(tracks)) {
+			for (const element of getVisibleElements(track)) {
+				const from = Math.max(start, element.startTime);
+				const to = Math.min(end, element.startTime + element.duration);
+				if (from >= to) continue;
+				if (element.type === "video" || element.type === "image") {
+					media.push(element);
+				} else if (element.type === "compound") {
+					const nested = byId.get(element.sceneId);
+					if (!nested || stack.has(nested.id)) continue;
+					const offset = element.trimStart - element.startTime;
+					stack.add(nested.id);
+					visit(nested.tracks, from + offset, to + offset);
+					stack.delete(nested.id);
+				}
+			}
+		}
+	}
+
+	visit(tracks, 0, duration);
+	return media;
 }
 
 function buildCompoundNode({
@@ -168,6 +204,7 @@ function buildTrackNodes({
 				} else if (element.type === "image" && mediaAsset.type === "image") {
 					nodes.push(
 						new ImageNode({
+							mediaId: mediaAsset.id,
 							url: mediaAsset.url,
 							duration: element.duration,
 							timeOffset: element.startTime,

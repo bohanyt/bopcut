@@ -1,6 +1,6 @@
 import type { TProject, TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
-import type { MediaAsset } from "@/media/types";
+import type { MediaAsset, MediaLoadFailure } from "@/media/types";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import { DiskAdapter, DiskSoundsAdapter } from "./disk-adapter";
@@ -494,7 +494,7 @@ class StorageService {
 		projectId: string;
 		concurrency?: number;
 		onProgress?: (progress: { loaded: number; total: number }) => void;
-		onFailed?: (failure: { id: string; name: string; error: string }) => void;
+		onFailed?: (failure: MediaLoadFailure) => void;
 		signal?: AbortSignal;
 		/** Media the project's timeline uses: staged media are loaded only when listed here. */
 		usedIds?: ReadonlySet<string>;
@@ -509,12 +509,18 @@ class StorageService {
 			while (next < list.length) {
 				signal?.throwIfAborted();
 				const index = next++;
+				const metadata = list[index];
 				try {
-					items[index] = await this.readMediaAsset({ projectId, metadata: list[index], signal });
+					items[index] = await this.readMediaAsset({ projectId, metadata, signal });
 				} catch (error) {
 					if (signal?.aborted) throw error;
-					console.error(`Failed to load media ${list[index].id}:`, error);
-					onFailed?.({ id: list[index].id, name: list[index].name, error: error instanceof Error ? error.message : String(error) });
+					console.error(`Failed to load media ${metadata.id}:`, error);
+					onFailed?.({
+						id: metadata.id,
+						name: metadata.name,
+						error: error instanceof Error ? error.message : String(error),
+						...(metadata.type === "video" && metadata.hasAudio !== undefined && { hasAudio: metadata.hasAudio }),
+					});
 				}
 				loaded++;
 				onProgress?.({ loaded, total: list.length });

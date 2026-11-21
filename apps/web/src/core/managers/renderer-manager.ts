@@ -3,18 +3,25 @@ import type { RootNode } from "@/services/renderer/nodes/root-node";
 import type { ExportOptions, ExportResult } from "@/export";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { SceneExporter } from "@/services/renderer/scene-exporter";
-import { buildScene } from "@/services/renderer/scene-builder";
-import { createTimelineAudioBuffer } from "@/media/audio";
+import { buildScene, collectVisibleMedia } from "@/services/renderer/scene-builder";
+import { collectAudibleCandidates, createTimelineAudioBuffer } from "@/media/audio";
+import type { MediaLoadFailure, MediaType } from "@/media/types";
 import { formatTimecode } from "opencut-wasm";
-import { frameRateToFloat } from "@/fps/utils";
 import { downloadBlob } from "@/utils/browser";
-import { calculateTotalDuration } from "@/timeline";
+import { calculateTotalDuration, type TScene } from "@/timeline";
+import { isElementMuted } from "@/timeline/audio-state";
+import type { TCanvasSize } from "@/project/types";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
+import { waitWithAbort } from "@/utils/abort";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
 	| { success: false; error: string };
+
+function unavailableMedia(missingMedia: MediaLoadFailure[]): ExportResult {
+	return { success: false, error: "Some media used in this timeline are unavailable.", missingMedia };
+}
 
 export class RendererManager {
 	private renderTree: RootNode | null = null;
@@ -166,42 +173,84 @@ export class RendererManager {
 		return this.exportRunning;
 	}
 
+	/** Checks a loaded scene before mixdown or rendering. */
+	checkExport({
+		format, allowMissing, includeAudio, scene, scenes, canvasSize, duration = calculateTotalDuration({ tracks: scene.tracks }),
+	}: Pick<ExportOptions, "format" | "allowMissing" | "includeAudio"> & {
+		scene: TScene;
+		scenes: TScene[];
+		canvasSize: TCanvasSize;
+		duration?: number;
+	}): ExportResult | null {
+		if (format === "mp4" && (canvasSize.width % 2 !== 0 || canvasSize.height % 2 !== 0)) {
+			return {
+				success: false,
+				error: `MP4 needs even canvas dimensions (${canvasSize.width} × ${canvasSize.height}). Choose WebM or set both dimensions to even numbers in project settings.`,
+			};
+		}
+		if (allowMissing === true) return null;
+		const { tracks } = scene;
+		const { media } = this.editor;
+		const visual = collectVisibleMedia({ tracks, scenes, duration })
+			.map(({ mediaId, name, type }) => ({ id: mediaId, name, requiresUrl: true, types: [type] }));
+		const audio = includeAudio ? collectAudibleCandidates({
+			tracks, scenes, duration, mediaAssets: media.getAssets(), includeMissingVideo: true,
+			silentMissingVideoIds: new Set(media.getMissingMedia().filter(({ hasAudio }) => hasAudio === false).map(({ id }) => id)),
+		}).flatMap(({ element }) => {
+			if (isElementMuted({ element })) return [];
+			if (element.type === "audio" && element.sourceType !== "upload") return [];
+			const types: MediaType[] = element.type === "video" ? ["video"] : ["audio", "video"];
+			return [{ id: element.mediaId, name: element.name, types }];
+		}) : [];
+		const missingMedia = media.getMissingReferences([...visual, ...audio]);
+		return missingMedia.length ? unavailableMedia(missingMedia) : null;
+	}
+
 	/**
-	 * Exports the timeline as it is when this is called (read before the first wait, so later edits are
-	 * not mixed in). Refused while another export runs.
+	 * Exports the timeline as it is when this is called. If media are still loading, only the media
+	 * snapshot waits. Refused while another export runs.
 	 */
 	async exportProject(job: {
 		options: ExportOptions;
 		onProgress?: ({ progress }: { progress: number }) => void;
-		onCancel?: () => boolean;
+		signal?: AbortSignal;
 	}): Promise<ExportResult> {
 		if (this.exportRunning) {
 			return { success: false, error: "Another export is running; try again when it finishes" };
 		}
-		this.exportRunning = true;
+		const sessionSignal = this.editor.project.getSessionSignal();
+		const signal = job.signal ? AbortSignal.any([job.signal, sessionSignal]) : sessionSignal;
 		const releaseMedia = holdMediaUrls();
-		this.notify();
+		this.exportRunning = true;
 		try {
-			return await this.runExport(job);
-		} finally {
-			releaseMedia();
-			this.exportRunning = false;
 			this.notify();
+			return await this.runExport({ ...job, signal });
+		} finally {
+			this.exportRunning = false;
+			try {
+				releaseMedia();
+			} finally {
+				this.notify();
+			}
 		}
 	}
 
 	private async runExport({
 		options,
 		onProgress,
-		onCancel,
+		signal: callerSignal,
 	}: {
 		options: ExportOptions;
 		onProgress?: ({ progress }: { progress: number }) => void;
-		onCancel?: () => boolean;
+		signal: AbortSignal;
 	}): Promise<ExportResult> {
-		const { format, quality, fps, includeAudio, sceneId } = options;
+		const { format, quality, fps, includeAudio, sceneId, allowMissing } = options;
+		const visualFailure = new AbortController();
+		const signal = AbortSignal.any([callerSignal, visualFailure.signal]);
+		const failures = new Map<string, MediaLoadFailure>();
 
 		try {
+			signal.throwIfAborted();
 			const scenes = this.editor.scenes.getScenes();
 			const active = this.editor.scenes.getActiveScene();
 			const exported = sceneId ? scenes.find((scene) => scene.id === sceneId) : active;
@@ -209,7 +258,6 @@ export class RendererManager {
 				return { success: false, error: "Scene not found" };
 			}
 			const tracks = exported.tracks;
-			const mediaAssets = this.editor.media.getAssets();
 			const activeProject = this.editor.project.getActive();
 
 			if (!activeProject) {
@@ -222,30 +270,47 @@ export class RendererManager {
 			}
 
 			const exportFps = fps ?? activeProject.settings.fps;
-			const canvasSize = activeProject.settings.canvasSize;
+			const { canvasSize, background } = activeProject.settings;
+
+			const { media } = this.editor;
+			if (media.isLoadingMedia()) {
+				await new Promise<void>((resolve) => {
+					const finish = () => {
+						unsubscribeMedia();
+						signal.removeEventListener("abort", finish);
+						resolve();
+					};
+					const unsubscribeMedia = media.subscribe(() => {
+						if (!media.isLoadingMedia()) finish();
+					});
+					signal.addEventListener("abort", finish, { once: true });
+				});
+			}
+			signal.throwIfAborted();
+
+			const preflight = this.checkExport({ format, allowMissing, includeAudio, scene: exported, scenes, canvasSize, duration });
+			if (preflight) return preflight;
+			const mediaAssets = media.getAssets();
 
 			let audioBuffer: AudioBuffer | null = null;
 			if (includeAudio) {
 				onProgress?.({ progress: 0.05 });
-				audioBuffer = await createTimelineAudioBuffer({
-					tracks,
-					mediaAssets,
-					duration,
-					scenes,
-				});
+				signal.throwIfAborted();
+				audioBuffer = await waitWithAbort(createTimelineAudioBuffer({
+					tracks, mediaAssets, duration, scenes, signal,
+					onFailure: (failure) => failures.set(failure.id, failure),
+				}), signal);
 			}
 
-			// Checked again before encoding: preparing the sound can take a while.
-			if (onCancel?.()) {
-				return { success: false, cancelled: true };
-			}
+			signal.throwIfAborted();
+			if (failures.size && allowMissing !== true) return unavailableMedia([...failures.values()]);
 
 			const scene = buildScene({
 				tracks,
 				mediaAssets,
 				duration,
 				canvasSize,
-				background: activeProject.settings.background,
+				background,
 				scenes,
 			});
 
@@ -257,6 +322,11 @@ export class RendererManager {
 				quality,
 				shouldIncludeAudio: !!includeAudio,
 				audioBuffer: audioBuffer || undefined,
+				onMediaFailure: (id, error) => {
+					const name = mediaAssets.find((asset) => asset.id === id)?.name ?? id;
+					failures.set(id, { id, name, error: error instanceof Error ? error.message : String(error), unreadable: true });
+					if (allowMissing !== true) visualFailure.abort();
+				},
 			});
 
 			exporter.on("progress", (progress) => {
@@ -266,37 +336,17 @@ export class RendererManager {
 				onProgress?.({ progress: adjustedProgress });
 			});
 
-			let cancelled = false;
-			const checkCancel = () => {
-				if (onCancel?.()) {
-					cancelled = true;
-					exporter.cancel();
-				}
-			};
+			const buffer = await exporter.export({ rootNode: scene, signal });
+			signal.throwIfAborted();
 
-			const cancelInterval = setInterval(checkCancel, 100);
-
-			try {
-				const buffer = await exporter.export({ rootNode: scene });
-				clearInterval(cancelInterval);
-
-				// Also a cancel that came after the last check (a short export ends within 100 ms).
-				if (cancelled || onCancel?.()) {
-					return { success: false, cancelled: true };
-				}
-
-				if (!buffer) {
-					return { success: false, error: "Export failed to produce buffer" };
-				}
-
-				return {
-					success: true,
-					buffer,
-				};
-			} finally {
-				clearInterval(cancelInterval);
+			if (!buffer) {
+				return { success: false, error: "Export failed to produce buffer" };
 			}
+
+			return { success: true, buffer };
 		} catch (error) {
+			if (callerSignal.aborted) return { success: false, cancelled: true };
+			if (visualFailure.signal.aborted) return unavailableMedia([...failures.values()]);
 			console.error("Export failed:", error);
 			return {
 				success: false,

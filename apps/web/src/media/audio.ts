@@ -8,7 +8,7 @@ import type {
 } from "@/timeline";
 import { expandCompoundAudioTracks } from "@/timeline/compound";
 import { shouldMaintainPitch } from "@/retime/rate";
-import type { MediaAsset } from "@/media/types";
+import type { MediaAsset, MediaLoadFailure } from "@/media/types";
 import { applyAudioMasteringToBuffer } from "@/media/audio-mastering";
 import type { AudioCapableElement } from "@/timeline/audio-state";
 import {
@@ -16,7 +16,7 @@ import {
 	isElementMuted,
 	resolveEffectiveAudioGain,
 } from "@/timeline/audio-state";
-import { doesElementHaveEnabledAudio } from "@/timeline/audio-separation";
+import { doesElementHaveEnabledAudio, isSourceAudioEnabled } from "@/timeline/audio-separation";
 import { canElementHaveAudio, hasMediaId } from "@/timeline/element-utils";
 import { canTrackHaveAudio } from "@/timeline";
 import { mediaSupportsAudio } from "@/media/media-utils";
@@ -97,11 +97,18 @@ export function collectAudibleCandidates({
 	tracks: sceneTracks,
 	mediaAssets,
 	scenes = [],
+	duration = Infinity,
+	includeMissingVideo = false,
+	silentMissingVideoIds,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
 	/** All project scenes; needed to mix the audio inside compound clips. */
 	scenes?: TScene[];
+	duration?: number;
+	/** Include enabled video audio even when its file is absent, for export preflight. */
+	includeMissingVideo?: boolean;
+	silentMissingVideoIds?: ReadonlySet<string>;
 }): AudibleElementCandidate[] {
 	const tracks = expandCompoundAudioTracks({ tracks: sceneTracks, scenes });
 	const allTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
@@ -113,12 +120,15 @@ export function collectAudibleCandidates({
 
 		for (const element of track.elements) {
 			if (!canElementHaveAudio(element)) continue;
-			if (element.duration <= 0) continue;
+			if (element.duration <= 0 || element.startTime >= duration || element.startTime + element.duration <= 0) continue;
 
 			const mediaAsset = hasMediaId(element)
 				? (mediaMap.get(element.mediaId) ?? null)
 				: null;
-			if (!doesElementHaveEnabledAudio({ element, mediaAsset })) continue;
+			const enabled = element.type === "video" && mediaAsset?.type !== "video" && includeMissingVideo
+				? !silentMissingVideoIds?.has(element.mediaId) && isSourceAudioEnabled({ element })
+				: doesElementHaveEnabledAudio({ element, mediaAsset });
+			if (!enabled) continue;
 
 			candidates.push({ element, mediaAsset });
 		}
@@ -146,111 +156,76 @@ export async function collectAudioElements({
 	mediaAssets,
 	audioContext,
 	scenes,
+	duration,
+	onFailure,
+	signal,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
 	audioContext: AudioContext;
 	scenes?: TScene[];
+	duration?: number;
+	onFailure?: (failure: MediaLoadFailure) => void;
+	signal?: AbortSignal;
 }): Promise<CollectedAudioElement[]> {
-	const candidates = collectAudibleCandidates({ tracks, mediaAssets, scenes });
-	const mediaMap = new Map<string, MediaAsset>(
-		mediaAssets.map((media) => [media.id, media]),
-	);
-	const pendingElements: Array<Promise<CollectedAudioElement | null>> = [];
-
-	for (const { element, mediaAsset } of candidates) {
-		if (element.type === "audio") {
-			pendingElements.push(
-				resolveAudioBufferForElement({
-					element,
-					mediaMap,
-					audioContext,
-				}).then((audioBuffer) => {
-					if (!audioBuffer) return null;
-					return {
-						timelineElement: element,
-						buffer: audioBuffer,
-						startTime: element.startTime / TICKS_PER_SECOND,
-						duration: element.duration / TICKS_PER_SECOND,
-						trimStart: element.trimStart / TICKS_PER_SECOND,
-						trimEnd: element.trimEnd / TICKS_PER_SECOND,
-						volume: resolveEffectiveAudioGain({
-							element,
-							trackMuted: false,
-							localTime: 0,
-						}),
-						muted: isElementMuted({ element }),
-						retime: element.retime,
-					};
-				}),
-			);
-			continue;
-		}
-
-		if (element.type === "video") {
-			if (!mediaAsset || !mediaSupportsAudio({ media: mediaAsset })) continue;
-
-			pendingElements.push(
-				resolveAudioBufferForAsset({
-					asset: mediaAsset,
-					audioContext,
-				}).then((audioBuffer) => {
-					if (!audioBuffer) return null;
-					return {
-						timelineElement: element,
-						buffer: audioBuffer,
-						startTime: element.startTime / TICKS_PER_SECOND,
-						duration: element.duration / TICKS_PER_SECOND,
-						trimStart: element.trimStart / TICKS_PER_SECOND,
-						trimEnd: element.trimEnd / TICKS_PER_SECOND,
-						volume: resolveEffectiveAudioGain({
-							element,
-							trackMuted: false,
-							localTime: 0,
-						}),
-						muted: isElementMuted({ element }),
-						retime: element.retime,
-					};
-				}),
-			);
-		}
-	}
-
-	const resolvedElements = await Promise.all(pendingElements);
-	const audioElements: CollectedAudioElement[] = [];
-	for (const element of resolvedElements) {
-		if (element) audioElements.push(element);
-	}
-	return audioElements;
+	const candidates = collectAudibleCandidates({ tracks, mediaAssets, scenes, duration });
+	const resolved = await Promise.all(candidates.map(async ({ element, mediaAsset }) => {
+		signal?.throwIfAborted();
+		if (isElementMuted({ element })) return null;
+		const buffer = await resolveAudioBufferForElement({ element, mediaAsset, audioContext, onFailure, signal });
+		if (!buffer) return null;
+		return {
+			timelineElement: element,
+			buffer,
+			startTime: element.startTime / TICKS_PER_SECOND,
+			duration: element.duration / TICKS_PER_SECOND,
+			trimStart: element.trimStart / TICKS_PER_SECOND,
+			trimEnd: element.trimEnd / TICKS_PER_SECOND,
+			volume: resolveEffectiveAudioGain({ element, trackMuted: false, localTime: 0 }),
+			muted: false,
+			retime: element.retime,
+		};
+	}));
+	return resolved.filter((element): element is NonNullable<typeof element> => element !== null);
 }
 
 async function resolveAudioBufferForElement({
 	element,
-	mediaMap,
+	mediaAsset,
 	audioContext,
+	onFailure,
+	signal,
 }: {
-	element: AudioElement;
-	mediaMap: Map<string, MediaAsset>;
+	element: AudioElement | VideoElement;
+	mediaAsset: MediaAsset | null;
 	audioContext: AudioContext;
+	onFailure?: (failure: MediaLoadFailure) => void;
+	signal?: AbortSignal;
 }): Promise<AudioBuffer | null> {
+	const library = element.type === "audio" && element.sourceType === "library" ? element : null;
 	try {
-		if (element.sourceType === "upload") {
-			const asset = mediaMap.get(element.mediaId);
-			if (!asset) return null;
-			return await resolveAudioBufferForAsset({ asset, audioContext });
+		if (!library) {
+			if (!mediaAsset?.file || !mediaSupportsAudio({ media: mediaAsset })) return null;
+			if (element.type === "video" && mediaAsset.type !== "video") return null;
+			return await resolveAudioBufferForAsset({
+				asset: mediaAsset, audioContext, signal,
+				requiresAudio: element.type === "audio" || mediaAsset.hasAudio === true,
+			});
 		}
-
-		if (element.buffer) return element.buffer;
-
-		const response = await fetch(element.sourceUrl);
+		if (library.buffer) return library.buffer;
+		const response = await fetch(library.sourceUrl, { signal });
 		if (!response.ok) {
 			throw new Error(`Library audio fetch failed: ${response.status}`);
 		}
-
-		const arrayBuffer = await response.arrayBuffer();
-		return await audioContext.decodeAudioData(arrayBuffer.slice(0));
+		const bytes = await response.arrayBuffer();
+		signal?.throwIfAborted();
+		return await audioContext.decodeAudioData(bytes);
 	} catch (error) {
-		console.warn("Failed to decode audio:", error);
+		signal?.throwIfAborted();
+		const message = error instanceof Error ? error.message : String(error);
+		if (!onFailure) console.warn("Failed to decode audio:", error);
+		else if (library) onFailure({ id: `library:${library.sourceUrl}`, name: library.name, error: message, sourceUrl: library.sourceUrl });
+		else if (mediaAsset) onFailure({ id: mediaAsset.id, name: mediaAsset.name, error: message, unreadable: true });
 		return null;
 	}
 }
@@ -258,18 +233,18 @@ async function resolveAudioBufferForElement({
 async function resolveAudioBufferForAsset({
 	asset,
 	audioContext,
+	requiresAudio,
+	signal,
 }: {
 	asset: MediaAsset;
 	audioContext: AudioContext;
+	requiresAudio: boolean;
+	signal?: AbortSignal;
 }): Promise<AudioBuffer | null> {
 	if (asset.type === "audio") {
-		try {
-			const arrayBuffer = await asset.file.arrayBuffer();
-			return await audioContext.decodeAudioData(arrayBuffer.slice(0));
-		} catch (error) {
-			console.warn("Failed to decode audio asset:", error);
-			return null;
-		}
+		const arrayBuffer = await asset.file.arrayBuffer();
+		signal?.throwIfAborted();
+		return await audioContext.decodeAudioData(arrayBuffer);
 	}
 
 	const input = new Input({
@@ -277,9 +252,15 @@ async function resolveAudioBufferForAsset({
 		formats: ALL_FORMATS,
 	});
 
+	const dispose = () => input.dispose();
+	signal?.addEventListener("abort", dispose, { once: true });
 	try {
 		const audioTrack = await input.getPrimaryAudioTrack();
-		if (!audioTrack) return null;
+		signal?.throwIfAborted();
+		if (!audioTrack) {
+			if (requiresAudio) throw new Error("No audio track found");
+			return null;
+		}
 
 		const sink = new AudioBufferSink(audioTrack);
 		const targetSampleRate = audioContext.sampleRate;
@@ -288,11 +269,12 @@ async function resolveAudioBufferForAsset({
 		let totalSamples = 0;
 
 		for await (const { buffer } of sink.buffers(0)) {
+			signal?.throwIfAborted();
 			chunks.push(buffer);
 			totalSamples += buffer.length;
 		}
 
-		if (chunks.length === 0) return null;
+		if (totalSamples === 0) throw new Error("No audio samples could be decoded");
 
 		const nativeSampleRate = chunks[0].sampleRate;
 		const numChannels = Math.min(
@@ -340,11 +322,9 @@ async function resolveAudioBufferForAsset({
 		sourceNode.start(0);
 
 		return await offlineContext.startRendering();
-	} catch (error) {
-		console.warn("Failed to decode asset audio:", error);
-		return null;
 	} finally {
-		input.dispose();
+		signal?.removeEventListener("abort", dispose);
+		dispose();
 	}
 }
 
@@ -645,6 +625,8 @@ export async function createTimelineAudioBuffer({
 	sampleRate = EXPORT_SAMPLE_RATE,
 	audioContext,
 	scenes,
+	onFailure,
+	signal,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
@@ -652,56 +634,60 @@ export async function createTimelineAudioBuffer({
 	sampleRate?: number;
 	audioContext?: AudioContext;
 	scenes?: TScene[];
+	onFailure?: (failure: MediaLoadFailure) => void;
+	signal?: AbortSignal;
 }): Promise<AudioBuffer | null> {
+	signal?.throwIfAborted();
 	const context = audioContext ?? createAudioContext({ sampleRate });
-
-	const audioElements = await collectAudioElements({
-		tracks,
-		mediaAssets,
-		audioContext: context,
-		scenes,
-	});
-
-	if (audioElements.length === 0) return null;
-
-	const outputChannels = 2;
-	const durationSeconds = duration / TICKS_PER_SECOND;
-	const outputLength = Math.ceil(durationSeconds * sampleRate);
-	const outputBuffer = context.createBuffer(
-		outputChannels,
-		outputLength,
-		sampleRate,
-	);
-
-	for (const element of audioElements) {
-		if (element.muted) continue;
-
-		const renderedBuffer = shouldMaintainPitch({
-			rate: element.retime?.rate ?? 1,
-			maintainPitch: element.retime?.maintainPitch,
-		})
-			? await renderRetimedBuffer({
-					audioContext: context,
-					sourceBuffer: element.buffer,
-					trimStart: element.trimStart,
-					clipDuration: element.duration,
-					retime: element.retime,
-					maintainPitch: true,
-				})
-			: undefined;
-
-		mixAudioChannels({
-			element,
-			buffer: renderedBuffer ?? element.buffer,
-			trimStart: renderedBuffer ? 0 : element.trimStart,
-			retime: renderedBuffer ? undefined : element.retime,
-			outputBuffer,
-			outputLength,
-			sampleRate,
+	const closeContext = () => {
+		if (!audioContext && context.state !== "closed") {
+			void context.close().catch((error) => console.warn("Failed to close audio context:", error));
+		}
+	};
+	signal?.addEventListener("abort", closeContext, { once: true });
+	try {
+		const audioElements = await collectAudioElements({
+			tracks, mediaAssets, audioContext: context, scenes, duration, onFailure, signal,
 		});
-	}
+		signal?.throwIfAborted();
+		if (audioElements.length === 0) return null;
 
-	return await applyAudioMasteringToBuffer({ audioBuffer: outputBuffer });
+		const outputLength = Math.ceil((duration / TICKS_PER_SECOND) * sampleRate);
+		const outputBuffer = context.createBuffer(MAX_AUDIO_CHANNELS, outputLength, sampleRate);
+		for (const element of audioElements) {
+			signal?.throwIfAborted();
+			if (element.muted) continue;
+
+			const renderedBuffer = shouldMaintainPitch({
+				rate: element.retime?.rate ?? 1,
+				maintainPitch: element.retime?.maintainPitch,
+			})
+				? await renderRetimedBuffer({
+						audioContext: context,
+						sourceBuffer: element.buffer,
+						trimStart: element.trimStart,
+						clipDuration: element.duration,
+						retime: element.retime,
+						maintainPitch: true,
+					})
+				: undefined;
+			signal?.throwIfAborted();
+
+			mixAudioChannels({
+				element,
+				buffer: renderedBuffer ?? element.buffer,
+				trimStart: renderedBuffer ? 0 : element.trimStart,
+				retime: renderedBuffer ? undefined : element.retime,
+				outputBuffer,
+				outputLength,
+				sampleRate,
+			});
+		}
+		return await applyAudioMasteringToBuffer({ audioBuffer: outputBuffer });
+	} finally {
+		signal?.removeEventListener("abort", closeContext);
+		if (!signal?.aborted) closeContext();
+	}
 }
 
 function collectPeakRange({

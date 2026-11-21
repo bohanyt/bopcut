@@ -59,4 +59,17 @@ describe("video frames", () => {
 		const frames = await Promise.all([0.15, 1.2, 2.8].map((time) => cache.getFrameAt({ mediaId: "m", file, time, exact: true })));
 		expect(frames.map(at)).toEqual([0.15, 1.2, 2.8]);
 	});
+
+	test("export reads report seek errors and tracks that decode no frames", async () => {
+		const cache = new VideoCache();
+		const sinks = (cache as unknown as { sinks: Map<string, unknown> }).sinks;
+		sinks.set("m", {
+			file,
+			sink: { async *canvases() { throw new Error("Invalid packet"); } },
+		});
+		const read = () => cache.getFrameAt({ mediaId: "m", file, time: 0, exact: true, throwOnSeekError: true });
+		await expect(read()).rejects.toThrow("Invalid packet");
+		sinks.set("m", { file, sink: { async *canvases() {} } });
+		await expect(read()).rejects.toThrow("No video frames could be decoded");
+	});
 });

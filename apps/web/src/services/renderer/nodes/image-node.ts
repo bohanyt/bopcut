@@ -5,6 +5,7 @@ import {
 } from "./visual-node";
 
 export interface ImageNodeParams extends VisualNodeParams {
+	mediaId: string;
 	url: string;
 	maxSourceSize?: number;
 }

@@ -1,7 +1,7 @@
 import { revokeMediaUrl } from "@/media/url-release";
 import type { EditorCore } from "@/core";
 import { toast } from "sonner";
-import type { MediaAsset } from "@/media/types";
+import type { MediaAsset, MediaLoadFailure, MediaType } from "@/media/types";
 import { storageService } from "@/services/storage/service";
 import { generateUUID } from "@/utils/id";
 import { videoCache } from "@/services/video-cache/service";
@@ -19,10 +19,13 @@ export function mediaIdsInScenes(scenes: readonly { tracks: { main: { elements: 
 	return ids;
 }
 
-/** A stored media file that could not be read when the project loaded. */
-export type MediaLoadFailure = { id: string; name: string; error: string };
 /** Outcome of discarding staged imports: ids removed from storage, and those that could not be. */
 export type DiscardResult = { removed: string[]; failed: { id: string; error: string }[] };
+
+type MediaRetry = {
+	original: MediaAsset | undefined;
+	read: Promise<{ asset: MediaAsset } | { failure: MediaLoadFailure }>;
+};
 
 export class MediaManager {
 	private assets: MediaAsset[] = [];
@@ -34,6 +37,7 @@ export class MediaManager {
 	private loadedProjectId: string | null = null;
 	/** Stored media of the loaded project that could not be read (see retryMissingMedia). */
 	private missing: MediaLoadFailure[] = [];
+	private retries = new Map<string, MediaRetry>();
 	/**
 	 * Imports saved to storage but not published to `assets` yet (agent drafts before they commit).
 	 * Nothing can use them, so discarding them can never break a clip or a history entry.
@@ -189,25 +193,82 @@ export class MediaManager {
 		return this.missing;
 	}
 
-	/** Reads the missing media again; returns the ones still missing. */
-	async retryMissingMedia({ projectId }: { projectId: string }): Promise<MediaLoadFailure[]> {
-		if (this.loadedProjectId !== projectId || this.missing.length === 0) return this.missing;
-		const generation = this.loadGeneration;
-		const results = await Promise.all(this.missing.map(async (failure) => {
-			try {
-				const asset = await storageService.loadMediaAsset({ projectId, id: failure.id });
-				return asset ? { asset } : { failure: { ...failure, error: "not in storage" } };
-			} catch (error) {
-				return { failure: { ...failure, error: error instanceof Error ? error.message : String(error) } };
+	getMissingReferences(references: { id: string; name: string; requiresUrl?: boolean; types: readonly MediaType[] }[]): MediaLoadFailure[] {
+		const byId = new Map(this.assets.map((asset) => [asset.id, asset]));
+		const failures = new Map(this.missing.map((failure) => [failure.id, failure]));
+		const missing = new Map<string, MediaLoadFailure>();
+		for (const { id, name, requiresUrl, types } of references) {
+			const asset = byId.get(id);
+			if (asset && !types.includes(asset.type)) {
+				missing.set(id, { id, name, error: "Media type does not match the timeline reference", unreadable: true });
+				continue;
 			}
-		}));
-		if (generation !== this.loadGeneration) return this.missing;
-		this.mergeAssets(results.flatMap((r) => ("asset" in r && r.asset ? [r.asset] : [])));
-		this.missing = results.flatMap((r) => ("failure" in r && r.failure ? [r.failure] : []));
+			if (asset?.file && (!requiresUrl || asset.url)) continue;
+			missing.set(id, failures.get(id) ?? { id, name, error: "Media file is unavailable" });
+		}
+		return [...missing.values()];
+	}
+
+	/** Reads the missing media again; returns the ones still missing. */
+	async retryMissingMedia({ projectId, failures = this.missing }: { projectId: string; failures?: MediaLoadFailure[] }): Promise<MediaLoadFailure[]> {
+		const { project } = this.editor;
+		if (project.getActiveOrNull()?.metadata.id !== projectId || this.isLoading || failures.length === 0) return this.missing;
+		const generation = this.loadGeneration;
+		const session = project.getSession();
+		const isCurrent = () => generation === this.loadGeneration && session === project.getSession();
+		const byId = new Map(this.assets.map((asset) => [asset.id, asset]));
+		const pending = new Map<string, MediaRetry>();
+		for (const failure of failures) {
+			// Export retries library audio through the mixer, with a fresh fetch.
+			if (failure.sourceUrl !== undefined) continue;
+			const original = byId.get(failure.id);
+			if (!failure.unreadable && original?.file && (original.type === "audio" || original.url)) continue;
+			const key = `${generation}:${session}:${failure.id}`;
+			let read = this.retries.get(key);
+			if (!read) {
+				read = { original, read: this.readRetry(projectId, failure) };
+				this.retries.set(key, read);
+			}
+			pending.set(key, read);
+		}
+		if (!pending.size) return this.missing;
+		const results = await Promise.all([...pending].map(async ([key, retry]) => ({
+			key, retry, result: await retry.read,
+		})));
+		// An overlapping batch may already have applied a shared read.
+		const uncommitted = results.filter(({ key, retry }) => {
+			if (this.retries.get(key) !== retry) return false;
+			this.retries.delete(key);
+			return true;
+		});
+		if (!isCurrent() || !uncommitted.length) return this.missing;
+		const current = new Map(this.assets.map((asset) => [asset.id, asset]));
+		const applied = new Set<string>();
+		const restored: MediaAsset[] = [];
+		const failed: MediaLoadFailure[] = [];
+		for (const { retry, result } of uncommitted) {
+			const id = "asset" in result ? result.asset.id : result.failure.id;
+			if (current.get(id) !== retry.original) continue;
+			applied.add(id);
+			if ("asset" in result) restored.push(result.asset);
+			else failed.push(result.failure);
+		}
+		if (applied.size === 0) return this.missing;
+		this.mergeAssets(restored);
+		this.missing = [...this.missing.filter(({ id }) => !applied.has(id)), ...failed];
 		toast.dismiss(`missing-media-${projectId}`);
 		if (this.missing.length) this.reportMissing({ projectId });
 		this.notify();
 		return this.missing;
+	}
+
+	private async readRetry(projectId: string, failure: MediaLoadFailure): MediaRetry["read"] {
+		try {
+			const asset = await storageService.loadMediaAsset({ projectId, id: failure.id });
+			return asset ? { asset } : { failure: { ...failure, error: "not in storage" } };
+		} catch (error) {
+			return { failure: { ...failure, error: error instanceof Error ? error.message : String(error) } };
+		}
 	}
 
 	private reportMissing({ projectId }: { projectId: string }): void {

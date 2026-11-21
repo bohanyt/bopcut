@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 
@@ -68,6 +68,47 @@ describe("missing media", () => {
 			expect(failed).toEqual(["b"]);
 		} finally {
 			globalThis.fetch = realFetch;
+		}
+	});
+
+	test("toast and export retries share a read, and a stale export result skips the restored asset", async () => {
+		const editor = await load(project("p", new Date(0)), { failed: ["b"] });
+		const failures = editor.media.getMissingMedia();
+		const restored = { ...asset("b"), url: "blob:restored" };
+		const pending = Promise.withResolvers<MediaAsset>();
+		const read = mock(() => pending.promise);
+		stub({ loadMediaAsset: read });
+
+		const toastRetry = editor.media.retryMissingMedia({ projectId: "p" });
+		const exportRetry = editor.media.retryMissingMedia({ projectId: "p", failures });
+		pending.resolve(restored);
+		expect(await Promise.all([toastRetry, exportRetry])).toEqual([[], []]);
+		expect(read).toHaveBeenCalledTimes(1);
+		expect(editor.media.getAssets()).toEqual([restored]);
+
+		expect(await editor.media.retryMissingMedia({ projectId: "p", failures })).toEqual([]);
+		expect(read).toHaveBeenCalledTimes(1);
+	});
+
+	test("a batch retry publishes assets and failures together after all reads", async () => {
+		const editor = await load(project("p", new Date(0)), { failed: ["a", "b", "c"] });
+		const pending = Promise.withResolvers<null>();
+		stub({ loadMediaAsset: async ({ id }: { id: string }) => id === "c" ? pending.promise : asset(id) });
+		const changed = mock(() => {});
+		const unsubscribe = editor.media.subscribe(changed);
+		const retry = editor.media.retryMissingMedia({ projectId: "p" });
+		try {
+			await Bun.sleep(0);
+			expect(editor.media.getAssets()).toEqual([]);
+			expect(editor.media.getMissingMedia().map(({ id }) => id)).toEqual(["a", "b", "c"]);
+			pending.resolve(null);
+			expect(await retry).toEqual([{ id: "c", name: "c", error: "not in storage" }]);
+			expect(editor.media.getAssets().map(({ id }) => id).sort()).toEqual(["a", "b"]);
+			expect(changed).toHaveBeenCalledTimes(1);
+		} finally {
+			pending.resolve(null);
+			await retry;
+			unsubscribe();
 		}
 	});
 });

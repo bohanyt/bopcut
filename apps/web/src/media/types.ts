@@ -2,6 +2,19 @@ import type { MediaAssetData } from "@/services/storage/types";
 
 export type MediaType = "image" | "video" | "audio";
 
+/** A referenced or stored media file that could not be read. */
+export type MediaLoadFailure = {
+	id: string;
+	name: string;
+	error: string;
+	/** Audio presence recorded in the stored video metadata. */
+	hasAudio?: boolean;
+	/** Library audio is fetched by URL during mixdown. */
+	sourceUrl?: string;
+	/** A stored asset was present but could not be decoded. Retry by reading it again. */
+	unreadable?: boolean;
+};
+
 export interface MediaAsset
 	extends Omit<MediaAssetData, "size" | "lastModified"> {
 	file: File;

@@ -42,6 +42,7 @@ export class ProjectManager {
 	 * settings change), so async work can tell it still runs in the project session it started in.
 	 */
 	private session = 0;
+	private sessionController = new AbortController();
 	/** Bumped by every loadProject: a load that is no longer the newest one stops before it installs. */
 	private loadSequence = 0;
 	/** The load that put the open project in the editor and is still loading its media, or null. */
@@ -66,7 +67,7 @@ export class ProjectManager {
 		progress: 0,
 		result: null,
 	};
-	private exportCancelRequested = false;
+	private exportController: AbortController | null = null;
 
 	constructor(private editor: EditorCore) {}
 
@@ -107,7 +108,7 @@ export class ProjectManager {
 			version: CURRENT_PROJECT_VERSION,
 		};
 
-		this.session++;
+		this.advanceSession();
 		this.supersedeLoads();
 		// Opened before the editor's project changes: the open project's unsaved edits are kept (see SaveManager.open).
 		// Nothing is written for the new project until its first write below is done.
@@ -201,7 +202,7 @@ export class ProjectManager {
 		}
 
 		const project = result.project;
-		this.session++;
+		this.advanceSession();
 		// Opened before the editor's project changes: the open project's unsaved edits are taken now and
 		// written in the background (see SaveManager.open). The new session saves nothing but forced
 		// edits until this load is done.
@@ -313,18 +314,29 @@ export class ProjectManager {
 	}
 
 	async export({ options }: { options: ExportOptions }): Promise<ExportResult> {
-		this.exportCancelRequested = false;
+		if (this.exportController) {
+			return { success: false, error: "Another export is running; try again when it finishes" };
+		}
+		const controller = new AbortController();
+		this.exportController = controller;
 		this.exportState = { isExporting: true, progress: 0, result: null };
-		this.notify();
 
-		const result = await this.editor.renderer.exportProject({
-			options,
-			onProgress: ({ progress }) => {
-				this.exportState = { ...this.exportState, progress };
-				this.notify();
-			},
-			onCancel: () => this.exportCancelRequested,
-		});
+		let result: ExportResult;
+		try {
+			this.notify();
+			result = await this.editor.renderer.exportProject({
+				options,
+				signal: controller.signal,
+				onProgress: ({ progress }) => {
+					this.exportState = { ...this.exportState, progress };
+					this.notify();
+				},
+			});
+		} catch (error) {
+			result = { success: false, error: error instanceof Error ? error.message : "Unknown export error" };
+		} finally {
+			this.exportController = null;
+		}
 
 		this.exportState = {
 			isExporting: false,
@@ -337,7 +349,7 @@ export class ProjectManager {
 	}
 
 	cancelExport(): void {
-		this.exportCancelRequested = true;
+		this.exportController?.abort();
 	}
 
 	clearExportState(): void {
@@ -411,7 +423,7 @@ export class ProjectManager {
 				(project) => !deletedIds.has(project.id),
 			);
 			if (this.active && deletedIds.has(this.active.metadata.id)) {
-				this.session++;
+				this.advanceSession();
 				this.active = null;
 				this.editor.media.clearAllAssets();
 				this.editor.scenes.clearScenes();
@@ -429,7 +441,7 @@ export class ProjectManager {
 	}
 
 	closeProject(): void {
-		this.session++;
+		this.advanceSession();
 		// A load still reading or loading media does not put its project in place after the close.
 		this.supersedeLoads();
 		// Unsaved edits are taken now and written in the background.
@@ -780,11 +792,22 @@ export class ProjectManager {
 		return this.session;
 	}
 
+	getSessionSignal(): AbortSignal {
+		return this.sessionController.signal;
+	}
+
+	private advanceSession(): void {
+		const previous = this.sessionController;
+		this.session++;
+		this.sessionController = new AbortController();
+		previous.abort();
+	}
+
 	setActiveProject({ project }: { project: TProject }): void {
 		if (this.active?.metadata.id !== project.metadata.id) {
 			// Another project put in place directly: it gets its own save session (the open one's unsaved
 			// edits are kept, see SaveManager.open).
-			this.session++;
+			this.advanceSession();
 			this.supersedeLoads();
 			this.editor.save.open({ projectId: project.metadata.id, session: this.session, name: project.metadata.name, savedAt: project.metadata.updatedAt, loading: false });
 		}

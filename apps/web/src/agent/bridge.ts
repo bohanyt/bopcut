@@ -5,6 +5,7 @@ import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { defaultExportName, parseExportRequest } from "./export";
 import type { ExportResult } from "@/export";
+import type { MediaLoadFailure } from "@/media/types";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
@@ -223,10 +224,6 @@ export function installAgentBridge() {
 	editor.save.subscribe(readinessChanged);
 	editor.media.subscribe(readinessChanged);
 	editor.project.subscribe(readinessChanged);
-	const retryMissingMedia = () => {
-		const project = editor.project.getActiveOrNull();
-		return project ? editor.media.retryMissingMedia({ projectId: project.metadata.id }) : Promise.resolve([]);
-	};
 	// A snapshot taken in the console is remembered like a synced one, so a draft can be basedOn it.
 	const consoleSnapshot = () => {
 		const snap = agentSnapshot();
@@ -243,6 +240,12 @@ export function installAgentBridge() {
 		void pollChanges();
 		void pollExport();
 	}, 2000);
+}
+
+export function retryMissingMedia(failures?: MediaLoadFailure[]): Promise<MediaLoadFailure[]> {
+	const editor = EditorCore.getInstance();
+	const project = editor.project.getActiveOrNull();
+	return project ? editor.media.retryMissingMedia({ projectId: project.metadata.id, failures }) : Promise.resolve([]);
 }
 
 /**
@@ -298,8 +301,7 @@ function exportable() {
 	const project = editor.project.getActiveOrNull();
 	const root = agentRootScene();
 	if (!project || !root || timelineBusy() || editor.renderer.isExportRunning()) return null;
-	const { ready, missingMedia } = agentReadiness();
-	return ready ? { project, root, missingMedia } : null;
+	return agentReadiness().ready ? { project, root } : null;
 }
 
 async function answerExport() {
@@ -328,18 +330,29 @@ async function answerExport() {
 	const request = parseExportRequest(raw);
 	if (typeof request === "string") return await answer({ status: "error", error: request });
 	if (!request) return;
-	if (before.missingMedia.length && !request.allowMissing) {
-		return await answer({ status: "error", error: `${before.missingMedia.length} stored media could not be loaded; retry them (window.agent.retryMissingMedia()) or send allowMissing:true`, missingMedia: before.missingMedia });
-	}
+	const reportFailure = ({ cancelled, error, missingMedia }: ExportResult) => {
+		if (missingMedia?.length) {
+			return answer({
+				status: "error",
+				error: `${error} Restore the missing sources, pass this result's missingMedia to window.agent.retryMissingMedia() to reload stored files, then use a new rev. To export without them, send allowMissing:true with a new rev.`,
+				missingMedia,
+			});
+		}
+		return answer({ status: "error", error: cancelled ? "cancelled: the project was closed during the export" : error ?? "export failed" });
+	};
+	const preflight = editor.renderer.checkExport({
+		format: request.format, allowMissing: request.allowMissing, includeAudio: request.includeAudio, scene: before.root,
+		scenes: editor.scenes.getScenes(), canvasSize: before.project.settings.canvasSize,
+	});
+	if (preflight) return await reportFailure(preflight);
 	// The request is taken first (another tab may be exporting it, or it may be answered already, for example
 	// before a reload), then the editor is checked again: it may have changed meanwhile.
 	const claim = await sendExportResult({ rev, projectId, status: "exporting", progress: 0 });
 	if (claim === "answered") return markAnswered(key, rev);
 	if (claim !== "ok") return;
 	const now = exportable();
-	if (!now || now.project.metadata.id !== projectId || (now.missingMedia.length && !request.allowMissing)) return; // taken again on the next poll
+	if (!now || now.project.metadata.id !== projectId) return; // taken again on the next poll
 	const { project, root } = now;
-	const session = editor.project.getSession();
 	const settings = project.settings;
 	const fps = request.fps ? { numerator: Math.round(request.fps * 1000), denominator: 1000 } : settings.fps;
 	const name = request.name ?? defaultExportName(project.metadata.name);
@@ -348,7 +361,7 @@ async function answerExport() {
 	// Progress: one post at a time, at most every 2 s, none once the export has ended. If the request was
 	// answered or taken meanwhile (another tab), this export stops.
 	let running = true;
-	let lost = false;
+	const claimController = new AbortController();
 	let lastPost = Date.now();
 	let posting: Promise<unknown> | null = null;
 	const progress = (value: number) => {
@@ -356,7 +369,7 @@ async function answerExport() {
 		lastPost = Date.now();
 		posting = sendExportResult({ rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000 })
 			.then((sent) => {
-				if (sent === "answered" || sent === "claimed") lost = true;
+				if (sent === "answered" || sent === "claimed") claimController.abort();
 			})
 			.finally(() => {
 				posting = null;
@@ -368,9 +381,9 @@ async function answerExport() {
 		// No wait between the checks above and this call: the export takes the timeline as it is now. It
 		// stops if the project is closed or another one opened (its media go with it).
 		result = await editor.renderer.exportProject({
-			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, sceneId: root.id },
+			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
 			onProgress: ({ progress: value }) => progress(value),
-			onCancel: () => lost || editor.project.getSession() !== session,
+			signal: claimController.signal,
 		});
 	} catch (error) {
 		result = { success: false, error: errorText(error) };
@@ -379,9 +392,9 @@ async function answerExport() {
 		await posting;
 		toast.dismiss(toastId);
 	}
-	if (lost) return;
+	if (claimController.signal.aborted) return;
 	if (!result.success || !result.buffer) {
-		return await answer({ status: "error", error: result.cancelled ? "cancelled: the project was closed during the export" : result.error ?? "export failed" });
+		return await reportFailure(result);
 	}
 	// The server writes the final answer together with the file.
 	const done = {
