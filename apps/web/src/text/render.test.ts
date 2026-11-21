@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, expect, mock, spyOn, test } from "bun:test";
 import { Canvas, createCanvas, GlobalFonts } from "@napi-rs/canvas";
 import { measureTextElement } from "./measure-element";
 import { drawStyledText } from "./draw-styled";
@@ -312,6 +312,25 @@ test("typewriter: only the first share of the letters is drawn, and they stay wh
 	expect(half.left).toBe(all.left);
 	expect(half.right).toBeLessThan(all.right - 20);
 });
+
+for (const grapheme of ["\u{1F44D}\u{1F3FD}", "\u{1F469}\u200D\u{1F469}\u200D\u{1F467}", "e\u0301"]) {
+	test(`typewriter reveals a complete grapheme: ${grapheme}`, () => {
+		const ctx = createCanvas(640, 360).getContext("2d") as unknown as CanvasRenderingContext2D;
+		const draw = spyOn(ctx, "fillText").mockImplementation(() => {});
+		try {
+			const target: TextElement = {
+				...element,
+				caption: undefined,
+				params: { content: `${grapheme}Z`, fontFamily: FONT, fontSize: 15, typewriter: 0.5 },
+			};
+			const layout = measureTextElement({ element: target, canvasHeight: 360, localTime: time(0.5), ctx });
+			drawStyledText({ ctx, layout, textColor: "#ffffff", backgroundColor: "transparent" });
+			expect(draw.mock.calls.map(([text]) => text)).toEqual([grapheme]);
+		} finally {
+			draw.mockRestore();
+		}
+	});
+}
 
 test("an effect that changes nothing right now (a blur of 0) gives the compositor no empty pass group", async () => {
 	mock.module("@/services/renderer/compositor/wasm-compositor", () => ({
