@@ -1,75 +1,319 @@
-import { describe, expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { Input, InputVideoTrack, VideoSample, VideoSampleSink } from "mediabunny";
+import { TICKS_PER_SECOND } from "@/wasm";
 import { VideoCache } from "./service";
+import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+import { buildFrameDescriptor } from "@/services/renderer/compositor/frame-descriptor";
+import { BlurBackgroundNode } from "@/services/renderer/nodes/blur-background-node";
+import { CompoundNode } from "@/services/renderer/nodes/compound-node";
+import { RootNode } from "@/services/renderer/nodes/root-node";
+import { VideoNode } from "@/services/renderer/nodes/video-node";
+import { resolveRenderTree } from "@/services/renderer/resolve";
 
-/** A cache whose decoder is fake: resolving a time takes a moment and makes that frame current. */
-function fakeCache() {
-	const cache = new VideoCache();
-	const decoded: number[] = [];
-	const sink = { currentFrame: null as { timestamp: number } | null };
-	Object.assign(cache as object, {
-		ensureSink: async ({ mediaId }: { mediaId: string }) => {
-			(cache as unknown as { sinks: Map<string, unknown> }).sinks.set(mediaId, sink);
-		},
-		resolveFrame: async ({ time }: { time: number }) => {
-			await new Promise((resolve) => setTimeout(resolve, 5));
-			decoded.push(time);
-			sink.currentFrame = { timestamp: time };
-			return sink.currentFrame;
-		},
-	});
-	return { cache, decoded };
+const ticks = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND);
+const fps = { numerator: 30, denominator: 1 };
+
+class TestCanvas {
+	constructor(public width = 0, public height = 0) {}
+	getContext() {
+		return { canvas: this, clearRect() {} };
+	}
 }
 
-const file = new File(["x"], "clip.mp4");
-const at = (frame: unknown) => (frame as { timestamp: number } | null)?.timestamp;
+type TestFrame = { timestamp: number; duration: number };
 
-describe("video frames", () => {
-	test("a preview request overtaken by a newer one gets the current frame (scrubbing stays fast)", async () => {
-		const { cache, decoded } = fakeCache();
-		const [first, second, third] = await Promise.all([
-			cache.getFrameAt({ mediaId: "m", file, time: 1 }),
-			cache.getFrameAt({ mediaId: "m", file, time: 2 }),
-			cache.getFrameAt({ mediaId: "m", file, time: 3 }),
-		]);
-		// Only the newest time is decoded; the overtaken ones get whatever frame is current.
-		expect(decoded).toEqual([3]);
-		expect(at(third)).toBe(3);
-		expect([first, second]).toEqual([null, null]);
+async function withVideo(
+	frames: TestFrame[],
+	run: (fixture: {
+		file: File;
+		starts: number[];
+		decoded: number[];
+		closed: number[];
+		pixels: Map<OffscreenCanvas, TestFrame>;
+	}) => Promise<void>,
+	{ width = 3840, height = 2160, rotation = 0, seekError }: {
+		width?: number; height?: number; rotation?: number; seekError?: Error;
+	} = {},
+) {
+	const previous = Object.getOwnPropertyDescriptors(globalThis);
+	const globals = {
+		document: { createElement: () => new TestCanvas() },
+		OffscreenCanvas: TestCanvas,
+	};
+	for (const [key, value] of Object.entries(globals)) {
+		Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+	}
+	const track: InputVideoTrack = Object.create(InputVideoTrack.prototype, {
+		displayWidth: { value: width },
+		displayHeight: { value: height },
+		rotation: { value: rotation },
+		canDecode: { value: async () => true },
 	});
+	const starts: number[] = [];
+	const decoded: number[] = [];
+	const closed: number[] = [];
+	const pixels = new Map<OffscreenCanvas, TestFrame>();
+	const trackSpy = spyOn(Input.prototype, "getPrimaryVideoTrack").mockResolvedValue(track);
+	const sampleSpy = spyOn(VideoSampleSink.prototype, "samples").mockImplementation(
+		async function* (start = 0) {
+			starts.push(start);
+			if (seekError) throw seekError;
+			const after = frames.findIndex((frame) => frame.timestamp > start);
+			const first = after < 0 ? frames.length - 1 : Math.max(0, after - 1);
+			for (const frame of frames.slice(first)) {
+				decoded.push(frame.timestamp);
+				const sample: VideoSample = Object.create(VideoSample.prototype, {
+					timestamp: { value: frame.timestamp },
+					duration: { value: frame.duration },
+					drawWithFit: {
+						value: (ctx: OffscreenCanvasRenderingContext2D, options: { fit: string; rotation: number }) => {
+							expect(options).toEqual({ fit: "fill", rotation });
+							pixels.set(ctx.canvas, frame);
+						},
+					},
+					close: { value: () => closed.push(frame.timestamp) },
+				});
+				yield sample;
+			}
+		},
+	);
+	try {
+		await run({ file: new File([], "source.webm"), starts, decoded, closed, pixels });
+	} finally {
+		sampleSpy.mockRestore();
+		trackSpy.mockRestore();
+		for (const key of Object.keys(globals)) {
+			if (previous[key]) Object.defineProperty(globalThis, key, previous[key]);
+			else Reflect.deleteProperty(globalThis, key);
+		}
+	}
+}
 
-	test("an exact request gets its own frame even while the preview keeps asking for another time", async () => {
-		// Before: the snapshot was overtaken by the preview's next request and got the preview's frame.
-		const before = fakeCache();
-		await before.cache.getFrameAt({ mediaId: "m", file, time: 0 });
-		const overtaken = before.cache.getFrameAt({ mediaId: "m", file, time: 2.8 });
-		await before.cache.getFrameAt({ mediaId: "m", file, time: 0 });
-		expect(at(await overtaken)).toBe(0);
-
-		const { cache, decoded } = fakeCache();
-		await cache.getFrameAt({ mediaId: "m", file, time: 0 });
-		const snapshot = cache.getFrameAt({ mediaId: "m", file, time: 2.8, exact: true });
-		const previewAgain = cache.getFrameAt({ mediaId: "m", file, time: 0 });
-		expect(at(await snapshot)).toBe(2.8);
-		expect(at(await previewAgain)).toBe(0);
-		expect(decoded).toEqual([0, 2.8, 0]);
+function clip(file: File, trimStart = 0, zoom = 1) {
+	return new VideoNode({
+		mediaId: "source", file, url: "blob:source",
+		trimStart: ticks(trimStart), trimEnd: 0, timeOffset: 0, duration: ticks(40),
+		transform: { scaleX: zoom, scaleY: zoom, position: { x: 0, y: 0 }, rotate: 0 },
+		opacity: 1,
 	});
+}
 
-	test("several exact requests in a row each decode their own time", async () => {
-		const { cache } = fakeCache();
-		const frames = await Promise.all([0.15, 1.2, 2.8].map((time) => cache.getFrameAt({ mediaId: "m", file, time, exact: true })));
-		expect(frames.map(at)).toEqual([0.15, 1.2, 2.8]);
-	});
+async function resolveFrame(renderer: CanvasRenderer, node: RootNode, seconds: number) {
+	try {
+		await resolveRenderTree({ renderer, node, time: ticks(seconds) });
+		return await buildFrameDescriptor({ renderer, node });
+	} finally {
+		renderer.videoCache.finishFrame();
+	}
+}
 
-	test("export reads report seek errors and tracks that decode no frames", async () => {
-		const cache = new VideoCache();
-		const sinks = (cache as unknown as { sinks: Map<string, unknown> }).sinks;
-		sinks.set("m", {
-			file,
-			sink: { async *canvases() { throw new Error("Invalid packet"); } },
+function rendererAt(renderScale = 0.25, exactFrames = false) {
+	return new CanvasRenderer({ width: 3840, height: 2160, fps, renderScale, exactFrames });
+}
+
+const constantRate = (seconds: number) => Array.from({ length: seconds * 30 }, (_, i) => ({
+	timestamp: i / 30,
+	duration: 1 / 30,
+}));
+
+test("overlapping clips keep distinct source pixels and a matching blur background shares the decode", () =>
+	withVideo(constantRate(12), async ({ file, starts, pixels }) => {
+		const renderer = rendererAt();
+		const lower = clip(file, 1);
+		const upper = clip(file, 10);
+		const backdrop = new BlurBackgroundNode({
+			mediaId: "source", file, url: "blob:source", mediaType: "video",
+			timeOffset: 0, duration: ticks(1), trimStart: ticks(1), trimEnd: 0, blurIntensity: 20,
 		});
-		const read = () => cache.getFrameAt({ mediaId: "m", file, time: 0, exact: true, throwOnSeekError: true });
-		await expect(read()).rejects.toThrow("Invalid packet");
-		sinks.set("m", { file, sink: { async *canvases() {} } });
-		await expect(read()).rejects.toThrow("No video frames could be decoded");
+		const node = new RootNode({ duration: ticks(1) }).add(backdrop).add(lower).add(upper);
+		try {
+			for (const time of [0, 1 / 30]) {
+				const { textures } = await resolveFrame(renderer, node, time);
+				const sources = textures.filter((texture) => texture.kind === "external");
+				expect(sources.map(({ version }) => version)).toEqual([1 + time, 10 + time]);
+				expect(backdrop.resolved?.backdropSource.source).toBe(lower.resolved?.source);
+				expect(sources.map(({ source }) => pixels.get(source as OffscreenCanvas)?.timestamp))
+					.toEqual([1 + time, 10 + time]);
+			}
+			expect(starts).toEqual([1, 10]);
+		} finally {
+			renderer.videoCache.clear();
+		}
+	}));
+
+test("quarter preview uploads 960 × 540 for 4K and increases its budget for a zoom; exact stays 4K", () =>
+	withVideo(constantRate(1), async ({ file, starts }) => {
+		const preview = rendererAt();
+		const exact = rendererAt(0.25, true);
+		const video = clip(file);
+		const node = new RootNode({ duration: ticks(1) }).add(video);
+		try {
+			const quarter = await resolveFrame(preview, node, 0);
+			expect(quarter.textures[0]).toMatchObject({ width: 960, height: 540 });
+			video.params.transform.scaleX = 2;
+			video.params.transform.scaleY = 2;
+			const zoomed = await resolveFrame(preview, node, 1 / 30);
+			expect(zoomed.textures[0]).toMatchObject({ width: 1920, height: 1080 });
+			expect(zoomed.frame.items[0]).toMatchObject({ transform: { width: 1920, height: 1080 } });
+			const captured = await resolveFrame(exact, node, 1 / 30);
+			expect(captured.textures[0]).toMatchObject({ width: 3840, height: 2160 });
+			expect(starts).toEqual([0, 1 / 30]);
+		} finally {
+			preview.videoCache.clear();
+			exact.videoCache.clear();
+		}
+	}));
+
+test("rotated portrait video preserves its layout and supplies enough pixels for a cover background", () =>
+	withVideo(constantRate(1), async ({ file, starts }) => {
+		const renderer = rendererAt();
+		const video = clip(file);
+		const backdrop = new BlurBackgroundNode({
+			mediaId: "source", file, url: "blob:source", mediaType: "video",
+			timeOffset: 0, duration: ticks(1), trimStart: 0, trimEnd: 0, blurIntensity: 20,
+		});
+		const node = new RootNode({ duration: ticks(1) }).add(backdrop).add(video);
+		try {
+			const { frame, textures } = await resolveFrame(renderer, node, 0);
+			expect(frame.items[1]).toMatchObject({ transform: { width: 303.75, height: 540 } });
+			expect(textures[1]).toMatchObject({ width: 382, height: 679 });
+			expect(backdrop.resolved?.backdropSource.source).toMatchObject({ width: 1080, height: 1920 });
+			expect(starts).toEqual([0]);
+		} finally {
+			renderer.videoCache.clear();
+		}
+	}, { width: 2160, height: 3840, rotation: 90 }));
+
+test("interleaved preview and exact consumers keep their decode cursors and surfaces", () =>
+	withVideo(constantRate(32), async ({ file, starts }) => {
+		const preview = rendererAt();
+		const exact = rendererAt(1, true);
+		const previewTree = new RootNode({ duration: ticks(31) }).add(clip(file));
+		const exactTree = new RootNode({ duration: ticks(31) }).add(clip(file));
+		try {
+			for (let index = 0; index < 5; index++) {
+				const low = await resolveFrame(preview, previewTree, 30 + index / 30);
+				const full = await resolveFrame(exact, exactTree, index / 30);
+				expect(low.textures[0]).toMatchObject({ version: 30 + index / 30, width: 960, height: 540 });
+				expect(full.textures[0]).toMatchObject({ version: index / 30, width: 3840, height: 2160 });
+			}
+			expect(starts).toEqual([30, 0]);
+		} finally {
+			preview.videoCache.clear();
+			exact.videoCache.clear();
+		}
+	}));
+
+test.each([{ duration: 0 }, { duration: 0.033 }])("timestamp gaps retain the active sample with duration $duration", ({ duration }) => {
+	const frames = Array.from({ length: 12 }, (_, index) => ({ timestamp: index * 0.034, duration }));
+	return withVideo(frames, async ({ file, starts, decoded }) => {
+		const cache = new VideoCache();
+		try {
+			for (let index = 0; index < 10; index++) {
+				const timestamp = frames[index].timestamp;
+				const atStart = await cache.getFrameAt({ file, time: timestamp });
+				cache.finishFrame();
+				const inGap = await cache.getFrameAt({ file, time: timestamp + 0.0335 });
+				cache.finishFrame();
+				expect(atStart?.timestamp).toBe(timestamp);
+				expect(inGap?.timestamp).toBe(timestamp);
+				expect(inGap?.canvas).toBe(atStart?.canvas);
+			}
+			expect(starts).toEqual([0]);
+			expect(decoded).toHaveLength(11);
+		} finally {
+			cache.clear();
+		}
 	});
 });
+
+test("skipped display ticks keep the cursor current after two seconds of playback", () =>
+	withVideo(constantRate(3), async ({ file, starts, decoded, closed }) => {
+		const cache = new VideoCache();
+		try {
+			for (let index = 0; index < 65; index++) {
+				const frame = await cache.getFrameAt({ file, time: index / 30 });
+				expect(frame?.timestamp).toBe(index / 30);
+				cache.finishFrame();
+			}
+			const skipped = await cache.getFrameAt({ file, time: 67 / 30 });
+			expect(skipped?.timestamp).toBe(67 / 30);
+			expect(starts).toEqual([0]);
+			cache.finishFrame();
+			cache.finishFrame(); // The track has no visible use on this output frame.
+			await Promise.resolve();
+			expect(closed).toEqual(decoded);
+		} finally {
+			cache.clear();
+		}
+	}));
+
+test("a delayed first sample is visible before its presentation timestamp without repeated seeks", () =>
+	withVideo([
+		{ timestamp: 0.5, duration: 0.05 },
+		{ timestamp: 0.6, duration: 0.05 },
+	], async ({ file, starts }) => {
+		const cache = new VideoCache();
+		try {
+			for (const [time, timestamp] of [[0, 0.5], [0.25, 0.5], [0.56, 0.5], [0.6, 0.6]]) {
+				expect((await cache.getFrameAt({ file, time }))?.timestamp).toBe(timestamp);
+				cache.finishFrame();
+			}
+			expect(starts).toEqual([0]);
+		} finally {
+			cache.clear();
+		}
+	}));
+
+test("leaving an outer compound drops the video surfaces held by nested nodes", () =>
+	withVideo(constantRate(1), async ({ file }) => {
+		const renderer = rendererAt();
+		const video = clip(file);
+		const inner = new CompoundNode({
+			...video.params,
+			content: new RootNode({ duration: ticks(1) }).add(video),
+		});
+		const outer = new CompoundNode({
+			...video.params, duration: ticks(1),
+			content: new RootNode({ duration: ticks(1) }).add(inner),
+		});
+		const root = new RootNode({ duration: ticks(2) }).add(outer);
+		try {
+			// Resolve only: descriptor construction for a compound needs the real compositor.
+			await resolveRenderTree({ renderer, node: root, time: 0 });
+			renderer.videoCache.finishFrame();
+			expect(video.resolved?.source).toBeInstanceOf(TestCanvas);
+			await resolveRenderTree({ renderer, node: root, time: ticks(1) });
+			renderer.videoCache.finishFrame();
+			expect(video.resolved).toBeNull();
+		} finally {
+			renderer.videoCache.clear();
+		}
+	}));
+
+test("identical requests share a frame while distinct exact times remain available", () =>
+	withVideo(constantRate(4), async ({ file, starts }) => {
+		const cache = new VideoCache();
+		try {
+			const get = (time: number) => cache.getFrameAt({ file, time });
+			const [early, middle, duplicate, late] = await Promise.all([get(0), get(1), get(1), get(3)]);
+			expect([early?.timestamp, middle?.timestamp, late?.timestamp]).toEqual([0, 1, 3]);
+			expect(duplicate).toBe(middle);
+			expect(starts).toEqual([0, 1, 3]);
+		} finally {
+			cache.clear();
+		}
+	}));
+
+test.each([
+	{ seekError: undefined, message: "No video frames could be decoded" },
+	{ seekError: new Error("Invalid packet"), message: "Invalid packet" },
+])("strict export reads report $message", ({ seekError, message }) =>
+	withVideo([], async ({ file }) => {
+		const cache = new VideoCache();
+		try {
+			await expect(cache.getFrameAt({ file, time: 0, throwOnSeekError: true })).rejects.toThrow(message);
+		} finally {
+			cache.clear();
+		}
+	}, { seekError }));

@@ -177,6 +177,8 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			if (!signal?.aborted) throw error;
 			this.emit("cancelled");
 			return null;
+		} finally {
+			this.renderer.videoCache.clear();
 		}
 	}
 }

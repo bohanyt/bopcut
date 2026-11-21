@@ -270,7 +270,7 @@ async function collectVisualSourceNode({
 					vectorIcon ? transform.width : sourceWidth * renderer.renderScale,
 				),
 			)
-		: sourceWidth;
+		: node instanceof VideoNode ? node.resolved.source.width : sourceWidth;
 	const height = graphic
 		? Math.max(
 				1,
@@ -278,7 +278,7 @@ async function collectVisualSourceNode({
 					vectorIcon ? transform.height : sourceHeight * renderer.renderScale,
 				),
 			)
-		: sourceHeight;
+		: node instanceof VideoNode ? node.resolved.source.height : sourceHeight;
 	const source =
 		node instanceof GraphicNode
 			? node.getSource({

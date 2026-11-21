@@ -8,7 +8,6 @@ import { EditorCore } from "@/core";
 import type { MediaAsset } from "@/media/types";
 import { buildWaveformSourceKey } from "@/media/waveform-summary";
 import { storageService } from "@/services/storage/service";
-import { videoCache } from "@/services/video-cache/service";
 import { waveformCache } from "@/services/waveform-cache/service";
 import { hasMediaId } from "@/timeline/element-utils";
 import type { SceneTracks, TScene, TimelineTrack } from "@/timeline";
@@ -63,7 +62,6 @@ export class RemoveMediaAssetCommand extends Command {
 			revokeMediaUrl(this.removedAsset.thumbnailUrl);
 		}
 
-		videoCache.clearVideo({ mediaId: this.assetId });
 		waveformCache.clearSource({
 			sourceKey: buildWaveformSourceKey({
 				kind: "media",

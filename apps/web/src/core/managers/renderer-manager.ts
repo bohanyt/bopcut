@@ -138,11 +138,15 @@ export class RendererManager {
 			tempCanvas.width = canvasSize.width;
 			tempCanvas.height = canvasSize.height;
 
-			await renderer.renderToCanvas({
-				node: renderTree,
-				time: renderTime,
-				targetCanvas: tempCanvas,
-			});
+			try {
+				await renderer.renderToCanvas({
+					node: renderTree,
+					time: renderTime,
+					targetCanvas: tempCanvas,
+				});
+			} finally {
+				renderer.videoCache.clear();
+			}
 
 			const blob = await new Promise<Blob | null>((resolve) => {
 				tempCanvas.toBlob((result) => resolve(result), "image/png");
@@ -171,6 +175,22 @@ export class RendererManager {
 	/** Whether an export (the user's or an agent's) is running: one runs at a time. */
 	isExportRunning(): boolean {
 		return this.exportRunning;
+	}
+
+	renderPreview({
+		renderer,
+		node,
+		time,
+		signal,
+	}: {
+		renderer: CanvasRenderer;
+		node: RootNode;
+		time: number;
+		signal: AbortSignal;
+	}): Promise<void> | undefined {
+		// An export owns the shared compositor until it finishes. The next preview tick can catch up.
+		if (this.exportRunning || signal.aborted) return;
+		return renderer.render({ node, time, signal });
 	}
 
 	/** Checks a loaded scene before mixdown or rendering. */

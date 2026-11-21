@@ -146,6 +146,7 @@ function PreviewCanvas({
 	const lastFrameRef = useRef(-1);
 	const lastSceneRef = useRef<RootNode | null>(null);
 	const renderingRef = useRef(false);
+	const renderSignalRef = useRef<AbortSignal | null>(null);
 	const lastRendererRef = useRef<CanvasRenderer | null>(null);
 	const { width: nativeWidth, height: nativeHeight } = usePreviewSize();
 	const viewportSize = useContainerSize({ containerRef: viewportRef });
@@ -162,6 +163,7 @@ function PreviewCanvas({
 	const { canPan, panByScreenDelta, scaleZoom } = viewport;
 
 	const quality = usePreviewStore((state) => state.quality);
+	const sessionSignal = editor.project.getSessionSignal();
 	const renderer = useMemo(() => {
 		return new CanvasRenderer({
 			width: nativeWidth,
@@ -175,17 +177,25 @@ function PreviewCanvas({
 	useEffect(() => {
 		const mount = canvasMountRef.current;
 		if (!mount) return;
+		const controller = new AbortController();
+		const signal = AbortSignal.any([controller.signal, sessionSignal]);
+		const clearVideo = () => renderer.videoCache.clear();
+		signal.addEventListener("abort", clearVideo, { once: true });
+		renderSignalRef.current = signal;
+		lastFrameRef.current = -1;
 		const outputCanvas = renderer.getOutputCanvas();
 		outputCanvas.style.display = "block";
 		outputCanvas.style.width = "100%";
 		outputCanvas.style.height = "100%";
 		mount.appendChild(outputCanvas);
 		return () => {
+			renderSignalRef.current = null;
+			controller.abort();
 			if (outputCanvas.parentElement === mount) {
 				mount.removeChild(outputCanvas);
 			}
 		};
-	}, [renderer]);
+	}, [renderer, sessionSignal]);
 
 	const render = useCallback(() => {
 		if (!renderTree || renderingRef.current) return;
@@ -210,16 +220,21 @@ function PreviewCanvas({
 			return;
 		}
 
+		const signal = renderSignalRef.current;
+		if (!signal) return;
+		const task = editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
+		if (!task) return;
 		renderingRef.current = true;
 		lastSceneRef.current = renderTree;
 		lastFrameRef.current = frame;
-		renderer
-			.render({ node: renderTree, time: renderTime })
-			.catch((error) => console.error("Preview render failed:", error))
+		task
+			.catch((error) => {
+				if (!signal.aborted) console.error("Preview render failed:", error);
+			})
 			.finally(() => {
 				renderingRef.current = false;
 			});
-	}, [renderer, renderTree, editor.playback, editor.timeline]);
+	}, [renderer, renderTree, editor.playback, editor.renderer, editor.timeline]);
 
 	useRafLoop(render);
 

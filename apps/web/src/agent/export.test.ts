@@ -5,6 +5,7 @@ import type { TProject } from "@/project/types";
 import type { ExportFormat } from "@/export";
 import type { MediaAsset } from "@/media/types";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
+import { waitWithAbort } from "@/utils/abort";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
@@ -18,7 +19,7 @@ const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
 const { RootNode } = await import("@/services/renderer/nodes/root-node");
 const { SceneExporter } = await import("@/services/renderer/scene-exporter");
 const { resolveRenderTree } = await import("@/services/renderer/resolve");
-const { videoCache } = await import("@/services/video-cache/service");
+const { VideoCache } = await import("@/services/video-cache/service");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
 
@@ -718,13 +719,48 @@ describe("the export poller", () => {
 		})).toMatchObject({ missingMedia: [{ id: videoAsset.id }] });
 	});
 
+	test("preview yields the compositor during export and resumes afterwards", () =>
+		withCanvas(async () => {
+			const editor = open("p", 0.1);
+			editor.save.stop();
+			const entered = Promise.withResolvers<void>();
+			const encoding = Promise.withResolvers<ArrayBuffer>();
+			const encode = spyOn(SceneExporter.prototype, "export").mockImplementation(() => {
+				entered.resolve();
+				return encoding.promise;
+			});
+			const renderer = new CanvasRenderer({ width: 4, height: 4, fps: { numerator: 30, denominator: 1 } });
+			const render = spyOn(renderer, "render").mockResolvedValue(undefined);
+			const frame = {
+				renderer, node: new RootNode({ duration: T(1) }), time: T(0.5),
+				signal: editor.project.getSessionSignal(),
+			};
+			const exporting = editor.renderer.exportProject({ options: { format: "mp4", quality: "high", includeAudio: false } });
+			try {
+				await entered.promise;
+				expect(editor.renderer.renderPreview(frame)).toBeUndefined();
+				expect(render).not.toHaveBeenCalled();
+				encoding.resolve(new ArrayBuffer(10));
+				expect(await exporting).toMatchObject({ success: true });
+				await editor.renderer.renderPreview(frame);
+				expect(render).toHaveBeenCalledTimes(1);
+			} finally {
+				encoding.resolve(new ArrayBuffer(10));
+				await exporting;
+				encode.mockRestore();
+				render.mockRestore();
+			}
+		}));
+
 	/** Resolve real scene nodes while substituting the compositor and browser encoder. */
 	const withFrameResolution = (
 		run: (stubs: { cancel: typeof Output.prototype.cancel; finalize: typeof Output.prototype.finalize }) => Promise<void>,
 		extraGlobals?: Record<string, unknown>,
 	) => withCanvas(async () => {
 		const render = spyOn(CanvasRenderer.prototype, "render").mockImplementation(function (this: InstanceType<typeof CanvasRenderer>, { node, time, signal }) {
-			return resolveRenderTree({ node, time, signal, renderer: this });
+			const work = resolveRenderTree({ node, time, signal, renderer: this })
+				.finally(() => this.videoCache.finishFrame());
+			return waitWithAbort(work, signal);
 		});
 		const start = spyOn(Output.prototype, "start").mockResolvedValue(undefined);
 		const cancel = spyOn(Output.prototype, "cancel").mockResolvedValue(undefined);
@@ -749,7 +785,7 @@ describe("the export poller", () => {
 		withFrameResolution(async ({ cancel, finalize }) => {
 			const editor = open("p", 0.1);
 			editor.save.stop();
-			const decode = spyOn(videoCache, "getFrameAt").mockImplementation(async ({ throwOnSeekError }) => {
+			const decode = spyOn(VideoCache.prototype, "getFrameAt").mockImplementation(async ({ throwOnSeekError }) => {
 				if (throwOnSeekError) throw new Error("Invalid video packet");
 				return null;
 			});
@@ -775,7 +811,7 @@ describe("the export poller", () => {
 			editor.save.stop();
 			const pending = Promise.withResolvers<null>();
 			const reading = Promise.withResolvers<void>();
-			const decode = spyOn(videoCache, "getFrameAt").mockImplementationOnce(() => {
+			const decode = spyOn(VideoCache.prototype, "getFrameAt").mockImplementationOnce(() => {
 				reading.resolve();
 				return pending.promise;
 			}).mockResolvedValue(null);

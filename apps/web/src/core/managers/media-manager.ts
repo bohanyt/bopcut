@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import type { MediaAsset, MediaLoadFailure, MediaType } from "@/media/types";
 import { storageService } from "@/services/storage/service";
 import { generateUUID } from "@/utils/id";
-import { videoCache } from "@/services/video-cache/service";
 import { waveformCache } from "@/services/waveform-cache/service";
 import { BatchCommand, RemoveMediaAssetCommand } from "@/commands";
 
@@ -410,7 +409,6 @@ export class MediaManager {
 		this.loadedProjectId = null;
 		this.missing = [];
 		this.isLoading = false;
-		videoCache.clearAll();
 		waveformCache.clearAll();
 
 		this.assets.forEach((asset) => {
