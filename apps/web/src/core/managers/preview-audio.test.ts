@@ -356,7 +356,7 @@ test("pitch-preserved preview prepares short windows at a late trim and parks ah
 	await flush();
 
 	expect(starts.map(({ when, rate }) => [when, rate])).toEqual([[10, 1], [11, 1]]);
-	expect(decode.mock.calls[0][0]).toBeCloseTo(7200, 3);
+	expect(decode.mock.calls[0][0]).toBeCloseTo(7200, 2);
 	expect(decode.mock.calls.every(([start = 0, end = Infinity]) => end - start < 1.01)).toBe(true);
 	expect(decode.mock.calls.at(-1)?.[1]).toBeLessThan(7207);
 

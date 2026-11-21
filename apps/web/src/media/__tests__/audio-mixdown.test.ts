@@ -67,8 +67,8 @@ test("overlapping cuts share one late decode window and muted clips do not reque
 	const blocks = await Array.fromAsync(mixTimelineAudio({ tracks, mediaAssets: [asset], duration: t(6), sampleRate }));
 	expect(buffers).toHaveBeenCalledTimes(1);
 	const [start, end] = buffers.mock.calls[0];
-	expect(start).toBeCloseTo(7200, 3);
-	expect(end).toBeCloseTo(7203, 3);
+	expect(start).toBeCloseTo(7200, 2);
+	expect(end).toBeCloseTo(7203, 2);
 	expect(blocks.map((block) => block.length)).toEqual([5 * sampleRate, sampleRate]);
 	expect(blocks[0].getChannelData(0)[0]).toBeCloseTo(0.5);
 	expect(blocks[0].getChannelData(0)[4 * sampleRate]).toBe(0);
@@ -147,6 +147,40 @@ test("mixdown puts center-only 5.1 dialogue in both stereo channels and ignores 
 	for (let side = 0; side < 2; side++) {
 		expect(block.getChannelData(side)[0]).toBeCloseTo(0.5 * Math.SQRT1_2);
 		expect(block.getChannelData(side)[4]).toBe(0);
+	}
+});
+
+test("96 kHz sources reject ultrasonic aliases across mix block boundaries", async () => {
+	installBuffer();
+	const nativeRate = 96_000;
+	const outputRate = 44_100;
+	const buffer = new AudioBuffer({ length: 11 * nativeRate, sampleRate: nativeRate });
+	const source = buffer.getChannelData(0);
+	for (let frame = 0; frame < source.length; frame++) {
+		const time = frame / nativeRate;
+		source[frame] = 0.25 * Math.sin(2 * Math.PI * 1_000 * time) + 0.4 * Math.sin(2 * Math.PI * 44_000 * time);
+	}
+	const tracks = timeline();
+	tracks.audio[0].elements.push({
+		...clip("library", 0, 0, 26), sourceType: "library", sourceUrl: "/library/high-rate.wav", buffer,
+	});
+
+	const blocks = mixTimelineAudio({ tracks, mediaAssets: [], duration: t(26), sampleRate: outputRate });
+	try {
+		for (let block = 0; block < 2; block++) {
+			const result = await blocks.next();
+			if (result.done) throw new Error("Expected an audio block");
+			const samples = result.value.getChannelData(0);
+			let peakError = 0;
+			for (let frame = block ? 0 : 128; frame < samples.length; frame++) {
+				const time = block * 5 + frame / outputRate;
+				const expected = 0.25 * Math.sin(2 * Math.PI * 1_000 * time);
+				peakError = Math.max(peakError, Math.abs(samples[frame] - expected));
+			}
+			expect(peakError).toBeLessThan(0.002);
+		}
+	} finally {
+		await blocks.return();
 	}
 });
 

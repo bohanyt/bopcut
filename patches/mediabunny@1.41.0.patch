@@ -1,0 +1,40 @@
+diff --git a/dist/bundles/mediabunny.cjs b/dist/bundles/mediabunny.cjs
+index fcd33bc13766e8c89877ebd1c1a5ad8d8f849a37..c6003b530e4b14a86b0b67d9f3e14ab9bdc11bb4 100644
+--- a/dist/bundles/mediabunny.cjs
++++ b/dist/bundles/mediabunny.cjs
+@@ -27002,6 +27002,7 @@ ${cue.notes ?? ""}`;
+             );
+           }
+           const support = await VideoEncoder.isConfigSupported(encoderConfig);
++          this.source._ensureValidAdd();
+           if (!support.supported) {
+             throw new Error(
+               `This specific encoder configuration (${encoderConfig.codec}, ${encoderConfig.bitrate} bps, ${encoderConfig.width}x${encoderConfig.height}, hardware acceleration: ${encoderConfig.hardwareAcceleration ?? "no-preference"}) is not supported by this browser. Consider using another codec or changing your video parameters.`
+@@ -27906,6 +27907,7 @@ ${cue.notes ?? ""}`;
+             throw new Error("AudioEncoder is not supported by this browser.");
+           }
+           const support = await AudioEncoder.isConfigSupported(encoderConfig);
++          this.source._ensureValidAdd();
+           if (!support.supported) {
+             throw new Error(
+               `This specific encoder configuration (${encoderConfig.codec}, ${encoderConfig.bitrate} bps, ${encoderConfig.numberOfChannels} channels, ${encoderConfig.sampleRate} Hz) is not supported by this browser. Consider using another codec or changing your audio parameters.`
+diff --git a/dist/modules/src/media-source.js b/dist/modules/src/media-source.js
+index f120d2bb8262379e399c04f489d6215dd975191a..22e16e1aa76342b43535ce749e9ae230ffad2671 100644
+--- a/dist/modules/src/media-source.js
++++ b/dist/modules/src/media-source.js
+@@ -383,6 +383,7 @@ class VideoEncoderWrapper {
+                         + ` round your dimensions to the nearest even number.`);
+                 }
+                 const support = await VideoEncoder.isConfigSupported(encoderConfig);
++                this.source._ensureValidAdd();
+                 if (!support.supported) {
+                     throw new Error(`This specific encoder configuration (${encoderConfig.codec}, ${encoderConfig.bitrate} bps,`
+                         + ` ${encoderConfig.width}x${encoderConfig.height}, hardware acceleration:`
+@@ -1383,6 +1384,7 @@ class AudioEncoderWrapper {
+                     throw new Error('AudioEncoder is not supported by this browser.');
+                 }
+                 const support = await AudioEncoder.isConfigSupported(encoderConfig);
++                this.source._ensureValidAdd();
+                 if (!support.supported) {
+                     throw new Error(`This specific encoder configuration (${encoderConfig.codec}, ${encoderConfig.bitrate} bps,`
+                         + ` ${encoderConfig.numberOfChannels} channels, ${encoderConfig.sampleRate} Hz) is not`

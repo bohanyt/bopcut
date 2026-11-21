@@ -1,10 +1,11 @@
 import type { Input } from "mediabunny";
 import { collectAudibleCandidates } from "@/media/audio";
+import { createStereoSampler, resamplePadding } from "@/media/audio-resample";
 import { createBlockMastering } from "@/media/audio-mastering";
 import { createAudioCheckpoint, decodeAudioWindow, openAudioInput, sliceAudioWindow, STEREO_CHANNELS, yieldAudioTask, type DecodedAudioWindow } from "@/media/audio-window";
 import { mediaSupportsAudio } from "@/media/media-utils";
 import type { MediaAsset, MediaLoadFailure } from "@/media/types";
-import { createPitchReader, shouldMaintainPitch, clampRetimeRate } from "@/retime";
+import { createPitchReader, shouldMaintainPitch, clampRetimeRate, MAX_RETIME_RATE } from "@/retime";
 import type { AudioCapableElement } from "@/timeline/audio-state";
 import { hasAnimatedVolume, isElementMuted, resolveEffectiveAudioGain } from "@/timeline/audio-state";
 import type { SceneTracks, TScene } from "@/timeline";
@@ -13,12 +14,10 @@ import { TICKS_PER_SECOND } from "@/wasm";
 
 export const EXPORT_SAMPLE_RATE = 44_100;
 const BLOCK_SECONDS = 5;
-const MAX_WINDOW_SECONDS = BLOCK_SECONDS * 5;
+const MAX_WINDOW_SECONDS = BLOCK_SECONDS * MAX_RETIME_RATE;
 const MAX_OPEN_INPUTS = 4;
 const MAX_CACHED_BYTES = 32 * 2 ** 20;
 const MAX_CACHED_WINDOWS = 128;
-// Keep an interpolation sample at the end of a decoded window, even at 8 kHz.
-const INTERPOLATION_PADDING = 1 / 8000;
 
 interface MixClip {
 	element: AudioCapableElement;
@@ -46,24 +45,26 @@ interface WindowRequest {
 	clips: MixClip[];
 }
 
-function addClipWindow(requests: WindowRequest[], clip: MixClip, start: number, end: number): void {
+function addClipWindow(requests: WindowRequest[], clip: MixClip, start: number, end: number, sampleRate: number): void {
 	const clipStart = clip.trim;
 	const clipEnd = clipStart + clip.duration * clip.rate;
 	const useWholeClip = clipEnd - clipStart <= MAX_WINDOW_SECONDS;
+	const padding = resamplePadding(sampleRate, clip.rate);
 	requests.push({
-		start: useWholeClip ? clipStart : clipStart + Math.max(0, start) * clip.rate,
-		end: (useWholeClip ? clipEnd : clipStart + end * clip.rate) + INTERPOLATION_PADDING,
+		start: (useWholeClip ? clipStart : clipStart + Math.max(0, start) * clip.rate) - padding,
+		end: (useWholeClip ? clipEnd : clipStart + end * clip.rate) + padding,
 		clips: [clip],
 	});
 }
 
-function mergeWindows(requests: WindowRequest[]): WindowRequest[] {
+function mergeWindows(requests: WindowRequest[], sampleRate: number): WindowRequest[] {
+	const maxWindow = MAX_WINDOW_SECONDS + 2 * resamplePadding(sampleRate, MAX_RETIME_RATE);
 	requests.sort((a, b) => a.start - b.start);
 	const windows: WindowRequest[] = [];
 	for (const request of requests) {
 		const previous = windows.at(-1);
 		if (previous && request.start <= previous.end &&
-			request.end - previous.start <= MAX_WINDOW_SECONDS + INTERPOLATION_PADDING) {
+			request.end - previous.start <= maxWindow) {
 			previous.end = Math.max(previous.end, request.end);
 			previous.clips.push(...request.clips);
 		} else {
@@ -255,12 +256,12 @@ export async function* mixTimelineAudio({
 				if (!windows) requests.set(clip.source, windows = []);
 				// Block boundaries are in output samples; the decode window remains in source seconds.
 				addClipWindow(windows, clip, (start - clip.start) / sampleRate,
-					(Math.min(end, clip.end) - clip.start) / sampleRate);
+					(Math.min(end, clip.end) - clip.start) / sampleRate, sampleRate);
 			}
 
 			// One decoder runs at a time. Each decoded window is mixed before opening the next.
 			for (const [source, windows] of requests) {
-				for (const request of mergeWindows(windows)) {
+				for (const request of mergeWindows(windows, sampleRate)) {
 					const window = await decode(source, request);
 					if (!window) break;
 					for (const clip of request.clips) {
@@ -310,13 +311,13 @@ async function mixClip({
 	stretched: boolean;
 }): Promise<void> {
 	const { buffer } = window;
-	const left = buffer.getChannelData(0);
-	const right = buffer.getChannelData(buffer.numberOfChannels - 1);
 	const outputLeft = output.getChannelData(0);
 	const outputRight = output.getChannelData(1);
 	const from = Math.max(start, clip.start);
 	const to = Math.min(end, clip.end);
 	const rate = stretched ? 1 : clip.rate;
+	const sample = createStereoSampler(buffer, rate * buffer.sampleRate / output.sampleRate);
+	const stereo = new Float64Array(2);
 	const trim = (stretched ? 0 : clip.trim) - window.start;
 	for (let block = from; block < to; block += 4096) {
 		const pause = checkpoint();
@@ -324,13 +325,11 @@ async function mixClip({
 		for (let index = block; index < Math.min(block + 4096, to); index++) {
 			const time = (index - clip.start) / output.sampleRate;
 			const position = stretched ? index - from : (trim + time * rate) * buffer.sampleRate;
-			const lower = Math.floor(position);
-			const upper = lower + 1;
-			const fraction = position - lower;
+			sample(position, stereo);
 			const gain = clip.animated ? resolveEffectiveAudioGain({ element: clip.element, localTime: time }) : clip.gain;
 			const offset = index - start;
-			outputLeft[offset] += ((left[lower] ?? 0) * (1 - fraction) + (left[upper] ?? 0) * fraction) * gain;
-			outputRight[offset] += ((right[lower] ?? 0) * (1 - fraction) + (right[upper] ?? 0) * fraction) * gain;
+			outputLeft[offset] += stereo[0] * gain;
+			outputRight[offset] += stereo[1] * gain;
 		}
 	}
 }

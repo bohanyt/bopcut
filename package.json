@@ -43,5 +43,8 @@
   },
   "trustedDependencies": [
     "@tailwindcss/oxide"
-  ]
+  ],
+  "patchedDependencies": {
+    "mediabunny@1.41.0": "patches/mediabunny@1.41.0.patch"
+  }
 }

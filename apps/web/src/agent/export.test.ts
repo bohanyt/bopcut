@@ -170,6 +170,48 @@ test("abort during a later audio encoder write cancels the muxer without waiting
 		}
 	}));
 
+test("a late codec support result cannot initialize an audio encoder after cancellation", async () => {
+	const requested = Promise.withResolvers<void>();
+	const support = Promise.withResolvers<AudioEncoderSupport>();
+	const constructed = mock(() => {});
+	class DelayedAudioEncoder {
+		static isConfigSupported() {
+			requested.resolve();
+			return support.promise;
+		}
+		constructor() {
+			constructed();
+			throw new Error("Encoder constructed after cancellation");
+		}
+	}
+
+	await withCanvas(async () => {
+		const controller = new AbortController();
+		const first = new AudioBuffer({ length: 44_100, sampleRate: 44_100, numberOfChannels: 2 });
+		async function* blocks() {}
+		const add = spyOn(AudioBufferSource.prototype, "add");
+		try {
+			const exporter = new SceneExporter({
+				width: 16, height: 16, fps: { numerator: 24, denominator: 1 }, format: "webm", quality: "high",
+				audio: { first, blocks: blocks() },
+			});
+			const exporting = exporter.export({ rootNode: new RootNode({ duration: T(1) }), signal: controller.signal });
+			await requested.promise;
+			controller.abort();
+			support.resolve({ supported: true });
+			expect(await exporting).toBeNull();
+
+			const write = add.mock.results[0];
+			if (!write || write.type !== "return") throw new Error("Expected an audio write");
+			await expect(write.value).rejects.toThrow(/cancel/i);
+			expect(constructed).not.toHaveBeenCalled();
+		} finally {
+			support.resolve({ supported: false });
+			add.mockRestore();
+		}
+	}, { AudioEncoder: DelayedAudioEncoder });
+});
+
 describe("export requests", () => {
 	test("defaults and checks", () => {
 		expect(parseExportRequest({ rev: "e1" })).toEqual({ rev: "e1", format: "mp4", quality: "high", includeAudio: true, allowMissing: false });

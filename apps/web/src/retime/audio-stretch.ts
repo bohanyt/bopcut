@@ -1,4 +1,5 @@
 import { SoundTouch } from "soundtouchjs";
+import { createStereoSampler, resamplePadding } from "@/media/audio-resample";
 import { createAudioCheckpoint, STEREO_CHANNELS, type DecodedAudioWindow } from "@/media/audio-window";
 
 type ReadWindow = (start: number, end: number) => Promise<DecodedAudioWindow | null>;
@@ -20,8 +21,11 @@ export function createPitchReader({
 	const inputFrames = Math.ceil((sourceEnd - sourceStart) * sampleRate);
 	const quantum = Math.ceil(sampleRate * Math.min(1, rate) / 8);
 	const scratch = new Float32Array(quantum * 2);
+	const padding = resamplePadding(sampleRate);
+	const stereo = new Float64Array(2);
 	let inputFrame = 0;
 	let window: DecodedAudioWindow | null = null;
+	let sample: ReturnType<typeof createStereoSampler> | undefined;
 
 	return async (length) => {
 		const output = new AudioBuffer({ numberOfChannels: STEREO_CHANNELS, length, sampleRate });
@@ -45,20 +49,19 @@ export function createPitchReader({
 				if (frames) {
 					const start = sourceStart + inputFrame / sampleRate;
 					const end = sourceStart + (inputFrame + frames) / sampleRate;
-					if (!window || end + 1 / 8000 > window.start + window.buffer.duration) {
+					if (!window || end + padding > window.start + window.buffer.duration) {
 						const windowEnd = sourceStart + Math.min(inputFrames, inputFrame + sampleRate) / sampleRate;
-						window = await readWindow(start, windowEnd + 1 / 8000);
+						window = await readWindow(start - padding, windowEnd + padding);
+						if (!window) return output;
+						sample = createStereoSampler(window.buffer, window.buffer.sampleRate / sampleRate);
 					}
 					if (!window) return output;
 					const nativeRate = window.buffer.sampleRate;
-					const inputLeft = window.buffer.getChannelData(0);
-					const inputRight = window.buffer.getChannelData(1);
 					for (let i = 0; i < frames; i++) {
 						const position = (start - window.start + i / sampleRate) * nativeRate;
-						const lower = Math.floor(position);
-						const fraction = position - lower;
-						scratch[i * 2] = (inputLeft[lower] ?? 0) * (1 - fraction) + (inputLeft[lower + 1] ?? 0) * fraction;
-						scratch[i * 2 + 1] = (inputRight[lower] ?? 0) * (1 - fraction) + (inputRight[lower + 1] ?? 0) * fraction;
+						sample!(position, stereo);
+						scratch[i * 2] = stereo[0];
+						scratch[i * 2 + 1] = stereo[1];
 					}
 					inputFrame += frames;
 				}

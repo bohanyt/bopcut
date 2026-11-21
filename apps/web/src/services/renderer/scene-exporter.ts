@@ -99,6 +99,13 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			target: new BufferTarget(),
 		});
 
+		let cancelling = false;
+		const cancelOutput = () => {
+			if (cancelling || (output.state !== "pending" && output.state !== "started")) return;
+			cancelling = true;
+			void output.cancel().catch((error) => console.warn("Failed to cancel export output:", error));
+		};
+		signal?.addEventListener("abort", cancelOutput, { once: true });
 		try {
 			const videoSource = new CanvasSource(this.renderer.getOutputCanvas(), {
 				codec: this.format === "webm" ? "vp9" : "avc",
@@ -185,13 +192,12 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			this.emit("complete", buffer);
 			return buffer;
 		} catch (error) {
-			if (output.state === "pending" || output.state === "started") {
-				void output.cancel().catch((cleanup) => console.warn("Failed to cancel export output:", cleanup));
-			}
+			cancelOutput();
 			if (!signal?.aborted) throw error;
 			this.emit("cancelled");
 			return null;
 		} finally {
+			signal?.removeEventListener("abort", cancelOutput);
 			this.renderer.videoCache.clear();
 		}
 	}
