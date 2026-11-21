@@ -1,5 +1,6 @@
 import type { FrameRate } from "opencut-wasm";
 import type { MediaAsset } from "@/media/types";
+import { TICKS_PER_SECOND } from "@/wasm/media-time";
 
 type MediaAssetFpsInput = Pick<MediaAsset, "type" | "fps">;
 
@@ -20,6 +21,10 @@ const STANDARD_FRAME_RATE_TOLERANCE = 0.01;
 
 export function frameRateToFloat(rate: FrameRate): number {
 	return rate.numerator / rate.denominator;
+}
+
+export function frameRateHasWholeTicks({ numerator, denominator }: FrameRate): boolean {
+	return numerator > 0 && denominator > 0 && (TICKS_PER_SECOND * denominator) % numerator === 0;
 }
 
 export function frameRatesEqual({
@@ -52,6 +57,28 @@ export function floatToFrameRate(fps: number): FrameRate {
 		numerator: scaledNumerator / divisor,
 		denominator: ARBITRARY_DENOMINATOR / divisor,
 	};
+}
+
+export function importedVideoProjectRate(fps: number): FrameRate | null {
+	if (!Number.isFinite(fps) || fps <= 0 || fps > TICKS_PER_SECOND) return null;
+	const rate = floatToFrameRate(fps);
+	// Both the source frame grid and the nominal clock used for frame timecode must be exact.
+	if (
+		rate.numerator <= 0xffffffff && frameRateHasWholeTicks(rate) &&
+		TICKS_PER_SECOND % Math.ceil(frameRateToFloat(rate)) === 0
+	) {
+		return rate;
+	}
+
+	// Preserve supported legacy rounded rates outside the usual footage range.
+	if (fps < STANDARD_FRAME_RATES[0].value || fps > STANDARD_FRAME_RATES.at(-1)!.value) {
+		const rounded = Math.round(fps);
+		return TICKS_PER_SECOND % rounded === 0 ? { numerator: rounded, denominator: 1 } : null;
+	}
+
+	return STANDARD_FRAME_RATES.reduce((closest, candidate) =>
+		Math.abs(fps - candidate.value) < Math.abs(fps - closest.value) ? candidate : closest,
+	).rate;
 }
 
 function gcd({ left, right }: { left: number; right: number }): number {
@@ -90,15 +117,11 @@ export function getRaisedProjectFpsForImportedMedia({
 	currentFps: FrameRate;
 	importedAssets: MediaAssetFpsInput[];
 }): FrameRate | null {
-	const highestImportedVideoFps = getHighestImportedVideoFps({
-		mediaAssets: importedAssets,
-	});
-
-	const currentFpsFloat = frameRateToFloat(currentFps);
-
-	if (highestImportedVideoFps === null || highestImportedVideoFps <= currentFpsFloat) {
-		return null;
+	let highest = currentFps;
+	for (const { type, fps } of importedAssets) {
+		if (type !== "video" || fps === undefined) continue;
+		const rate = importedVideoProjectRate(fps);
+		if (rate && frameRateToFloat(rate) > frameRateToFloat(highest)) highest = rate;
 	}
-
-	return floatToFrameRate(highestImportedVideoFps);
+	return highest === currentFps ? null : highest;
 }

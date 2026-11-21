@@ -11,7 +11,13 @@ import { requiresMediaId } from "@/timeline/element-utils";
 import type { MediaAsset } from "@/media/types";
 import type { TProjectSettings } from "@/project/types";
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
-import { floatToFrameRate } from "@/fps/utils";
+import { DEFAULT_FPS } from "@/fps/defaults";
+import {
+	frameRateHasWholeTicks,
+	frameRateToFloat,
+	getRaisedProjectFpsForImportedMedia,
+	importedVideoProjectRate,
+} from "@/fps/utils";
 import { graphicsRegistry, registerDefaultGraphics } from "@/graphics";
 import {
 	applyPlacement,
@@ -91,12 +97,12 @@ export class InsertElementCommand extends Command {
 			const mediaAssets = editor.media.getAssets();
 			const activeProject = editor.project.getActive();
 			const { canvasSize, originalCanvasSize, fps } = activeProject.settings;
-			this.savedSettings = { canvasSize, originalCanvasSize, fps };
 			const asset = mediaAssets.find(
 				(item: MediaAsset) => item.id === newElement.mediaId,
 			);
 
 			if (asset?.width && asset?.height) {
+				this.savedSettings = { canvasSize, originalCanvasSize };
 				const nextCanvasSize = { width: asset.width, height: asset.height };
 				const shouldSetOriginalCanvasSize =
 					!activeProject?.settings.originalCanvasSize;
@@ -111,9 +117,13 @@ export class InsertElementCommand extends Command {
 				});
 			}
 
-			if (asset?.type === "video" && asset?.fps) {
+			const sourceFps = asset?.type === "video" && asset.fps !== undefined
+				? importedVideoProjectRate(asset.fps)
+				: null;
+			if (sourceFps && shouldInitializeFps({ current: fps, source: sourceFps, mediaAssets })) {
+				this.savedSettings = { ...this.savedSettings, fps };
 				editor.project.updateSettings({
-					settings: { fps: floatToFrameRate(asset.fps) },
+					settings: { fps: sourceFps },
 					pushHistory: false,
 				});
 			}
@@ -319,4 +329,23 @@ export class InsertElementCommand extends Command {
 			targetTrackId: appliedPlacement.targetTrackId,
 		};
 	}
+}
+
+function shouldInitializeFps({
+	current,
+	source,
+	mediaAssets,
+}: {
+	current: TProjectSettings["fps"];
+	source: TProjectSettings["fps"];
+	mediaAssets: MediaAsset[];
+}): boolean {
+	const currentRate = frameRateToFloat(current);
+	const sourceRate = frameRateToFloat(source);
+	if (!frameRateHasWholeTicks(current) || sourceRate > currentRate) return true;
+	if (sourceRate === currentRate || currentRate !== frameRateToFloat(DEFAULT_FPS)) return false;
+
+	// A 30 fps import can have selected the default rate from an earlier setting.
+	const fasterBinRate = getRaisedProjectFpsForImportedMedia({ currentFps: source, importedAssets: mediaAssets });
+	return !fasterBinRate || frameRateToFloat(fasterBinRate) < currentRate;
 }
