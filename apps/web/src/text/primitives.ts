@@ -1,6 +1,7 @@
 import type { TextCanvasContext, TextBlockMeasurement } from "@/text/layout";
 import { DEFAULTS } from "@/timeline/defaults";
 import { clamp } from "@/utils/math";
+import { GENERIC_FONT_FAMILIES } from "@/fonts/system-fonts";
 import { CORNER_RADIUS_MAX, CORNER_RADIUS_MIN } from "./background";
 import {
 	drawTextDecoration,
@@ -62,7 +63,7 @@ export interface ResolvedTextBackgroundLike {
 	cornerRadius: number;
 }
 
-export function quoteFontFamily({
+function quoteFontFamily({
 	fontFamily,
 }: {
 	fontFamily: string;
@@ -81,7 +82,10 @@ export function buildTextFontString({
 	fontStyle: TextFontStyle;
 	scaledFontSize: number;
 }): string {
-	return `${fontStyle} ${fontWeight} ${scaledFontSize}px ${quoteFontFamily({ fontFamily })}, sans-serif`;
+	const generic = fontFamily.toLowerCase();
+	const primary = GENERIC_FONT_FAMILIES.has(generic) ? generic : quoteFontFamily({ fontFamily });
+	const families = primary === "sans-serif" ? primary : `${primary}, sans-serif`;
+	return `${fontStyle} ${fontWeight} ${scaledFontSize}px ${families}`;
 }
 
 export function resolveTextLayout({
