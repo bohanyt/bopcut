@@ -152,9 +152,12 @@ export function resolvePitchSourceEnd(element: AudioCapableElement, rate: number
 	if (element.sourceDuration !== undefined) {
 		const storedEnd = element.sourceDuration - element.trimEnd;
 		const storedSpan = storedEnd - element.trimStart;
-		// The timeline duration and both source endpoints can each round by half a tick.
+		// Preserve an earlier stored cut even when repeated leading edits round the span.
+		// A later cut can account for rounding at the endpoints and the timeline duration.
 		const roundingTolerance = rate / 2 + 1;
-		if (Math.abs(storedSpan - sourceSpan) <= roundingTolerance) {
+		// Older duration edits stored the unscaled duration. Later trims can reduce that span further.
+		const legacyDuration = rate > 1 && storedSpan <= element.duration && sourceSpan - storedSpan > roundingTolerance;
+		if (storedSpan > 0 && storedSpan <= sourceSpan + roundingTolerance && !legacyDuration) {
 			return storedEnd / TICKS_PER_SECOND;
 		}
 	}

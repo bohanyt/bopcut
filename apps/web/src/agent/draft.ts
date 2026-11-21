@@ -4,6 +4,7 @@
 import type { ParamValues } from "@/params";
 import { type ElementRecord, StaleError, assertNoteNotStale, assertNotStale, assertRippleNotStale, fieldsMapOf, touchedFields } from "./stale";
 import type { Bookmark, SceneTracks, TScene, TimelineElement, TimelineTrack } from "@/timeline";
+import { isRetimableElement } from "@/timeline";
 import { buildGraphicElement } from "@/timeline/element-utils";
 import { resolveAnimationPathValueAtTime } from "@/animation";
 import { type MediaTime, TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
@@ -24,6 +25,7 @@ import { type WordRef, cutAtWords, cutWarnings, snapCutsToWords, sourceEnd } fro
 import { cutRange, cutRangeBookmarks } from "@/timeline/range-cut";
 import { type AgentAnimateSide, animateAgentElement, animateParams, parseAgentAnimate, readAnimationPresets } from "./animate";
 import { PRESET_PARAM, checkPresetParams, presetLayerAt, readPresetSettings } from "@/animation/presets";
+import { getSourceSpanAtClipTime } from "@/retime";
 
 /** `compound` = add into that compound clip's content (times relative to it). */
 export type DraftTrackRef = AgentTrackRef & { compound?: AgentMatch };
@@ -267,7 +269,13 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					if (op.duration !== undefined) patch.duration = secs(op.duration);
 					if (op.trimStart !== undefined) patch.trimStart = secs(op.trimStart);
 					if (el.sourceDuration !== undefined && (patch.duration !== undefined || patch.trimStart !== undefined)) {
-						patch.trimEnd = Math.max(0, el.sourceDuration - (patch.trimStart ?? el.trimStart) - (patch.duration ?? el.duration));
+						const sourceSpan = roundMediaTime({
+							time: getSourceSpanAtClipTime({
+								clipTime: patch.duration ?? el.duration,
+								retime: isRetimableElement(el) ? el.retime : undefined,
+							}),
+						});
+						patch.trimEnd = Math.max(0, el.sourceDuration - (patch.trimStart ?? el.trimStart) - sourceSpan);
 					}
 					// Animation presets written as raw params are checked like an animate op.
 					checkPresetParams(el, op.params as ParamValues | undefined);

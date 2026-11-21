@@ -5,6 +5,7 @@ import { mixTimelineAudio } from "@/media/audio-mixdown";
 import { TestAudioBuffer } from "@/media/__tests__/audio-buffer";
 import type { AudioElement, LibraryAudioElement, UploadAudioElement } from "@/timeline";
 import { clipElementToRange } from "@/timeline/compound";
+import { splitElementAt } from "@/timeline/split";
 import { scene, t } from "@/timeline/__tests__/compound-fixtures";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
@@ -395,26 +396,37 @@ test("pitch-preserved preview seeks keep in-trim taps before the cursor", async 
 	expect(Math.max(...buffers[0].getChannelData(0).subarray(0, 16).map(Math.abs))).toBeGreaterThan(0.0001);
 });
 
-test.each([
+const roundedCutCases = [
 	{ nativeRate: 48_000, sampleRate: 44_100 },
 	{ nativeRate: 44_100, sampleRate: 48_000 },
-].flatMap((rates) => [0, 0.000025].map((leadingTrim) => ({ ...rates, leadingTrim }))))(
-	"preview and export exclude the first native sample at a rounded 0.85x cut ($nativeRate to $sampleRate Hz, leading trim $leadingTrim s)", async ({
-	nativeRate, sampleRate, leadingTrim,
+].flatMap((rates) => (["direct", "compound", "split"] as const).map((edit) => ({ ...rates, edit })));
+test.each(roundedCutCases)(
+	"preview and export exclude the first native sample at a rounded 0.85x cut ($nativeRate to $sampleRate Hz, $edit)", async ({
+	nativeRate, sampleRate, edit,
 }) => {
 	const rate = 0.85;
+	const end = edit === "split" ? 0.4 : 0.1;
 	const original = uploadedClip({
-		duration: t(0.1 / rate), sourceDuration: t(1), trimEnd: t(0.9), retime: { rate, maintainPitch: true },
+		duration: t(end / rate), sourceDuration: t(1), trimEnd: t(1 - end), retime: { rate, maintainPitch: true },
 	});
-	const clipped = clipElementToRange({
-		element: original, rangeStart: t(leadingTrim), rangeEnd: original.duration,
-	});
-	if (!clipped) throw new Error("Expected a visible clip");
-	const { duration } = clipped;
-	const { editor, tracks } = setup({ ...clipped, startTime: t(0) });
+	let element = original;
+	if (edit === "compound") {
+		const clipped = clipElementToRange({ element, rangeStart: t(0.000025), rangeEnd: element.duration });
+		if (!clipped) throw new Error("Expected a visible clip");
+		element = clipped;
+	}
+	if (edit === "split") {
+		for (let split = 1; split <= 3; split++) {
+			const parts = splitElementAt({ element, splitTime: t(split * 0.000025), rightId: `right-${split}` });
+			if (parts?.right.type !== "audio" || parts.right.sourceType !== "upload") throw new Error("Expected an audio split");
+			element = parts.right;
+		}
+	}
+	const { duration } = element;
+	const { editor, tracks } = setup({ ...element, startTime: t(0) });
 	const { buffers } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
-	buffer.getChannelData(0)[nativeRate / 10] = 1;
+	buffer.getChannelData(0)[nativeRate * end] = 1;
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
 
 	editor.playback.play();
@@ -449,6 +461,29 @@ test("a legacy retimed clip with stale trim metadata keeps its visible source wi
 
 	expect(buffers).toHaveLength(1);
 	expect(buffers[0].getChannelData(0).every((value) => value === 0)).toBe(true);
+});
+
+test.each([0, 0.05])("a legacy duration-only edit retains its playable source at 2x after a %d s leading split", async (splitTime) => {
+	const sampleRate = 48_000;
+	let element = uploadedClip({
+		duration: t(0.25), sourceDuration: t(1), trimEnd: t(0.75), retime: { rate: 2, maintainPitch: true },
+	});
+	if (splitTime > 0) {
+		const parts = splitElementAt({ element, splitTime: t(splitTime), rightId: "legacy-right" });
+		if (parts?.right.type !== "audio" || parts.right.sourceType !== "upload") throw new Error("Expected an audio split");
+		element = parts.right;
+	}
+	const { editor } = setup({ ...element, startTime: t(0) });
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: sampleRate, sampleRate });
+	buffer.getChannelData(0).fill(0.5, sampleRate * 0.3, sampleRate * 0.5);
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].getChannelData(0).some((value) => value > 0.1)).toBe(true);
 });
 
 const pitchCases = [44_100, 48_000].flatMap((sampleRate) =>
