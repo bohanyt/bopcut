@@ -21,6 +21,8 @@ export type CanvasRendererParams = {
 	 * frames of the same video (snapshots, agent frames, export, thumbnails). The preview leaves it off.
 	 */
 	exactFrames?: boolean;
+	/** Export reports source decode failures in its missing-media result. */
+	onVideoFailure?: (mediaId: string, error: unknown) => void;
 };
 
 // The WASM compositor and its textures are shared by all renderers.
@@ -36,9 +38,12 @@ export class CanvasRenderer {
 	private outputCanvas: HTMLCanvasElement;
 
 	readonly exactFrames: boolean;
+	readonly onVideoFailure?: CanvasRendererParams["onVideoFailure"];
+	readonly failedVideoIds = new Set<string>();
 
-	constructor({ width, height, fps, renderScale = 1, exactFrames = false }: CanvasRendererParams) {
+	constructor({ width, height, fps, renderScale = 1, exactFrames = false, onVideoFailure }: CanvasRendererParams) {
 		this.exactFrames = exactFrames;
+		this.onVideoFailure = onVideoFailure;
 		this.width = width;
 		this.height = height;
 		this.fps = fps;

@@ -297,12 +297,7 @@ async function resolveVideoNode({
 			clipTime,
 			retime: node.params.retime,
 		});
-	const frame = await videoCache.getFrameAt({
-		mediaId: node.params.mediaId,
-		file: node.params.file,
-		time: mediaTimeToSeconds({ time: roundMediaTime({ time: sourceTimeTicks }) }),
-		exact: context.renderer.exactFrames,
-	});
+	const frame = await readVideoFrame(node.params, sourceTimeTicks, context.renderer);
 	if (!frame) {
 		return null;
 	}
@@ -324,6 +319,23 @@ async function resolveVideoNode({
 		sourceHeight: frame.canvas.height,
 		sourceVersion: frame.timestamp,
 	};
+}
+
+async function readVideoFrame({ mediaId, file }: { mediaId: string; file: File }, time: number, renderer: CanvasRenderer) {
+	if (renderer.failedVideoIds.has(mediaId)) return null;
+	try {
+		return await videoCache.getFrameAt({
+			mediaId, file,
+			time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
+			exact: renderer.exactFrames,
+			throwOnSeekError: !!renderer.onVideoFailure,
+		});
+	} catch (error) {
+		if (!renderer.onVideoFailure) throw error;
+		renderer.failedVideoIds.add(mediaId);
+		renderer.onVideoFailure(mediaId, error);
+		return null;
+	}
 }
 
 // Render 3D models at 1024 px to stay sharp when enlarged nearly fullscreen.
@@ -516,7 +528,7 @@ async function resolveBlurBackgroundNode({
 		return null;
 	}
 
-	const backdropSource = await resolveBackdropSource({ node, clipTime, exact: context.renderer.exactFrames });
+	const backdropSource = await resolveBackdropSource({ node, clipTime, renderer: context.renderer });
 	if (!backdropSource) {
 		return null;
 	}
@@ -541,11 +553,11 @@ async function resolveBlurBackgroundNode({
 async function resolveBackdropSource({
 	node,
 	clipTime,
-	exact,
+	renderer,
 }: {
 	node: BlurBackgroundNode;
 	clipTime: number;
-	exact: boolean;
+	renderer: CanvasRenderer;
 }): Promise<BackdropSource | null> {
 	if (node.params.mediaType === "video") {
 		const sourceTimeTicks =
@@ -554,12 +566,7 @@ async function resolveBackdropSource({
 				clipTime,
 				retime: node.params.retime,
 			});
-		const frame = await videoCache.getFrameAt({
-			mediaId: node.params.mediaId,
-			file: node.params.file,
-			time: mediaTimeToSeconds({ time: roundMediaTime({ time: sourceTimeTicks }) }),
-			exact,
-		});
+		const frame = await readVideoFrame(node.params, sourceTimeTicks, renderer);
 		if (!frame) {
 			return null;
 		}

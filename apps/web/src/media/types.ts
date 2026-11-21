@@ -9,6 +9,8 @@ export type MediaLoadFailure = {
 	error: string;
 	/** Library audio is fetched by URL during mixdown. */
 	sourceUrl?: string;
+	/** A stored asset was present but could not be decoded. Retry by reading it again. */
+	unreadable?: boolean;
 };
 
 export interface MediaAsset

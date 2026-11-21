@@ -17,8 +17,17 @@ const { storageService } = await import("@/services/storage/service");
 const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
 const { RootNode } = await import("@/services/renderer/nodes/root-node");
 const { SceneExporter } = await import("@/services/renderer/scene-exporter");
+const { resolveRenderTree } = await import("@/services/renderer/resolve");
+const { videoCache } = await import("@/services/video-cache/service");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
+
+class TestAudioContext {
+	async close() {}
+	async decodeAudioData() {
+		throw new Error("Invalid audio");
+	}
+}
 
 async function withCanvas(run: () => Promise<void>, extraGlobals: Record<string, unknown> = {}) {
 	class TestCanvas {
@@ -333,6 +342,19 @@ describe("one export at a time", () => {
 			revoke.mockRestore();
 		}
 	});
+
+	test("an exception in an export-start listener releases the slot", async () => {
+		const { renderer } = EditorCore.getInstance();
+		const unsubscribe = renderer.subscribe(() => {
+			if (renderer.isExportRunning()) throw new Error("Listener failed");
+		});
+		try {
+			await expect(renderer.exportProject({ options: { format: "mp4", quality: "high" } })).rejects.toThrow("Listener failed");
+			expect(renderer.isExportRunning()).toBe(false);
+		} finally {
+			unsubscribe();
+		}
+	});
 });
 
 describe("the export poller", () => {
@@ -521,12 +543,148 @@ describe("the export poller", () => {
 				expect(encode).not.toHaveBeenCalled();
 				expect((await editor.project.export({ options: { ...options, allowMissing: true } })).success).toBe(true);
 				expect(encode).toHaveBeenCalledTimes(1);
-				expect(fetchSound.mock.calls).toEqual([[sound.sourceUrl], [sound.sourceUrl]]);
+				expect(fetchSound.mock.calls.map(([url]) => url)).toEqual([sound.sourceUrl, sound.sourceUrl]);
 			} finally {
 				encode.mockRestore();
 				fetchSound.mockRestore();
 			}
-		}, { window: { AudioContext: class {} } }));
+		}, { window: { AudioContext: TestAudioContext } }));
+
+	test("cancelling mixdown aborts a pending library fetch and releases the export slot", () =>
+		withCanvas(async () => {
+			const editor = open("p");
+			editor.save.stop();
+			const [scene] = editor.scenes.getScenes();
+			const sound: LibraryAudioElement = {
+				id: "sound", type: "audio", sourceType: "library", sourceUrl: "/library/pending.mp3", name: "Pending sound",
+				startTime: T(0), duration: T(1), trimStart: T(0), trimEnd: T(0), params: {},
+			};
+			scene.tracks.audio = [{ id: "audio", name: "Audio", type: "audio", muted: false, elements: [sound] }];
+			const pending = Promise.withResolvers<Response>();
+			const fetchSound = spyOn(globalThis, "fetch").mockReturnValue(pending.promise);
+			const exporting = editor.project.export({ options: { format: "mp4", quality: "high", includeAudio: true } });
+			try {
+				expect(fetchSound).toHaveBeenCalled();
+				const signal = fetchSound.mock.calls[0]?.[1]?.signal;
+				signal?.addEventListener("abort", () => pending.reject(signal.reason), { once: true });
+				editor.project.cancelExport();
+				const result = await Promise.race([exporting, Bun.sleep(0).then(() => "waiting for audio")]);
+				expect(result).toEqual({ success: false, cancelled: true });
+				expect(signal?.aborted).toBe(true);
+				expect(editor.renderer.isExportRunning()).toBe(false);
+			} finally {
+				pending.resolve(new Response(null, { status: 404 }));
+				await exporting;
+				fetchSound.mockRestore();
+			}
+		}, { window: { AudioContext: TestAudioContext } }));
+
+	test("preflight checks enabled source audio even when its video track is hidden", () => {
+		const editor = open("p", 2, { missing: true });
+		editor.save.stop();
+		const scenes = editor.scenes.getScenes();
+		const scene = scenes[0];
+		const track = scene.tracks.main;
+		track.hidden = true;
+		const video = { ...clip(2), isSourceAudioEnabled: true };
+		track.elements = [video];
+		const request = { format: "mp4", scene, scenes, canvasSize: { width: 1080, height: 1920 } } as const;
+		expect(editor.renderer.checkExport({ ...request, includeAudio: false })).toBeNull();
+		expect(editor.renderer.checkExport({ ...request, includeAudio: true })).toMatchObject({
+			missingMedia: [{ id: video.mediaId }],
+		});
+		track.muted = true;
+		expect(editor.renderer.checkExport({ ...request, includeAudio: true })).toBeNull();
+		track.muted = false;
+		video.isSourceAudioEnabled = false;
+		expect(editor.renderer.checkExport({ ...request, includeAudio: true })).toBeNull();
+	});
+
+	test.each(["upload", "video"] as const)("an unreadable %s audio source requires an explicit override", (source) =>
+		withCanvas(async () => {
+			const editor = open("p");
+			editor.save.stop();
+			const soundAsset: MediaAsset = { id: "sound", name: "Uploaded sound", type: "audio", file: new File(["bad"], "sound.wav") };
+			const [scene] = editor.scenes.getScenes();
+			const sound: UploadAudioElement = {
+				id: "audio", type: "audio", sourceType: "upload", mediaId: soundAsset.id, name: soundAsset.name,
+				startTime: T(0), duration: T(1), trimStart: T(0), trimEnd: T(0), params: {},
+			};
+			if (source === "upload") {
+				scene.tracks.audio = [{ id: "audio", name: "Audio", type: "audio", muted: false, elements: [sound] }];
+			}
+			editor.media.setAssets({ assets: [{ ...videoAsset, hasAudio: source === "video" }, soundAsset] });
+			const encode = spyOn(SceneExporter.prototype, "export").mockResolvedValue(new ArrayBuffer(10));
+			const expected = source === "upload" ? soundAsset : videoAsset;
+			try {
+				const options = { format: "mp4", quality: "high", includeAudio: true } as const;
+				const blocked = await editor.project.export({ options });
+				expect(blocked).toMatchObject({
+					success: false,
+					missingMedia: [{ id: expected.id, name: expected.name }],
+				});
+				expect(encode).not.toHaveBeenCalled();
+				const read = spyOn(storageService, "loadMediaAsset").mockResolvedValue(expected);
+				try {
+					await editor.media.retryMissingMedia({ projectId: "p", failures: blocked.missingMedia });
+					expect(read).toHaveBeenCalledWith({ projectId: "p", id: expected.id });
+				} finally {
+					read.mockRestore();
+				}
+				expect((await editor.project.export({ options: { ...options, allowMissing: true } })).success).toBe(true);
+			} finally {
+				encode.mockRestore();
+			}
+		}, { window: { AudioContext: TestAudioContext } }));
+
+	test("visible references must resolve to a source of the correct type", () => {
+		const editor = open("p");
+		editor.save.stop();
+		editor.media.setAssets({ assets: [{ ...videoAsset, type: "image" }] });
+		const scenes = editor.scenes.getScenes();
+		expect(editor.renderer.checkExport({
+			format: "mp4", scene: scenes[0], scenes, canvasSize: { width: 1080, height: 1920 },
+		})).toMatchObject({ missingMedia: [{ id: videoAsset.id }] });
+	});
+
+	test("a video decoder failure reports the asset and requires an override", () =>
+		withCanvas(async () => {
+			const editor = open("p", 0.1);
+			editor.save.stop();
+			const decode = spyOn(videoCache, "getFrameAt").mockImplementation(async ({ throwOnSeekError }) => {
+				if (throwOnSeekError) throw new Error("Invalid video packet");
+				return null;
+			});
+			const render = spyOn(CanvasRenderer.prototype, "render").mockImplementation(function (this: InstanceType<typeof CanvasRenderer>, { node, time }) {
+				return resolveRenderTree({ node, time, renderer: this });
+			});
+			const start = spyOn(Output.prototype, "start").mockResolvedValue(undefined);
+			const cancel = spyOn(Output.prototype, "cancel").mockResolvedValue(undefined);
+			const finalize = spyOn(Output.prototype, "finalize").mockImplementation(async function (this: Output) {
+				Object.defineProperty(this.target, "buffer", { value: new ArrayBuffer(10) });
+			});
+			const add = spyOn(CanvasSource.prototype, "add").mockResolvedValue(undefined);
+			const close = spyOn(CanvasSource.prototype, "close").mockImplementation(() => {});
+			try {
+				const options = { format: "mp4", quality: "high" } as const;
+				expect(await editor.project.export({ options })).toMatchObject({
+					success: false, missingMedia: [{ id: videoAsset.id, error: "Invalid video packet" }],
+				});
+				expect(cancel).toHaveBeenCalledTimes(1);
+				expect(finalize).not.toHaveBeenCalled();
+				expect(editor.renderer.isExportRunning()).toBe(false);
+				expect((await editor.project.export({ options: { ...options, allowMissing: true } })).success).toBe(true);
+				expect(decode).toHaveBeenCalledTimes(2);
+			} finally {
+				close.mockRestore();
+				add.mockRestore();
+				finalize.mockRestore();
+				cancel.mockRestore();
+				start.mockRestore();
+				render.mockRestore();
+				decode.mockRestore();
+			}
+		}));
 
 	test("preflight checks only media used by the selected export", () =>
 		withCanvas(async () => {
@@ -539,10 +697,10 @@ describe("the export poller", () => {
 			outer.tracks.main.elements = outer.tracks.main.elements.map((element) => ({
 				...element, duration: T(1), trimStart: T(1),
 			}));
-			root.tracks.main.elements.push({ ...clip(2), id: "hidden", mediaId: "hidden-clip", hidden: true });
+			root.tracks.main.elements.push({ ...clip(2), id: "hidden", mediaId: "hidden-clip", hidden: true, isSourceAudioEnabled: false });
 			root.tracks.overlay.push({
 				...root.tracks.main, id: "hidden-track", hidden: true,
-				elements: [{ ...clip(2), mediaId: "hidden-track-video" }],
+				elements: [{ ...clip(2), mediaId: "hidden-track-video", isSourceAudioEnabled: false }],
 			});
 			const audio: UploadAudioElement = {
 				id: "sound", type: "audio", sourceType: "upload", mediaId: "missing-audio", name: "Uploaded sound",

@@ -27,6 +27,7 @@ type ExportParams = {
 	quality: ExportQuality;
 	shouldIncludeAudio?: boolean;
 	audioBuffer?: AudioBuffer;
+	onVideoFailure?: (mediaId: string, error: unknown) => void;
 };
 
 const qualityMap = {
@@ -63,6 +64,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		quality,
 		shouldIncludeAudio,
 		audioBuffer,
+		onVideoFailure,
 	}: ExportParams) {
 		super();
 		this.renderer = new CanvasRenderer({
@@ -70,6 +72,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			height,
 			fps,
 			exactFrames: true,
+			onVideoFailure,
 		});
 
 		this.format = format;
@@ -139,19 +142,14 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			audioSource.close();
 		}
 
-		for (let i = 0; i < frameCount; i++) {
-			if (this.isCancelled) {
-				await output.cancel();
-				this.emit("cancelled");
-				return null;
-			}
-
+		for (let i = 0; i < frameCount && !this.isCancelled; i++) {
 			const timeTicks = Math.min(rootNode.duration - 1, Math.round((i * frameTicksNumerator) / fps.numerator));
 			const timeSeconds = (i * fps.denominator) / fps.numerator;
 			const sampleDuration = this.format === "mp4" && i === frameCount - 1
 				? Math.max(MP4_MIN_SAMPLE_DURATION, Math.min(frameDuration, duration - timeSeconds))
 				: frameDuration;
 			await this.renderer.render({ node: rootNode, time: timeTicks });
+			if (this.isCancelled) break;
 			await videoSource.add(timeSeconds, sampleDuration);
 
 			this.emit("progress", i / frameCount);
