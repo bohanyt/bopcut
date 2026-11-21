@@ -341,7 +341,7 @@ export class AudioManager {
 			const read = createPitchReader({
 				readWindow: (start, end) => decodeAudioWindow({ input, start, end, signal }),
 				sourceStart: clip.trimStart,
-				sourceEnd: resolvePitchSourceEnd(clip.timelineElement, rate),
+				...resolvePitchSourceEnd(clip.timelineElement, rate),
 				readStart: clip.trimStart + firstFrame / sampleRate * rate,
 				rate, sampleRate, signal,
 			});

@@ -6,11 +6,12 @@ type ReadWindow = (start: number, end: number) => Promise<DecodedAudioWindow | n
 
 /** Pull bounded PCM blocks through one pitch processor, starting at readStart within the source trim. */
 export function createPitchReader({
-	readWindow, sourceStart, sourceEnd, readStart = sourceStart, rate, sampleRate, signal,
+	readWindow, sourceStart, sourceEnd, boundSourceEnd = true, readStart = sourceStart, rate, sampleRate, signal,
 }: {
 	readWindow: ReadWindow;
 	sourceStart: number;
 	sourceEnd: number;
+	boundSourceEnd?: boolean;
 	readStart?: number;
 	rate: number;
 	sampleRate: number;
@@ -59,7 +60,7 @@ export function createPitchReader({
 						// Convert the actual trim independently of the seek offset and decoder window.
 						sample = createStereoSampler(window.buffer, nativeRate / sampleRate, {
 							start: Math.ceil(sourceStart * nativeRate - 1e-7) - windowStart,
-							end: Math.ceil(sourceEnd * nativeRate - 1e-7) - windowStart,
+							end: boundSourceEnd ? Math.ceil(sourceEnd * nativeRate - 1e-7) - windowStart : undefined,
 						});
 					}
 					if (!window) return output;

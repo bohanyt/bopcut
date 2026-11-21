@@ -1,4 +1,6 @@
 import {
+	getEffectiveRateAt,
+	getSourceSpanRoundingTolerance,
 	getSourceSpanAtClipTime,
 	getTimelineDurationForSourceSpan,
 } from "@/retime";
@@ -143,6 +145,19 @@ function buildResizeUpdate({
 		};
 	}
 
+	let trimEnd = member.trimEnd;
+	const rate = getEffectiveRateAt({ retime: member.retime });
+	if (deltaTime !== 0 && rate > 1 && member.sourceDuration !== undefined) {
+		const storedSpan = member.sourceDuration - member.trimStart - trimEnd;
+		if (member.duration * rate - storedSpan > getSourceSpanRoundingTolerance(rate)) {
+			// Legacy speed-up edits may have saved the trailing trim in timeline time.
+			const visibleSpan = getVisibleSourceSpanForDuration({ member, duration: member.duration });
+			trimEnd = subMediaTime({
+				a: member.sourceDuration,
+				b: addMediaTime({ a: member.trimStart, b: visibleSpan }),
+			});
+		}
+	}
 	return {
 		trackId: member.trackId,
 		elementId: member.elementId,
@@ -150,7 +165,7 @@ function buildResizeUpdate({
 			trimStart: member.trimStart,
 			trimEnd: maxMediaTime({
 				a: ZERO_MEDIA_TIME,
-				b: subMediaTime({ a: member.trimEnd, b: sourceDelta }),
+				b: subMediaTime({ a: trimEnd, b: sourceDelta }),
 			}),
 			startTime: member.startTime,
 			duration: addMediaTime({ a: member.duration, b: deltaTime }),

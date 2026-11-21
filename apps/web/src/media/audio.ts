@@ -17,6 +17,7 @@ import { doesElementHaveEnabledAudio, isSourceAudioEnabled } from "@/timeline/au
 import { canElementHaveAudio, hasMediaId } from "@/timeline/element-utils";
 import { canTrackHaveAudio } from "@/timeline";
 import { mediaSupportsAudio } from "@/media/media-utils";
+import { getSourceSpanRoundingTolerance } from "@/retime/resolve";
 import { TICKS_PER_SECOND } from "@/wasm";
 import {
 	computeRmsBuckets,
@@ -147,21 +148,26 @@ export function timelineHasAudio({
 	);
 }
 
-export function resolvePitchSourceEnd(element: AudioCapableElement, rate: number): number {
+export function resolvePitchSourceEnd(element: AudioCapableElement, rate: number): {
+	sourceEnd: number;
+	boundSourceEnd?: boolean;
+} {
 	const sourceSpan = element.duration * rate;
+	const projectedEnd = (element.trimStart + sourceSpan) / TICKS_PER_SECOND;
 	if (element.sourceDuration !== undefined) {
 		const storedEnd = element.sourceDuration - element.trimEnd;
 		const storedSpan = storedEnd - element.trimStart;
-		// Preserve an earlier stored cut even when repeated leading edits round the span.
-		// A later cut can account for rounding at the endpoints and the timeline duration.
-		const roundingTolerance = rate / 2 + 1;
-		// Older duration edits stored the unscaled duration. Later trims can reduce that span further.
-		const legacyDuration = rate > 1 && storedSpan <= element.duration && sourceSpan - storedSpan > roundingTolerance;
-		if (storedSpan > 0 && storedSpan <= sourceSpan + roundingTolerance && !legacyDuration) {
-			return storedEnd / TICKS_PER_SECOND;
+		const tolerance = getSourceSpanRoundingTolerance(rate);
+		if (rate > 1 && sourceSpan - storedSpan > tolerance) {
+			// Older speed-up edits could leave a short stored span even after a resize.
+			// Preserve the visible read and original trailing filter for these records.
+			return { sourceEnd: projectedEnd, boundSourceEnd: false };
+		}
+		if (storedSpan > 0 && storedSpan <= sourceSpan + tolerance) {
+			return { sourceEnd: storedEnd / TICKS_PER_SECOND };
 		}
 	}
-	return (element.trimStart + sourceSpan) / TICKS_PER_SECOND;
+	return { sourceEnd: projectedEnd };
 }
 
 interface AudioMixSource {

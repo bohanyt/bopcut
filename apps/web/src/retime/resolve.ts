@@ -5,6 +5,11 @@ function getSafeRate({ rate }: { rate: number }): number {
 	return clampRetimeRate({ rate });
 }
 
+export function getSourceSpanRoundingTolerance(rate: number): number {
+	// The timeline duration and the source endpoints can each round by half a tick.
+	return rate / 2 + 1;
+}
+
 export function getSourceTimeAtClipTime({
 	clipTime,
 	retime,

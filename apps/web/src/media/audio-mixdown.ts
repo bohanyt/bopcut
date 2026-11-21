@@ -280,7 +280,7 @@ export async function* mixTimelineAudio({
 							start: sourceStart, end: sourceEnd, clips: [],
 						}),
 						sourceStart: clip.trim,
-						sourceEnd: resolvePitchSourceEnd(clip.element, clip.rate),
+						...resolvePitchSourceEnd(clip.element, clip.rate),
 						readStart: clip.trim + (from - clip.start) / sampleRate * clip.rate,
 						rate: clip.rate, sampleRate, signal,
 					});

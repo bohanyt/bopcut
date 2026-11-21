@@ -5,6 +5,7 @@ import { mixTimelineAudio } from "@/media/audio-mixdown";
 import { TestAudioBuffer } from "@/media/__tests__/audio-buffer";
 import type { AudioElement, LibraryAudioElement, UploadAudioElement } from "@/timeline";
 import { clipElementToRange } from "@/timeline/compound";
+import { computeGroupResize } from "@/timeline/group-resize/compute-resize";
 import { splitElementAt } from "@/timeline/split";
 import { scene, t } from "@/timeline/__tests__/compound-fixtures";
 
@@ -484,6 +485,39 @@ test.each([0, 0.05])("a legacy duration-only edit retains its playable source at
 
 	expect(buffers).toHaveLength(1);
 	expect(buffers[0].getChannelData(0).some((value) => value > 0.1)).toBe(true);
+});
+
+test.each([false, true])("a right extension of a legacy 2x clip keeps its audible tail (already saved: %s)", async (saved) => {
+	const sampleRate = 44_100;
+	const nativeRate = 48_000;
+	const element = uploadedClip({
+		duration: t(0.25), sourceDuration: t(1), trimEnd: t(0.75), retime: { rate: 2, maintainPitch: true },
+	});
+	const { updates: [{ patch }] } = computeGroupResize({
+		members: [{ ...element, elementId: element.id, trackId: "audio", leftNeighborBound: null, rightNeighborBound: null }],
+		side: "right", deltaTime: t(0.1), fps: { numerator: 30, denominator: 1 },
+	});
+	const duration = t(0.35);
+	expect(patch.duration).toBe(duration);
+	const trimEnd = saved ? t(0.55) : patch.trimEnd;
+	if (!saved) expect(trimEnd).toBe(t(0.3));
+	const { editor, tracks } = setup({ ...element, ...patch, trimEnd });
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
+	buffer.getChannelData(0).fill(0.5, nativeRate * 0.48, nativeRate * 0.65);
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+	editor.playback.pause();
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].getChannelData(0).some((value) => value > 0.4)).toBe(true);
+	const blocks: AudioBuffer[] = [];
+	for await (const block of mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), duration, sampleRate })) {
+		blocks.push(block);
+	}
+	expect(blocks).toHaveLength(1);
+	expect(blocks[0].getChannelData(0)).toEqual(buffers[0].getChannelData(0));
 });
 
 const pitchCases = [44_100, 48_000].flatMap((sampleRate) =>
