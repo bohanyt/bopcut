@@ -1,5 +1,5 @@
 import type { Input } from "mediabunny";
-import { collectAudibleCandidates } from "@/media/audio";
+import { collectAudibleCandidates, resolvePitchSourceEnd } from "@/media/audio";
 import { createStereoSampler, resamplePadding } from "@/media/audio-resample";
 import { createBlockMastering } from "@/media/audio-mastering";
 import { createAudioCheckpoint, decodeAudioWindow, openAudioInput, sliceAudioWindow, STEREO_CHANNELS, yieldAudioTask, type DecodedAudioWindow } from "@/media/audio-window";
@@ -280,7 +280,7 @@ export async function* mixTimelineAudio({
 							start: sourceStart, end: sourceEnd, clips: [],
 						}),
 						sourceStart: clip.trim,
-						sourceEnd: clip.trim + clip.duration * clip.rate,
+						sourceEnd: resolvePitchSourceEnd(clip.element, clip.rate),
 						readStart: clip.trim + (from - clip.start) / sampleRate * clip.rate,
 						rate: clip.rate, sampleRate, signal,
 					});

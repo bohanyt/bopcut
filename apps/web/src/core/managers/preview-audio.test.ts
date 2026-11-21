@@ -4,6 +4,7 @@ import { collectAudioClips, decodeAudioToFloat32 } from "@/media/audio";
 import { mixTimelineAudio } from "@/media/audio-mixdown";
 import { TestAudioBuffer } from "@/media/__tests__/audio-buffer";
 import type { AudioElement, LibraryAudioElement, UploadAudioElement } from "@/timeline";
+import { clipElementToRange } from "@/timeline/compound";
 import { scene, t } from "@/timeline/__tests__/compound-fixtures";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
@@ -392,6 +393,62 @@ test("pitch-preserved preview seeks keep in-trim taps before the cursor", async 
 	expect(buffers).toHaveLength(1);
 	expect(buffers[0].length).toBe(sampleRate / 2);
 	expect(Math.max(...buffers[0].getChannelData(0).subarray(0, 16).map(Math.abs))).toBeGreaterThan(0.0001);
+});
+
+test.each([
+	{ nativeRate: 48_000, sampleRate: 44_100 },
+	{ nativeRate: 44_100, sampleRate: 48_000 },
+].flatMap((rates) => [0, 0.000025].map((leadingTrim) => ({ ...rates, leadingTrim }))))(
+	"preview and export exclude the first native sample at a rounded 0.85x cut ($nativeRate to $sampleRate Hz, leading trim $leadingTrim s)", async ({
+	nativeRate, sampleRate, leadingTrim,
+}) => {
+	const rate = 0.85;
+	const original = uploadedClip({
+		duration: t(0.1 / rate), sourceDuration: t(1), trimEnd: t(0.9), retime: { rate, maintainPitch: true },
+	});
+	const clipped = clipElementToRange({
+		element: original, rangeStart: t(leadingTrim), rangeEnd: original.duration,
+	});
+	if (!clipped) throw new Error("Expected a visible clip");
+	const { duration } = clipped;
+	const { editor, tracks } = setup({ ...clipped, startTime: t(0) });
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
+	buffer.getChannelData(0)[nativeRate / 10] = 1;
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+	editor.playback.pause();
+
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].getChannelData(0).every((value) => value === 0)).toBe(true);
+	const blocks: AudioBuffer[] = [];
+	for await (const block of mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), duration, sampleRate })) {
+		blocks.push(block);
+	}
+	expect(blocks).toHaveLength(1);
+	expect(blocks[0].length).toBe(buffers[0].length);
+	expect(blocks[0].getChannelData(0)).toEqual(buffers[0].getChannelData(0));
+	expect(blocks[0].getChannelData(1)).toEqual(buffers[0].getChannelData(1));
+});
+
+test("a legacy retimed clip with stale trim metadata keeps its visible source window", async () => {
+	const nativeRate = 48_000;
+	const sampleRate = 44_100;
+	const { editor } = setup(uploadedClip({
+		duration: t(0.25), trimStart: t(0.25), sourceDuration: t(1), retime: { rate: 2, maintainPitch: true },
+	}));
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
+	buffer.getChannelData(0).fill(0.5, nativeRate * 0.75);
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].getChannelData(0).every((value) => value === 0)).toBe(true);
 });
 
 const pitchCases = [44_100, 48_000].flatMap((sampleRate) =>

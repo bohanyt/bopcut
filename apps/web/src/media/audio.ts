@@ -147,6 +147,20 @@ export function timelineHasAudio({
 	);
 }
 
+export function resolvePitchSourceEnd(element: AudioCapableElement, rate: number): number {
+	const sourceSpan = element.duration * rate;
+	if (element.sourceDuration !== undefined) {
+		const storedEnd = element.sourceDuration - element.trimEnd;
+		const storedSpan = storedEnd - element.trimStart;
+		// The timeline duration and both source endpoints can each round by half a tick.
+		const roundingTolerance = rate / 2 + 1;
+		if (Math.abs(storedSpan - sourceSpan) <= roundingTolerance) {
+			return storedEnd / TICKS_PER_SECOND;
+		}
+	}
+	return (element.trimStart + sourceSpan) / TICKS_PER_SECOND;
+}
+
 interface AudioMixSource {
 	timelineElement: AudioCapableElement;
 	file: File;
