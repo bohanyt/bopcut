@@ -1,6 +1,6 @@
 // In and out animation presets for a clip: drawn on top of the clip's own animation, so its keyframes
 // stay as they are, and trims, speed changes and copies keep them.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
 import { NumberField } from "@/components/ui/number-field";
@@ -24,13 +24,14 @@ import {
 	ANIMATION_OUT_TYPES,
 	DEFAULT_IN_SECONDS,
 	DEFAULT_OUT_SECONDS,
-	MAX_PRESET_SECONDS,
-	MIN_PRESET_SECONDS,
+	PRESET_PARAM,
 	type AnimationPresetRequest,
 	applyAnimationPresets,
 	readAnimationPresets,
 } from "@/animation/presets";
+import { getPresetDurationRange } from "@/animation/duration-control";
 import type { TimelineElement } from "@/timeline";
+import { useElementPreview } from "@/timeline/hooks/use-element-preview";
 
 const LABELS: Record<string, string> = {
 	none: "None",
@@ -46,11 +47,13 @@ const LABELS: Record<string, string> = {
 function PresetSide({
 	side,
 	element,
+	trackId,
 	current,
 	onApply,
 }: {
 	side: "in" | "out";
 	element: TimelineElement;
+	trackId: string;
 	current: { type: string; duration: number } | null;
 	onApply: (request: AnimationPresetRequest) => void;
 }) {
@@ -58,8 +61,6 @@ function PresetSide({
 		(type) => type !== "typewriter" || element.type === "text",
 	);
 	const type = current?.type ?? "none";
-	const [duration, setDuration] = useState(current ? String(current.duration) : "");
-	useEffect(() => setDuration(current ? String(current.duration) : ""), [current?.duration]);
 	const apply = (nextType: string, seconds?: number) =>
 		onApply({ [side]: { type: nextType, ...(seconds ? { duration: seconds } : {}) } } as AnimationPresetRequest);
 	return (
@@ -79,23 +80,128 @@ function PresetSide({
 				</Select>
 			</SectionField>
 			{current && (
-				<SectionField label="Length">
-					<NumberField
-						value={duration}
-						suffix="s"
-						onChange={(event) => setDuration(event.target.value)}
-						onBlur={() => {
-							const seconds = Number.parseFloat(duration);
-							if (Number.isFinite(seconds) && seconds >= MIN_PRESET_SECONDS && seconds <= MAX_PRESET_SECONDS && seconds !== current.duration) apply(type, seconds);
-							else setDuration(String(current.duration));
-						}}
-						onReset={() =>
-							apply(type, side === "in" ? DEFAULT_IN_SECONDS[type as keyof typeof DEFAULT_IN_SECONDS] : DEFAULT_OUT_SECONDS[type as keyof typeof DEFAULT_OUT_SECONDS])
-						}
-					/>
-				</SectionField>
+				<PresetDuration
+					key={type}
+					side={side}
+					element={element}
+					trackId={trackId}
+					duration={current.duration}
+					defaultDuration={side === "in"
+						? DEFAULT_IN_SECONDS[type as keyof typeof DEFAULT_IN_SECONDS]
+						: DEFAULT_OUT_SECONDS[type as keyof typeof DEFAULT_OUT_SECONDS]}
+					onApply={(seconds) => apply(type, seconds)}
+				/>
 			)}
 		</>
+	);
+}
+
+function PresetDuration({
+	side,
+	element,
+	trackId,
+	duration,
+	defaultDuration,
+	onApply,
+}: {
+	side: "in" | "out";
+	element: TimelineElement;
+	trackId: string;
+	duration: number;
+	defaultDuration: number;
+	onApply: (seconds: number) => void;
+}) {
+	const { timeline } = useEditor();
+	const { min, max } = getPresetDurationRange(element.duration);
+	const clampDuration = (seconds: number) => Math.min(max, Math.max(min, seconds));
+	const value = clampDuration(duration);
+	const resetValue = clampDuration(defaultDuration);
+	const [draft, setDraft] = useState<string | null>(null);
+	const drag = useRef<{ pointerId: number; startValue: number; previewing: boolean } | null>(null);
+	const label = side === "in" ? "In length" : "Out length";
+	const durationKey = side === "in" ? PRESET_PARAM.inDuration : PRESET_PARAM.outDuration;
+
+	useEffect(() => {
+		const finish = (event: PointerEvent) => {
+			if (drag.current?.pointerId !== event.pointerId) return;
+			const { previewing } = drag.current;
+			drag.current = null;
+			if (!previewing) return;
+			if (event.type === "pointercancel") timeline.discardPreview();
+			else timeline.commitPreview();
+		};
+		window.addEventListener("pointerup", finish);
+		window.addEventListener("pointercancel", finish);
+		return () => {
+			window.removeEventListener("pointerup", finish);
+			window.removeEventListener("pointercancel", finish);
+			if (drag.current?.previewing) timeline.discardPreview();
+			drag.current = null;
+		};
+	}, [timeline]);
+
+	return (
+		<SectionField label="Length">
+			<div className="flex items-center gap-3">
+				<input
+					type="range"
+					aria-label={label}
+					min={min}
+					max={max}
+					step="any"
+					value={value}
+					disabled={min === max}
+					className="accent-primary min-w-0 flex-1 disabled:opacity-50"
+					onPointerDown={(event) => {
+						if (event.button === 0 && event.isPrimary) {
+							drag.current = { pointerId: event.pointerId, startValue: value, previewing: false };
+						}
+					}}
+					onChange={(event) => {
+						const raw = event.currentTarget.valueAsNumber;
+						const gesture = drag.current;
+						// The range input serializes fractional endpoints with reduced precision.
+						const seconds = Math.abs(raw - max) < 1e-12
+							? max
+							: gesture ? clampDuration(Math.round(raw * 100) / 100) : raw;
+						if (gesture && seconds === gesture.startValue) {
+							if (gesture.previewing) timeline.discardPreview();
+							gesture.previewing = false;
+							return;
+						}
+						if (seconds === value) return;
+						timeline.previewElements({
+							updates: [{
+								trackId,
+								elementId: element.id,
+								updates: { params: { ...element.params, [durationKey]: seconds } },
+							}],
+						});
+						if (gesture) gesture.previewing = true;
+						else timeline.commitPreview();
+					}}
+				/>
+				<NumberField
+					aria-label={`${label} in seconds`}
+					className="w-24 shrink-0 [&_input]:pr-4"
+					value={draft ?? String(Number(value.toFixed(3)))}
+					suffix="s"
+					suffixClassName="right-2 left-auto!"
+					disabled={min === max}
+					onChange={(event) => setDraft(event.target.value)}
+					onBlur={() => {
+						if (draft === null) return;
+						const seconds = Number.parseFloat(draft);
+						setDraft(null);
+						if (!Number.isFinite(seconds)) return;
+						const next = clampDuration(seconds);
+						if (next !== value) onApply(next);
+					}}
+					isDefault={duration === resetValue}
+					onReset={() => onApply(resetValue)}
+				/>
+			</div>
+		</SectionField>
 	);
 }
 
@@ -107,7 +213,8 @@ export function AnimationTab({
 	trackId: string;
 }) {
 	const editor = useEditor();
-	const presets = readAnimationPresets(element);
+	const { renderElement } = useElementPreview({ trackId, elementId: element.id, fallback: element });
+	const presets = readAnimationPresets(renderElement);
 	const onApply = (request: AnimationPresetRequest) => {
 		let next: TimelineElement;
 		try {
@@ -128,8 +235,8 @@ export function AnimationTab({
 			</SectionHeader>
 			<SectionContent>
 				<SectionFields>
-					<PresetSide side="in" element={element} current={presets.in} onApply={onApply} />
-					<PresetSide side="out" element={element} current={presets.out} onApply={onApply} />
+					<PresetSide side="in" element={renderElement} trackId={trackId} current={presets.in} onApply={onApply} />
+					<PresetSide side="out" element={renderElement} trackId={trackId} current={presets.out} onApply={onApply} />
 					<p className="text-muted-foreground text-xs">
 						Drawn on top of the clip's own keyframes; on a short clip both are shortened to fit.
 					</p>
