@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { applyAnimationPresets, presetLayerAt, readAnimationPresets, readPresetSettings } from "./presets";
+import { applyAnimationPresets, fitPresetSpans, presetLayerAt, readAnimationPresets, readPresetSettings } from "./presets";
+import { getPresetDurationRange } from "./duration-control";
 import { buildTextElement } from "@/timeline/element-utils";
 import { splitElementAt } from "@/timeline/split";
 import { applyElementUpdate } from "@/timeline/update-pipeline";
@@ -14,6 +15,35 @@ const layer = (element: TimelineElement, seconds: number, canvasHeight = 1920) =
 	presetLayerAt(readPresetSettings(element.params), T(seconds), element.duration, canvasHeight);
 
 describe("animation presets", () => {
+	test("timeline spans use the rendered boundaries on a short clip", () => {
+		const element = applyAnimationPresets(text(0.4), {
+			in: { type: "typewriter", duration: 0.2 },
+			out: { type: "fade", duration: 0.4 },
+		});
+		const settings = readPresetSettings(element.params);
+		const { inTicks, outTicks } = fitPresetSpans(settings, element.duration);
+		expect(inTicks / element.duration).toBeCloseTo(0.3);
+		expect(outTicks / element.duration).toBeCloseTo(0.6);
+		expect(presetLayerAt(settings, inTicks / 2, element.duration, 1080).typed).toBeCloseTo(0.5);
+		expect(presetLayerAt(settings, inTicks, element.duration, 1080).typed).toBe(1);
+		expect(presetLayerAt(settings, element.duration - outTicks, element.duration, 1080).opacity).toBe(1);
+		expect(presetLayerAt(settings, element.duration - outTicks / 2, element.duration, 1080).opacity).toBeCloseTo(0.875);
+	});
+
+	test("timeline spans retain their lengths when there is room and vanish without room", () => {
+		const settings = readPresetSettings(applyAnimationPresets(text(), { out: { type: "fade" } }).params);
+		expect(fitPresetSpans(settings, T(2))).toEqual({ inTicks: 0, outTicks: T(0.3) });
+		expect(fitPresetSpans(settings, T(1 / 24))).toEqual({ inTicks: 0, outTicks: 0 });
+		expect(fitPresetSpans({}, T(2))).toEqual({ inTicks: 0, outTicks: 0 });
+	});
+
+	test("the slider range uses the clip length with a 10-second cap and a 0.05-second floor", () => {
+		const duration = T(13 / 30);
+		expect(getPresetDurationRange(duration)).toEqual({ min: 0.05, max: duration / TICKS_PER_SECOND });
+		expect(getPresetDurationRange(T(15))).toEqual({ min: 0.05, max: 10 });
+		expect(getPresetDurationRange(T(1 / 24))).toEqual({ min: 0.05, max: 0.05 });
+	});
+
 	test("are clip settings: each side is set, replaced or removed on its own, keyframes untouched", () => {
 		const base = { ...text(2), animations: { opacity: { keys: [] } } } as unknown as TextElement;
 		const both = applyAnimationPresets(base, { in: { type: "pop" }, out: { type: "fade", duration: 0.5 } });

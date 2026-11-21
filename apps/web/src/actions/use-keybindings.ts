@@ -43,7 +43,11 @@ export function useKeybindingsListener() {
 			if (!binding) return;
 			if (!boundAction) return;
 
-			if (isTextInput) return;
+			const canUndoRangeEdit =
+				activeElement instanceof HTMLInputElement &&
+				activeElement.type === "range" &&
+				(boundAction === "undo" || boundAction === "redo");
+			if (isTextInput && !canUndoRangeEdit) return;
 			if (boundAction === "paste-copied") {
 				if (!editor.clipboard.hasEntry()) return;
 				ev.preventDefault();

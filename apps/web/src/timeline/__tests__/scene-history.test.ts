@@ -3,6 +3,7 @@ import type { TScene, TextElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import { buildEffectParamPath, getKeyframeAtTime } from "@/animation";
+import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { allElements, allTracks, fixture, getHost, refs, t, video } from "./compound-fixtures";
 
 // Another test file replaces opencut-wasm with a partial mock and Bun keeps that module shape,
@@ -176,6 +177,37 @@ describe("split and ripple replay", () => {
 		expect(main()[0].duration).toBe(t(1));
 		expect(main()[1].startTime).toBe(t(2));
 	});
+});
+
+test("an animation duration drag previews every change and commits one undo entry", () => {
+	const scenes = fixture();
+	getHost(scenes).tracks.main.elements = [applyAnimationPresets(video("a", 0, 2), {
+		in: { type: "fade" },
+		out: { type: "fall" },
+	})];
+	const editor = setup(scenes);
+	const clip = () => editor.scenes.getActiveScene().tracks.main.elements[0];
+	for (const seconds of [0.5, 0.75, 1.25]) {
+		editor.timeline.previewElements({
+			updates: [{
+				trackId: "t-main",
+				elementId: "a",
+				updates: { params: { ...clip().params, [PRESET_PARAM.inDuration]: seconds } },
+			}],
+		});
+		const preview = editor.timeline.getPreviewTracks()?.main.elements[0];
+		expect(preview?.params[PRESET_PARAM.inDuration]).toBe(seconds);
+		expect(clip().params[PRESET_PARAM.inDuration]).toBe(0.3);
+		expect(editor.command.canUndo()).toBe(false);
+	}
+	editor.timeline.commitPreview();
+	expect(clip().params[PRESET_PARAM.inDuration]).toBe(1.25);
+	expect(clip().params[PRESET_PARAM.outDuration]).toBe(0.5);
+	editor.command.undo();
+	expect(clip().params[PRESET_PARAM.inDuration]).toBe(0.3);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.command.redo();
+	expect(clip().params[PRESET_PARAM.inDuration]).toBe(1.25);
 });
 
 describe("generated ids in history", () => {

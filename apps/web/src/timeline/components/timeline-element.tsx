@@ -14,6 +14,7 @@ import { useKeyframeSelection } from "@/timeline/hooks/element/use-keyframe-sele
 import { useKeyframeBoxSelect } from "@/timeline/hooks/element/use-keyframe-box-select";
 import { SelectionBox } from "@/selection/selection-box";
 import { getElementKeyframes } from "@/animation";
+import { fitPresetSpans, readPresetSettings } from "@/animation/presets";
 import {
 	canElementHaveAudio,
 	canElementBeHidden,
@@ -600,6 +601,10 @@ function ElementInner({
 }) {
 	const editor = useEditor();
 	const visibleElement = displayElement ?? element;
+	const { inTicks, outTicks } = fitPresetSpans(
+		readPresetSettings(visibleElement.params),
+		visibleElement.duration,
+	);
 	const isReducedOpacity =
 		(canElementBeHidden(visibleElement) && visibleElement.hidden) ||
 		isDropTarget;
@@ -647,7 +652,7 @@ function ElementInner({
 					>
 						<div
 							className={cn(
-								"flex shrink-0 items-center overflow-hidden",
+								"relative flex shrink-0 items-center overflow-hidden",
 								isCompoundElement(element)
 									? TIMELINE_COMPOUND_THEME.elementClassName
 									: getTimelineElementClassName({
@@ -660,6 +665,22 @@ function ElementInner({
 							<div className="flex flex-1 min-h-0 h-full items-center overflow-hidden">
 								<ElementContent element={visibleElement} track={track} />
 							</div>
+							{inTicks > 0 && (
+								<span
+									aria-hidden="true"
+									data-animation-span="in"
+									className="pointer-events-none absolute inset-y-0 left-0 border-r border-white/20 bg-black/25"
+									style={{ width: `${(100 * inTicks) / visibleElement.duration}%` }}
+								/>
+							)}
+							{outTicks > 0 && (
+								<span
+									aria-hidden="true"
+									data-animation-span="out"
+									className="pointer-events-none absolute inset-y-0 right-0 border-l border-white/20 bg-black/25"
+									style={{ width: `${(100 * outTicks) / visibleElement.duration}%` }}
+								/>
+							)}
 						</div>
 						{expandedContent}
 					</button>

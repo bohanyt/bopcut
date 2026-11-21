@@ -129,12 +129,8 @@ const easeIn = (t: number) => t ** 3;
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2);
 const lerp = (from: number, to: number, t: number) => from + (to - from) * t;
 
-/**
- * The presets' effect at `localTime` (ticks from the clip's start) of a clip `duration` ticks long. Both
- * sides are shortened alike when they would not fit.
- */
-export function presetLayerAt(settings: PresetSettings, localTime: number, duration: number, canvasHeight: number): PresetLayer {
-	if (!settings.in && !settings.out) return NO_PRESET_LAYER;
+/** The In and Out spans in timeline ticks, shortened proportionally to fit the clip. */
+export function fitPresetSpans(settings: PresetSettings, duration: number) {
 	let inTicks = (settings.in?.seconds ?? 0) * TICKS_PER_SECOND;
 	let outTicks = (settings.out?.seconds ?? 0) * TICKS_PER_SECOND;
 	// Shortened to fit, the presets leave the clip whole for a moment (a tenth, at least a frame at 24 fps),
@@ -145,6 +141,13 @@ export function presetLayerAt(settings: PresetSettings, localTime: number, durat
 		inTicks *= fit;
 		outTicks *= fit;
 	}
+	return { inTicks, outTicks };
+}
+
+/** The presets' effect at `localTime` ticks from the start of a clip `duration` ticks long. */
+export function presetLayerAt(settings: PresetSettings, localTime: number, duration: number, canvasHeight: number): PresetLayer {
+	if (!settings.in && !settings.out) return NO_PRESET_LAYER;
+	const { inTicks, outTicks } = fitPresetSpans(settings, duration);
 	const layer = { ...NO_PRESET_LAYER };
 	if (settings.in && inTicks > 0 && localTime < inTicks) {
 		const p = clamp01(localTime / inTicks);
