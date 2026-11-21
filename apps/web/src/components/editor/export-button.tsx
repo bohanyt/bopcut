@@ -117,10 +117,20 @@ function ExportPopover({
 	);
 	const [isRetrying, setIsRetrying] = useState(false);
 
-	const handleExport = async (allowMissing = false) => {
+	const handleExport = async ({
+		allowMissing = false,
+		retryResult,
+		restoreMissingMedia = false,
+	}: {
+		allowMissing?: boolean;
+		retryResult?: ExportResult;
+		restoreMissingMedia?: boolean;
+	} = {}) => {
 		if (!activeProject) return;
 
 		const result = await editor.project.export({
+			retryResult,
+			restoreMissingMedia,
 			options: {
 				format,
 				quality,
@@ -131,7 +141,7 @@ function ExportPopover({
 		});
 
 		if (result.cancelled) {
-			editor.project.clearExportState();
+			if (editor.project.getExportState().result === result) editor.project.clearExportState();
 			return;
 		}
 
@@ -148,20 +158,10 @@ function ExportPopover({
 	};
 
 	const handleRetry = async () => {
-		if (!exportResult?.missingMedia?.length) {
-			await handleExport();
-			return;
-		}
-		const session = editor.project.getSession();
+		if (!exportResult) return;
 		setIsRetrying(true);
 		try {
-			await editor.media.retryMissingMedia({
-				projectId: activeProject.metadata.id,
-				failures: exportResult.missingMedia,
-			});
-			if (editor.project.getSession() === session && editor.project.getExportState().result === exportResult) {
-				await handleExport();
-			}
+			await handleExport({ retryResult: exportResult, restoreMissingMedia: true });
 		} finally {
 			setIsRetrying(false);
 		}
@@ -179,7 +179,7 @@ function ExportPopover({
 					isRetrying={isRetrying}
 					onRetry={handleRetry}
 					onBack={() => editor.project.clearExportState()}
-					onAllowMissing={() => handleExport(true)}
+					onAllowMissing={() => handleExport({ allowMissing: true, retryResult: exportResult })}
 				/>
 			) : (
 				<>
