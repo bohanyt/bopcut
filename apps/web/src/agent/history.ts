@@ -19,6 +19,13 @@ export type StateRef = { syncedAt: string } | { draft: string; side: "before" | 
 /** Snapshots sent to the agent (also those taken in the console), for `basedOn`, `since` and frames. */
 export const snapshotHistory = new SnapshotHistory(64, (scenes) => withoutBuffers(scenes));
 
+let lastSnapshotTime = 0;
+/** Keep snapshot references unique even when two roots are read in the same millisecond. */
+export function nextSnapshotTime(): string {
+	lastSnapshotTime = Math.max(Date.now(), lastSnapshotTime + 1);
+	return new Date(lastSnapshotTime).toISOString();
+}
+
 /**
  * Scenes without decoded audio: a library sound carries its AudioBuffer, which a kept state must not hold
  * on to after the sound is removed. Only those elements are copied; everything else is shared.

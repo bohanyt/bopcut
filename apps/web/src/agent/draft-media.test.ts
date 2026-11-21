@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, setSystemTime, spyOn, test } from "bun:test";
 import type { SceneTracks, TScene, TimelineElement, VideoElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
@@ -12,7 +12,8 @@ mock.module("@/media/processing", () => ({
 	processMediaAssets: async ({ files }: { files: File[] }) => Array.from(files).map((file) => (file.name.endsWith(".mp4") ? { name: file.name, type: "video", file, width: 400, height: 200, duration: 10 } : { name: file.name, type: "image", file, width: 400, height: 200 })),
 }));
 const { EditorCore } = await import("@/core");
-const { applyDraft, pollDraft, pollChanges } = await import("./bridge");
+const { agentSnapshot, applyDraft, pollDraft, pollChanges } = await import("./bridge");
+const { snapshotHistory } = await import("./history");
 const { storageService } = await import("@/services/storage/service");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
@@ -492,6 +493,103 @@ describe("the draft poller", () => {
 });
 
 describe("basedOn is checked before anything is imported", () => {
+	const addOtherRoot = (editor: ReturnType<typeof setup>) => {
+		const main = editor.scenes.getActiveScene().tracks.main;
+		const other = scene("other", { overlay: [], main: { ...main, id: "t-other", elements: main.elements.map((element) => ({ ...element, id: "other-clip" })) }, audio: [] });
+		editor.scenes.setScenes({ scenes: [...editor.scenes.getScenes(), { ...other, isMain: false }], activeSceneId: "main" });
+	};
+
+	test.each(["root", "project"])("rejects a cut based on another %s before staging assets", async (context) => {
+		const editor = setup();
+		addOtherRoot(editor);
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const basedOn = `before-switch-${context}`;
+		snapshotHistory.record(basedOn, editor.scenes.getScenes(), { projectId: "p", rootSceneId: "main" });
+		if (context === "root") {
+			await editor.scenes.switchToScene({ sceneId: "other" });
+		} else {
+			const project = editor.project.getActive();
+			editor.project.setActiveProject({ project: { ...project, metadata: { ...project.metadata, id: "other-project" } } });
+		}
+		const before = editor.scenes.getScenes();
+		await applyDraft(draft([
+			{ op: "cut", start: 0.5, end: 1 },
+			{ op: "add", track: { name: "Logos" }, element: image("a.png", "a") },
+		], { basedOn }));
+		expect(editor.scenes.getScenes()).toBe(before);
+		expect(backend.state.saved).toEqual([]);
+		expect(backend.state.results[0]).toMatchObject({ applied: false, stale: true, sceneId: context === "root" ? "other" : "main" });
+		expect(backend.state.results[0].error).toContain("basedOn belongs to a different project or root scene");
+	});
+
+	test("a draft queued on one root cannot cut another root before it starts", async () => {
+		const editor = setup();
+		addOtherRoot(editor);
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const run = applyDraft(draft([{ op: "cut", start: 0.5, end: 1 }]));
+		const switched = editor.scenes.switchToScene({ sceneId: "other" });
+		await switched;
+		await run;
+		expect(editor.scenes.getActiveScene().tracks.main.elements[0]?.duration).toBe(T(2));
+		expect(backend.state.results[0]).toMatchObject({ applied: false, sceneId: "other" });
+		expect(backend.state.results[0].error).toContain("another scene");
+	});
+
+	test("the poller refuses a root switch while reading a draft even if the editor becomes unready", async () => {
+		const editor = setup();
+		addOtherRoot(editor);
+		const backend = fakeBackend();
+		const pending = gate();
+		const getIsLoading = spyOn(editor.project, "getIsLoading").mockReturnValue(false);
+		const mediaLoaded = spyOn(editor.media, "isProjectMediaLoaded").mockReturnValue(true);
+		const stored = new Map<string, string>();
+		const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+		Object.defineProperty(globalThis, "localStorage", {
+			configurable: true, value: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) },
+		});
+		restore = () => {
+			backend.restore();
+			getIsLoading.mockRestore();
+			mediaLoaded.mockRestore();
+			if (originalStorage) Object.defineProperty(globalThis, "localStorage", originalStorage);
+			else Reflect.deleteProperty(globalThis, "localStorage");
+		};
+		const read = globalThis.fetch;
+		globalThis.fetch = (async (url, init) => {
+			if (url !== "/api/agent/draft") return read(url, init);
+			await pending.promise;
+			return Response.json(draft([{ op: "cut", start: 0.5, end: 1 }]));
+		}) as typeof fetch;
+		const running = pollDraft();
+		try {
+			await editor.scenes.switchToScene({ sceneId: "other" });
+			getIsLoading.mockReturnValue(true);
+		} finally {
+			pending.open();
+			await running;
+		}
+		expect(editor.scenes.getActiveScene().tracks.main.elements[0]?.duration).toBe(T(2));
+		expect(backend.state.results[0]).toMatchObject({ applied: false, sceneId: "other", error: expect.stringContaining("another scene") });
+	});
+
+	test("snapshots of different roots have distinct references in the same millisecond", async () => {
+		const editor = setup();
+		addOtherRoot(editor);
+		setSystemTime(new Date());
+		try {
+			const a = agentSnapshot();
+			await editor.scenes.switchToScene({ sceneId: "other" });
+			const b = agentSnapshot();
+			expect(a?.sceneId).toBe("main");
+			expect(b?.sceneId).toBe("other");
+			expect(a?.syncedAt).not.toBe(b?.syncedAt);
+		} finally {
+			setSystemTime();
+		}
+	});
+
 	test("an unknown or malformed basedOn refuses the draft without importing", async () => {
 		setup();
 		const backend = fakeBackend();
@@ -515,8 +613,7 @@ describe("basedOn is checked before anything is imported", () => {
 			disk.restore();
 		};
 		editor.save.start();
-		const { snapshotHistory } = await import("./bridge");
-		snapshotHistory.record("before-the-user-edit", editor.scenes.getScenes());
+		snapshotHistory.record("before-the-user-edit", editor.scenes.getScenes(), { projectId: "p", rootSceneId: "main" });
 		// The user moves "old" after the agent read the snapshot.
 		const scenes = editor.scenes.getScenes().map((scene) => ({
 			...scene,

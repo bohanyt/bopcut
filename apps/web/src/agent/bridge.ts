@@ -1,6 +1,6 @@
 // Every timeline change is written to AGENT_WORKSPACE/project.json (seconds, pixels),
 // so the agent can see each item's location, time, and position without opening the browser.
-import { draftHistory, isForOtherProject, snapshotHistory } from "./history";
+import { draftHistory, isForOtherProject, nextSnapshotTime, snapshotHistory } from "./history";
 import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { defaultExportName, parseExportRequest } from "./export";
@@ -123,7 +123,7 @@ export function agentSnapshot() {
 	return {
 		schema: "opencut-agent-sync-1", projectId: project.metadata.id, projectName: project.metadata.name,
 		// ready = media loaded and nothing left to save; savedAt = last write of project.json; syncedAt = this snapshot.
-		ready, mediaLoaded, mediaCount: editor.media.getAssets().length, missingMedia, pendingSave, saveError, savedAt, syncedAt: new Date().toISOString(),
+		ready, mediaLoaded, mediaCount: editor.media.getAssets().length, missingMedia, pendingSave, saveError, savedAt, syncedAt: nextSnapshotTime(),
 		canvas: project.settings.canvasSize, fps: project.settings.fps,
 		note: "Times are in seconds. transform.positionX/Y = pixels from the canvas center. Overlay index 0 = topmost. Inside compounds, start/end are relative to the compound's content; visible = intervals in the root timeline.",
 		sceneId: scene.id, activeSceneId: active.id,
@@ -236,7 +236,7 @@ export function installAgentBridge() {
 	// Frames wait for media and saves too: otherwise a frame can miss content that is still loading.
 	// One timer for frame and change requests (two small reads of the workspace every 2 s).
 	setInterval(() => {
-		void framesGate().then((request) => (request ? pollFrames(request) : undefined));
+		void pollFrames(agentReadiness);
 		void pollChanges();
 		void pollExport();
 	}, 2000);
@@ -462,34 +462,6 @@ export async function pollChanges() {
 	}
 }
 
-// A frame request is refused (once per rev, with an error result) while stored media are
-// missing, unless it says `allowMissing: true`: frames would silently lack that content.
-let refusedFramesRev: string | null = null;
-async function framesGate(): Promise<unknown | null> {
-	const { ready, missingMedia } = agentReadiness();
-	if (!ready) return null;
-	let request: { rev?: unknown; allowMissing?: unknown; projectId?: unknown; state?: unknown; compare?: unknown } | null = null;
-	try {
-		request = await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json();
-	} catch {
-		return null;
-	}
-	if (!request || typeof request.rev !== "string") return null;
-	// Another project's request is left for it (this one must not answer it, also not with an error).
-	const openId = EditorCore.getInstance().project.getActiveOrNull()?.metadata.id;
-	if (!openId || isForOtherProject(request, [request.state, request.compare], openId)) return null;
-	if (missingMedia.length === 0 || request.allowMissing === true) return request;
-	if (refusedFramesRev !== request.rev) {
-		refusedFramesRev = request.rev;
-		const projectId = EditorCore.getInstance().project.getActiveOrNull()?.metadata.id;
-		await fetch("/api/agent/frames-result", {
-			method: "POST", headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ rev: request.rev, projectId, files: [], error: `${missingMedia.length} stored media could not be loaded; retry them (window.agent.retryMissingMedia()) or send allowMissing:true`, missingMedia }),
-		}).catch(() => {});
-	}
-	return null;
-}
-
 // An agent draft is a list of per-item operations, protecting human edits (see AGENT.md and draft.ts).
 // Times are in seconds; inside a compound clip they are relative to its content. The whole draft is one Undo step.
 let applying = false;
@@ -503,6 +475,7 @@ export async function pollDraft() {
 	// The session is taken before the fetch: a project opened while draft.json is read is not the
 	// one this poll was for, and the draft is left for the next poll (not marked seen, not refused).
 	const session = currentSession();
+	const rootSceneId = agentRootScene()?.id ?? null;
 	let draft: Draft | null = null;
 	try {
 		draft = await (await fetch("/api/agent/draft", { cache: "no-store" })).json();
@@ -510,13 +483,15 @@ export async function pollDraft() {
 		return;
 	}
 	if (!draft?.rev || (draft.projectId && draft.projectId !== project.metadata.id)) return;
-	if (draftSessionError({ draft, queued: session, now: currentSession() }) || !agentReadiness().ready) return;
+	if (draftSessionError({ draft, queued: session, now: currentSession() })) return;
+	// A root switch can also make the editor unready. Refuse this draft before a later poll can retarget it.
+	if (rootSceneId === (agentRootScene()?.id ?? null) && !agentReadiness().ready) return;
 	const key = `agent-draft-${project.metadata.id}`;
 	if (localStorage.getItem(key) === draft.rev) return;
 	localStorage.setItem(key, draft.rev);
 	applying = true;
 	try {
-		await applyDraft(draft, { session });
+		await applyDraft(draft, { session, rootSceneId });
 	} finally {
 		applying = false;
 	}
@@ -544,9 +519,9 @@ const opLabel = (op: DraftOp) => (op?.op === "add" ? { name: op.element?.name } 
  * Once applied, the project is saved before the result is written, so `draft-result.json` with
  * `saved: true` means the change is in project.json on disk.
  */
-export function applyDraft(draft: Draft, { session = currentSession() }: { session?: DraftSession | null } = {}): Promise<void> {
-	// Bound now: a draft waiting behind another one never runs against a project opened meanwhile.
-	const run = draftQueue.then(() => applyDraftNow(draft, session));
+export function applyDraft(draft: Draft, { session = currentSession(), rootSceneId = agentRootScene()?.id ?? null }: { session?: DraftSession | null; rootSceneId?: string | null } = {}): Promise<void> {
+	// A queued draft keeps its project session and root.
+	const run = draftQueue.then(() => applyDraftNow(draft, session, rootSceneId));
 	draftQueue = run.catch(() => {});
 	return run;
 }
@@ -571,7 +546,7 @@ export function draftSessionError({ draft, queued, now }: { draft: Pick<Draft, "
 	return null;
 }
 
-async function applyDraftNow(draft: Draft, session: DraftSession | null) {
+async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSceneId: string | null) {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const active = editor.scenes.getActiveSceneOrNull();
@@ -587,9 +562,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 		}).catch(() => {});
 		return;
 	}
-	if (!project || !active || !agentRootScene()) return;
-	// The root scene the draft runs against (another one opened while it loads or waits stops it).
 	const rootBefore = agentRootScene()?.id;
+	if (!project || !active || !rootBefore) return;
 	const projectId = project.metadata.id;
 	const ops: DraftOp[] = Array.isArray(draft?.ops) ? structuredClone(draft.ops) : [];
 	const report = (body: Record<string, unknown>) =>
@@ -599,16 +573,23 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ...body }),
 		}).catch(() => {});
 
-	// A draft based on a snapshot this editor no longer remembers cannot be checked against the user's edits:
-	// refused before anything is imported.
+	// A draft's base must describe the target timeline before anything is imported.
+	const snapshot = typeof draft.basedOn === "string" ? snapshotHistory.state(draft.basedOn) : null;
 	const base = typeof draft.basedOn === "string" ? snapshotHistory.get(draft.basedOn) : undefined;
-	if (draft.basedOn !== undefined && !base) {
-		const error = typeof draft.basedOn === "string"
-			? "basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend"
-			: "basedOn must be the syncedAt string of a snapshot";
+	if (draft.basedOn !== undefined && (!snapshot || !base || snapshot.projectId !== projectId || snapshot.rootSceneId !== rootBefore)) {
+		const error = typeof draft.basedOn !== "string"
+			? "basedOn must be the syncedAt string of a snapshot"
+			: !snapshot || !base
+				? "basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend"
+				: "basedOn belongs to a different project or root scene; re-read the snapshot and resend";
 		const results = ops.map((op) => ({ op: op?.op, ...opLabel(op), ...(op && "match" in op && op.match !== undefined ? { match: op.match } : {}), ok: false, stale: true, error }));
-		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: "It was based on an old snapshot; the agent should re-read and resend" });
-		await report({ ok: false, applied: false, stale: true, error, results });
+		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: error });
+		await report({ sceneId: rootBefore, ok: false, applied: false, stale: true, error, results });
+		return;
+	}
+	if (rootBefore !== rootSceneId) {
+		const error = "another scene was opened before the draft ran; nothing was applied, resend";
+		await report({ sceneId: rootBefore, ok: false, applied: false, error, results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
 	}
 
@@ -746,7 +727,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null) {
 	}
 	const root = agentRootScene();
 	// Another root scene was opened while the draft loaded or waited: its ops were meant for the first one.
-	if (root && rootBefore && root.id !== rootBefore) {
+	if (root && root.id !== rootBefore) {
 		const cleanup = await discard();
 		await report({ ok: false, applied: false, error: "another scene was opened before the draft applied; nothing was applied, resend" + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
