@@ -9,6 +9,7 @@ import { isVisualElement } from "@/timeline/element-utils";
 import { resolveAnimationTarget } from "@/timeline/animation-targets";
 import type { AnimationInterpolation } from "@/animation/types";
 import type { SceneTracks } from "@/timeline";
+import { generateUUID } from "@/utils/id";
 import {
 	type MediaTime,
 	maxMediaTime,
@@ -25,7 +26,7 @@ export class UpsertEffectParamKeyframeCommand extends Command {
 	private readonly time: MediaTime;
 	private readonly value: number | string | boolean;
 	private readonly interpolation: AnimationInterpolation | undefined;
-	private readonly keyframeId: string | undefined;
+	private readonly keyframeId: string;
 
 	constructor({
 		trackId,
@@ -54,7 +55,7 @@ export class UpsertEffectParamKeyframeCommand extends Command {
 		this.time = time;
 		this.value = value;
 		this.interpolation = interpolation;
-		this.keyframeId = keyframeId;
+		this.keyframeId = keyframeId ?? generateUUID();
 	}
 
 	execute(): CommandResult | undefined {

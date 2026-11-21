@@ -18,6 +18,8 @@ import {
 	ZERO_MEDIA_TIME,
 } from "@/wasm";
 
+type PasteKeyframeItem = KeyframeClipboardItem & { keyframeId: string };
+
 function pasteKeyframesIntoElement({
 	element,
 	time,
@@ -25,7 +27,7 @@ function pasteKeyframesIntoElement({
 }: {
 	element: TimelineElement;
 	time: MediaTime;
-	clipboardItems: KeyframeClipboardItem[];
+	clipboardItems: PasteKeyframeItem[];
 }): TimelineElement {
 	let nextElement = element;
 
@@ -51,7 +53,7 @@ function pasteKeyframesIntoElement({
 			time: keyframeTime,
 			value: item.value,
 			interpolation: item.interpolation,
-			keyframeId: generateUUID(),
+			keyframeId: item.keyframeId,
 			channelLayout: target.channelLayout,
 			coerceValue: target.coerceValue,
 		});
@@ -89,7 +91,7 @@ export class PasteKeyframesCommand extends Command {
 	private readonly trackId: string;
 	private readonly elementId: string;
 	private readonly time: MediaTime;
-	private readonly clipboardItems: KeyframeClipboardItem[];
+	private readonly clipboardItems: PasteKeyframeItem[];
 
 	constructor({
 		trackId,
@@ -106,7 +108,7 @@ export class PasteKeyframesCommand extends Command {
 		this.trackId = trackId;
 		this.elementId = elementId;
 		this.time = time;
-		this.clipboardItems = clipboardItems;
+		this.clipboardItems = clipboardItems.map((item) => ({ ...item, keyframeId: generateUUID() }));
 	}
 
 	execute(): CommandResult | undefined {

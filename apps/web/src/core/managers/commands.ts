@@ -9,6 +9,7 @@ import { toast } from "sonner";
 interface CommandHistoryEntry {
 	command: Command;
 	projectSession: number;
+	rippleEnabled: boolean;
 	/** Scene the command ran in; undo and redo switch the editor to it first. */
 	sceneId: string | null;
 	/** Other scenes the scenes manager changed as a side effect (compound relocation). */
@@ -28,16 +29,17 @@ export class CommandManager {
 	execute({ command }: { command: Command }): Command {
 		const projectSession = this.editor.project.getSession();
 		const sceneId = this.getActiveSceneId();
+		const rippleEnabled = this.isRippleEnabled;
 		const beforeTracks =
-			this.isRippleEnabled && command.ripples
+			rippleEnabled && command.ripples
 				? (this.editor.scenes.getActiveSceneOrNull()?.tracks ?? null)
 				: null;
 		const previousSelection = this.getSelectionSnapshot();
 		this.editor.scenes.beginDerivedLog();
 		let result: CommandResult | undefined;
 		try {
-			result = command.execute();
-			this.applyRipple({ beforeTracks });
+			result = command.execute({ rippleEnabled });
+			if (result?.changed !== false) this.applyRipple({ beforeTracks });
 		} catch (error) {
 			// The command left its own scene untouched; put side effects elsewhere back too.
 			this.editor.scenes.applyDerivedChanges({
@@ -47,12 +49,14 @@ export class CommandManager {
 			throw error;
 		}
 		const derived = this.editor.scenes.endDerivedLog();
+		if (result?.changed === false) return command;
 		const selectionOverride = this.applySelectionOverride(result);
 		this.runReactors();
 		if (projectSession !== this.editor.project.getSession()) return command;
 		this.history.push({
 			command,
 			projectSession,
+			rippleEnabled,
 			sceneId,
 			derived,
 			previousSelection,
@@ -66,6 +70,8 @@ export class CommandManager {
 		this.history.push({
 			command,
 			projectSession: this.editor.project.getSession(),
+			// The edit has already been applied without command-manager ripple.
+			rippleEnabled: false,
 			sceneId: this.getActiveSceneId(),
 			derived: [],
 			previousSelection: this.getSelectionSnapshot(),
@@ -104,11 +110,12 @@ export class CommandManager {
 		this.redoStack.pop();
 
 		const beforeTracks =
-			this.isRippleEnabled && entry.command.ripples
+			entry.rippleEnabled && entry.command.ripples
 				? (this.editor.scenes.getActiveSceneOrNull()?.tracks ?? null)
 				: null;
 		const previousSelection = this.getSelectionSnapshot();
-		const result = entry.command.redo();
+		const result = entry.command.redo({ rippleEnabled: entry.rippleEnabled });
+		if (result?.changed === false) return;
 		this.applyRipple({ beforeTracks });
 		this.editor.scenes.applyDerivedChanges({ changes: entry.derived, side: "after" });
 		const selectionOverride = this.applySelectionOverride(result);
@@ -190,13 +197,13 @@ export class CommandManager {
 		}
 	}
 
-	/** Ripples the active scene after a change, if ripple editing is on and `beforeTracks` is set. */
+	/** Ripples the active scene after a change when the caller captured its pre-edit tracks. */
 	applyRipple({
 		beforeTracks,
 	}: {
 		beforeTracks: SceneTracks | null;
 	}): void {
-		if (!this.isRippleEnabled || !beforeTracks) {
+		if (!beforeTracks) {
 			return;
 		}
 

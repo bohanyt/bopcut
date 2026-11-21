@@ -19,6 +19,8 @@ import { generateUUID } from "@/utils/id";
 
 export class ToggleSourceAudioSeparationCommand extends Command {
 	private savedState: SceneTracks | null = null;
+	private readonly audioId = generateUUID();
+	private readonly audioTrackId = generateUUID();
 
 	constructor(
 		private readonly params: {
@@ -74,8 +76,9 @@ export class ToggleSourceAudioSeparationCommand extends Command {
 		const separatedAudioElement = {
 			...buildSeparatedAudioElement({
 				sourceElement: videoElement,
+				keyframeIdPrefix: this.audioId,
 			}),
-			id: generateUUID(),
+			id: this.audioId,
 		};
 		const placementResult = resolveTrackPlacement({
 			tracks: this.savedState,
@@ -95,6 +98,7 @@ export class ToggleSourceAudioSeparationCommand extends Command {
 			tracks: this.savedState,
 			placementResult,
 			elements: [separatedAudioElement],
+			newTrackId: this.audioTrackId,
 		});
 		if (!appliedPlacement) {
 			return;

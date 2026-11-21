@@ -12,7 +12,17 @@ import { addMediaTime, type MediaTime, roundMediaTime, subMediaTime } from "@/wa
  * the source split point is snapped once and the right part is derived from it), keyframes are split
  * at the boundary, and the left part keeps only the fade-in, the right part only the fade-out.
  */
-export function splitElementAt({ element, splitTime, rightId }: { element: TimelineElement; splitTime: MediaTime; rightId: string }): { left: TimelineElement; right: TimelineElement } | null {
+export function splitElementAt({
+	element,
+	splitTime,
+	rightId,
+	boundaryIdPrefix,
+}: {
+	element: TimelineElement;
+	splitTime: MediaTime;
+	rightId: string;
+	boundaryIdPrefix?: string;
+}): { left: TimelineElement; right: TimelineElement } | null {
 	const start = element.startTime;
 	const end = element.startTime + element.duration;
 	if (splitTime <= start || splitTime >= end) return null;
@@ -25,7 +35,11 @@ export function splitElementAt({ element, splitTime, rightId }: { element: Timel
 	const leftSourceSpan = roundMediaTime({ time: getSourceSpanAtClipTime({ clipTime: leftVisibleDuration, retime: retimeRef }) });
 	const totalSourceSpan = roundMediaTime({ time: getSourceSpanAtClipTime({ clipTime: element.duration, retime: retimeRef }) });
 	const rightSourceSpan = subMediaTime({ a: totalSourceSpan, b: leftSourceSpan });
-	const { leftAnimations, rightAnimations } = splitAnimationsAtTime({ animations: element.animations, splitTime: relativeTime, shouldIncludeSplitBoundary: true });
+	const { leftAnimations, rightAnimations } = splitAnimationsAtTime({
+		animations: element.animations,
+		splitTime: relativeTime,
+		boundaryIdPrefix,
+	});
 	// Like audio fades, the left part keeps what happens at the start, the right part what happens at the end.
 	const withoutFade = (key: "fadeIn" | "fadeOut") => {
 		const params = { ...element.params };

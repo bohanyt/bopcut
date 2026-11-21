@@ -1,4 +1,4 @@
-import { Command, type CommandResult } from "./base-command";
+import { Command, type CommandContext, type CommandResult } from "./base-command";
 import { EditorCore } from "@/core";
 
 export class BatchCommand extends Command {
@@ -10,8 +10,8 @@ export class BatchCommand extends Command {
 		super();
 	}
 
-	execute(): CommandResult | undefined {
-		return this.runAll((command) => command.execute());
+	execute(context = this.getContext()): CommandResult | undefined {
+		return this.runAll(context, (command) => command.execute(context));
 	}
 
 	undo(): void {
@@ -20,12 +20,17 @@ export class BatchCommand extends Command {
 		}
 	}
 
-	redo(): CommandResult | undefined {
-		return this.runAll((command) => command.redo());
+	redo(context = this.getContext()): CommandResult | undefined {
+		return this.runAll(context, (command) => command.redo(context));
+	}
+
+	private getContext(): CommandContext {
+		return { rippleEnabled: EditorCore.getInstance().command.isRippleEnabled };
 	}
 
 	// All or nothing: if one command throws (e.g. a compound cycle), the earlier ones are undone.
 	private runAll(
+		context: CommandContext,
 		run: (command: Command) => CommandResult | undefined,
 	): CommandResult | undefined {
 		let latestSelectionResult: CommandResult | undefined;
@@ -35,10 +40,11 @@ export class BatchCommand extends Command {
 		try {
 			for (const command of this.commands) {
 				const beforeTracks =
-					editor.command.isRippleEnabled && command.ripples
+					context.rippleEnabled && command.ripples
 						? (editor.scenes.getActiveSceneOrNull()?.tracks ?? null)
 						: null;
 				const result = run(command);
+				if (result?.changed === false) continue;
 				done.push(command);
 				editor.command.applyRipple({ beforeTracks });
 				if (result?.selection !== undefined) {
@@ -52,6 +58,6 @@ export class BatchCommand extends Command {
 			throw error;
 		}
 
-		return latestSelectionResult;
+		return done.length > 0 ? latestSelectionResult : { changed: false };
 	}
 }

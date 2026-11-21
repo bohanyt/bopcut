@@ -3,6 +3,12 @@ import type { ElementRef } from "@/timeline/types";
 
 export interface CommandResult {
 	selection?: EditorSelectionPatch;
+	/** Explicitly false when the command made no edit. */
+	changed?: false;
+}
+
+export interface CommandContext {
+	rippleEnabled: boolean;
 }
 
 export function createElementSelectionResult(
@@ -22,7 +28,7 @@ export abstract class Command {
 	/** False for commands that move elements between scenes; ripple would read that as a delete. */
 	readonly ripples: boolean = true;
 
-	abstract execute(): CommandResult | undefined;
+	abstract execute(context?: CommandContext): CommandResult | undefined;
 
 	/**
 	 * True if undoing/redoing this command brings back `sceneId` itself (e.g. undoing the
@@ -44,7 +50,7 @@ export abstract class Command {
 		throw new Error("Undo not implemented for this command");
 	}
 
-	redo(): CommandResult | undefined {
-		return this.execute();
+	redo(context?: CommandContext): CommandResult | undefined {
+		return this.execute(context);
 	}
 }

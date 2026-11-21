@@ -74,8 +74,10 @@ export function doesElementHaveEnabledAudio({
 
 export function buildSeparatedAudioElement({
 	sourceElement,
+	keyframeIdPrefix,
 }: {
 	sourceElement: VideoElement;
+	keyframeIdPrefix?: string;
 }): CreateUploadAudioElement {
 	return {
 		type: "audio",
@@ -104,6 +106,7 @@ export function buildSeparatedAudioElement({
 			: undefined,
 		animations: cloneVolumeAnimations({
 			animations: sourceElement.animations,
+			keyframeIdPrefix,
 		}),
 	};
 }
@@ -120,8 +123,10 @@ export function getSourceAudioActionLabel({
 
 function cloneVolumeAnimations({
 	animations,
+	keyframeIdPrefix,
 }: {
 	animations: ElementAnimations | undefined;
+	keyframeIdPrefix?: string;
 }): ElementAnimations | undefined {
 	const volumeData = animations?.volume;
 	if (!volumeData) {
@@ -131,5 +136,6 @@ function cloneVolumeAnimations({
 	return cloneAnimations({
 		animations: { volume: volumeData },
 		shouldRegenerateKeyframeIds: true,
+		keyframeIdPrefix,
 	});
 }
