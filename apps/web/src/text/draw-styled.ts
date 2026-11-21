@@ -105,24 +105,33 @@ function drawGlyphs(
 const STRONG = /\p{L}/u;
 const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
 const LTR = /(?![\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF])\p{L}/u;
+let graphemeSegmenter: Intl.Segmenter | undefined;
+
+function revealCharacters(text: string): string[] {
+	if (!/[^\x00-\x7F]/.test(text) || typeof Intl.Segmenter !== "function") {
+		return Array.from(text);
+	}
+	graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+	return Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment);
+}
 
 /**
  * The runs cut to the first `typed` share of their characters (in reading order); a right-to-left run is
  * marked so it is drawn from its right edge.
  */
 function typedRuns<T extends { text: string }>(runs: T[], typed: number): (T & { rtl: boolean })[] {
-	const total = runs.reduce((sum, run) => sum + Array.from(run.text).length, 0);
+	const segmented = runs.map((run) => ({ run, characters: revealCharacters(run.text) }));
+	const total = segmented.reduce((sum, { characters }) => sum + characters.length, 0);
 	let left = Math.floor(typed * total + 1e-9);
 	const shown: (T & { rtl: boolean })[] = [];
-	for (const run of runs) {
+	for (const { run, characters } of segmented) {
 		if (left <= 0) break;
-		const chars = Array.from(run.text);
 		const rtl = RTL.test(STRONG.exec(run.text)?.[0] ?? "");
-		const whole = chars.length <= left;
+		const whole = characters.length <= left;
 		// A run mixing both directions would reorder as it grows: it appears whole once it is typed.
 		const mixed = !whole && RTL.test(run.text) && LTR.test(run.text);
-		if (!mixed) shown.push({ ...run, text: whole ? run.text : chars.slice(0, left).join(""), rtl });
-		left -= chars.length;
+		if (!mixed) shown.push({ ...run, text: whole ? run.text : characters.slice(0, left).join(""), rtl });
+		left -= characters.length;
 	}
 	return shown;
 }
