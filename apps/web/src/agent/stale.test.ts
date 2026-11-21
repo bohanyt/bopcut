@@ -65,6 +65,22 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		expect(history.get("t3")?.get("main:a1")?.fields.params.color).toBe(JSON.stringify("#ff0000"));
 	});
 
+	test("unchanged scene snapshots share an index but retain independent timestamps and roots", () => {
+		const history = new SnapshotHistory(3);
+		history.record("before", read, { projectId: "p", rootSceneId: "main" });
+		history.record("same-tracks", read, { projectId: "p", rootSceneId: "another-root" });
+		history.record("edited", now, { projectId: "p", rootSceneId: "main" });
+
+		const before = history.get("before");
+		expect(before).toBeDefined();
+		expect(history.get("same-tracks")).toBe(before);
+		expect(history.get("edited")).not.toBe(before);
+		expect(history.state("before")?.rootSceneId).toBe("main");
+		expect(history.state("same-tracks")?.rootSceneId).toBe("another-root");
+		expect(before?.get("main:a1")?.fields.params.color).toBe(JSON.stringify("#ffffff"));
+		expect(history.get("edited")?.get("main:a1")?.fields.params.color).toBe(JSON.stringify("#ff0000"));
+	});
+
 	test("two ops of one draft on the same field do not trip over each other", () => {
 		const fresh = scenesWith([text("a1", "cap-1", { color: "#ffffff" })]);
 		const out = run(fresh, [
