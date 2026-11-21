@@ -48,33 +48,63 @@ function getFilter(step: number): Filter {
 	return filter;
 }
 
-/** Sample both channels at a fractional native frame, filtering before downsampling. */
-export function createStereoSampler(buffer: AudioBuffer, step: number) {
+/** Optional bounds are the half-open clip trim in native frames relative to this window. */
+export function createStereoSampler(
+	buffer: AudioBuffer,
+	step: number,
+	{ start = -Infinity, end = Infinity }: { start?: number; end?: number } = {},
+) {
 	const left = buffer.getChannelData(0);
 	const right = buffer.getChannelData(1);
+	const firstSample = Math.max(0, start);
+	const endSample = Math.min(left.length, end);
+	if (firstSample >= endSample) {
+		return (_position: number, result: Float64Array) => result.fill(0);
+	}
 	if (step <= 1) {
 		return (position: number, result: Float64Array) => {
 			const frame = Math.floor(position);
 			const fraction = position - frame;
-			result[0] = (left[frame] ?? 0) * (1 - fraction) + (left[frame + 1] ?? 0) * fraction;
-			result[1] = (right[frame] ?? 0) * (1 - fraction) + (right[frame + 1] ?? 0) * fraction;
+			if (frame < start || frame >= end - 1) {
+				const edge = frame < start ? start : end - 1;
+				result[0] = left[edge] ?? 0;
+				result[1] = right[edge] ?? 0;
+			} else {
+				result[0] = (left[frame] ?? 0) * (1 - fraction) + (left[frame + 1] ?? 0) * fraction;
+				result[1] = (right[frame] ?? 0) * (1 - fraction) + (right[frame + 1] ?? 0) * fraction;
+			}
 		};
 	}
 
 	const { radius, weights } = getFilter(step);
 	const taps = radius * 2 + 1;
+	// Extend only the actual cut samples. Missing PCM at a decoder window edge stays silent.
+	const extendStart = firstSample === start;
+	const extendEnd = endSample === end;
 	return (position: number, result: Float64Array) => {
 		const frame = Math.floor(position);
 		const first = frame - radius;
 		const phase = Math.round((position - frame) * PHASES);
 		const offset = phase * taps;
-		const from = Math.max(first, 0);
-		const to = Math.min(first + taps, left.length);
+		const from = Math.max(first, firstSample);
+		const to = Math.min(first + taps, endSample);
 		let sumLeft = 0;
 		let sumRight = 0;
 		for (let index = from, weight = offset + from - first; index < to; index++, weight++) {
 			sumLeft += left[index] * weights[weight];
 			sumRight += right[index] * weights[weight];
+		}
+		if (extendStart && first < start) {
+			let gain = 0;
+			for (let tap = 0; tap < Math.min(taps, start - first); tap++) gain += weights[offset + tap];
+			sumLeft += left[start] * gain;
+			sumRight += right[start] * gain;
+		}
+		if (extendEnd && first + taps > end) {
+			let gain = 0;
+			for (let tap = Math.max(0, end - first); tap < taps; tap++) gain += weights[offset + tap];
+			sumLeft += left[end - 1] * gain;
+			sumRight += right[end - 1] * gain;
 		}
 		result[0] = sumLeft;
 		result[1] = sumRight;

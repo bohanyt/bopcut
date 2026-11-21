@@ -279,8 +279,9 @@ export async function* mixTimelineAudio({
 						readWindow: (sourceStart, sourceEnd) => decode(clip.source, {
 							start: sourceStart, end: sourceEnd, clips: [],
 						}),
-						sourceStart: clip.trim + (from - clip.start) / sampleRate * clip.rate,
+						sourceStart: clip.trim,
 						sourceEnd: clip.trim + clip.duration * clip.rate,
+						readStart: clip.trim + (from - clip.start) / sampleRate * clip.rate,
 						rate: clip.rate, sampleRate, signal,
 					});
 					pitchReaders.set(clip, read);

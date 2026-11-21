@@ -1,6 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { AudioBufferSink, Input, InputAudioTrack, type WrappedAudioBuffer } from "mediabunny";
 import { collectAudioClips, decodeAudioToFloat32 } from "@/media/audio";
+import { mixTimelineAudio } from "@/media/audio-mixdown";
 import { TestAudioBuffer } from "@/media/__tests__/audio-buffer";
 import type { AudioElement, LibraryAudioElement, UploadAudioElement } from "@/timeline";
 import { scene, t } from "@/timeline/__tests__/compound-fixtures";
@@ -107,10 +108,11 @@ afterEach(() => {
 	for (const restoreStub of restore.splice(0).reverse()) restoreStub();
 });
 
-function fakeAudio({ withVisibility = false } = {}) {
+function fakeAudio({ withVisibility = false, sampleRate = 8_000 } = {}) {
 	let raf: FrameRequestCallback | undefined;
 	let wallTimeMs = 1_000;
 	const starts: Array<{ when: number; offset?: number; duration?: number; rate: number }> = [];
+	const buffers: AudioBuffer[] = [];
 	const gains: Array<{ time: number; value: number }> = [];
 	const disconnect = mock(() => {});
 	const stops = mock(() => {});
@@ -120,7 +122,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 	const wakes = new Map<EventTarget, number>();
 	const audio = {
 		currentTime: 10,
-		sampleRate: 8000,
+		sampleRate,
 		state: "suspended",
 		destination: {},
 		resume: mock(async () => { audio.state = "running"; }),
@@ -161,6 +163,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 		createBufferSource: () => {
 			const playbackRate = { value: 1 };
 			return {
+				buffer: null as AudioBuffer | null,
 				playbackRate,
 				connect() {},
 				disconnect,
@@ -168,6 +171,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 				addEventListener() {},
 				start(when: number, offset?: number, duration?: number) {
 					starts.push({ when, offset, duration, rate: playbackRate.value });
+					if (this.buffer) buffers.push(this.buffer);
 				},
 			};
 		},
@@ -197,7 +201,7 @@ function fakeAudio({ withVisibility = false } = {}) {
 			if (deadline <= time) source.dispatchEvent(new Event("ended"));
 		}
 	};
-	return { audio, starts, gains, frame, stops, disconnect, setInterval, wakes, setHidden, advanceAudio };
+	return { audio, starts, buffers, gains, frame, stops, disconnect, setInterval, wakes, setHidden, advanceAudio };
 }
 
 function stubFetch(...responses: Promise<Response>[]) {
@@ -363,6 +367,79 @@ test("pitch-preserved preview prepares short windows at a late trim and parks ah
 	editor.playback.pause();
 	await flush();
 	expect(starts).toHaveLength(2);
+});
+
+test("pitch-preserved preview seeks keep in-trim taps before the cursor", async () => {
+	const sampleRate = 44_100;
+	const nativeRate = 48_000;
+	const rate = 1.5;
+	const trim = 0.25;
+	const seek = 0.5;
+	const { editor } = setup(uploadedClip({
+		duration: t(1), trimStart: t(trim), retime: { rate, maintainPitch: true },
+	}));
+	const { buffers } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: 2 * nativeRate, sampleRate: nativeRate });
+	// Only the last native sample before the cursor carries this signal.
+	const cursor = (trim + seek * rate) * nativeRate;
+	buffer.getChannelData(0)[cursor - 1] = 0.5;
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.seek({ time: t(seek) });
+	editor.playback.play();
+	await flush();
+
+	expect(buffers).toHaveLength(1);
+	expect(buffers[0].length).toBe(sampleRate / 2);
+	expect(Math.max(...buffers[0].getChannelData(0).subarray(0, 16).map(Math.abs))).toBeGreaterThan(0.0001);
+});
+
+const pitchCases = [44_100, 48_000].flatMap((sampleRate) =>
+	[1, 2].flatMap((channels) => [0.5, 1.5, 2].map((rate) => ({ sampleRate, channels, rate }))),
+);
+test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $channels channel(s), $rate x", async ({
+	sampleRate, channels, rate,
+}) => {
+	const nativeRate = sampleRate === 44_100 ? 48_000 : 44_100;
+	const duration = 1.2;
+	const { editor, tracks } = setup(uploadedClip({
+		duration: t(duration), trimStart: t(0.25001), retime: { rate, maintainPitch: true },
+	}));
+	const { buffers, starts } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: 3 * nativeRate, sampleRate: nativeRate, numberOfChannels: channels });
+	for (let channel = 0; channel < channels; channel++) {
+		const samples = buffer.getChannelData(channel);
+		for (let frame = 0; frame < samples.length; frame++) {
+			samples[frame] = 0.5 * Math.sin(2 * Math.PI * (300 + channel * 100) * frame / nativeRate);
+		}
+	}
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+
+	editor.playback.play();
+	await flush();
+	expect(buffers.map((block) => block.length)).toEqual([sampleRate, sampleRate / 5]);
+	expect(starts[0]).toMatchObject({ offset: 0, duration: 1, rate: 1 });
+	expect(starts[1]).toMatchObject({ offset: 0, rate: 1 });
+	expect(starts[1].duration).toBeCloseTo(0.2, 10);
+	editor.playback.pause();
+
+	const blocks: AudioBuffer[] = [];
+	for await (const block of mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), duration: t(duration), sampleRate })) {
+		blocks.push(block);
+	}
+	expect(blocks).toHaveLength(1);
+	expect(blocks[0].length).toBe(duration * sampleRate);
+	for (let channel = 0; channel < 2; channel++) {
+		const samples = blocks[0].getChannelData(channel);
+		expect(buffers[0].getChannelData(channel)).toEqual(samples.subarray(0, sampleRate));
+		expect(buffers[1].getChannelData(channel)).toEqual(samples.subarray(sampleRate));
+		let crossings = 0;
+		for (let frame = sampleRate / 10 + 1; frame <= sampleRate * 0.4; frame++) {
+			if (samples[frame - 1] <= 0 && samples[frame] > 0) crossings++;
+		}
+		const frequency = channels === 2 && channel === 1 ? 400 : 300;
+		expect(Math.abs(crossings - frequency * 0.3)).toBeLessThanOrEqual(2);
+	}
 });
 
 test("rounding the preview frame to the end does not stop the last audio samples early", async () => {
