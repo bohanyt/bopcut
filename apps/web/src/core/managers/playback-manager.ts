@@ -64,6 +64,13 @@ export class PlaybackManager {
 		this.notify();
 	}
 
+	finishAtTimelineEnd(): void {
+		const endTime = this.editor.timeline.getTotalDuration();
+		this.pause();
+		this.seek({ time: endTime });
+		this.dispatchSeekEvent(this.currentTime);
+	}
+
 	toggle(): void {
 		if (this.isPlaying) {
 			this.pause();
@@ -236,11 +243,7 @@ export class PlaybackManager {
 		const maxTime = this.editor.timeline.getTotalDuration();
 
 		if (rawTime >= maxTime) {
-			this.pause();
-			this.currentTime = maxTime;
-			this.notify();
-		this.notifySeek(maxTime);
-		this.dispatchSeekEvent(maxTime);
+			this.finishAtTimelineEnd();
 		return;
 		}
 

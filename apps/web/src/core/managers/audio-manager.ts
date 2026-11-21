@@ -5,6 +5,7 @@ import { createAudioContext, collectAudioClips } from "@/media/audio";
 import { buildAudioGainAutomation, hasAnimatedVolume, hasVolumeKeyframes } from "@/timeline/audio-state";
 import { createAudioMasteringChain } from "@/media/audio-mastering";
 import { renderRetimedBuffer } from "@/retime";
+import { TICKS_PER_SECOND } from "@/wasm";
 import {
 	ALL_FORMATS,
 	AudioBufferSink,
@@ -14,14 +15,15 @@ import {
 } from "mediabunny";
 
 const LOOKAHEAD_SECONDS = 2;
-const SCHEDULE_STEP_SECONDS = 0.5;
 const STREAM_AHEAD_SECONDS = 1;
+const BACKGROUND_STREAM_BATCH_SECONDS = 0.25;
 
 export class AudioManager {
 	private audioContext: AudioContext | null = null;
 	private masterGain: GainNode | null = null;
 	private playbackAnchor: { timelineTime: number; clockTime: number } | null = null;
-	private nextScheduleTime = 0;
+	private nextScheduleTime = Infinity;
+	private backgroundWake: { source: ConstantSourceNode; deadline: number } | null = null;
 	private clips: AudioClipSource[] = [];
 	private sinks = new Map<string, Promise<AudioBufferSink | null>>();
 	private inputs = new Map<string, Input>();
@@ -114,7 +116,56 @@ export class AudioManager {
 			}
 		}
 		if (time >= this.nextScheduleTime) this.scheduleUpcomingClips(time);
+		this.queueBackgroundWake();
 	};
+
+	private handleVisibilityChange = (): void => {
+		if (document.hidden) this.handlePlaybackUpdate();
+		else this.cancelBackgroundWake();
+	};
+
+	private queueBackgroundWake(): void {
+		const context = this.audioContext;
+		const anchor = this.playbackAnchor;
+		if (!context || !anchor || typeof document === "undefined" || !document.hidden) return;
+
+		const timelineEnd = this.editor.timeline.getTotalDuration() / TICKS_PER_SECOND;
+		if (this.editor.playback.getPlaybackTime() >= timelineEnd) {
+			this.editor.playback.finishAtTimelineEnd();
+			return;
+		}
+
+		let deadline = Math.min(timelineEnd, this.nextScheduleTime);
+		for (const waiter of this.streamWaiters) {
+			const batch = Math.ceil(waiter.resumeAt / BACKGROUND_STREAM_BATCH_SECONDS);
+			deadline = Math.min(deadline, batch * BACKGROUND_STREAM_BATCH_SECONDS);
+		}
+		if (this.backgroundWake?.deadline === deadline) return;
+		this.cancelBackgroundWake();
+
+		// Hidden tabs stop receiving animation frames. Wake at the next audio deadline on the
+		// same clock as the sources, so background playback can keep its bounded lookahead.
+		const source = context.createConstantSource();
+		source.offset.value = 0;
+		source.connect(context.destination);
+		this.backgroundWake = { source, deadline };
+		source.addEventListener("ended", () => {
+			if (this.backgroundWake?.source !== source) return;
+			this.backgroundWake = null;
+			source.disconnect();
+			this.handlePlaybackUpdate();
+		}, { once: true });
+		source.start();
+		source.stop(Math.max(context.currentTime, anchor.clockTime + (deadline - anchor.timelineTime)));
+	}
+
+	private cancelBackgroundWake(): void {
+		if (!this.backgroundWake) return;
+		const { source } = this.backgroundWake;
+		this.backgroundWake = null;
+		source.stop();
+		source.disconnect();
+	}
 
 	private ensureAudioContext(): AudioContext | null {
 		if (this.audioContext) return this.audioContext;
@@ -169,7 +220,11 @@ export class AudioManager {
 
 			// Transfer the current unrounded playhead to the audio clock after startup.
 			this.playbackAnchor = this.editor.playback.setPlaybackClock(() => audioContext.currentTime);
+			if (typeof document !== "undefined") {
+				document.addEventListener("visibilitychange", this.handleVisibilityChange, { signal });
+			}
 			this.scheduleUpcomingClips(this.playbackAnchor.timelineTime);
+			this.queueBackgroundWake();
 		} catch (error) {
 			if (signal.aborted) return;
 			console.warn("Failed to start preview audio:", error);
@@ -180,12 +235,16 @@ export class AudioManager {
 	private scheduleUpcomingClips(currentTime: number): void {
 		const signal = this.playbackSession?.signal;
 		if (!signal) return;
-		this.nextScheduleTime = currentTime + SCHEDULE_STEP_SECONDS;
-		const windowEnd = currentTime + LOOKAHEAD_SECONDS;
+		this.nextScheduleTime = Infinity;
 
 		for (const clip of this.clips) {
 			if (this.activeClipIds.has(clip.id)) continue;
-			if (clip.startTime + clip.duration <= currentTime || clip.startTime > windowEnd) continue;
+			if (clip.startTime + clip.duration <= currentTime) continue;
+			const deadline = clip.startTime - LOOKAHEAD_SECONDS;
+			if (deadline > currentTime) {
+				this.nextScheduleTime = Math.min(this.nextScheduleTime, deadline);
+				continue;
+			}
 
 			this.activeClipIds.add(clip.id);
 			const task = this.shouldUsePreparedClipBuffer({ clip })
@@ -201,6 +260,7 @@ export class AudioManager {
 		const hadSession = this.playbackSession !== null;
 		this.playbackSession?.abort();
 		this.playbackSession = null;
+		this.cancelBackgroundWake();
 		if (this.playbackAnchor) {
 			this.editor.playback.setPlaybackClock();
 			this.playbackAnchor = null;
@@ -253,7 +313,10 @@ export class AudioManager {
 				if (bufferLocalTime >= clip.duration) break;
 				const resumeAt = clip.startTime + bufferLocalTime - STREAM_AHEAD_SECONDS;
 				if (resumeAt > this.editor.playback.getPlaybackTime()) {
-					await new Promise<void>((resolve) => this.streamWaiters.add({ resumeAt, resolve }));
+					await new Promise<void>((resolve) => {
+						this.streamWaiters.add({ resumeAt, resolve });
+						this.queueBackgroundWake();
+					});
 					if (signal.aborted) break;
 				}
 				this.scheduleBuffer({ clip, buffer, bufferLocalTime, rate });

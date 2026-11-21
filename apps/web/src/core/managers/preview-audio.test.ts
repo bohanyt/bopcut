@@ -106,7 +106,7 @@ afterEach(() => {
 	for (const restoreStub of restore.splice(0).reverse()) restoreStub();
 });
 
-function fakeAudio() {
+function fakeAudio({ withVisibility = false } = {}) {
 	let raf: FrameRequestCallback | undefined;
 	let wallTimeMs = 1_000;
 	const starts: Array<{ when: number; offset?: number; duration?: number; rate: number }> = [];
@@ -115,6 +115,8 @@ function fakeAudio() {
 	const stops = mock(() => {});
 	const setInterval = mock(() => 1);
 	const clearInterval = mock(() => {});
+	const visibility = Object.assign(new EventTarget(), { hidden: false });
+	const wakes = new Map<EventTarget, number>();
 	const audio = {
 		currentTime: 10,
 		state: "suspended",
@@ -144,6 +146,16 @@ function fakeAudio() {
 			release: { value: 0 },
 			connect() {},
 		}),
+		createConstantSource: () => {
+			const source = new EventTarget();
+			return Object.assign(source, {
+				offset: { value: 1 },
+				connect() {},
+				disconnect() { wakes.delete(source); },
+				start() {},
+				stop(deadline = audio.currentTime) { wakes.set(source, deadline); },
+			});
+		},
 		createBufferSource: () => {
 			const playbackRate = { value: 1 };
 			return {
@@ -160,6 +172,7 @@ function fakeAudio() {
 	};
 
 	stubGlobal("window", { AudioContext: class { constructor() { return audio; } }, setInterval, clearInterval });
+	if (withVisibility) stubGlobal("document", visibility);
 	stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
 		raf = callback;
 		return 1;
@@ -171,7 +184,17 @@ function fakeAudio() {
 		wallTimeMs += elapsedWallMs;
 		raf?.(wallTimeMs);
 	};
-	return { audio, starts, gains, frame, stops, disconnect, setInterval };
+	const setHidden = (hidden: boolean) => {
+		visibility.hidden = hidden;
+		visibility.dispatchEvent(new Event("visibilitychange"));
+	};
+	const advanceAudio = (time: number) => {
+		audio.currentTime = time;
+		for (const [source, deadline] of [...wakes]) {
+			if (deadline <= time) source.dispatchEvent(new Event("ended"));
+		}
+	};
+	return { audio, starts, gains, frame, stops, disconnect, setInterval, wakes, setHidden, advanceAudio };
 }
 
 function stubFetch(...responses: Promise<Response>[]) {
@@ -331,6 +354,62 @@ test("rounding the preview frame to the end does not stop the last audio samples
 	audio.currentTime = 11;
 	frame(10);
 	expect(editor.playback.getIsPlaying()).toBe(false);
+});
+
+test("background audio starts future clips, feeds parked decoders and stops at timeline end without frames", async () => {
+	const { starts, audio, wakes, setHidden, advanceAudio } = fakeAudio({ withVisibility: true });
+	const { editor } = setup(uploadedClip({ startTime: t(4), duration: t(5) }));
+	const { decode } = stubDecoder(async function* () {
+		yield packet(0, 0.1);
+		yield packet(3, 0.1);
+	});
+
+	editor.playback.play();
+	await flush();
+	expect(decode).not.toHaveBeenCalled();
+
+	setHidden(true);
+	expect([...wakes.values()]).toEqual([12]);
+	advanceAudio(12);
+	await flush();
+	expect(decode).toHaveBeenCalledTimes(1);
+	expect(starts).toHaveLength(0);
+
+	advanceAudio(13);
+	await flush();
+	expect(starts.map((start) => start.when)).toEqual([14]);
+
+	advanceAudio(16);
+	await flush();
+	expect(starts.map((start) => start.when)).toEqual([14, 17]);
+
+	advanceAudio(19);
+	expect(editor.playback.getIsPlaying()).toBe(false);
+	expect(editor.playback.getCurrentTime()).toBe(t(9));
+	expect(audio.state).toBe("suspended");
+	expect(wakes.size).toBe(0);
+});
+
+test("background wake is cancelled when the tab returns or playback stops", async () => {
+	const { starts, wakes, setHidden, advanceAudio } = fakeAudio({ withVisibility: true });
+	const { editor } = setup(uploadedClip({ startTime: t(4), duration: t(5) }));
+	const { decode } = stubDecoder(async function* () { yield packet(0, 0.1); });
+
+	editor.playback.play();
+	await flush();
+	setHidden(true);
+	expect(wakes.size).toBe(1);
+	setHidden(false);
+	expect(wakes.size).toBe(0);
+	setHidden(true);
+	expect(wakes.size).toBe(1);
+	editor.playback.pause();
+	expect(wakes.size).toBe(0);
+
+	advanceAudio(15);
+	await flush();
+	expect(decode).not.toHaveBeenCalled();
+	expect(starts).toHaveLength(0);
 });
 
 test("pausing releases queued audio and a parked decoder, and project close suspends playback again", async () => {
