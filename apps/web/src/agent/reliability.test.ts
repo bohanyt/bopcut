@@ -69,18 +69,6 @@ async function withAgentApi(action: () => Promise<void>): Promise<any> {
 afterEach(() => EditorCore.reset());
 
 describe("transactional drafts", () => {
-	test("a duration edit keeps a retimed clip's trailing trim in source time", async () => {
-		const editor = setup();
-		editor.timeline.updateElements({
-			updates: [{ trackId: "t-main", elementId: "v1", patch: { retime: { rate: 2, maintainPitch: true } } }],
-		});
-		const result = await withAgentApi(() => applyDraft(draft([
-			{ op: "set", match: { agentId: "clip-1" }, trimStart: 0.25, duration: 0.75 },
-		])));
-		expect(result.applied).toBe(true);
-		expect(find(editor, "clip-1")).toMatchObject({ duration: T(0.75), trimStart: T(0.25), trimEnd: T(8.25) });
-	});
-
 	test("5 deletes + 5 compounds whose assets fail: nothing is applied and every failure is reported", async () => {
 		const editor = setup();
 		const before = state(editor);

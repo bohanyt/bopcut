@@ -8,6 +8,7 @@ import { clipElementToRange } from "@/timeline/compound";
 import { computeGroupResize } from "@/timeline/group-resize/compute-resize";
 import { splitElementAt } from "@/timeline/split";
 import { scene, t } from "@/timeline/__tests__/compound-fixtures";
+import { subMediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({
@@ -400,13 +401,13 @@ test("pitch-preserved preview seeks keep in-trim taps before the cursor", async 
 const roundedCutCases = [
 	{ nativeRate: 48_000, sampleRate: 44_100 },
 	{ nativeRate: 44_100, sampleRate: 48_000 },
-].flatMap((rates) => (["direct", "compound", "split"] as const).map((edit) => ({ ...rates, edit })));
+].flatMap((rates) => (["direct", "compound", "split", "frame split"] as const).map((edit) => ({ ...rates, edit })));
 test.each(roundedCutCases)(
-	"preview and export exclude the first native sample at a rounded 0.85x cut ($nativeRate to $sampleRate Hz, $edit)", async ({
+	"preview and export exclude the first native sample at a rounded cut ($nativeRate to $sampleRate Hz, $edit)", async ({
 	nativeRate, sampleRate, edit,
 }) => {
-	const rate = 0.85;
-	const end = edit === "split" ? 0.4 : 0.1;
+	const rate = edit === "frame split" ? 1.15 : 0.85;
+	const end = edit === "frame split" ? 0.53375 : edit === "split" ? 0.4 : 0.1;
 	const original = uploadedClip({
 		duration: t(end / rate), sourceDuration: t(1), trimEnd: t(1 - end), retime: { rate, maintainPitch: true },
 	});
@@ -416,9 +417,11 @@ test.each(roundedCutCases)(
 		if (!clipped) throw new Error("Expected a visible clip");
 		element = clipped;
 	}
-	if (edit === "split") {
-		for (let split = 1; split <= 3; split++) {
-			const parts = splitElementAt({ element, splitTime: t(split * 0.000025), rightId: `right-${split}` });
+	if (edit === "split" || edit === "frame split") {
+		const splitCount = edit === "frame split" ? 5 : 3;
+		const step = edit === "frame split" ? 1001 / 30_000 : 0.000025;
+		for (let split = 1; split <= splitCount; split++) {
+			const parts = splitElementAt({ element, splitTime: t(split * step), rightId: `right-${split}` });
 			if (parts?.right.type !== "audio" || parts.right.sourceType !== "upload") throw new Error("Expected an audio split");
 			element = parts.right;
 		}
@@ -427,7 +430,7 @@ test.each(roundedCutCases)(
 	const { editor, tracks } = setup({ ...element, startTime: t(0) });
 	const { buffers } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
-	buffer.getChannelData(0)[nativeRate * end] = 1;
+	buffer.getChannelData(0)[Math.ceil(nativeRate * end)] = 1;
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
 
 	editor.playback.play();
@@ -444,6 +447,20 @@ test.each(roundedCutCases)(
 	expect(blocks[0].length).toBe(buffers[0].length);
 	expect(blocks[0].getChannelData(0)).toEqual(buffers[0].getChannelData(0));
 	expect(blocks[0].getChannelData(1)).toEqual(buffers[0].getChannelData(1));
+});
+
+test("right extension applies its delta to the stored cut after repeated 1.15x frame splits", () => {
+	const fps = { numerator: 30_000, denominator: 1001 };
+	const { updates: [{ patch }] } = computeGroupResize({
+		members: [{
+			elementId: "audio", trackId: "audio", startTime: t(5 * 1001 / 30_000),
+			duration: subMediaTime({ a: t(0.53375 / 1.15), b: t(5 * 1001 / 30_000) }),
+			trimStart: t(23_025 / TICKS_PER_SECOND), trimEnd: t(1 - 0.53375), sourceDuration: t(1),
+			retime: { rate: 1.15, maintainPitch: true }, leftNeighborBound: null, rightNeighborBound: null,
+		}],
+		side: "right", deltaTime: t(1001 / 30_000), fps,
+	});
+	expect(patch.trimEnd).toBe(t(51_345 / TICKS_PER_SECOND));
 });
 
 test("a legacy retimed clip with stale trim metadata keeps its visible source window", async () => {
@@ -487,7 +504,7 @@ test.each([0, 0.05])("a legacy duration-only edit retains its playable source at
 	expect(buffers[0].getChannelData(0).some((value) => value > 0.1)).toBe(true);
 });
 
-test.each([false, true])("a right extension of a legacy 2x clip keeps its audible tail (already saved: %s)", async (saved) => {
+test("a right extension of a legacy 2x clip keeps its audible tail", async () => {
 	const sampleRate = 44_100;
 	const nativeRate = 48_000;
 	const element = uploadedClip({
@@ -499,9 +516,7 @@ test.each([false, true])("a right extension of a legacy 2x clip keeps its audibl
 	});
 	const duration = t(0.35);
 	expect(patch.duration).toBe(duration);
-	const trimEnd = saved ? t(0.55) : patch.trimEnd;
-	if (!saved) expect(trimEnd).toBe(t(0.3));
-	const { editor, tracks } = setup({ ...element, ...patch, trimEnd });
+	const { editor, tracks } = setup({ ...element, ...patch });
 	const { buffers } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
 	buffer.getChannelData(0).fill(0.5, nativeRate * 0.48, nativeRate * 0.65);

@@ -17,7 +17,6 @@ import { doesElementHaveEnabledAudio, isSourceAudioEnabled } from "@/timeline/au
 import { canElementHaveAudio, hasMediaId } from "@/timeline/element-utils";
 import { canTrackHaveAudio } from "@/timeline";
 import { mediaSupportsAudio } from "@/media/media-utils";
-import { getSourceSpanRoundingTolerance } from "@/retime/resolve";
 import { TICKS_PER_SECOND } from "@/wasm";
 import {
 	computeRmsBuckets,
@@ -157,10 +156,11 @@ export function resolvePitchSourceEnd(element: AudioCapableElement, rate: number
 	if (element.sourceDuration !== undefined) {
 		const storedEnd = element.sourceDuration - element.trimEnd;
 		const storedSpan = storedEnd - element.trimStart;
-		const tolerance = getSourceSpanRoundingTolerance(rate);
-		if (rate > 1 && sourceSpan - storedSpan > tolerance) {
-			// Older speed-up edits could leave a short stored span even after a resize.
-			// Preserve the visible read and original trailing filter for these records.
+		// Allow timeline and source tick rounding, or one 48 kHz frame for split drift.
+		const tolerance = Math.max(rate / 2 + 1, TICKS_PER_SECOND / 48_000);
+		if (sourceSpan - storedSpan > tolerance) {
+			// A short stored span can come from valid edits or stale duration metadata.
+			// Keep the original trailing reads until the timeline can distinguish them.
 			return { sourceEnd: projectedEnd, boundSourceEnd: false };
 		}
 		if (storedSpan > 0 && storedSpan <= sourceSpan + tolerance) {
