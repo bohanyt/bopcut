@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import { pollFrames } from "./frames";
 import { loadIcon } from "@/stickers/providers/iconify";
 import { createEditLogger, type EditSnapshot } from "./edit-log";
-import { type AgentElement, type LoadedMedia, assetKey, existingAgentMedia, stageAgentAsset } from "./elements";
+import { type AgentElement, type LoadedMedia, assetKey, existingAgentMedia, loadAgentAsset } from "./elements";
 import { walkAgentElements } from "./compound-content";
 import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
@@ -565,6 +565,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	const rootBefore = agentRootScene()?.id;
 	if (!project || !active || !rootBefore) return;
 	const projectId = project.metadata.id;
+	const importSession = { projectId, signal: editor.project.getSessionSignal() };
 	const ops: DraftOp[] = Array.isArray(draft?.ops) ? structuredClone(draft.ops) : [];
 	const report = (body: Record<string, unknown>) =>
 		fetch("/api/agent/applied", {
@@ -682,7 +683,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 					const asset = e.asset;
 					const key = assetKey(asset);
 					const withWords = wordsByAsset.has(key) ? { ...asset, words: wordsByAsset.get(key) as SourceWord[] } : asset;
-					if (!byPath.has(key)) byPath.set(key, stageAgentAsset({ projectId, asset: withWords, onId: (id) => staged.push(id) }));
+					if (!byPath.has(key)) byPath.set(key, loadAgentAsset({ session: importSession, asset: withWords, stagedIds: staged }));
 					media.set(e, await byPath.get(key)!);
 				}
 			} catch (error) {

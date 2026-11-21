@@ -77,8 +77,9 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 		checkAgentCaption(e);
 	}
 	const projectId = await editor.project.createNewProject({ name: bundle.name });
-	// The bundle's canvas becomes the project's before anything is placed on it. Its frame rate is applied
-	// after the media load, because importing a video raises the project frame rate to the video's.
+	const session = editor.media.startImport();
+	if (!session || session.projectId !== projectId) throw new Error("The bundle's project is no longer open");
+	// Apply the bundle's canvas before anything is placed on it.
 	const settings = bundleProjectSettings(bundle);
 	if (settings?.canvasSize) await editor.project.updateSettings({ settings: { canvasSize: settings.canvasSize, canvasSizeMode: settings.canvasSizeMode }, pushHistory: false });
 	const media = new Map<string, LoadedMedia>();
@@ -86,15 +87,18 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 	let done = 0;
 	for (const a of bundle.assets) {
 		onStatus(`Loading asset ${++done}/${bundle.assets.length}: ${a.name}`);
-		media.set(a.key, await loadAgentAsset({ projectId, asset: a }));
+		media.set(a.key, await loadAgentAsset({ session, asset: a }));
 	}
 
 	for (const e of walkAgentElements([...(bundle.main ?? []), ...(bundle.audio ?? []), ...(bundle.overlay ?? []).flatMap((t) => t.elements ?? [])])) {
+		session.signal.throwIfAborted();
 		if (e.icon) e.icon.svg = await loadIcon(e.icon.name);
 	}
 
+	session.signal.throwIfAborted();
 	if (settings?.fps) await editor.project.updateSettings({ settings: { fps: settings.fps }, pushHistory: false });
 
+	session.signal.throwIfAborted();
 	onStatus("Building timeline…");
 	const main = editor.scenes.getActiveScene();
 	// Elements are sized for the canvas the project really has (an invalid bundle size keeps the default).

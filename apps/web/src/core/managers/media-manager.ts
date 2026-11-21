@@ -1,4 +1,5 @@
-import { revokeMediaUrl } from "@/media/url-release";
+import { releaseMediaAssetUrls } from "@/media/url-release";
+import { processMediaFile } from "@/media/processing";
 import type { EditorCore } from "@/core";
 import { toast } from "sonner";
 import type { MediaAsset, MediaLoadFailure, MediaType } from "@/media/types";
@@ -20,11 +21,14 @@ export function mediaIdsInScenes(scenes: readonly { tracks: { main: { elements: 
 
 /** Outcome of discarding staged imports: ids removed from storage, and those that could not be. */
 export type DiscardResult = { removed: string[]; failed: { id: string; error: string }[] };
+export type MediaImportSession = { projectId: string; signal: AbortSignal };
 
 type MediaRetry = {
 	original: MediaAsset | undefined;
 	read: Promise<{ asset: MediaAsset } | { failure: MediaLoadFailure }>;
 };
+
+type BinWrite = { asset: MediaAsset | null; done: Promise<void> };
 
 export class MediaManager {
 	private assets: MediaAsset[] = [];
@@ -41,10 +45,70 @@ export class MediaManager {
 	 * Imports saved to storage but not published to `assets` yet (agent drafts before they commit).
 	 * Nothing can use them, so discarding them can never break a clip or a history entry.
 	 */
-	private staged = new Map<string, { projectId: string; asset: MediaAsset }>();
+	private staged = new Map<string, { projectId: string; asset: MediaAsset | null }>();
+	private pendingPublications = new Map<string, { binChanged: boolean }>();
+	private binWrites = new Map<string, Map<string, BinWrite>>();
+	private loadingBinChanges: { projectId: string; changes: Map<string, MediaAsset | null> } | null = null;
 	private listeners = new Set<() => void>();
 
 	constructor(private editor: EditorCore) {}
+
+	startImport(): MediaImportSession | null {
+		const { project } = this.editor;
+		const projectId = project.getActiveOrNull()?.metadata.id;
+		return projectId && project.canImportMedia(projectId) ? { projectId, signal: project.getSessionSignal() } : null;
+	}
+
+	private isCurrentImport({ projectId, signal }: MediaImportSession): boolean {
+		return !signal.aborted && this.editor.project.getSessionSignal() === signal &&
+			this.editor.project.canImportMedia(projectId);
+	}
+
+	persistBinChange({ projectId, id, asset }: { projectId: string; id: string; asset: MediaAsset | null }): Promise<void> {
+		const publication = this.pendingPublications.get(id);
+		if (publication) publication.binChanged = true;
+		let writes = this.binWrites.get(projectId);
+		if (!writes) this.binWrites.set(projectId, writes = new Map());
+		const projectWrites = writes;
+		// Send immediately. The server coordinates disk access. A response taking longer than
+		// its disk operation must not hold up the next history action.
+		const done = (asset
+			? storageService.saveMediaAsset({ projectId, mediaAsset: asset })
+			: storageService.deleteMediaAsset({ projectId, id })
+		).finally(() => {
+			if (projectWrites.get(id)?.done === done) projectWrites.delete(id);
+			if (!projectWrites.size && this.binWrites.get(projectId) === projectWrites) this.binWrites.delete(projectId);
+		});
+		projectWrites.set(id, { asset, done });
+		if (this.loadingBinChanges?.projectId === projectId) this.loadingBinChanges.changes.set(id, asset);
+		return done;
+	}
+
+	async settleBinWrites(projectId: string): Promise<void> {
+		await Promise.allSettled([...(this.binWrites.get(projectId)?.values() ?? [])].map(({ done }) => done));
+	}
+
+	async importFile({ session, file, name, words, ratchetFps = true, stagedIds }: {
+		session: MediaImportSession;
+		file: File;
+		name?: string;
+		words?: MediaAsset["words"];
+		ratchetFps?: boolean;
+		stagedIds?: string[];
+	}): Promise<MediaAsset | null> {
+		if (!this.isCurrentImport(session)) return null;
+		const { projectId, signal } = session;
+		const processed = await processMediaFile({ file, signal });
+		if (!processed) return null;
+		if (!this.isCurrentImport(session)) {
+			releaseMediaAssetUrls(processed);
+			return null;
+		}
+		const asset = { ...processed, name: name ?? processed.name, words };
+		if (!stagedIds) return this.addMediaAsset({ projectId, asset, ratchetFps, session });
+		const saved = await this.stageMediaAsset({ projectId, asset, onId: (id) => stagedIds.push(id) });
+		return this.isCurrentImport(session) ? saved : null;
+	}
 
 	/**
 	 * `ratchetFps: false` keeps the project frame rate when the media has a higher one (agent
@@ -54,41 +118,81 @@ export class MediaManager {
 		projectId,
 		asset,
 		ratchetFps = true,
+		session = { projectId, signal: this.editor.project.getSessionSignal() },
 	}: {
 		projectId: string;
 		asset: Omit<MediaAsset, "id">;
 		ratchetFps?: boolean;
+		session?: MediaImportSession;
 	}): Promise<MediaAsset | null> {
-		const newAsset: MediaAsset = {
-			...asset,
-			id: generateUUID(),
+		if (!this.isCurrentImport(session) || session.projectId !== projectId) {
+			releaseMediaAssetUrls(asset);
+			return null;
+		}
+		const newAsset: MediaAsset = { ...asset, id: generateUUID() };
+		let released = false;
+		const release = () => {
+			if (released) return;
+			released = true;
+			releaseMediaAssetUrls(newAsset);
 		};
-
-		this.assets = [...this.assets, newAsset];
-		this.notify();
+		session.signal.addEventListener("abort", release, { once: true });
+		const pending = { binChanged: false };
+		this.pendingPublications.set(newAsset.id, pending);
 
 		try {
 			await storageService.saveMediaAsset({ projectId, mediaAsset: newAsset });
-			if (ratchetFps)
-				this.editor.project.ratchetFpsForImportedMedia({
-					importedAssets: [newAsset],
-				});
-			return newAsset;
-		} catch (error) {
-			console.error("Failed to save media asset:", error);
-			this.assets = this.assets.filter((asset) => asset.id !== newAsset.id);
-			this.notify();
-
-			if (storageService.isQuotaExceededError({ error })) {
-				toast.error("Not enough browser storage", {
-					description: error instanceof Error ? error.message : undefined,
-				});
-			} else {
-				toast.error("Failed to save media", { description: error instanceof Error ? error.message : undefined });
+			if (!this.isCurrentImport(session)) {
+				release();
+				if (session.signal.aborted) await this.reconcileLatePublication(projectId, newAsset, pending);
+				return null;
 			}
-
+		} catch (error) {
+			release();
+			// A failed response can arrive after another tab has seen the saved asset.
+			if (!this.isCurrentImport(session)) return null;
+			console.error("Failed to save media asset:", error);
+			toast.error(storageService.isQuotaExceededError({ error }) ? "Not enough browser storage" : "Failed to save media", {
+				description: error instanceof Error ? error.message : undefined,
+			});
+			return null;
+		} finally {
+			this.pendingPublications.delete(newAsset.id);
+			session.signal.removeEventListener("abort", release);
+		}
+		if (pending.binChanged) {
+			release();
 			return null;
 		}
+		const loaded = this.assets.find(({ id }) => id === newAsset.id);
+		if (loaded) release();
+		else this.assets = [...this.assets, newAsset];
+		const published = loaded ?? newAsset;
+		if (ratchetFps) this.editor.project.ratchetFpsForImportedMedia({ importedAssets: [published] });
+		if (!loaded) this.notify();
+		return published;
+	}
+
+	/** A write accepted before a switch can finish after its project reopens. */
+	private async reconcileLatePublication(projectId: string, asset: MediaAsset, pending: { binChanged: boolean }): Promise<void> {
+		const session = this.startImport();
+		if (session?.projectId !== projectId || pending.binChanged || this.assets.some(({ id }) => id === asset.id)) return;
+		const { id } = asset;
+		const stored = await storageService.hasStoredMediaAsset({
+			projectId, id, signal: AbortSignal.any([session.signal, AbortSignal.timeout(10_000)]),
+		}).catch(() => null);
+		if (!stored || !this.isCurrentImport(session) || pending.binChanged || this.assets.some((current) => current.id === id)) return;
+		this.assets = [...this.assets, {
+			...asset,
+			url: URL.createObjectURL(asset.file),
+			thumbnailUrl: asset.thumbnailUrl?.startsWith("blob:") ? undefined : asset.thumbnailUrl,
+		}];
+		if (this.missing.some(({ id }) => id === asset.id)) {
+			this.missing = this.missing.filter(({ id }) => id !== asset.id);
+			toast.dismiss(`missing-media-${projectId}`);
+			if (this.missing.length) this.reportMissing({ projectId });
+		}
+		this.notify();
 	}
 
 	removeMediaAsset({ projectId, id }: { projectId: string; id: string }): void {
@@ -102,6 +206,7 @@ export class MediaManager {
 		projectId: string;
 		ids: string[];
 	}): void {
+		if (!this.editor.project.canImportMedia(projectId)) return;
 		const uniqueIds = [...new Set(ids)];
 		if (uniqueIds.length === 0) {
 			return;
@@ -138,6 +243,11 @@ export class MediaManager {
 		this.loadedProjectId = null;
 		this.missing = [];
 		this.isLoading = true;
+		const bin = { projectId, changes: new Map<string, MediaAsset | null>() };
+		for (const [id, { asset }] of this.binWrites.get(projectId) ?? []) {
+			bin.changes.set(id, asset);
+		}
+		this.loadingBinChanges = bin;
 		this.notify();
 		const missing: MediaLoadFailure[] = [];
 
@@ -145,10 +255,13 @@ export class MediaManager {
 		const toastId = `load-media-${projectId}`;
 		let lastToast = 0;
 		try {
+			controller.signal.throwIfAborted();
+			const usedIds = mediaIdsInScenes(this.editor.scenes.getScenes());
 			const mediaAssets = await storageService.loadAllMediaAssets({
 				projectId,
 				signal: controller.signal,
-				usedIds: mediaIdsInScenes(this.editor.scenes.getScenes()),
+				usedIds,
+				excludeIds: new Set(bin.changes.keys()),
 				onProgress: ({ loaded, total }) => {
 					// At most ~4 updates a second: re-rendering the toast for every file slows the load itself.
 					const now = Date.now();
@@ -159,15 +272,21 @@ export class MediaManager {
 				onFailed: (failure) => missing.push(failure),
 			});
 			if (generation !== this.loadGeneration) return;
-			this.mergeAssets(mediaAssets);
-			this.missing = missing;
+			const live = new Map(this.assets.map((asset) => [asset.id, asset]));
+			const unchanged = mediaAssets.filter(({ id }) => !bin.changes.has(id)).map((asset) => live.get(asset.id) ?? asset);
+			for (const [id, asset] of bin.changes) {
+				if (asset && !live.has(id)) unchanged.push({ ...asset, url: URL.createObjectURL(asset.file) });
+			}
+			this.mergeAssets(unchanged);
+			this.missing = missing.filter(({ id }) => !bin.changes.has(id) && !live.has(id));
 			this.loadedProjectId = projectId;
-			if (missing.length) this.reportMissing({ projectId });
+			if (this.missing.length) this.reportMissing({ projectId });
 		} catch (error) {
 			if (generation === this.loadGeneration)
 				console.error("Failed to load media assets:", error);
 		} finally {
 			toast.dismiss(toastId);
+			if (this.loadingBinChanges === bin) this.loadingBinChanges = null;
 			if (generation === this.loadGeneration) {
 				this.isLoading = false;
 				this.loadController = null;
@@ -249,8 +368,11 @@ export class MediaManager {
 			const id = "asset" in result ? result.asset.id : result.failure.id;
 			if (current.get(id) !== retry.original) continue;
 			applied.add(id);
-			if ("asset" in result) restored.push(result.asset);
-			else failed.push(result.failure);
+			if ("asset" in result) {
+				restored.push(result.asset);
+			} else {
+				failed.push(result.failure);
+			}
 		}
 		if (applied.size === 0) return this.missing;
 		this.mergeAssets(restored);
@@ -303,6 +425,7 @@ export class MediaManager {
 			return staged;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
+			this.releaseStagedUrls(this.staged.get(staged.id));
 			try {
 				await storageService.deleteMediaAsset({ projectId, id: staged.id });
 				this.staged.delete(staged.id);
@@ -318,7 +441,8 @@ export class MediaManager {
 		const assets = ids.flatMap((id) => {
 			const entry = this.staged.get(id);
 			this.staged.delete(id);
-			return entry ? [entry.asset] : [];
+			if (!entry?.asset) return [];
+			return [entry.asset];
 		});
 		if (assets.length === 0) return;
 		const incoming = new Set(assets.map((asset) => asset.id));
@@ -346,7 +470,10 @@ export class MediaManager {
 	unpublishMediaAssets({ projectId, ids }: { projectId: string; ids: string[] }): void {
 		const back = new Set(ids);
 		if (back.size === 0) return;
-		for (const asset of this.assets) if (back.has(asset.id)) this.staged.set(asset.id, { projectId, asset });
+		for (const asset of this.assets) {
+			if (!back.has(asset.id)) continue;
+			this.staged.set(asset.id, { projectId, asset });
+		}
 		this.assets = this.assets.filter((asset) => !back.has(asset.id));
 		this.notify();
 	}
@@ -364,6 +491,7 @@ export class MediaManager {
 				else result.removed.push(id); // already cleaned up when its save failed
 				return;
 			}
+			this.releaseStagedUrls(entry);
 			try {
 				await storageService.deleteMediaAsset({ projectId: entry.projectId, id });
 				this.staged.delete(id);
@@ -375,17 +503,16 @@ export class MediaManager {
 		return result;
 	}
 
+	private releaseStagedUrls(entry: { asset: MediaAsset | null } | undefined): void {
+		if (!entry?.asset) return;
+		releaseMediaAssetUrls(entry.asset);
+		entry.asset = null;
+	}
+
 	async clearProjectMedia({ projectId }: { projectId: string }): Promise<void> {
 		waveformCache.clearAll();
 
-		this.assets.forEach((asset) => {
-			if (asset.url) {
-				revokeMediaUrl(asset.url);
-			}
-			if (asset.thumbnailUrl) {
-				revokeMediaUrl(asset.thumbnailUrl);
-			}
-		});
+		this.assets.forEach(releaseMediaAssetUrls);
 
 		const mediaIds = this.assets.map((asset) => asset.id);
 		this.assets = [];
@@ -406,19 +533,14 @@ export class MediaManager {
 		this.loadGeneration++;
 		this.loadController?.abort();
 		this.loadController = null;
+		this.loadingBinChanges = null;
 		this.loadedProjectId = null;
 		this.missing = [];
 		this.isLoading = false;
 		waveformCache.clearAll();
 
-		this.assets.forEach((asset) => {
-			if (asset.url) {
-				revokeMediaUrl(asset.url);
-			}
-			if (asset.thumbnailUrl) {
-				revokeMediaUrl(asset.thumbnailUrl);
-			}
-		});
+		this.assets.forEach(releaseMediaAssetUrls);
+		for (const entry of this.staged.values()) this.releaseStagedUrls(entry);
 
 		this.assets = [];
 		this.notify();

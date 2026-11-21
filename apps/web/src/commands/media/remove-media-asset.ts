@@ -1,4 +1,4 @@
-import { revokeMediaUrl } from "@/media/url-release";
+import { releaseMediaAssetUrls } from "@/media/url-release";
 import {
 	Command,
 	createElementSelectionResult,
@@ -7,7 +7,6 @@ import {
 import { EditorCore } from "@/core";
 import type { MediaAsset } from "@/media/types";
 import { buildWaveformSourceKey } from "@/media/waveform-summary";
-import { storageService } from "@/services/storage/service";
 import { waveformCache } from "@/services/waveform-cache/service";
 import { hasMediaId } from "@/timeline/element-utils";
 import type { SceneTracks, TScene, TimelineTrack } from "@/timeline";
@@ -20,7 +19,7 @@ function withoutMedia<T extends TimelineTrack>(track: T, mediaId: string): T {
 }
 
 export class RemoveMediaAssetCommand extends Command {
-	private savedAssets: MediaAsset[] | null = null;
+	private removedIndex = -1;
 	/** All scenes before removal: clips using the asset are removed everywhere, compound content included. */
 	private savedScenes: TScene[] | null = null;
 	private removedAsset: MediaAsset | null = null;
@@ -44,23 +43,16 @@ export class RemoveMediaAssetCommand extends Command {
 		const editor = EditorCore.getInstance();
 		const assets = editor.media.getAssets();
 
-		this.savedAssets = [...assets];
-		this.savedScenes = editor.scenes.getScenes();
-
-		this.removedAsset =
-			assets.find((media) => media.id === this.assetId) ?? null;
+		this.removedIndex = assets.findIndex((media) => media.id === this.assetId);
+		this.removedAsset = assets[this.removedIndex] ?? null;
+		this.savedScenes = null;
 
 		if (!this.removedAsset) {
 			console.error("Media asset not found:", this.assetId);
 			return;
 		}
 
-		if (this.removedAsset.url) {
-			revokeMediaUrl(this.removedAsset.url);
-		}
-		if (this.removedAsset.thumbnailUrl) {
-			revokeMediaUrl(this.removedAsset.thumbnailUrl);
-		}
+		releaseMediaAssetUrls(this.removedAsset);
 
 		waveformCache.clearSource({
 			sourceKey: buildWaveformSourceKey({
@@ -76,7 +68,8 @@ export class RemoveMediaAssetCommand extends Command {
 		// Remove the clips here rather than through another command, so this stays one history
 		// entry and its selection intent is returned below.
 		let removedClips = false;
-		const nextScenes = this.savedScenes.map((scene) => {
+		const previousScenes = editor.scenes.getScenes();
+		const nextScenes = previousScenes.map((scene) => {
 			const tracks: SceneTracks = {
 				overlay: scene.tracks.overlay.map((track) => withoutMedia(track, this.assetId)),
 				main: withoutMedia(scene.tracks.main, this.assetId),
@@ -91,12 +84,13 @@ export class RemoveMediaAssetCommand extends Command {
 			return { ...scene, tracks };
 		});
 		if (removedClips) {
+			this.savedScenes = previousScenes;
 			editor.scenes.setScenes({ scenes: nextScenes });
 			editor.timeline.updateTracks(editor.scenes.getActiveScene().tracks);
 		}
 
-		storageService
-			.deleteMediaAsset({ projectId: this.projectId, id: this.assetId })
+		editor.media
+			.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: null })
 			.catch((error) => {
 				console.error("Failed to delete media item:", error);
 			});
@@ -107,23 +101,20 @@ export class RemoveMediaAssetCommand extends Command {
 	undo(): void {
 		const editor = EditorCore.getInstance();
 
-		if (this.savedAssets && this.removedAsset) {
+		const assets = editor.media.getAssets();
+		if (this.removedAsset && !assets.some((asset) => asset.id === this.assetId)) {
 			const restoredAsset: MediaAsset = {
 				...this.removedAsset,
 				url: URL.createObjectURL(this.removedAsset.file),
+				thumbnailUrl: this.removedAsset.thumbnailUrl?.startsWith("blob:") ? undefined : this.removedAsset.thumbnailUrl,
 			};
 
-			editor.media.setAssets({
-				assets: this.savedAssets.map((a) =>
-					a.id === this.assetId ? restoredAsset : a,
-				),
-			});
+			const restoredBin = [...assets];
+			restoredBin.splice(this.removedIndex, 0, restoredAsset);
+			editor.media.setAssets({ assets: restoredBin });
 
-			storageService
-				.saveMediaAsset({
-					projectId: this.projectId,
-					mediaAsset: restoredAsset,
-				})
+			editor.media
+				.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: restoredAsset })
 				.catch((error) => {
 					console.error("Failed to restore media item on undo:", error);
 				});

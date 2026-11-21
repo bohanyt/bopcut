@@ -181,6 +181,12 @@ export class DiskAdapter {
 	mediaUrl(id: string, mediaId: string): string {
 		return `${projectUrl(id)}/media/${encodeURIComponent(mediaId)}`;
 	}
+	async hasStoredMediaAsset(id: string, mediaId: string, signal: AbortSignal): Promise<boolean> {
+		const response = await fetch(this.mediaUrl(id, mediaId), { method: "HEAD", cache: "no-store", signal });
+		if (response.status === 404) return false;
+		await checked(response);
+		return true;
+	}
 	async saveMedia(
 		id: string,
 		metadata: MediaAssetData,

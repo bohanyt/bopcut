@@ -9,7 +9,12 @@ mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompo
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 // Asset processing needs browser media APIs: an image is 400×200 whatever its bytes.
 mock.module("@/media/processing", () => ({
-	processMediaAssets: async ({ files }: { files: File[] }) => Array.from(files).map((file) => (file.name.endsWith(".mp4") ? { name: file.name, type: "video", file, width: 400, height: 200, duration: 10 } : { name: file.name, type: "image", file, width: 400, height: 200 })),
+	processMediaFile: async ({ file, signal }: { file: File; signal: AbortSignal }) => {
+		if (signal.aborted) return null;
+		return file.name.endsWith(".mp4")
+			? { name: file.name, type: "video", file, width: 400, height: 200, duration: 10, fps: 120 }
+			: { name: file.name, type: "image", file, width: 400, height: 200 };
+	},
 }));
 const { EditorCore } = await import("@/core");
 const { agentSnapshot, applyDraft, pollDraft, pollChanges } = await import("./bridge");
@@ -283,8 +288,8 @@ describe("drafts belong to the project session they were queued in", () => {
 		expect(backend.state.deleted).toEqual(backend.state.saved);
 		expect(b).toMatchObject({ projectId: "p", applied: false });
 		expect(b.error).toContain("another project");
-		// The waiting draft never imported anything.
-		expect(backend.state.saved.length).toBe(1);
+		// Neither the stale fetch nor the queued draft may start a new storage write.
+		expect(backend.state.saved).toEqual([]);
 	});
 
 	test("a draft for another projectId is refused", async () => {
@@ -787,5 +792,332 @@ describe("basedOn is checked before anything is imported", () => {
 		await applyDraft(draft([{ op: "words", mediaId: "m-old", words: [{ text: "hi", start: 0, end: 1 }] }, { op: "set", match: { agentId: "missing" }, start: 1 }], { atomic: true }));
 		expect(backend.state.results[0]).toMatchObject({ applied: false, rolledBack: false });
 		expect(backend.state.results[0].cleanup.failed).toEqual([{ id: "words:m-old", error: "EIO" }]);
+	});
+});
+
+
+describe("media import lifecycle", () => {
+	test("a stalled upload does not hold the next import in the same project", async () => {
+		const editor = setup();
+		const started = gate();
+		const finish = gate();
+		const save = spyOn(storageService, "saveMediaAsset").mockResolvedValue();
+		save.mockImplementationOnce(async () => {
+			started.open();
+			await finish.promise;
+		});
+		restore = () => save.mockRestore();
+		const session = editor.media.startImport()!;
+		const first = editor.media.importFile({ session, file: new File(["first"], "slow.png") });
+		await started.promise;
+		const second = editor.media.importFile({ session, file: new File(["second"], "quick.png") });
+		try {
+			expect(await Promise.race([second, Bun.sleep(100).then(() => null)])).toMatchObject({ name: "quick.png" });
+		} finally {
+			finish.open();
+			await Promise.all([first, second]);
+		}
+	});
+
+	test("undo and redo of a paste or library insertion include its new source", async () => {
+		const editor = setup();
+		const { AddMediaAssetCommand, BatchCommand, InsertElementCommand } = await import("@/commands");
+		const { buildElementFromMedia } = await import("@/timeline/element-utils");
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const source = await editor.media.importFile({
+			session: editor.media.startImport()!, file: new File(["new"], "pasted.png", { type: "image/png" }),
+		});
+		if (!source) throw new Error("Expected a saved import");
+		const add = new AddMediaAssetCommand({ projectId: "p", assetId: source.id });
+		const insert = new InsertElementCommand({
+			element: buildElementFromMedia({ mediaId: source.id, mediaType: source.type, name: source.name, startTime: T(3), duration: T(1) }),
+			placement: { mode: "explicit", trackId: "t-main" },
+		});
+		editor.command.execute({ command: new BatchCommand([add, insert]) });
+		const refersToSource = (element: TimelineElement) => "mediaId" in element && element.mediaId === source.id;
+		expect(elements(editor).some(refersToSource)).toBe(true);
+		editor.command.undo();
+		expect(elements(editor).some(refersToSource)).toBe(false);
+		expect(editor.media.getAssets().some(({ id }) => id === source.id)).toBe(false);
+		await editor.media.settleBinWrites("p");
+		expect(backend.state.deleted).toEqual([source.id]);
+		editor.command.redo();
+		expect(elements(editor).some(refersToSource)).toBe(true);
+		expect(editor.media.getAssets().some(({ id }) => id === source.id)).toBe(true);
+		await editor.media.settleBinWrites("p");
+		expect(backend.state.saved).toEqual([source.id, source.id]);
+	});
+
+	test.each(["pending", "accepted", "accepted then removed", "removed in another tab"])("reopening during an import (%s) loads media and reconciles the response once", async (status) => {
+		const editor = setup();
+		const project = editor.project.getActive();
+		const started = gate();
+		const finish = gate();
+		let onDisk: MediaAsset | undefined;
+		const save = spyOn(storageService, "saveMediaAsset").mockImplementation(async ({ mediaAsset }) => {
+			if (status !== "pending") onDisk = mediaAsset;
+			started.open();
+			await finish.promise;
+			if (status === "pending") onDisk = mediaAsset;
+		});
+		const remove = spyOn(storageService, "deleteMediaAsset").mockImplementation(async () => { onDisk = undefined; });
+		const present = spyOn(storageService, "hasStoredMediaAsset").mockImplementation(async () => !!onDisk);
+		const load = spyOn(storageService, "loadAllMediaAssets").mockImplementation(async () =>
+			onDisk ? [asset("m-old"), { ...onDisk, url: "/stored.mp4" }] : [asset("m-old")],
+		);
+		restore = () => { save.mockRestore(); remove.mockRestore(); present.mockRestore(); load.mockRestore(); };
+		const importing = editor.media.importFile({ session: editor.media.startImport()!, file: new File(["movie"], "movie.mp4", { type: "video/mp4" }) });
+		await started.promise;
+		if (status === "removed in another tab") onDisk = undefined;
+		editor.project.closeProject();
+		editor.project.setActiveProject({ project });
+		editor.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+		const reopening = editor.media.loadProjectMedia({ projectId: "p" });
+		try {
+			expect(await Promise.race([reopening.then(() => true), Bun.sleep(100).then(() => false)])).toBe(true);
+			const opened = editor.media.getAssets();
+			expect(opened.map(({ name }) => name)).toEqual(status === "pending" || status === "removed in another tab" ? ["m-old"] : ["m-old", "movie.mp4"]);
+			if (status === "accepted then removed") editor.media.removeMediaAsset({ projectId: "p", id: opened[1].id });
+			finish.open();
+			expect(await importing).toBeNull();
+			expect(editor.media.getAssets().map(({ name }) => name)).toEqual(status.includes("removed") ? ["m-old"] : ["m-old", "movie.mp4"]);
+			expect(editor.project.getActive().settings.fps).toEqual({ numerator: 30, denominator: 1 });
+		} finally {
+			finish.open();
+			await Promise.all([reopening, importing]);
+			await editor.media.settleBinWrites("p");
+		}
+	});
+
+	test("project deletion proceeds while a media response is pending", async () => {
+		const editor = setup();
+		const started = gate();
+		const finish = gate();
+		const save = spyOn(storageService, "saveMediaAsset").mockImplementation(async () => {
+			started.open();
+			await finish.promise;
+		});
+		const remove = spyOn(storageService, "deleteProject").mockResolvedValue();
+		restore = () => { save.mockRestore(); remove.mockRestore(); };
+		const importing = editor.media.importFile({ session: editor.media.startImport()!, file: new File(["x"], "slow.png") });
+		await started.promise;
+		const deleting = editor.project.deleteProjects({ ids: ["p"] });
+		try {
+			expect(await Promise.race([deleting.then(() => true), Bun.sleep(100).then(() => false)])).toBe(true);
+			expect(remove).toHaveBeenCalledWith({ id: "p" });
+		} finally {
+			finish.open();
+			await Promise.all([deleting, importing]);
+		}
+		expect(editor.project.getActiveOrNull()).toBeNull();
+	});
+
+	test("reopening loads unaffected media while a bin deletion is pending", async () => {
+		const editor = setup();
+		const removal = gate();
+		const started = gate();
+		const project = editor.project.getActive();
+		const remove = spyOn(storageService, "deleteMediaAsset").mockImplementation(async () => {
+			started.open();
+			await removal.promise;
+		});
+		const load = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([asset("m-old"), asset("m-new")]);
+		restore = () => { remove.mockRestore(); load.mockRestore(); };
+		editor.media.removeMediaAsset({ projectId: "p", id: "m-new" });
+		await started.promise;
+		editor.project.closeProject();
+		editor.project.setActiveProject({ project });
+		editor.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+		const reopening = editor.media.loadProjectMedia({ projectId: "p" });
+		try {
+			expect(await Promise.race([reopening.then(() => true), Bun.sleep(100).then(() => false)])).toBe(true);
+			expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["m-old"]);
+		} finally {
+			removal.open();
+			await reopening;
+		}
+	});
+
+	test("an upload published on disk survives a switch while its response is pending", async () => {
+		const editor = setup();
+		const before = editor.project.getActive();
+		const session = editor.media.startImport()!;
+		const started = gate();
+		const finish = gate();
+		const stored = new Map<string, MediaAsset>();
+		const destinations: string[] = [];
+		const save = spyOn(storageService, "saveMediaAsset").mockImplementation(async ({ projectId, mediaAsset }) => {
+			destinations.push(projectId);
+			stored.set(mediaAsset.id, mediaAsset);
+			started.open();
+			await finish.promise;
+		});
+		const remove = spyOn(storageService, "deleteMediaAsset").mockImplementation(async ({ id }) => {
+			stored.delete(id);
+		});
+		const load = spyOn(storageService, "loadAllMediaAssets").mockImplementation(async () => [...stored.values()]);
+		restore = () => { save.mockRestore(); remove.mockRestore(); load.mockRestore(); };
+
+		const pending = editor.media.importFile({ session, file: new File(["first"], "fast.mp4") });
+		await started.promise;
+		editor.project.closeProject();
+		editor.project.setActiveProject({ project: { ...before, metadata: { ...before.metadata, id: "q" } } });
+		finish.open();
+		expect(await pending).toBeNull();
+		expect(await editor.media.importFile({ session, file: new File(["second"], "next.mp4") })).toBeNull();
+		expect(destinations).toEqual(["p"]);
+		expect(editor.media.getAssets()).toEqual([]);
+		expect(editor.project.getActive().settings.fps).toEqual({ numerator: 30, denominator: 1 });
+
+		editor.project.closeProject();
+		editor.project.setActiveProject({ project: before });
+		editor.scenes.setScenes({ scenes: before.scenes, activeSceneId: "main" });
+		await editor.media.loadProjectMedia({ projectId: "p" });
+		expect(editor.media.getAssets().map(({ name }) => name)).toEqual(["fast.mp4"]);
+		expect(remove).not.toHaveBeenCalled();
+		expect(editor.project.getActive().settings.fps).toEqual({ numerator: 30, denominator: 1 });
+	});
+
+	test("rejected and discarded imports release their source and thumbnail URLs", async () => {
+		const editor = setup();
+		const save = spyOn(storageService, "saveMediaAsset").mockRejectedValue(new Error("write failed"));
+		const remove = spyOn(storageService, "deleteMediaAsset").mockResolvedValue();
+		const revoked = spyOn(URL, "revokeObjectURL");
+		restore = () => { save.mockRestore(); remove.mockRestore(); revoked.mockRestore(); };
+		const file = new File(["new"], "new.png");
+		const attempt = () => ({
+			name: file.name,
+			type: "image" as const,
+			file,
+			url: URL.createObjectURL(file),
+			thumbnailUrl: URL.createObjectURL(file),
+		});
+		const normal = attempt();
+		expect(await editor.media.addMediaAsset({ projectId: "p", asset: normal })).toBeNull();
+		const failedStage = attempt();
+		await expect(editor.media.stageMediaAsset({ projectId: "p", asset: failedStage })).rejects.toThrow("write failed");
+		save.mockResolvedValue();
+		const staged = await editor.media.stageMediaAsset({ projectId: "p", asset: attempt() });
+		remove.mockRejectedValueOnce(new Error("cleanup failed"));
+		expect((await editor.media.discardStagedMediaAssets({ ids: [staged.id] })).failed).toHaveLength(1);
+		for (const asset of [normal, failedStage, staged]) {
+			expect(revoked).toHaveBeenCalledWith(asset.url);
+			expect(revoked).toHaveBeenCalledWith(asset.thumbnailUrl);
+		}
+		expect(await editor.media.discardStagedMediaAssets({ ids: [staged.id] })).toEqual({ removed: [staged.id], failed: [] });
+	});
+
+	test("undo restores the removed item alongside a later import", async () => {
+		const editor = setup();
+		const backend = fakeBackend();
+		const deleting = gate();
+		const deletes = spyOn(storageService, "deleteMediaAsset").mockImplementation(async () => deleting.promise);
+		restore = () => { deletes.mockRestore(); backend.restore(); };
+		const session = editor.media.startImport()!;
+		editor.media.removeMediaAsset({ projectId: "p", id: "m-old" });
+		deleting.open();
+		const later = await editor.media.importFile({ session, file: new File(["later"], "later.png") });
+		expect(later).not.toBeNull();
+		editor.command.undo();
+		expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["m-old", "m-new", later!.id]);
+		await editor.media.settleBinWrites("p");
+		expect(backend.state.saved).toEqual([later!.id, "m-old"]);
+
+		editor.command.redo();
+		editor.command.undo();
+		await editor.media.settleBinWrites("p");
+		expect(backend.state.saved).toEqual([later!.id, "m-old", "m-old"]);
+	});
+
+	test("undo persists the source for a fresh tab while the delete response is stalled", async () => {
+		const editor = setup();
+		const project = editor.project.getActive();
+		const removal = gate();
+		const started = gate();
+		const restored = gate();
+		const stored = new Map([["m-old", asset("m-old")], ["m-new", asset("m-new")]]);
+		const remove = spyOn(storageService, "deleteMediaAsset").mockImplementation(async () => {
+			stored.delete("m-new");
+			started.open();
+			await removal.promise;
+		});
+		const save = spyOn(storageService, "saveMediaAsset").mockImplementation(async ({ mediaAsset }) => {
+			stored.set(mediaAsset.id, { ...mediaAsset, url: "/stored.png" });
+			restored.open();
+		});
+		const load = spyOn(storageService, "loadAllMediaAssets").mockImplementation(async () => [...stored.values()]);
+		restore = () => { remove.mockRestore(); save.mockRestore(); load.mockRestore(); };
+		editor.media.removeMediaAsset({ projectId: "p", id: "m-new" });
+		await started.promise;
+		editor.command.undo();
+		try {
+			expect(await Promise.race([restored.promise.then(() => true), Bun.sleep(100).then(() => false)])).toBe(true);
+			const fresh = setup();
+			fresh.media.clearAllAssets();
+			fresh.project.setActiveProject({ project });
+			fresh.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+			await fresh.media.loadProjectMedia({ projectId: "p" });
+			expect(fresh.media.getAssets().map(({ id }) => id)).toEqual(["m-old", "m-new"]);
+		} finally {
+			removal.open();
+			await editor.media.settleBinWrites("p");
+		}
+		expect(save).toHaveBeenCalledTimes(1);
+	});
+
+	test("an older delete response cannot forget a newer pending bin removal", async () => {
+		const editor = setup();
+		const project = editor.project.getActive();
+		const firstResponse = gate();
+		const secondResponse = gate();
+		const remove = spyOn(storageService, "deleteMediaAsset").mockImplementation(({ id }) =>
+			id === "m-old" ? firstResponse.promise : secondResponse.promise,
+		);
+		const save = spyOn(storageService, "saveMediaAsset").mockResolvedValue();
+		const load = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([asset("m-old"), asset("m-new")]);
+		restore = () => { remove.mockRestore(); save.mockRestore(); load.mockRestore(); };
+		editor.media.removeMediaAsset({ projectId: "p", id: "m-old" });
+		editor.command.undo();
+		await editor.media.settleBinWrites("p");
+		editor.media.removeMediaAsset({ projectId: "p", id: "m-new" });
+		firstResponse.open();
+		await Bun.sleep(0);
+		editor.project.closeProject();
+		editor.project.setActiveProject({ project });
+		editor.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+		try {
+			await editor.media.loadProjectMedia({ projectId: "p" });
+			expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["m-old"]);
+		} finally {
+			secondResponse.open();
+			await editor.media.settleBinWrites("p");
+		}
+	});
+
+	test.each([false, true])("a late upload does not duplicate or revive a loaded entry (removed: %s)", async (removed) => {
+		const editor = setup();
+		const file = new File(["png"], "upload.png", { type: "image/png" });
+		const url = URL.createObjectURL(file);
+		const started = Promise.withResolvers<MediaAsset>();
+		const finish = gate();
+		const save = spyOn(storageService, "saveMediaAsset").mockImplementation(async ({ mediaAsset }) => {
+			started.resolve(mediaAsset);
+			await finish.promise;
+		});
+		const remove = spyOn(storageService, "deleteMediaAsset").mockResolvedValue();
+		const load = spyOn(storageService, "loadAllMediaAssets");
+		const revoke = spyOn(URL, "revokeObjectURL");
+		restore = () => { save.mockRestore(); remove.mockRestore(); load.mockRestore(); revoke.mockRestore(); };
+		const pending = editor.media.addMediaAsset({ projectId: "p", asset: { name: file.name, type: "image", file, url } });
+		const written = await started.promise;
+		const loaded = { ...written, url: "/stored.png" };
+		load.mockResolvedValue([loaded]);
+		await editor.media.loadProjectMedia({ projectId: "p" });
+		if (removed) editor.media.removeMediaAsset({ projectId: "p", id: written.id });
+		finish.open();
+		expect(await pending).toBe(removed ? null : loaded);
+		expect(editor.media.getAssets().filter(({ id }) => id === written.id)).toEqual(removed ? [] : [loaded]);
+		expect(revoke).toHaveBeenCalledWith(url);
 	});
 });

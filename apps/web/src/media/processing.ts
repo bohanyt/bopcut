@@ -6,6 +6,7 @@ import type { MediaAsset } from "@/media/types";
 import { readVideoFile } from "./mediabunny";
 import type { VideoFileData } from "./mediabunny";
 import { renderThumbnailDataUrl } from "./thumbnail";
+import { releaseMediaAssetUrls } from "./url-release";
 
 export interface ProcessedMediaAsset extends Omit<MediaAsset, "id"> {}
 
@@ -40,15 +41,27 @@ const getStorageLimitDescription = ({
 };
 
 async function generateImageThumbnail({
-	imageFile,
+	url,
+	signal,
 }: {
-	imageFile: File;
+	url: string;
+	signal: AbortSignal;
 }): Promise<{ thumbnailUrl: string; width: number; height: number }> {
+	signal.throwIfAborted();
 	return new Promise((resolve, reject) => {
 		const image = new window.Image();
-		const objectUrl = URL.createObjectURL(imageFile);
-
-		image.addEventListener("load", () => {
+		const cleanup = () => {
+			signal.removeEventListener("abort", abort);
+			image.onload = null;
+			image.onerror = null;
+			image.removeAttribute("src");
+		};
+		const abort = () => {
+			cleanup();
+			reject(signal.reason);
+		};
+		signal.addEventListener("abort", abort, { once: true });
+		image.onload = () => {
 			try {
 				const thumbnailUrl = renderThumbnailDataUrl({
 					width: image.naturalWidth,
@@ -67,168 +80,155 @@ async function generateImageThumbnail({
 					error instanceof Error ? error : new Error("Could not render image"),
 				);
 			} finally {
-				URL.revokeObjectURL(objectUrl);
-				image.remove();
+				cleanup();
 			}
-		});
+		};
 
-		image.addEventListener("error", () => {
-			URL.revokeObjectURL(objectUrl);
-			image.remove();
+		image.onerror = () => {
+			cleanup();
 			reject(new Error("Could not load image"));
-		});
+		};
 
-		image.src = objectUrl;
+		image.src = url;
 	});
 }
 
-export async function processMediaAssets({
-	files,
-	onProgress,
+export async function processMediaFile({
+	file: original,
+	signal,
 }: {
-	files: FileList | File[];
-	onProgress?: ({ progress }: { progress: number }) => void;
-}): Promise<ProcessedMediaAsset[]> {
-	const fileArray = Array.from(files);
-	const processedAssets: ProcessedMediaAsset[] = [];
-
-	const total = fileArray.length;
-	let completed = 0;
-
-	for (const original of fileArray) {
-		// Convert GIF to MP4 on the local server to preserve animation.
-		let file = original;
-		if (original.type === "image/gif") {
-			try {
-				const res = await fetch("/api/agent/gif", { method: "POST", body: original });
-				if (!res.ok) throw new Error(await res.text());
-				file = new File([await res.blob()], original.name.replace(/\.gif$/i, "") + ".mp4", { type: "video/mp4" });
-			} catch (error) {
-				toast.error(`GIF ${original.name} could not be converted to video; using a still image`);
-			}
-		}
-		const fileType = getMediaTypeFromFile({ file });
-
-		if (!fileType) {
-			toast.error(`Unsupported file type: ${file.name}`);
-			continue;
-		}
-
-		const storageCheck = await storageService.canStoreFile({
-			size: file.size,
-		});
-
-		if (!storageCheck.canStore) {
-			toast.error(`Not enough browser storage for ${file.name}`, {
-				description: getStorageLimitDescription({
-					fileSize: file.size,
-					availableBytes: storageCheck.availableBytes,
-				}),
-			});
-			continue;
-		}
-
-		const url = URL.createObjectURL(file);
-		let thumbnailUrl: string | undefined;
-		let duration: number | undefined;
-		let width: number | undefined;
-		let height: number | undefined;
-		let fps: number | undefined;
-		let hasAudio: boolean | undefined;
-
+	file: File;
+	signal: AbortSignal;
+}): Promise<ProcessedMediaAsset | null> {
+	if (signal.aborted) return null;
+	// Convert GIF to MP4 on the local server to preserve animation.
+	let file = original;
+	if (original.type === "image/gif") {
 		try {
-			if (isModelFile(file)) {
-				width = 512;
-				height = 512;
-				thumbnailUrl = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" fill="#30343b"/><path d="M64 22 100 42v42L64 106 28 84V42Z M28 42l36 21 36-21M64 63v43" fill="none" stroke="#b7c5d5" stroke-width="4"/></svg>')}`;
-			} else if (fileType === "image") {
-				const result = await generateImageThumbnail({ imageFile: file });
-				thumbnailUrl = result.thumbnailUrl;
-				width = result.width;
-				height = result.height;
-			} else if (fileType === "video") {
-				try {
-					const videoData = await readVideoFile({ file });
-					duration = videoData.duration;
-					width = videoData.width;
-					height = videoData.height;
-					fps = Number.isFinite(videoData.fps)
-						? Math.round(videoData.fps)
-						: undefined;
-					hasAudio = videoData.hasAudio;
-					thumbnailUrl = videoData.thumbnailUrl ?? undefined;
-
-					if (!videoData.canDecode) {
-						toast.error(`Can't preview ${file.name}`, {
-							description: getUnsupportedVideoDescription({
-								codec: videoData.codec,
-							}),
-						});
-					}
-				} catch (error) {
-					const message =
-						error instanceof Error
-							? error.message
-							: "Could not process video";
-
-					toast.error(`Couldn't process ${file.name}`, {
-						description: message,
-					});
-				}
-			} else if (fileType === "audio") {
-				duration = await getMediaDuration({ file });
-			}
-
-			processedAssets.push({
-				name: file.name,
-				type: fileType,
-				file,
-				url,
-				thumbnailUrl,
-				duration,
-				width,
-				height,
-				fps,
-				hasAudio,
-			});
-
-			await new Promise((resolve) => setTimeout(resolve, 0));
-
-			completed += 1;
-			if (onProgress) {
-				const percent = Math.round((completed / total) * 100);
-				onProgress({ progress: percent });
-			}
+			const res = await fetch("/api/agent/gif", { method: "POST", body: original, signal });
+			if (!res.ok) throw new Error(await res.text());
+			file = new File([await res.blob()], original.name.replace(/\.gif$/i, "") + ".mp4", { type: "video/mp4" });
 		} catch (error) {
-			console.error("Error processing file:", file.name, error);
-			toast.error(`Failed to process ${file.name}`);
-			URL.revokeObjectURL(url);
+			if (signal.aborted) return null;
+			toast.error(`GIF ${original.name} could not be converted to video; using a still image`);
 		}
 	}
+	const fileType = getMediaTypeFromFile({ file });
 
-	return processedAssets;
+	if (!fileType) {
+		toast.error(`Unsupported file type: ${file.name}`);
+		return null;
+	}
+
+	const storageCheck = await storageService.canStoreFile({
+		size: file.size,
+	});
+	if (signal.aborted) return null;
+
+	if (!storageCheck.canStore) {
+		toast.error(`Not enough browser storage for ${file.name}`, {
+			description: getStorageLimitDescription({
+				fileSize: file.size,
+				availableBytes: storageCheck.availableBytes,
+			}),
+		});
+		return null;
+	}
+
+	let thumbnailUrl: string | undefined;
+	let url: string | undefined;
+	let duration: number | undefined;
+	let width: number | undefined;
+	let height: number | undefined;
+	let fps: number | undefined;
+	let hasAudio: boolean | undefined;
+
+	try {
+		if (isModelFile(file)) {
+			width = 512;
+			height = 512;
+			thumbnailUrl = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" fill="#30343b"/><path d="M64 22 100 42v42L64 106 28 84V42Z M28 42l36 21 36-21M64 63v43" fill="none" stroke="#b7c5d5" stroke-width="4"/></svg>')}`;
+		} else if (fileType === "image") {
+			url = URL.createObjectURL(file);
+			const result = await generateImageThumbnail({ url, signal });
+			thumbnailUrl = result.thumbnailUrl;
+			width = result.width;
+			height = result.height;
+		} else if (fileType === "video") {
+			try {
+				const videoData = await readVideoFile({ file, signal });
+				duration = videoData.duration;
+				width = videoData.width;
+				height = videoData.height;
+				fps = Number.isFinite(videoData.fps)
+					? Math.round(videoData.fps)
+					: undefined;
+				hasAudio = videoData.hasAudio;
+				thumbnailUrl = videoData.thumbnailUrl ?? undefined;
+
+				if (!videoData.canDecode) {
+					toast.error(`Can't preview ${file.name}`, {
+						description: getUnsupportedVideoDescription({
+							codec: videoData.codec,
+						}),
+					});
+				}
+			} catch (error) {
+				const message =
+					error instanceof Error
+						? error.message
+						: "Could not process video";
+
+				if (!signal.aborted) toast.error(`Couldn't process ${file.name}`, { description: message });
+			}
+		} else if (fileType === "audio") {
+			url = URL.createObjectURL(file);
+			duration = await getAudioDuration({ url, signal });
+		}
+
+		if (signal.aborted) {
+			releaseMediaAssetUrls({ url, thumbnailUrl });
+			return null;
+		}
+		url ??= URL.createObjectURL(file);
+		return { name: file.name, type: fileType, file, url, thumbnailUrl, duration, width, height, fps, hasAudio };
+	} catch (error) {
+		releaseMediaAssetUrls({ url, thumbnailUrl });
+		if (!signal.aborted) {
+			console.error("Error processing file:", file.name, error);
+			toast.error(`Failed to process ${file.name}`);
+		}
+		return null;
+	}
 }
 
-const getMediaDuration = ({ file }: { file: File }): Promise<number> => {
+const getAudioDuration = ({ url, signal }: { url: string; signal: AbortSignal }): Promise<number> => {
+	signal.throwIfAborted();
 	return new Promise((resolve, reject) => {
-		const element = document.createElement(
-			file.type.startsWith("video/") ? "video" : "audio",
-		) as HTMLVideoElement;
-		const objectUrl = URL.createObjectURL(file);
-
-		element.addEventListener("loadedmetadata", () => {
+		const element = document.createElement("audio");
+		const cleanup = () => {
+			signal.removeEventListener("abort", abort);
+			element.onloadedmetadata = null;
+			element.onerror = null;
+			element.removeAttribute("src");
+			element.load();
+		};
+		const abort = () => {
+			cleanup();
+			reject(signal.reason);
+		};
+		signal.addEventListener("abort", abort, { once: true });
+		element.onloadedmetadata = () => {
 			resolve(element.duration);
-			URL.revokeObjectURL(objectUrl);
-			element.remove();
-		});
+			cleanup();
+		};
 
-		element.addEventListener("error", () => {
+		element.onerror = () => {
 			reject(new Error("Could not load media"));
-			URL.revokeObjectURL(objectUrl);
-			element.remove();
-		});
+			cleanup();
+		};
 
-		element.src = objectUrl;
+		element.src = url;
 		element.load();
 	});
 };

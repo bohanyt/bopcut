@@ -403,6 +403,10 @@ class StorageService {
 		}
 	}
 
+	hasStoredMediaAsset({ projectId, id, signal }: { projectId: string; id: string; signal: AbortSignal }): Promise<boolean> {
+		return this.projectsAdapter.hasStoredMediaAsset(projectId, id, signal);
+	}
+
 	async loadMediaAsset({
 		projectId,
 		id,
@@ -476,6 +480,7 @@ class StorageService {
 		onFailed,
 		signal,
 		usedIds,
+		excludeIds,
 	}: {
 		projectId: string;
 		concurrency?: number;
@@ -484,10 +489,11 @@ class StorageService {
 		signal?: AbortSignal;
 		/** Media the project's timeline uses: staged media are loaded only when listed here. */
 		usedIds?: ReadonlySet<string>;
+		excludeIds?: ReadonlySet<string>;
 	}): Promise<MediaAsset[]> {
 		// Staged media belong to a draft still loading (maybe in another tab): skipped unless the
 		// saved timeline already uses them (the draft committed but its promotion did not finish).
-		const list = [...(await this.fetchManifest({ projectId })).values()].filter((metadata) => !metadata.staged || usedIds?.has(metadata.id));
+		const list = [...(await this.fetchManifest({ projectId })).values()].filter((metadata) => !excludeIds?.has(metadata.id) && (!metadata.staged || usedIds?.has(metadata.id)));
 		const items: (MediaAsset | null)[] = new Array(list.length).fill(null);
 		let next = 0;
 		let loaded = 0;

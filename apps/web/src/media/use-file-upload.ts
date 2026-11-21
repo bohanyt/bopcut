@@ -2,11 +2,12 @@ import { useState, useRef } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { toast } from "sonner";
 import { fetchWebMedia, hasWebMedia, mediaLinksOf } from "@/media/web-drop";
+import type { MediaImportSession } from "@/core/managers/media-manager";
 
 interface UseFileUploadOptions {
 	accept?: string;
 	multiple?: boolean;
-	onFilesSelected?: (files: File[]) => void;
+	onFilesSelected?: (files: File[], session: MediaImportSession | null) => void;
 }
 
 export function useFileUpload({
@@ -18,6 +19,7 @@ export function useFileUpload({
 	const [isDragOver, setIsDragOver] = useState(false);
 	const dragCounterRef = useRef(0);
 	const inputRef = useRef<HTMLInputElement>(null);
+	const pickerSession = useRef<MediaImportSession | null>(null);
 
 	function containsFiles(dataTransfer: DataTransfer): boolean {
 		return (
@@ -32,13 +34,16 @@ export function useFileUpload({
 
 		inputRef.current.accept = accept || "*";
 		inputRef.current.multiple = multiple || false;
+		pickerSession.current = editor.media.startImport();
 		inputRef.current.click();
 	}
 
 	function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
 		const files = Array.from(event.target.files ?? []);
+		const session = pickerSession.current ?? editor.media.startImport();
+		pickerSession.current = null;
 		if (files.length > 0 && onFilesSelected) {
-			onFilesSelected(files);
+			onFilesSelected(files, session);
 		}
 
 		if (event.target) {
@@ -78,13 +83,16 @@ export function useFileUpload({
 		dragCounterRef.current = 0;
 
 		if (onFilesSelected && containsFiles(e.dataTransfer)) {
+			const session = editor.media.startImport();
+			if (!session) return;
 			const files = Array.from(e.dataTransfer.files);
 			if (files.length === 0) {
 				// An image (or video/sound) dragged from another web page: read the links now, fetch after.
 				const links = mediaLinksOf(e.dataTransfer);
 				if (links.length === 0) return;
-				void fetchWebMedia(links).then(({ file, error }) => {
-					if (file) onFilesSelected([file]);
+				void fetchWebMedia(links, session.signal).then(({ file, error }) => {
+					if (session.signal.aborted) return;
+					if (file) onFilesSelected([file], session);
 					else toast.error(`Could not add the dropped media${error ? `: ${error}` : ""}`);
 				});
 				return;
@@ -92,9 +100,9 @@ export function useFileUpload({
 			const shouldUseMultiple = multiple ?? false;
 
 			if (shouldUseMultiple) {
-				onFilesSelected(files);
+				onFilesSelected(files, session);
 			} else if (files.length > 0) {
-				onFilesSelected([files[0]]);
+				onFilesSelected([files[0]], session);
 			}
 		}
 	}
