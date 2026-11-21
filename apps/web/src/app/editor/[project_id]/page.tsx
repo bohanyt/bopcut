@@ -16,7 +16,7 @@ import { Onboarding } from "@/components/editor/onboarding";
 import { MigrationDialog } from "@/project/components/migration-dialog";
 import { usePanelStore } from "@/editor/panel-store";
 import { usePasteMedia } from "@/media/use-paste-media";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { installAgentBridge } from "@/agent/bridge";
 import { useEditor } from "@/editor/use-editor";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
@@ -79,7 +79,8 @@ function DegradedRendererBanner() {
 
 function EditorLayout() {
 	usePasteMedia();
-	const { panels, setPanel } = usePanelStore();
+	const editor = useEditor();
+	const isPreviewRight = usePanelStore((state) => state.layout === "preview-right");
 	const activeScene = useEditor((editor) =>
 		editor.scenes.getActiveSceneOrNull(),
 	);
@@ -89,6 +90,13 @@ function EditorLayout() {
 	const setOverlayVisibility = usePreviewStore(
 		(state) => state.setOverlayVisibility,
 	);
+
+	useLayoutEffect(() => {
+		// Restore the saved position on editor entry, even if the timeline remounts later.
+		const { playheadTime } = editor.project.getTimelineViewState();
+		if (playheadTime !== undefined) editor.playback.seek({ time: playheadTime });
+	}, [editor]);
+
 	const showBookmarkNotes = isPreviewOverlayVisible({
 		overlay: bookmarkNotesPreviewOverlay,
 		overlays,
@@ -124,43 +132,78 @@ function EditorLayout() {
 		[overlaySource.definitions, overlays],
 	);
 
+	const preview = (
+		<PreviewPanel
+			fitRenderToViewport={isPreviewRight}
+			overlayControls={overlayControls}
+			overlayInstances={overlaySource.instances}
+			onOverlayVisibilityChange={setOverlayVisibility}
+		/>
+	);
+
+	if (!isPreviewRight) return <EditorWorkArea centerPreview={preview} />;
+
+	const { rightPanels, setRightPanel } = usePanelStore.getState();
+	return (
+		<ResizablePanelGroup
+			direction="horizontal"
+			className="gap-[0.19rem] px-3 pb-3"
+			onLayout={([, previewWidth]) =>
+				setRightPanel({ panel: "preview", size: previewWidth })
+			}
+		>
+			<ResizablePanel defaultSize={100 - rightPanels.preview} minSize={55}>
+				<EditorWorkArea />
+			</ResizablePanel>
+			<ResizableHandle
+				aria-label="Resize preview column"
+				className="bg-border hover:bg-accent-foreground/40"
+			/>
+			<ResizablePanel defaultSize={rightPanels.preview} minSize={24} maxSize={45}>
+				{preview}
+			</ResizablePanel>
+		</ResizablePanelGroup>
+	);
+}
+
+function EditorWorkArea({ centerPreview }: { centerPreview?: ReactNode }) {
+	const { panels, rightPanels, setPanels, setRightPanel } = usePanelStore.getState();
+	const isClassic = centerPreview != null;
+	const timelineSize = isClassic ? panels.timeline : rightPanels.timeline;
+
 	return (
 		<ResizablePanelGroup
 			direction="vertical"
 			className="size-full gap-[0.18rem]"
-			onLayout={(sizes) => {
-				setPanel({
-					panel: "mainContent",
-					size: sizes[0] ?? panels.mainContent,
-				});
-				setPanel({
-					panel: "timeline",
-					size: sizes[1] ?? panels.timeline,
-				});
+			onLayout={([mainContent, timeline]) => {
+				if (isClassic) {
+					setPanels({ mainContent, timeline });
+				} else {
+					setRightPanel({ panel: "timeline", size: timeline });
+				}
 			}}
 		>
 			<ResizablePanel
-				defaultSize={panels.mainContent}
+				defaultSize={isClassic ? panels.mainContent : 100 - timelineSize}
 				minSize={30}
-				maxSize={85}
+				maxSize={isClassic ? 85 : 75}
 				className="min-h-0"
 			>
 				<ResizablePanelGroup
 					direction="horizontal"
-					className="size-full gap-[0.19rem] px-3"
-					onLayout={(sizes) => {
-						setPanel({ panel: "tools", size: sizes[0] ?? panels.tools });
-						setPanel({ panel: "preview", size: sizes[1] ?? panels.preview });
-						setPanel({
-							panel: "properties",
-							size: sizes[2] ?? panels.properties,
-						});
+					className={isClassic ? "gap-[0.19rem] px-3" : "gap-[0.19rem]"}
+					onLayout={([tools, second, third]) => {
+						if (isClassic) {
+							setPanels({ tools, preview: second, properties: third });
+						} else {
+							setRightPanel({ panel: "tools", size: tools });
+						}
 					}}
 				>
 					<ResizablePanel
-						defaultSize={panels.tools}
-						minSize={15}
-						maxSize={40}
+						defaultSize={isClassic ? panels.tools : rightPanels.tools}
+						minSize={isClassic ? 15 : 30}
+						maxSize={isClassic ? 40 : 70}
 						className="min-w-0"
 					>
 						<AssetsPanel />
@@ -168,24 +211,23 @@ function EditorLayout() {
 
 					<ResizableHandle withHandle />
 
-					<ResizablePanel
-						defaultSize={panels.preview}
-						minSize={30}
-						className="min-h-0 min-w-0 flex-1"
-					>
-						<PreviewPanel
-							overlayControls={overlayControls}
-							overlayInstances={overlaySource.instances}
-							onOverlayVisibilityChange={setOverlayVisibility}
-						/>
-					</ResizablePanel>
+					{isClassic && (
+						<>
+							<ResizablePanel
+								defaultSize={panels.preview}
+								minSize={30}
+								className="min-h-0 min-w-0 flex-1"
+							>
+								{centerPreview}
+							</ResizablePanel>
+							<ResizableHandle withHandle />
+						</>
+					)}
 
-					<ResizableHandle withHandle />
-
 					<ResizablePanel
-						defaultSize={panels.properties}
-						minSize={15}
-						maxSize={40}
+						defaultSize={isClassic ? panels.properties : 100 - rightPanels.tools}
+						minSize={isClassic ? 15 : 30}
+						maxSize={isClassic ? 40 : 70}
 						className="min-w-0"
 					>
 						<PropertiesPanel />
@@ -196,10 +238,10 @@ function EditorLayout() {
 			<ResizableHandle withHandle />
 
 			<ResizablePanel
-				defaultSize={panels.timeline}
-				minSize={15}
+				defaultSize={timelineSize}
+				minSize={isClassic ? 15 : 25}
 				maxSize={70}
-				className="min-h-0 px-3 pb-3"
+				className={isClassic ? "min-h-0 px-3 pb-3" : "min-h-0"}
 			>
 				<Timeline />
 			</ResizablePanel>

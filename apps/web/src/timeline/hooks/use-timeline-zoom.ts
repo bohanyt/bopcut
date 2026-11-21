@@ -13,14 +13,12 @@ import {
 	ZoomController,
 	type ZoomConfig,
 } from "@/timeline/controllers/zoom-controller";
-import type { MediaTime } from "@/wasm";
 
 interface UseTimelineZoomProps {
 	containerRef: RefObject<HTMLDivElement | null>;
 	minZoom?: number;
 	initialZoom?: number;
 	initialScrollLeft?: number;
-	initialPlayheadTime?: MediaTime;
 	tracksScrollRef: RefObject<HTMLDivElement | null>;
 	rulerScrollRef: RefObject<HTMLDivElement | null>;
 }
@@ -37,7 +35,6 @@ export function useTimelineZoom({
 	minZoom = TIMELINE_ZOOM_MIN,
 	initialZoom,
 	initialScrollLeft,
-	initialPlayheadTime,
 	tracksScrollRef,
 	rulerScrollRef,
 }: UseTimelineZoomProps): UseTimelineZoomReturn {
@@ -48,7 +45,6 @@ export function useTimelineZoom({
 		getTracksScrollEl: () => tracksScrollRef.current,
 		getRulerScrollEl: () => rulerScrollRef.current,
 		getCurrentPlayheadTime: () => editor.playback.getCurrentTime(),
-		seek: (time) => editor.playback.seek({ time }),
 		setTimelineViewState: ({ zoomLevel, scrollLeft, playheadTime }) =>
 			editor.project.setTimelineViewState({
 				viewState: {
@@ -79,9 +75,6 @@ export function useTimelineZoom({
 		return controller.restoreInitialScrollIfNeeded(initialScrollLeft);
 	}, [controller, initialScrollLeft]);
 
-	useLayoutEffect(() => {
-		controller.restoreInitialPlayheadIfNeeded(initialPlayheadTime);
-	}, [controller, initialPlayheadTime]);
 
 	useEffect(() => controller.bindPreventBrowserZoom(), [controller]);
 

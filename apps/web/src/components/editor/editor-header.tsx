@@ -21,6 +21,7 @@ import { DEFAULT_LOGO_URL } from "@/site/brand";
 import { SOCIAL_LINKS } from "@/site/social";
 import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
+import { usePanelStore } from "@/editor/panel-store";
 import { CommandIcon, Logout05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ShortcutsDialog } from "@/actions/components/shortcuts-dialog";
@@ -35,11 +36,32 @@ export function EditorHeader() {
 				<EditableProjectName />
 			</div>
 			<nav className="flex items-center gap-2">
+				<PreviewLayoutToggle />
 				<FeedbackPopover />
 				<ExportButton />
 				<ThemeToggle />
 			</nav>
 		</header>
+	);
+}
+
+function PreviewLayoutToggle() {
+	const layout = usePanelStore((state) => state.layout);
+	const setLayout = usePanelStore((state) => state.setLayout);
+	const isExportRunning = useEditor((editor) => editor.renderer.isExportRunning());
+	const isPreviewRight = layout === "preview-right";
+
+	return (
+		<Button
+			variant={isPreviewRight ? "secondary" : "outline"}
+			size="sm"
+			aria-pressed={isPreviewRight}
+			disabled={isExportRunning}
+			title={isExportRunning ? "Change layout after export finishes" : undefined}
+			onClick={() => setLayout(isPreviewRight ? "classic" : "preview-right")}
+		>
+			Preview on right
+		</Button>
 	);
 }
 

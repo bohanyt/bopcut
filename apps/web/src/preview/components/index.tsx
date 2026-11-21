@@ -58,10 +58,12 @@ function normalizeWheelDelta({
 }
 
 export function PreviewPanel({
+	fitRenderToViewport = false,
 	overlayControls,
 	overlayInstances,
 	onOverlayVisibilityChange,
 }: {
+	fitRenderToViewport?: boolean;
 	overlayControls: PreviewOverlayControl[];
 	overlayInstances: PreviewOverlayInstance[];
 	onOverlayVisibilityChange: (params: {
@@ -84,6 +86,7 @@ export function PreviewPanel({
 		>
 			<PreviewCanvas
 				container={container}
+				fitRenderToViewport={fitRenderToViewport}
 				onToggleFullscreen={toggleFullscreen}
 				overlayControls={overlayControls}
 				overlayInstances={overlayInstances}
@@ -127,12 +130,14 @@ function RenderTreeController() {
 
 function PreviewCanvas({
 	container,
+	fitRenderToViewport,
 	onToggleFullscreen,
 	overlayControls,
 	overlayInstances,
 	onOverlayVisibilityChange,
 }: {
 	container: HTMLElement | null;
+	fitRenderToViewport: boolean;
 	onToggleFullscreen: () => void;
 	overlayControls: PreviewOverlayControl[];
 	overlayInstances: PreviewOverlayInstance[];
@@ -163,15 +168,30 @@ function PreviewCanvas({
 	const { canPan, panByScreenDelta, scaleZoom } = viewport;
 
 	const quality = usePreviewStore((state) => state.quality);
+	const qualityScale = previewQualityScale(quality);
+	const renderScale =
+		fitRenderToViewport && viewportSize.width > 0 && viewportSize.height > 0
+			? Math.min(qualityScale, (viewport.sceneWidth * window.devicePixelRatio) / nativeWidth)
+			: qualityScale;
+	const [settledScale, setSettledScale] = useState(renderScale);
+
+	// Fit the displayed frame during the drag and resize the render target after it settles.
+	useEffect(() => {
+		if (!fitRenderToViewport || settledScale === renderScale) return;
+		const timeout = window.setTimeout(() => setSettledScale(renderScale), 120);
+		return () => window.clearTimeout(timeout);
+	}, [fitRenderToViewport, renderScale, settledScale]);
+
+	const outputScale = fitRenderToViewport ? Math.min(qualityScale, settledScale) : qualityScale;
 	const sessionSignal = editor.project.getSessionSignal();
 	const renderer = useMemo(() => {
 		return new CanvasRenderer({
 			width: nativeWidth,
 			height: nativeHeight,
 			fps: activeProject.settings.fps,
-			renderScale: previewQualityScale(quality),
+			renderScale: outputScale,
 		});
-	}, [nativeWidth, nativeHeight, activeProject.settings.fps, quality]);
+	}, [nativeWidth, nativeHeight, activeProject.settings.fps, outputScale]);
 
 	// Each renderer owns its output so snapshots and exports cannot resize the preview.
 	useEffect(() => {
@@ -187,13 +207,10 @@ function PreviewCanvas({
 		outputCanvas.style.display = "block";
 		outputCanvas.style.width = "100%";
 		outputCanvas.style.height = "100%";
-		mount.appendChild(outputCanvas);
+		if (!mount.firstChild) mount.appendChild(outputCanvas);
 		return () => {
 			renderSignalRef.current = null;
 			controller.abort();
-			if (outputCanvas.parentElement === mount) {
-				mount.removeChild(outputCanvas);
-			}
 		};
 	}, [renderer, sessionSignal]);
 
@@ -228,6 +245,14 @@ function PreviewCanvas({
 		lastSceneRef.current = renderTree;
 		lastFrameRef.current = frame;
 		task
+			.then(() => {
+				// Keep the previous frame visible while the new render target is waiting.
+				const mount = canvasMountRef.current;
+				const outputCanvas = renderer.getOutputCanvas();
+				if (!signal.aborted && mount && outputCanvas.parentElement !== mount) {
+					mount.replaceChildren(outputCanvas);
+				}
+			})
 			.catch((error) => {
 				if (!signal.aborted) console.error("Preview render failed:", error);
 			})
@@ -366,7 +391,10 @@ function PreviewCanvas({
 						/>
 					</ContextMenu>
 				</div>
-				<PreviewToolbar onToggleFullscreen={onToggleFullscreen} />
+				<PreviewToolbar
+					compact={fitRenderToViewport}
+					onToggleFullscreen={onToggleFullscreen}
+				/>
 			</div>
 		</PreviewViewportProvider>
 	);
