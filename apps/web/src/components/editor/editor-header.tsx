@@ -48,6 +48,7 @@ export function EditorHeader() {
 function PreviewLayoutToggle() {
 	const layout = usePanelStore((state) => state.layout);
 	const setLayout = usePanelStore((state) => state.setLayout);
+	const isExportRunning = useEditor((editor) => editor.renderer.isExportRunning());
 	const isPreviewRight = layout === "preview-right";
 
 	return (
@@ -55,6 +56,8 @@ function PreviewLayoutToggle() {
 			variant={isPreviewRight ? "secondary" : "outline"}
 			size="sm"
 			aria-pressed={isPreviewRight}
+			disabled={isExportRunning}
+			title={isExportRunning ? "Change layout after export finishes" : undefined}
 			onClick={() => setLayout(isPreviewRight ? "classic" : "preview-right")}
 		>
 			Preview on right
