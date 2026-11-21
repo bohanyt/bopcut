@@ -1,4 +1,5 @@
 import { EditorCore } from "@/core";
+import { generateUUID } from "@/utils/id";
 import { Command, type CommandResult } from "@/commands/base-command";
 import { insertPointOnFreeformSegment } from "@/masks/freeform/definition";
 import type { ElementBounds } from "@/preview/element-bounds";
@@ -11,17 +12,20 @@ function insertPointIntoFreeformPathMask({
 	segmentIndex,
 	canvasPoint,
 	bounds,
+	pointId,
 }: {
 	mask: FreeformPathMask;
 	segmentIndex: number;
 	canvasPoint: { x: number; y: number };
 	bounds: ElementBounds;
+	pointId: string;
 }): { mask: FreeformPathMask; insertedPointId: string | null } {
 	const result = insertPointOnFreeformSegment({
 		params: mask.params,
 		segmentIndex,
 		canvasPoint,
 		bounds,
+		pointId,
 	});
 	if (!result) {
 		return {
@@ -45,12 +49,14 @@ function insertPointIntoElementMask({
 	segmentIndex,
 	canvasPoint,
 	bounds,
+	pointId,
 }: {
 	element: MaskableElement;
 	maskId: string;
 	segmentIndex: number;
 	canvasPoint: { x: number; y: number };
 	bounds: ElementBounds;
+	pointId: string;
 }): {
 	element: MaskableElement;
 	didInsertPoint: boolean;
@@ -70,6 +76,7 @@ function insertPointIntoElementMask({
 			segmentIndex,
 			canvasPoint,
 			bounds,
+			pointId,
 		});
 		if (result.insertedPointId) {
 			insertedPointId = result.insertedPointId;
@@ -87,6 +94,7 @@ function insertPointIntoElementMask({
 
 export class InsertFreeformPathMaskPointCommand extends Command {
 	private savedState: SceneTracks | null = null;
+	private readonly pointId = generateUUID();
 	private readonly trackId: string;
 	private readonly elementId: string;
 	private readonly maskId: string;
@@ -137,6 +145,7 @@ export class InsertFreeformPathMaskPointCommand extends Command {
 					segmentIndex: this.segmentIndex,
 					canvasPoint: this.canvasPoint,
 					bounds: this.bounds,
+					pointId: this.pointId,
 				});
 				didInsertPoint ||= result.didInsertPoint;
 				insertedPointId ??= result.insertedPointId;

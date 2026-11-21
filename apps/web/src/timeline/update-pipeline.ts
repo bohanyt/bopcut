@@ -14,6 +14,7 @@ type ElementUpdateField = keyof TimelineElement | string;
 export interface ElementUpdateContext {
 	tracks: SceneTracks;
 	trackId: string;
+	boundaryIdPrefix?: string;
 }
 
 interface ElementUpdateRuleResult {
@@ -85,12 +86,13 @@ const deriveRules: ElementUpdateRule[] = [
 const enforceRules: ElementUpdateRule[] = [
 	{
 		triggers: ["duration"],
-		apply: ({ element }) => ({
+		apply: ({ element, context }) => ({
 			element: {
 				...element,
 				animations: clampAnimationsToDuration({
 					animations: element.animations,
 					duration: element.duration,
+					boundaryIdPrefix: context.boundaryIdPrefix,
 				}),
 			},
 		}),

@@ -6,9 +6,11 @@ import {
 	updateElementInSceneTracks,
 } from "@/timeline";
 import { applyElementUpdate } from "@/timeline/update-pipeline";
+import { generateUUID } from "@/utils/id";
 
 export class UpdateElementsCommand extends Command {
 	private savedState: SceneTracks | null = null;
+	private readonly boundaryIdPrefix = generateUUID();
 	private readonly updates: Array<{
 		trackId: string;
 		elementId: string;
@@ -33,7 +35,7 @@ export class UpdateElementsCommand extends Command {
 		this.savedState = editor.scenes.getActiveScene().tracks;
 		let updatedTracks = this.savedState;
 
-		for (const updateEntry of this.updates) {
+		for (const [index, updateEntry] of this.updates.entries()) {
 			const currentTrack = findTrackInSceneTracks({
 				tracks: updatedTracks,
 				trackId: updateEntry.trackId,
@@ -51,6 +53,7 @@ export class UpdateElementsCommand extends Command {
 				context: {
 					tracks: updatedTracks,
 					trackId: updateEntry.trackId,
+					boundaryIdPrefix: `${this.boundaryIdPrefix}:${index}`,
 				},
 			});
 

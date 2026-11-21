@@ -9,6 +9,7 @@ import type {
 	AnimationInterpolation,
 } from "@/animation/types";
 import type { ParamValue } from "@/params";
+import { generateUUID } from "@/utils/id";
 import {
 	type MediaTime,
 	maxMediaTime,
@@ -24,7 +25,7 @@ export class UpsertKeyframeCommand extends Command {
 	private readonly time: MediaTime;
 	private readonly value: ParamValue;
 	private readonly interpolation: AnimationInterpolation | undefined;
-	private readonly keyframeId: string | undefined;
+	private readonly keyframeId: string;
 
 	constructor({
 		trackId,
@@ -50,7 +51,7 @@ export class UpsertKeyframeCommand extends Command {
 		this.time = time;
 		this.value = value;
 		this.interpolation = interpolation;
-		this.keyframeId = keyframeId;
+		this.keyframeId = keyframeId ?? generateUUID();
 	}
 
 	execute(): CommandResult | undefined {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { TScene, TextElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
+import { buildEffectParamPath, getKeyframeAtTime } from "@/animation";
 import { allElements, allTracks, fixture, getHost, refs, t, video } from "./compound-fixtures";
 
 // Another test file replaces opencut-wasm with a partial mock and Bun keeps that module shape,
@@ -14,9 +15,10 @@ mock.module("@/services/renderer/gpu-renderer", () => ({
 }));
 const { EditorCore } = await import("@/core");
 const { BatchCommand } = await import("@/commands");
+const { PasteKeyframesCommand } = await import("@/commands/timeline/clipboard");
 const { RemoveMediaAssetCommand } = await import("@/commands/media");
 const { applyDraft } = await import("@/agent/bridge");
-const { CreateCompoundCommand, DeleteElementsCommand, InsertElementCommand } = await import(
+const { CreateCompoundCommand, DeleteElementsCommand, InsertElementCommand, SplitElementsCommand } = await import(
 	"@/commands/timeline"
 );
 
@@ -61,6 +63,271 @@ function elementsIn(editor: ReturnType<typeof setup>, sceneId: string) {
 
 afterEach(() => {
 	EditorCore.reset();
+});
+
+function setupSplitHistory() {
+	const scenes = fixture();
+	const host = getHost(scenes);
+	host.tracks.main.elements = [video("a", 0, 2), video("b", 2, 2)];
+	host.tracks.audio = [];
+	const editor = setup(scenes);
+	const tracks = () => editor.scenes.getActiveScene().tracks;
+	const main = () => tracks().main.elements;
+	const first = { trackId: "t-main", elementId: "a" };
+	const second = { trackId: "t-main", elementId: "b" };
+	const keyAt = (propertyPath: string, time: number, index = 0) =>
+		getKeyframeAtTime({
+			animations: main()[index].animations,
+			propertyPath,
+			time: t(time),
+		});
+	return { editor, tracks, main, first, second, keyAt };
+}
+
+describe("split and ripple replay", () => {
+	for (const retainSide of ["both", "right"] as const) {
+		test(`redo restores the same right segment after a ${retainSide} split`, () => {
+			const { editor, main, first } = setupSplitHistory();
+			const right = editor.timeline.splitElements({ elements: [first], splitTime: t(1), retainSide });
+			editor.timeline.deleteElements({ elements: right });
+			const remaining = main().map((clip) => clip.id);
+
+			editor.command.undo();
+			editor.command.undo();
+			editor.command.redo();
+			expect(main().some((clip) => clip.id === right[0].elementId)).toBe(true);
+			expect(editor.selection.getSelectedElements()).toEqual(right);
+			editor.command.redo();
+			expect(main().map((clip) => clip.id)).toEqual(remaining);
+		});
+	}
+
+	for (const retainSide of ["both", "left", "right"] as const) {
+		test(`a ${retainSide} split at either boundary leaves tracks and history alone`, () => {
+			const { editor, tracks, first, second } = setupSplitHistory();
+			editor.timeline.deleteElements({ elements: [second] });
+			editor.command.undo();
+			const before = tracks();
+			let reactorRuns = 0;
+			editor.command.registerReactor(() => reactorRuns++);
+
+			for (const boundary of [0, 2]) {
+				expect(editor.timeline.splitElements({
+					elements: [first], splitTime: t(boundary), retainSide,
+				})).toEqual([]);
+				expect(tracks()).toBe(before);
+				expect(editor.command.canUndo()).toBe(false);
+				expect(editor.command.canRedo()).toBe(true);
+			}
+			expect(reactorRuns).toBe(0);
+		});
+	}
+
+	test("a batch with only boundary splits leaves redo available", () => {
+		const { editor, tracks, first, second } = setupSplitHistory();
+		editor.timeline.deleteElements({ elements: [second] });
+		editor.command.undo();
+		const before = tracks();
+		editor.command.execute({ command: new BatchCommand([
+			new SplitElementsCommand({ elements: [first], splitTime: t(0) }),
+			new BatchCommand([new SplitElementsCommand({ elements: [first], splitTime: t(2) })]),
+		]) });
+		expect(tracks()).toBe(before);
+		expect(editor.command.canRedo()).toBe(true);
+	});
+
+	test("a split can change one selected clip while leaving a clip at its boundary alone", () => {
+		const { editor, main, tracks, first } = setupSplitHistory();
+		const untouched = tracks().overlay.find((track) => track.id === "t-gfx");
+		const right = editor.timeline.splitElements({
+			elements: [first, { trackId: "t-gfx", elementId: "box" }],
+			splitTime: t(1),
+		});
+		expect(right).toHaveLength(1);
+		expect(tracks().overlay.find((track) => track.id === "t-gfx")).toBe(untouched);
+		expect(main()[0].duration).toBe(t(1));
+	});
+
+	for (const nested of [false, true]) {
+		for (const ripple of [false, true]) {
+			test(`redo uses ripple=${ripple} for a ${nested ? "nested" : "standalone"} delete`, () => {
+				const { editor, main, first } = setupSplitHistory();
+				editor.command.isRippleEnabled = ripple;
+				const deletion = new DeleteElementsCommand({ elements: [first] });
+				editor.command.execute({ command: nested ? new BatchCommand([new BatchCommand([deletion])]) : deletion });
+				expect(main()[0].startTime).toBe(t(ripple ? 0 : 2));
+				editor.command.undo();
+				editor.command.isRippleEnabled = !ripple;
+				editor.command.redo();
+				expect(main()[0].startTime).toBe(t(ripple ? 0 : 2));
+				expect(editor.command.isRippleEnabled).toBe(!ripple);
+			});
+		}
+	}
+
+	test("redo of a committed preview does not ripple", () => {
+		const { editor, main, first } = setupSplitHistory();
+		editor.command.isRippleEnabled = true;
+		editor.timeline.previewElements({ updates: [{ ...first, updates: { duration: t(1) } }] });
+		editor.timeline.commitPreview();
+		expect(main()[1].startTime).toBe(t(2));
+		editor.command.undo();
+		editor.command.redo();
+		expect(main()[0].duration).toBe(t(1));
+		expect(main()[1].startTime).toBe(t(2));
+	});
+});
+
+describe("generated ids in history", () => {
+	test("redo of separation keeps the audio clip, track and volume key ids", () => {
+		const { editor, tracks, first } = setupSplitHistory();
+		editor.media.setAssets({ assets: [
+			{ id: "media-a", name: "a", type: "video", file: new File([], "a.mp4") },
+		] });
+		editor.timeline.upsertKeyframes({
+			keyframes: [{ ...first, propertyPath: "volume", time: t(1), value: -6 }],
+		});
+		editor.timeline.toggleSourceAudioSeparation(first);
+		const audio = tracks().audio[0];
+		expect(audio?.elements).toHaveLength(1);
+		editor.command.undo();
+		expect(tracks().audio).toHaveLength(0);
+		editor.command.redo();
+		expect(tracks().audio[0]).toEqual(audio);
+	});
+
+	test("redo of effect creation keeps the effect id for later parameter edits", () => {
+		const { editor, main, first } = setupSplitHistory();
+		const effectId = editor.timeline.addClipEffect({ ...first, effectType: "blur" });
+		editor.timeline.updateClipEffectParams({
+			...first, effectId, params: { intensity: 30 },
+		});
+		editor.command.undo();
+		editor.command.undo();
+		editor.command.redo();
+		editor.command.redo();
+		const clip = main()[0];
+		expect(clip.type === "video" && clip.effects?.[0]).toMatchObject({
+			id: effectId,
+			params: { intensity: 30 },
+		});
+	});
+
+	test("redo of an effect parameter keyframe preserves its id", () => {
+		const { editor, first, keyAt } = setupSplitHistory();
+		const effectId = editor.timeline.addClipEffect({ ...first, effectType: "blur" });
+		editor.timeline.upsertEffectParamKeyframe({
+			...first, effectId, paramKey: "intensity", time: t(1), value: 30,
+		});
+		const propertyPath = buildEffectParamPath({ effectId, paramKey: "intensity" });
+		const key = keyAt(propertyPath, 1);
+		expect(key).not.toBeNull();
+		editor.command.undo();
+		editor.command.redo();
+		expect(keyAt(propertyPath, 1)).toEqual(key);
+	});
+
+	test("redo of a new clip keyframe preserves its id", () => {
+		const { editor, first, keyAt } = setupSplitHistory();
+		const propertyPath = "opacity";
+		editor.timeline.upsertKeyframes({
+			keyframes: [{ ...first, propertyPath, time: t(1), value: 0.3 }],
+		});
+		const key = keyAt(propertyPath, 1);
+		expect(key).not.toBeNull();
+		editor.command.undo();
+		editor.command.redo();
+		expect(keyAt(propertyPath, 1)).toEqual(key);
+	});
+
+	test("redo of pasting keyframes preserves ids when overwriting or inserting keys", () => {
+		const { editor, first, keyAt } = setupSplitHistory();
+		const propertyPath = "opacity";
+		editor.timeline.upsertKeyframes({
+			keyframes: [{ ...first, propertyPath, time: t(0), value: 0.3 }],
+		});
+		const original = keyAt(propertyPath, 0);
+		editor.command.execute({ command: new PasteKeyframesCommand({
+			...first,
+			time: t(0),
+			clipboardItems: [0, 1].map((offset) => ({
+				propertyPath, timeOffset: t(offset), value: 0.5, interpolation: "linear", curvePatches: [],
+			})),
+		}) });
+		const pasted = [keyAt(propertyPath, 0), keyAt(propertyPath, 1)];
+		expect(pasted[0]?.id).toBe(original?.id);
+		expect(pasted[1]).not.toBeNull();
+		editor.command.undo();
+		editor.command.redo();
+		expect([keyAt(propertyPath, 0), keyAt(propertyPath, 1)]).toEqual(pasted);
+	});
+
+	test("redo preserves new keyframe ids in both the source and the split boundary", () => {
+		const { editor, first, keyAt } = setupSplitHistory();
+		const propertyPath = "opacity";
+		editor.timeline.upsertKeyframes({
+			keyframes: [0, 2].map((time) => ({ ...first, propertyPath, time: t(time), value: time / 2 })),
+		});
+		const right = editor.timeline.splitElements({ elements: [first], splitTime: t(1) })[0];
+		const leftKeys = [keyAt(propertyPath, 0), keyAt(propertyPath, 1)];
+		const rightKeys = [keyAt(propertyPath, 0, 1), keyAt(propertyPath, 1, 1)];
+		const boundaryId = rightKeys[0]?.id;
+		if (!boundaryId) throw new Error("Expected a right boundary keyframe");
+		editor.timeline.retimeKeyframe({ ...right, propertyPath, keyframeId: boundaryId, time: t(0.5) });
+		expect(keyAt(propertyPath, 0.5, 1)?.id).toBe(boundaryId);
+
+		editor.command.undo();
+		editor.command.undo();
+		editor.command.undo();
+		editor.command.redo();
+		editor.command.redo();
+		expect([keyAt(propertyPath, 0), keyAt(propertyPath, 1)]).toEqual(leftKeys);
+		expect([keyAt(propertyPath, 0, 1), keyAt(propertyPath, 1, 1)]).toEqual(rightKeys);
+		editor.command.redo();
+		expect(keyAt(propertyPath, 0.5, 1)?.id).toBe(boundaryId);
+	});
+
+	test("redo of a duration edit keeps the key synthesized at the new end", () => {
+		const { editor, first, keyAt } = setupSplitHistory();
+		const propertyPath = "opacity";
+		editor.timeline.upsertKeyframes({
+			keyframes: [0, 2].map((time) => ({ ...first, propertyPath, time: t(time), value: time / 2 })),
+		});
+		editor.timeline.updateElements({ updates: [{ ...first, patch: { duration: t(1) } }] });
+		const boundary = keyAt(propertyPath, 1);
+		expect(boundary).not.toBeNull();
+		editor.command.undo();
+		editor.command.redo();
+		expect(keyAt(propertyPath, 1)).toEqual(boundary);
+	});
+
+	test("redo selects the same inserted mask point", () => {
+		const scenes = fixture();
+		const clip = video("masked", 0, 2);
+		clip.masks = [{
+			id: "mask",
+			type: "freeform",
+			params: {
+				feather: 0, inverted: false, strokeColor: "#ffffff", strokeWidth: 0, strokeAlign: "center",
+				centerX: 0, centerY: 0, rotation: 0, scale: 1, closed: false,
+				path: [-0.25, 0.25].map((x, index) => ({
+					id: String(index), x, y: 0, inX: 0, inY: 0, outX: 0, outY: 0,
+				})),
+			},
+		}];
+		getHost(scenes).tracks.main.elements = [clip];
+		const editor = setup(scenes);
+		editor.timeline.insertFreeformPathMaskPoint({
+			trackId: "t-main", elementId: "masked", maskId: "mask", segmentIndex: 0,
+			canvasPoint: { x: 100, y: 100 },
+			bounds: { cx: 100, cy: 100, width: 200, height: 200, rotation: 0 },
+		});
+		const selected = editor.selection.getSnapshot().selectedMaskPoints;
+		expect(selected?.pointIds).toHaveLength(1);
+		editor.command.undo();
+		editor.command.redo();
+		expect(editor.selection.getSnapshot().selectedMaskPoints).toEqual(selected);
+	});
 });
 
 describe("scene-bound history", () => {

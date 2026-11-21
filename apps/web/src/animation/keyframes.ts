@@ -836,9 +836,11 @@ function cloneChannelWithKeyIds({
 export function cloneAnimations({
 	animations,
 	shouldRegenerateKeyframeIds = false,
+	keyframeIdPrefix,
 }: {
 	animations: ElementAnimations | undefined;
 	shouldRegenerateKeyframeIds?: boolean;
+	keyframeIdPrefix?: string;
 }): ElementAnimations | undefined {
 	if (!animations) {
 		return undefined;
@@ -855,7 +857,9 @@ export function cloneAnimations({
 			for (const key of primaryChannel.keys) {
 				keyIdMap.set(
 					key.id,
-					shouldRegenerateKeyframeIds ? generateUUID() : key.id,
+					keyframeIdPrefix
+						? `${keyframeIdPrefix}:${key.id}`
+						: shouldRegenerateKeyframeIds ? generateUUID() : key.id,
 				);
 			}
 		}
@@ -887,9 +891,11 @@ export function cloneAnimations({
 export function clampAnimationsToDuration({
 	animations,
 	duration,
+	boundaryIdPrefix,
 }: {
 	animations: ElementAnimations | undefined;
 	duration: MediaTime;
+	boundaryIdPrefix?: string;
 }): ElementAnimations | undefined {
 	if (!animations || duration <= 0) {
 		return undefined;
@@ -899,6 +905,7 @@ export function clampAnimationsToDuration({
 		animations,
 		splitTime: duration,
 		shouldIncludeSplitBoundary: true,
+		boundaryIdPrefix,
 	}).leftAnimations;
 }
 
@@ -1177,23 +1184,32 @@ function splitScalarChannelAtTime({
 		};
 	}
 
+	// Outside the keyed range, only the empty side needs a boundary key.
+	const boundaryValue = getChannelValueAtTime({
+		channel: normalizedChannel,
+		time: splitTime,
+		fallbackValue: normalizedChannel.keys[0].value,
+	});
+	if (leftKeys.length === 0) {
+		leftKeys = [createScalarKey({
+			id: leftBoundaryId,
+			time: splitTime,
+			value: boundaryValue,
+			interpolation: "linear",
+		})];
+	}
+	if (rightKeys.length === 0) {
+		rightKeys = [createScalarKey({
+			id: rightBoundaryId,
+			time: ZERO_MEDIA_TIME,
+			value: boundaryValue,
+			interpolation: "linear",
+		})];
+	}
+
 	return {
-		leftChannel: leftKeys.length
-			? normalizeChannel({
-					channel: {
-						keys: leftKeys,
-						extrapolation: normalizedChannel.extrapolation,
-					},
-				})
-			: undefined,
-		rightChannel: rightKeys.length
-			? normalizeChannel({
-					channel: {
-						keys: rightKeys,
-						extrapolation: normalizedChannel.extrapolation,
-					},
-				})
-			: undefined,
+		leftChannel: { keys: leftKeys, extrapolation: normalizedChannel.extrapolation },
+		rightChannel: { keys: rightKeys, extrapolation: normalizedChannel.extrapolation },
 	};
 }
 
@@ -1232,10 +1248,13 @@ export function splitAnimationsAtTime({
 	animations,
 	splitTime,
 	shouldIncludeSplitBoundary = true,
+	boundaryIdPrefix,
 }: {
 	animations: ElementAnimations | undefined;
 	splitTime: MediaTime;
 	shouldIncludeSplitBoundary?: boolean;
+	/** Lets a replayed edit regenerate the same boundary key ids. */
+	boundaryIdPrefix?: string;
 }): {
 	leftAnimations: ElementAnimations | undefined;
 	rightAnimations: ElementAnimations | undefined;
@@ -1254,8 +1273,8 @@ export function splitAnimationsAtTime({
 			continue;
 		}
 
-		const leftBoundaryId = generateUUID();
-		const rightBoundaryId = generateUUID();
+		const leftBoundaryId = boundaryIdPrefix ? `${boundaryIdPrefix}:${propertyPath}:left` : generateUUID();
+		const rightBoundaryId = boundaryIdPrefix ? `${boundaryIdPrefix}:${propertyPath}:right` : generateUUID();
 
 		for (const [componentKey, channel] of getChannelDataEntries({ data })) {
 			const splitResult = splitChannelAtTime({
