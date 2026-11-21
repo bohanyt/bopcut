@@ -25,7 +25,7 @@ type VideoSource = {
 
 class VideoCursor {
 	private iterator: AsyncGenerator<VideoSample, void, unknown> | null = null;
-	private seekTime = 0;
+	private currentStart = 0;
 	private current: VideoSample | null = null;
 	private next: Promise<VideoSample | null> | null = null;
 	private sink: VideoSampleSink;
@@ -37,13 +37,14 @@ class VideoCursor {
 	}
 
 	distanceFrom(time: number): number {
-		return Math.abs(time - (this.current?.timestamp ?? this.seekTime));
+		return Math.abs(time - this.currentStart);
 	}
 
 	async readAt(time: number): Promise<VideoSample | null> {
-		const start = this.current?.timestamp ?? this.seekTime;
+		const start = this.currentStart;
 		const iterator = this.iterator;
 		if (iterator && time >= start) {
+			if (this.current && time < this.current.timestamp) return this.current;
 			try {
 				if (time < start + 2) return await this.advanceTo(time);
 				const next = await this.next;
@@ -57,7 +58,7 @@ class VideoCursor {
 		}
 
 		this.reset();
-		this.seekTime = time;
+		this.currentStart = time;
 		this.iterator = this.sink.samples(time);
 		this.prefetch(this.iterator);
 		return this.advanceTo(time);
@@ -72,11 +73,14 @@ class VideoCursor {
 				if (!this.current) throw new Error("No video frames could be decoded");
 				break;
 			}
-			if (next.timestamp > time) break;
+			if (this.current && next.timestamp > time) break;
 
 			this.current?.close();
 			this.current = next;
+			// A seek before the first presentation timestamp displays the first sample immediately.
+			this.currentStart = Math.min(next.timestamp, time);
 			this.prefetch(iterator);
+			if (next.timestamp >= time) break;
 		}
 		// A frame remains active until the next presentation timestamp, including VFR gaps.
 		return this.current;

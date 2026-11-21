@@ -263,6 +263,17 @@ function withPresetBlur(groups: EffectPass[][], preset: PresetLayer, width: numb
 	return passes.length ? [...groups, passes] : groups;
 }
 
+function clearCompoundVideoFrames(node: AnyBaseNode): void {
+	if (node instanceof VideoNode || (node instanceof BlurBackgroundNode && node.params.mediaType === "video")) {
+		node.resolved = null;
+	}
+	if (node instanceof CompoundNode && node.resolved) {
+		node.resolved = null;
+		clearCompoundVideoFrames(node.params.content);
+	}
+	for (const child of node.children) clearCompoundVideoFrames(child);
+}
+
 // The nested scene is resolved at its own local time: t - startTime + trimStart.
 async function resolveCompoundNode({
 	node,
@@ -271,13 +282,17 @@ async function resolveCompoundNode({
 	node: CompoundNode;
 	context: ResolveContext;
 }): Promise<void> {
+	const wasVisible = node.resolved !== null;
 	node.resolved = resolveVisualState({
 		params: node.params,
 		context,
 		sourceWidth: context.renderer.width,
 		sourceHeight: context.renderer.height,
 	});
-	if (!node.resolved) return;
+	if (!node.resolved) {
+		if (wasVisible) clearCompoundVideoFrames(node.params.content);
+		return;
+	}
 
 	await resolveNode({
 		node: node.params.content,

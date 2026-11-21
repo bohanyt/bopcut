@@ -5,6 +5,7 @@ import { VideoCache } from "./service";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { buildFrameDescriptor } from "@/services/renderer/compositor/frame-descriptor";
 import { BlurBackgroundNode } from "@/services/renderer/nodes/blur-background-node";
+import { CompoundNode } from "@/services/renderer/nodes/compound-node";
 import { RootNode } from "@/services/renderer/nodes/root-node";
 import { VideoNode } from "@/services/renderer/nodes/video-node";
 import { resolveRenderTree } from "@/services/renderer/resolve";
@@ -244,6 +245,49 @@ test("skipped display ticks keep the cursor current after two seconds of playbac
 			expect(closed).toEqual(decoded);
 		} finally {
 			cache.clear();
+		}
+	}));
+
+test("a delayed first sample is visible before its presentation timestamp without repeated seeks", () =>
+	withVideo([
+		{ timestamp: 0.5, duration: 0.05 },
+		{ timestamp: 0.6, duration: 0.05 },
+	], async ({ file, starts }) => {
+		const cache = new VideoCache();
+		try {
+			for (const [time, timestamp] of [[0, 0.5], [0.25, 0.5], [0.56, 0.5], [0.6, 0.6]]) {
+				expect((await cache.getFrameAt({ file, time }))?.timestamp).toBe(timestamp);
+				cache.finishFrame();
+			}
+			expect(starts).toEqual([0]);
+		} finally {
+			cache.clear();
+		}
+	}));
+
+test("leaving an outer compound drops the video surfaces held by nested nodes", () =>
+	withVideo(constantRate(1), async ({ file }) => {
+		const renderer = rendererAt();
+		const video = clip(file);
+		const inner = new CompoundNode({
+			...video.params,
+			content: new RootNode({ duration: ticks(1) }).add(video),
+		});
+		const outer = new CompoundNode({
+			...video.params, duration: ticks(1),
+			content: new RootNode({ duration: ticks(1) }).add(inner),
+		});
+		const root = new RootNode({ duration: ticks(2) }).add(outer);
+		try {
+			// Resolve only: descriptor construction for a compound needs the real compositor.
+			await resolveRenderTree({ renderer, node: root, time: 0 });
+			renderer.videoCache.finishFrame();
+			expect(video.resolved?.source).toBeInstanceOf(TestCanvas);
+			await resolveRenderTree({ renderer, node: root, time: ticks(1) });
+			renderer.videoCache.finishFrame();
+			expect(video.resolved).toBeNull();
+		} finally {
+			renderer.videoCache.clear();
 		}
 	}));
 
