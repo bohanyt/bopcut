@@ -1,4 +1,5 @@
 import {
+	formatTimecode as _formatTimecode,
 	lastFrameTime as _lastFrameTime,
 	parseTimecode as _parseTimecode,
 	roundToFrame as _roundToFrame,
@@ -212,6 +213,37 @@ export function lastFrameMediaTime({
 	});
 }
 
+// Frame timecode counts frames on a nominal integer clock. Convert through the frame
+// index so NTSC-style rates never mix elapsed whole seconds with fractional frame lengths.
+function frameTimecodeClock(format: TimeCodeFormat, fps: FrameRate) {
+	if (format !== "HH:MM:SS:FF") return null;
+	const nominalFps = Math.ceil(fps.numerator / fps.denominator);
+	const frameTicks = TICKS_PER_SECOND * fps.denominator / fps.numerator;
+	const nominalFrameTicks = TICKS_PER_SECOND / nominalFps;
+	if (
+		!Number.isInteger(frameTicks) || frameTicks <= 0 ||
+		!Number.isInteger(nominalFrameTicks) || nominalFrameTicks <= 0 ||
+		frameTicks === nominalFrameTicks
+	) return null;
+
+	return { rate: { numerator: nominalFps, denominator: 1 }, frameTicks, nominalFrameTicks };
+}
+
+export function formatMediaTimecode({
+	time,
+	format,
+	fps,
+}: {
+	time: MediaTime;
+	format: TimeCodeFormat;
+	fps: FrameRate;
+}): string | undefined {
+	const clock = frameTimecodeClock(format, fps);
+	if (!clock) return _formatTimecode({ time, format, rate: fps });
+	const frame = Math.floor(Math.max(time, 0) / clock.frameTicks);
+	return _formatTimecode({ time: frame * clock.nominalFrameTicks, format, rate: clock.rate });
+}
+
 export function parseMediaTimecode({
 	timeCode,
 	format,
@@ -221,12 +253,13 @@ export function parseMediaTimecode({
 	format: TimeCodeFormat;
 	fps: FrameRate;
 }): MediaTime | null {
-	const parsedTime = _parseTimecode({ timeCode, format, rate: fps });
+	const clock = frameTimecodeClock(format, fps);
+	const parsedTime = _parseTimecode({ timeCode, format, rate: clock?.rate ?? fps });
 	if (parsedTime == null) {
 		return null;
 	}
 	return requireMediaTime({
-		value: parsedTime,
+		value: clock ? (parsedTime / clock.nominalFrameTicks) * clock.frameTicks : parsedTime,
 		context: "parseMediaTimecode()",
 	});
 }

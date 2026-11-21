@@ -1,21 +1,24 @@
-import { afterEach, describe, expect, mock, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, setSystemTime, spyOn, test } from "bun:test";
 import type { SceneTracks, TScene, TimelineElement, VideoElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
+import * as mediaProcessing from "@/media/processing";
 
 // Stub the GPU modules (unused here) before EditorCore pulls them in; see scene-history.test.ts.
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 // Asset processing needs browser media APIs: an image is 400×200 whatever its bytes.
-mock.module("@/media/processing", () => ({
-	processMediaFile: async ({ file, signal }: { file: File; signal: AbortSignal }) => {
+let restoreProcessing = () => {};
+beforeEach(() => {
+	const process = spyOn(mediaProcessing, "processMediaFile").mockImplementation(async ({ file, signal }) => {
 		if (signal.aborted) return null;
 		return file.name.endsWith(".mp4")
 			? { name: file.name, type: "video", file, width: 400, height: 200, duration: 10, fps: 120 }
 			: { name: file.name, type: "image", file, width: 400, height: 200 };
-	},
-}));
+	});
+	restoreProcessing = () => process.mockRestore();
+});
 const { EditorCore } = await import("@/core");
 const { agentSnapshot, applyDraft, pollDraft, pollChanges } = await import("./bridge");
 const { snapshotHistory } = await import("./history");
@@ -115,6 +118,7 @@ function projectWrites({ fail, wait }: { fail?: (id: string) => string | null; w
 
 let restore = () => {};
 afterEach(() => {
+	restoreProcessing();
 	restore();
 	restore = () => {};
 	EditorCore.reset();

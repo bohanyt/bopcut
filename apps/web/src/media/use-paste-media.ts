@@ -10,31 +10,7 @@ import { isTypableDOMElement } from "@/utils/browser";
 import { toast } from "sonner";
 import { fetchWebMedia, pastedMediaLinks } from "@/media/web-drop";
 import { CLIPS_CLIPBOARD_MARKER } from "@/core/managers/clipboard-manager";
-import type { MediaType } from "@/media/types";
-
-const MEDIA_MIME_PREFIXES: MediaType[] = ["image", "video", "audio"];
-
-function isMediaMimeType({ type }: { type: string }): boolean {
-	return MEDIA_MIME_PREFIXES.some((prefix) => type.startsWith(`${prefix}/`));
-}
-
-function extractMediaFilesFromClipboard({
-	clipboardData,
-}: {
-	clipboardData: DataTransfer | null;
-}): File[] {
-	if (!clipboardData?.items) return [];
-
-	const files: File[] = [];
-	for (const item of clipboardData.items) {
-		if (item.kind !== "file") continue;
-		if (!isMediaMimeType({ type: item.type })) continue;
-
-		const file = item.getAsFile();
-		if (file) files.push(file);
-	}
-	return files;
-}
+import { extractMediaFilesFromClipboard } from "@/media/media-utils";
 
 export function usePasteMedia() {
 	const editor = useEditor();

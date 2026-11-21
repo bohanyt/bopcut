@@ -9,8 +9,8 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
-import { FPS_PRESETS } from "@/fps/presets";
-import { floatToFrameRate, frameRateToFloat } from "@/fps/utils";
+import { FPS_PRESETS, getCurrentFpsOption } from "@/fps/presets";
+import { floatToFrameRate } from "@/fps/utils";
 import { useEditor } from "@/editor/use-editor";
 import {
 	Section,
@@ -100,6 +100,10 @@ export function SettingsView() {
 	const [view, setView] = useState<SettingsView>("project-info");
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
+	const fpsOption = getCurrentFpsOption(activeProject.settings.fps);
+	const fpsOptions = FPS_PRESETS.some(({ value }) => value === fpsOption.value)
+		? FPS_PRESETS
+		: [...FPS_PRESETS, fpsOption];
 	const { canvasPresets } = useEditorStore();
 	const currentCanvasSize = activeProject.settings.canvasSize;
 	const canvasSizeMode = activeProject.settings.canvasSizeMode ?? "preset";
@@ -242,9 +246,10 @@ export function SettingsView() {
 						<SectionHeader className="justify-between">
 							<SectionTitle className="flex-1">Frame rate</SectionTitle>
 					<Select
-							value={String(Math.round(frameRateToFloat(activeProject.settings.fps)))}
+							value={fpsOption.value}
 							onValueChange={(value) => {
-								const fps = floatToFrameRate(parseFloat(value));
+								if (value === fpsOption.value) return;
+								const fps = floatToFrameRate(Number(value));
 								editor.project.updateSettings({ settings: { fps } });
 							}}
 							>
@@ -252,7 +257,7 @@ export function SettingsView() {
 									<SelectValue placeholder="Select a frame rate" />
 								</SelectTrigger>
 								<SelectContent>
-									{FPS_PRESETS.map((preset) => (
+									{fpsOptions.map((preset) => (
 										<SelectItem key={preset.value} value={preset.value}>
 											{preset.label}
 										</SelectItem>

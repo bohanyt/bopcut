@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 
@@ -152,5 +152,37 @@ describe("frame rate on import", () => {
 		const editor = setup();
 		await editor.media.addMediaAsset({ projectId: "p", asset: footage });
 		expect(editor.project.getActive().settings.fps).toEqual({ numerator: 50, denominator: 1 });
+	});
+
+	test.each([[32.1, 32], [32, 32.1]])("successful sequential imports at %f and %f choose the highest normalized rate", async (a, b) => {
+		const editor = setup();
+		for (const fps of [a, b]) {
+			expect(await editor.media.addMediaAsset({ projectId: "p", asset: { ...footage, fps } })).not.toBeNull();
+		}
+		expect(editor.project.getActive().settings.fps).toEqual({ numerator: 32, denominator: 1 });
+	});
+
+	test.each([false, true])("a failed upload preserves the rate from successful imports (overlap: %s)", async (overlap) => {
+		const editor = setup();
+		editor.media.setAssets({ assets: [{ ...footage, id: "old", fps: 48 }] });
+		const saving = deferred<void>();
+		const write = spyOn(storageService, "saveMediaAsset").mockImplementationOnce(async () => {
+			await saving.promise;
+			throw new Error("save failed");
+		});
+		try {
+			const failed = editor.media.addMediaAsset({ projectId: "p", asset: { ...footage, fps: 60_000 / 1_001 } });
+			if (overlap) {
+				await editor.media.addMediaAsset({ projectId: "p", asset: { ...footage, fps: 59.7 } });
+			}
+			saving.resolve();
+			expect(await failed).toBeNull();
+			expect(editor.project.getActive().settings.fps).toEqual(overlap
+				? { numerator: 60_000, denominator: 1_001 }
+				: { numerator: 30, denominator: 1 });
+		} finally {
+			saving.resolve();
+			write.mockRestore();
+		}
 	});
 });

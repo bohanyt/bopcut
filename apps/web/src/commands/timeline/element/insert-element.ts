@@ -11,7 +11,7 @@ import { requiresMediaId } from "@/timeline/element-utils";
 import type { MediaAsset } from "@/media/types";
 import type { TProjectSettings } from "@/project/types";
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
-import { floatToFrameRate } from "@/fps/utils";
+import { importedVideoProjectRate } from "@/fps/utils";
 import { graphicsRegistry, registerDefaultGraphics } from "@/graphics";
 import {
 	applyPlacement,
@@ -111,9 +111,12 @@ export class InsertElementCommand extends Command {
 				});
 			}
 
-			if (asset?.type === "video" && asset?.fps) {
+			const sourceFps = asset?.type === "video" && asset.fps !== undefined
+				? importedVideoProjectRate(asset.fps)
+				: null;
+			if (sourceFps) {
 				editor.project.updateSettings({
-					settings: { fps: floatToFrameRate(asset.fps) },
+					settings: { fps: sourceFps },
 					pushHistory: false,
 				});
 			}

@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { getMediaTypeFromFile, isModelFile } from "@/media/media-utils";
+import { getMediaTypeFromFile, hasGenericMediaMimeType, isModelFile } from "@/media/media-utils";
 import { formatStorageBytes } from "@/services/storage/quota";
 import { storageService } from "@/services/storage/service";
 import type { MediaAsset } from "@/media/types";
@@ -103,7 +103,7 @@ export async function processMediaFile({
 	if (signal.aborted) return null;
 	// Convert GIF to MP4 on the local server to preserve animation.
 	let file = original;
-	if (original.type === "image/gif") {
+	if (original.type === "image/gif" || (hasGenericMediaMimeType(original) && /\.gif$/i.test(original.name))) {
 		try {
 			const res = await fetch("/api/agent/gif", { method: "POST", body: original, signal });
 			if (!res.ok) throw new Error(await res.text());
@@ -114,6 +114,7 @@ export async function processMediaFile({
 		}
 	}
 	const fileType = getMediaTypeFromFile({ file });
+	const inferredType = hasGenericMediaMimeType(original);
 
 	if (!fileType) {
 		toast.error(`Unsupported file type: ${file.name}`);
@@ -160,18 +161,19 @@ export async function processMediaFile({
 				duration = videoData.duration;
 				width = videoData.width;
 				height = videoData.height;
-				fps = Number.isFinite(videoData.fps)
-					? Math.round(videoData.fps)
-					: undefined;
+				fps = Number.isFinite(videoData.fps) && videoData.fps > 0 ? videoData.fps : undefined;
 				hasAudio = videoData.hasAudio;
 				thumbnailUrl = videoData.thumbnailUrl ?? undefined;
 
 				if (!videoData.canDecode) {
+					const description = getUnsupportedVideoDescription({ codec: videoData.codec });
+					if (inferredType) throw new Error(description);
 					toast.error(`Can't preview ${file.name}`, {
-						description: getUnsupportedVideoDescription({
-							codec: videoData.codec,
-						}),
+						description,
 					});
+				}
+				if (inferredType && (!Number.isFinite(duration) || duration <= 0)) {
+					throw new Error("The file does not contain playable video");
 				}
 			} catch (error) {
 				const message =
@@ -180,10 +182,17 @@ export async function processMediaFile({
 						: "Could not process video";
 
 				if (!signal.aborted) toast.error(`Couldn't process ${file.name}`, { description: message });
+				if (inferredType) {
+					releaseMediaAssetUrls({ thumbnailUrl });
+					return null;
+				}
 			}
 		} else if (fileType === "audio") {
 			url = URL.createObjectURL(file);
 			duration = await getAudioDuration({ url, signal });
+			if (inferredType && (!Number.isFinite(duration) || duration <= 0)) {
+				throw new Error("The file does not have a finite audio duration");
+			}
 		}
 
 		if (signal.aborted) {

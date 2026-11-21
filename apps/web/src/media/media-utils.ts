@@ -13,6 +13,16 @@ export function mediaSupportsAudio({
 
 export const isModelFile = (file: File): boolean => /\.(glb|gltf)$/i.test(file.name);
 
+const MEDIA_EXTENSIONS: Record<MediaType, RegExp> = {
+	video: /\.(mp4|m4v|mov|webm|mkv|ts|m2ts)$/i,
+	audio: /\.(mp3|m4a|wav|ogg|oga|opus|flac|aac)$/i,
+	image: /\.(png|jpe?g|webp|avif|gif)$/i,
+};
+
+export function hasGenericMediaMimeType({ type }: File): boolean {
+	return type === "" || type === "application/octet-stream";
+}
+
 export const getMediaTypeFromFile = ({
 	file,
 }: {
@@ -32,5 +42,29 @@ export const getMediaTypeFromFile = ({
 		return "audio";
 	}
 
+	if (hasGenericMediaMimeType(file)) {
+		for (const kind of ["video", "audio", "image"] as const) {
+			if (MEDIA_EXTENSIONS[kind].test(file.name)) return kind;
+		}
+	}
+
 	return null;
 };
+
+export function extractMediaFilesFromClipboard({
+	clipboardData,
+}: {
+	clipboardData: DataTransfer | null;
+}): File[] {
+	if (!clipboardData?.items) return [];
+
+	const files: File[] = [];
+	for (const item of clipboardData.items) {
+		if (item.kind !== "file") continue;
+		const file = item.getAsFile();
+		if (file && (getMediaTypeFromFile({ file }) || /^(image|video|audio)\//.test(item.type))) {
+			files.push(file);
+		}
+	}
+	return files;
+}

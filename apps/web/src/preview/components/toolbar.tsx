@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useEditor } from "@/editor/use-editor";
-import { formatTimecode } from "opencut-wasm";
 import { invokeAction } from "@/actions";
 import { EditableTimecode } from "@/components/editable-timecode";
 import { Button } from "@/components/ui/button";
@@ -26,7 +25,7 @@ import { usePreviewViewport } from "./preview-viewport";
 import { GridPopover } from "./guide-popover";
 import { usePreviewStore } from "@/preview/preview-store";
 import { isPreviewQuality } from "@/preview/quality";
-import type { MediaTime } from "@/wasm";
+import { formatMediaTimecode, type MediaTime } from "@/wasm";
 import { TIMELINE_COMPOUND_THEME } from "@/timeline/components/theme";
 
 export function PreviewToolbar({
@@ -121,10 +120,10 @@ function TimecodeDisplay() {
 			/>
 			<span className="text-muted-foreground px-2 font-mono text-xs">/</span>
 			<span className="text-muted-foreground font-mono text-xs">
-				{formatTimecode({
+				{formatMediaTimecode({
 					time: totalDuration,
 					format: "HH:MM:SS:FF",
-					rate: fps,
+					fps,
 				})}
 			</span>
 		</div>
