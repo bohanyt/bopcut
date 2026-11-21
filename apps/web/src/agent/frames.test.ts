@@ -28,8 +28,8 @@ const settings: TProjectSettings = {
 	fps: { numerator: 30, denominator: 1 },
 };
 
-function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame" }: {
-	compare?: { syncedAt: string }; times?: readonly number[]; pauseAt?: string;
+function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failCancellation = false }: {
+	compare?: { syncedAt: string }; times?: readonly number[]; pauseAt?: string; failCancellation?: boolean;
 } = {}) {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
@@ -51,6 +51,7 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame" }: {
 	const uploads: FormData[] = [];
 	const stored = new Map<string, string>();
 	let paused = false;
+	let failed = false;
 	const globals = {
 		fetch: async (url: string, init?: RequestInit) => {
 			if (url === pauseAt && !paused) {
@@ -64,7 +65,12 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame" }: {
 				return Response.json({ file: `frame-${uploads.length}.jpg` });
 			}
 			if (url === "/api/agent/frames-result") {
-				results.push(JSON.parse(init?.body as string));
+				const result = JSON.parse(init?.body as string);
+				if (failCancellation && !failed && result.error?.startsWith("cancelled:")) {
+					failed = true;
+					return new Response(null, { status: 500 });
+				}
+				results.push(result);
 				return Response.json({});
 			}
 			throw new Error(`Unexpected request: ${url}`);
@@ -90,8 +96,8 @@ afterEach(() => {
 
 const ready = () => ({ ready: true, missingMedia: [] });
 
-test.each(["/api/agent/frame", "/api/agent/frames-request"])("keeps the live and compare states fixed across a wait in %s", async (pauseAt) => {
-	const { editor, scenes, render, results, entered, release } = setup({ compare: { syncedAt: "compare-frame" }, pauseAt });
+test("keeps the live and compare states fixed across a frame upload", async () => {
+	const { editor, scenes, render, results, entered, release } = setup({ compare: { syncedAt: "compare-frame" } });
 	const pastScenes = [scene("past", 3)];
 	const pastSettings = { ...settings, canvasSize: { width: 640, height: 480 } };
 	snapshotHistory.record("compare-frame", pastScenes, { projectId: "p", rootSceneId: "past", settings: pastSettings });
@@ -115,6 +121,27 @@ test.each(["/api/agent/frame", "/api/agent/frames-request"])("keeps the live and
 	]);
 	expect(render.mock.calls[2]?.[0]?.scenes).toBe(scenes);
 	expect(results).toEqual([{ rev: "frame-test", projectId: "p", files: ["frame-1.jpg", "frame-3.jpg"], compare: ["frame-2.jpg", "frame-4.jpg"] }]);
+});
+
+test.each([true, false])("checks the current root and readiness when the request arrives (ready: %s)", async (isReady) => {
+	const { editor, render, results, entered, release } = setup({ pauseAt: "/api/agent/frames-request", times: [0] });
+	let ready = true;
+	const running = pollFrames(() => ({ ready, missingMedia: [] }));
+	await entered;
+	try {
+		ready = isReady;
+		await editor.scenes.switchToScene({ sceneId: "b" });
+	} finally {
+		release();
+		await running;
+	}
+	if (isReady) {
+		expect(render.mock.calls[0]?.[0]?.sceneId).toBe("b");
+		expect(results).toEqual([{ rev: "frame-test", projectId: "p", files: ["frame-1.jpg"] }]);
+	} else {
+		expect(render).not.toHaveBeenCalled();
+		expect(results).toEqual([]);
+	}
 });
 
 test.each([{ times: [0, 1] }, { times: [0] }])("cancels during an upload after returning to the same project ($times)", async ({ times }) => {
@@ -142,6 +169,22 @@ test("leaves a cancelled request answered after a project switch", async () => {
 		release();
 		await running;
 	}
+	await pollFrames(ready);
+	expect(render).toHaveBeenCalledTimes(1);
+	expect(results).toEqual([{ rev: "frame-test", projectId: "p", files: [], error: "cancelled: the project session changed during the frame request" }]);
+});
+
+test("retries a failed cancellation for the original project", async () => {
+	const { open, render, results, entered, release } = setup({ failCancellation: true });
+	const running = pollFrames(ready);
+	await entered;
+	try {
+		open("q");
+	} finally {
+		release();
+		await running;
+	}
+	expect(results).toEqual([]);
 	await pollFrames(ready);
 	expect(render).toHaveBeenCalledTimes(1);
 	expect(results).toEqual([{ rev: "frame-test", projectId: "p", files: [], error: "cancelled: the project session changed during the frame request" }]);
