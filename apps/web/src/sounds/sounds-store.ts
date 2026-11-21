@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { EditorCore } from "@/core";
 import { buildLibraryAudioElement } from "@/timeline/element-utils";
 import { mediaTimeFromSeconds } from "@/wasm";
+import { decodeAudioBuffer } from "@/media/audio";
 
 interface SoundsStore {
 	topSoundEffects: SoundEffect[];
@@ -222,8 +223,7 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 				throw new Error(`Failed to download audio: ${response.statusText}`);
 
 			const arrayBuffer = await response.arrayBuffer();
-			const audioContext = new AudioContext();
-			const buffer = await audioContext.decodeAudioData(arrayBuffer);
+			const buffer = await decodeAudioBuffer({ arrayBuffer });
 
 			const element = buildLibraryAudioElement({
 				sourceUrl: audioUrl,
