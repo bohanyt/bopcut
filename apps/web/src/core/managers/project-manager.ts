@@ -904,6 +904,8 @@ export class ProjectManager {
 		} catch (error) {
 			if (signal.aborted) return false;
 			throw error;
+		} finally {
+			renderer.videoCache.clear();
 		}
 		const thumbnail = await new Promise<Blob | null>((resolve) =>
 			renderer.getOutputCanvas().toBlob(resolve, "image/webp", 0.78),

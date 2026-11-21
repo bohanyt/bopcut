@@ -22,7 +22,6 @@ import { resolveColorAtTime, resolveOpacityAtTime } from "@/animation/values";
 import { resolveTransformAtTime } from "@/rendering/animation-values";
 import type { Transform } from "@/rendering";
 import { applyShake, readShakeSettings } from "@/rendering/shake";
-import { videoCache } from "@/services/video-cache/service";
 import { waitWithAbort } from "@/utils/abort";
 import type { CanvasRenderer } from "./canvas-renderer";
 import type { AnyBaseNode } from "./nodes/base-node";
@@ -71,7 +70,7 @@ export async function resolveRenderTree({
 	time: number;
 	signal?: AbortSignal;
 }): Promise<void> {
-	return waitWithAbort(resolveNode({ node, context: { renderer, time, signal } }), signal);
+	await resolveNode({ node, context: { renderer, time, signal } });
 }
 
 async function resolveNode({
@@ -119,7 +118,12 @@ async function resolveNode({
 		}
 		pending.push(resolveNode({ node: child, context }));
 	}
-	await Promise.all(pending);
+	if (!pending.length) return;
+	// Finish all reads before the renderer can recycle frame surfaces, even when one fails.
+	const results = await Promise.allSettled(pending);
+	for (const result of results) {
+		if (result.status === "rejected") throw result.reason;
+	}
 }
 
 function resolveEffectPassGroups({
@@ -162,37 +166,16 @@ function resolveVisualState({
 	context,
 	sourceWidth,
 	sourceHeight,
+	placement = resolveVisualPlacement(params, context),
 }: {
 	params: VisualNodeParams;
 	context: ResolveContext;
 	sourceWidth: number;
 	sourceHeight: number;
+	placement?: ReturnType<typeof resolveVisualPlacement>;
 }): ResolvedVisualNodeState | null {
-	const clipTime = context.time - params.timeOffset;
-	if (clipTime < 0 || clipTime >= params.duration) {
-		return null;
-	}
-
-	const localTime = getElementLocalTime({
-		timelineTime: context.time,
-		elementStartTime: params.timeOffset,
-		elementDuration: params.duration,
-	});
-	const preset = params.presets ? presetLayerAt(params.presets, localTime, params.duration, context.renderer.height) : NO_PRESET_LAYER;
-	const transform = withPresetLayer(
-		applyShake({
-			transform: resolveTransformAtTime({
-				baseTransform: params.transform,
-				animations: params.animations,
-				localTime,
-			}),
-			settings: params.shake,
-			animations: params.animations,
-			localTime,
-			ticksPerSecond: TICKS_PER_SECOND,
-		}),
-		preset,
-	);
+	if (!placement) return null;
+	const { localTime, preset, transform } = placement;
 	const opacity =
 		resolveOpacityAtTime({
 			baseOpacity: params.opacity,
@@ -229,6 +212,33 @@ function resolveVisualState({
 			passHeight,
 		),
 	};
+}
+
+function resolveVisualPlacement(params: VisualNodeParams, context: ResolveContext) {
+	const clipTime = context.time - params.timeOffset;
+	if (clipTime < 0 || clipTime >= params.duration) return null;
+
+	const localTime = getElementLocalTime({
+		timelineTime: context.time,
+		elementStartTime: params.timeOffset,
+		elementDuration: params.duration,
+	});
+	const preset = params.presets ? presetLayerAt(params.presets, localTime, params.duration, context.renderer.height) : NO_PRESET_LAYER;
+	const transform = withPresetLayer(
+		applyShake({
+			transform: resolveTransformAtTime({
+				baseTransform: params.transform,
+				animations: params.animations,
+				localTime,
+			}),
+			settings: params.shake,
+			animations: params.animations,
+			localTime,
+			ticksPerSecond: TICKS_PER_SECOND,
+		}),
+		preset,
+	);
+	return { localTime, preset, transform };
 }
 
 /** The transform with an animation preset's scale, drop and tilt on top. */
@@ -284,19 +294,25 @@ async function resolveVideoNode({
 }: {
 	node: VideoNode;
 	context: ResolveContext;
-}): Promise<ResolvedVisualSourceNodeState | null> {
-	const clipTime = context.time - node.params.timeOffset;
-	if (clipTime < 0 || clipTime >= node.params.duration) {
-		return null;
-	}
+}): Promise<VideoNode["resolved"]> {
+	const placement = resolveVisualPlacement(node.params, context);
+	if (!placement) return null;
 
 	const sourceTimeTicks =
 		node.params.trimStart +
 		getSourceTimeAtClipTime({
-			clipTime,
+			clipTime: context.time - node.params.timeOffset,
 			retime: node.params.retime,
 		});
-	const frame = await readVideoFrame(node.params, sourceTimeTicks, context);
+	const { width, height, outputWidth, outputHeight } = context.renderer;
+	const { scaleX, scaleY } = placement.transform;
+	const frame = await readVideoFrame(node.params, sourceTimeTicks, context, (source) => {
+		const containScale = Math.min(width / source.width, height / source.height);
+		return containScale * Math.max(
+			(Math.abs(scaleX) * outputWidth) / width,
+			(Math.abs(scaleY) * outputHeight) / height,
+		);
+	});
 	if (!frame) {
 		return null;
 	}
@@ -304,8 +320,9 @@ async function resolveVideoNode({
 	const visualState = resolveVisualState({
 		params: node.params,
 		context,
-		sourceWidth: frame.canvas.width,
-		sourceHeight: frame.canvas.height,
+		sourceWidth: frame.sourceWidth,
+		sourceHeight: frame.sourceHeight,
+		placement,
 	});
 	if (!visualState) {
 		return null;
@@ -314,17 +331,22 @@ async function resolveVideoNode({
 	return {
 		...visualState,
 		source: frame.canvas,
-		sourceWidth: frame.canvas.width,
-		sourceHeight: frame.canvas.height,
+		sourceWidth: frame.sourceWidth,
+		sourceHeight: frame.sourceHeight,
 		sourceVersion: frame.timestamp,
 	};
 }
 
-function readVideoFrame({ mediaId, file }: { mediaId: string; file: File }, time: number, context: ResolveContext) {
-	return readMediaSource(mediaId, context, () => videoCache.getFrameAt({
-		mediaId, file,
+function readVideoFrame(
+	{ mediaId, file }: { mediaId: string; file: File },
+	time: number,
+	context: ResolveContext,
+	getScale: (source: { width: number; height: number }) => number,
+) {
+	return readMediaSource(mediaId, context, () => context.renderer.videoCache.getFrameAt({
+		file,
 		time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
-		exact: context.renderer.exactFrames,
+		getScale: context.renderer.exactFrames ? undefined : getScale,
 		throwOnSeekError: !!context.renderer.onMediaFailure,
 		signal: context.signal,
 	}));
@@ -338,7 +360,7 @@ async function readMediaSource<T>(
 	if (renderer.failedMediaIds.has(mediaId)) return null;
 	signal?.throwIfAborted();
 	try {
-		return await read();
+		return await waitWithAbort(read(), signal);
 	} catch (error) {
 		signal?.throwIfAborted();
 		if (!renderer.onMediaFailure) throw error;
@@ -360,7 +382,10 @@ async function resolveModel3dNode({ node, context }: { node: Model3dNode; contex
 	for (const definition of model3dParams) {
 		params[definition.key] = resolveAnimationPathValueAtTime({ animations: node.params.animations, propertyPath: definition.key, localTime: visualState.localTime, fallbackValue: params[definition.key] ?? definition.default });
 	}
-	const source = await renderModel3d({ id: node.params.mediaId, file: node.params.file, params, size });
+	const source = await waitWithAbort(
+		renderModel3d({ id: node.params.mediaId, file: node.params.file, params, size }),
+		context.signal,
+	);
 	return { ...visualState, source, sourceWidth: size, sourceHeight: size };
 }
 
@@ -401,7 +426,7 @@ async function resolveStickerNode({
 	node: StickerNode;
 	context: ResolveContext;
 }): Promise<ResolvedVisualSourceNodeState | null> {
-	const source = await loadStickerSource({ stickerId: node.params.stickerId });
+	const source = await waitWithAbort(loadStickerSource({ stickerId: node.params.stickerId }), context.signal);
 	const sourceWidth = node.params.intrinsicWidth ?? source.width;
 	const sourceHeight = node.params.intrinsicHeight ?? source.height;
 	const visualState = resolveVisualState({
@@ -578,15 +603,18 @@ async function resolveBackdropSource({
 				clipTime,
 				retime: node.params.retime,
 			});
-		const frame = await readVideoFrame(node.params, sourceTimeTicks, context);
+		const { outputWidth, outputHeight } = context.renderer;
+		const frame = await readVideoFrame(node.params, sourceTimeTicks, context, ({ width, height }) =>
+			Math.max(outputWidth / width, outputHeight / height),
+		);
 		if (!frame) {
 			return null;
 		}
 
 		return {
 			source: frame.canvas,
-			width: frame.canvas.width,
-			height: frame.canvas.height,
+			width: frame.sourceWidth,
+			height: frame.sourceHeight,
 			version: frame.timestamp,
 		};
 	}

@@ -172,6 +172,7 @@ export class CompoundThumbnailCache {
 /** Renders single low-res frames of one nested scene. */
 export interface ThumbnailFrameRenderer {
 	renderAt(time: MediaTime): Promise<string>;
+	dispose?(): void;
 }
 
 export type LoadThumbnailRenderer = (params: {
@@ -216,6 +217,7 @@ const loadCanvasThumbnailRenderer: LoadThumbnailRenderer = async ({
 			await renderer.renderToCanvas({ node: tree, time, targetCanvas: canvas });
 			return canvas.toDataURL("image/jpeg", 0.7);
 		},
+		dispose: () => renderer.videoCache.clear(),
 	};
 };
 
@@ -243,12 +245,16 @@ export async function renderCompoundThumbnails({
 	const duration = Math.max(contentDuration, ...times.map((time) => time + 1)) as MediaTime;
 	if (shouldStop()) return null;
 	const renderer = await loadRenderer({ editor, nested, scenes, duration });
-	const frames: string[] = [];
-	for (const time of times) {
-		if (shouldStop()) return null;
-		frames.push(await renderer.renderAt(time));
+	try {
+		const frames: string[] = [];
+		for (const time of times) {
+			if (shouldStop()) return null;
+			frames.push(await renderer.renderAt(time));
+		}
+		return frames;
+	} finally {
+		renderer.dispose?.();
 	}
-	return frames;
 }
 
 let sharedCache: CompoundThumbnailCache | null = null;

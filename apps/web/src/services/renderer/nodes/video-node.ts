@@ -12,5 +12,5 @@ export interface VideoNodeParams extends VisualNodeParams {
 
 export class VideoNode extends VisualNode<
 	VideoNodeParams,
-	ResolvedVisualSourceNodeState
+	ResolvedVisualSourceNodeState & { source: OffscreenCanvas }
 > {}

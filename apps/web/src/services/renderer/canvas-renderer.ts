@@ -5,6 +5,7 @@ import { buildFrameDescriptor } from "./compositor/frame-descriptor";
 import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
 import { waitWithAbort } from "@/utils/abort";
+import { VideoCache } from "@/services/video-cache/service";
 import {
 	measureSpanAsync,
 	measureSpanSync,
@@ -18,8 +19,7 @@ export type CanvasRendererParams = {
 	/** Preview target scale; project coordinates remain unchanged. */
 	renderScale?: number;
 	/**
-	 * Video frames are decoded for exactly the rendered time, even while the preview asks for other
-	 * frames of the same video (snapshots, agent frames, export, thumbnails). The preview leaves it off.
+	 * Keep video textures at source resolution for exports, snapshots, and thumbnails.
 	 */
 	exactFrames?: boolean;
 	/** Export reports source decode failures in its missing-media result. */
@@ -41,6 +41,7 @@ export class CanvasRenderer {
 	readonly exactFrames: boolean;
 	readonly onMediaFailure?: CanvasRendererParams["onMediaFailure"];
 	readonly failedMediaIds = new Set<string>();
+	readonly videoCache = new VideoCache();
 
 	constructor({ width, height, fps, renderScale = 1, exactFrames = false, onMediaFailure }: CanvasRendererParams) {
 		this.exactFrames = exactFrames;
@@ -130,6 +131,9 @@ export class CanvasRenderer {
 					),
 			});
 			onRenderPerfFrameComplete();
+		}).finally(() => {
+			if (signal?.aborted) this.videoCache.clear();
+			else this.videoCache.finishFrame();
 		});
 		renderQueue = task.catch(() => {});
 		return waitWithAbort(task, signal);
