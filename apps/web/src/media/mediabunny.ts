@@ -5,7 +5,7 @@ import {
 	VideoSampleSink,
 	type VideoCodec,
 } from "mediabunny";
-import { createTimelineAudioBuffer } from "@/media/audio";
+import { EXPORT_SAMPLE_RATE as SAMPLE_RATE, mixTimelineAudio } from "@/media/audio-mixdown";
 import type { SceneTracks, TScene } from "@/timeline";
 import type { MediaAsset } from "@/media/types";
 import { TICKS_PER_SECOND } from "@/wasm";
@@ -78,8 +78,8 @@ export async function readVideoFile({
 	}
 }
 
-const SAMPLE_RATE = 44100;
 const NUM_CHANNELS = 2;
+const BYTES_PER_SAMPLE = 2;
 const EMPTY_TIMELINE_SILENT_DURATION_SECONDS = 0.1;
 const MIN_SILENT_DURATION_SECONDS = 0.001;
 
@@ -96,102 +96,68 @@ export const extractTimelineAudio = async ({
 	onProgress?: (progress: number) => void;
 	scenes?: TScene[];
 }): Promise<Blob> => {
-	if (totalDuration === 0) {
-		return createWavBlob({
-			samples: new Float32Array(
-				SAMPLE_RATE * EMPTY_TIMELINE_SILENT_DURATION_SECONDS,
-			),
-		});
+	const duration = totalDuration === 0 ? EMPTY_TIMELINE_SILENT_DURATION_SECONDS : totalDuration / TICKS_PER_SECOND;
+	const maxSamples = Math.ceil(Math.max(MIN_SILENT_DURATION_SECONDS, duration) * SAMPLE_RATE);
+	if (maxSamples * NUM_CHANNELS * BYTES_PER_SAMPLE > 0xffffffff - 36) {
+		throw new Error("Timeline audio exceeds the WAV size limit.");
 	}
 
-	onProgress?.(10);
-
-	const audioBuffer = await createTimelineAudioBuffer({
-		tracks,
-		mediaAssets,
-		duration: totalDuration,
-		sampleRate: SAMPLE_RATE,
-		scenes,
-	});
-
-	if (!audioBuffer) {
-		const silentDurationSeconds = Math.max(
-			MIN_SILENT_DURATION_SECONDS,
-			totalDuration / TICKS_PER_SECOND,
-		);
-		const silentSamples = new Float32Array(
-			Math.ceil(silentDurationSeconds * SAMPLE_RATE) * NUM_CHANNELS,
-		);
-		return createWavBlob({ samples: silentSamples });
+	if (totalDuration !== 0) onProgress?.(10);
+	const parts: Blob[] = [];
+	let samples = 0;
+	for await (const block of mixTimelineAudio({ tracks, mediaAssets, duration: totalDuration, scenes })) {
+		const left = block.getChannelData(0);
+		const right = block.getChannelData(1);
+		const pcm = new ArrayBuffer(block.length * NUM_CHANNELS * BYTES_PER_SAMPLE);
+		const view = new DataView(pcm);
+		for (let i = 0; i < block.length; i++) {
+			writePcmSample(view, i * 4, left[i]);
+			writePcmSample(view, i * 4 + 2, right[i]);
+		}
+		samples += block.length;
+		parts.push(new Blob([pcm]));
 	}
 
-	onProgress?.(90);
-
-	const interleavedSamples = interleaveAudioBuffer({ audioBuffer });
-	onProgress?.(100);
-
-	return createWavBlob({ samples: interleavedSamples });
+	if (!parts.length) {
+		let remainingBytes = maxSamples * NUM_CHANNELS * BYTES_PER_SAMPLE;
+		const silence = new Blob([new ArrayBuffer(Math.min(remainingBytes, SAMPLE_RATE * NUM_CHANNELS * BYTES_PER_SAMPLE))]);
+		while (remainingBytes >= silence.size) {
+			parts.push(silence);
+			remainingBytes -= silence.size;
+		}
+		if (remainingBytes) parts.push(silence.slice(0, remainingBytes));
+		samples = maxSamples;
+	}
+	if (totalDuration !== 0) onProgress?.(90);
+	const blob = new Blob([createWavHeader(samples), ...parts], { type: "audio/wav" });
+	if (totalDuration !== 0) onProgress?.(100);
+	return blob;
 };
 
-function interleaveAudioBuffer({
-	audioBuffer,
-}: {
-	audioBuffer: AudioBuffer;
-}): Float32Array {
-	const numChannels = Math.min(NUM_CHANNELS, audioBuffer.numberOfChannels);
-	const interleavedSamples = new Float32Array(
-		audioBuffer.length * NUM_CHANNELS,
-	);
-
-	for (let sampleIndex = 0; sampleIndex < audioBuffer.length; sampleIndex++) {
-		for (let channel = 0; channel < NUM_CHANNELS; channel++) {
-			const sourceChannel = Math.min(channel, Math.max(0, numChannels - 1));
-			interleavedSamples[sampleIndex * NUM_CHANNELS + channel] =
-				audioBuffer.getChannelData(sourceChannel)[sampleIndex] ?? 0;
-		}
-	}
-
-	return interleavedSamples;
+function writePcmSample(view: DataView, offset: number, value: number): void {
+	const sample = Math.max(-1, Math.min(1, value));
+	view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
 }
 
-function createWavBlob({ samples }: { samples: Float32Array }): Blob {
-	const numChannels = NUM_CHANNELS;
-	const bitsPerSample = 16;
-	const bytesPerSample = bitsPerSample / 8;
-	const numSamples = samples.length / numChannels;
-	const dataSize = numSamples * numChannels * bytesPerSample;
-	const buffer = new ArrayBuffer(44 + dataSize);
+function createWavHeader(numSamples: number): ArrayBuffer {
+	const dataSize = numSamples * NUM_CHANNELS * BYTES_PER_SAMPLE;
+	const buffer = new ArrayBuffer(44);
 	const view = new DataView(buffer);
 
-	// riff header
 	writeString({ view, offset: 0, str: "RIFF" });
 	view.setUint32(4, 36 + dataSize, true);
 	writeString({ view, offset: 8, str: "WAVE" });
-
-	// fmt chunk
 	writeString({ view, offset: 12, str: "fmt " });
 	view.setUint32(16, 16, true);
 	view.setUint16(20, 1, true);
-	view.setUint16(22, numChannels, true);
+	view.setUint16(22, NUM_CHANNELS, true);
 	view.setUint32(24, SAMPLE_RATE, true);
-	view.setUint32(28, SAMPLE_RATE * numChannels * bytesPerSample, true);
-	view.setUint16(32, numChannels * bytesPerSample, true);
-	view.setUint16(34, bitsPerSample, true);
-
-	// data chunk
+	view.setUint32(28, SAMPLE_RATE * NUM_CHANNELS * BYTES_PER_SAMPLE, true);
+	view.setUint16(32, NUM_CHANNELS * BYTES_PER_SAMPLE, true);
+	view.setUint16(34, BYTES_PER_SAMPLE * 8, true);
 	writeString({ view, offset: 36, str: "data" });
 	view.setUint32(40, dataSize, true);
-
-	// convert float32 to int16 and write
-	let offset = 44;
-	for (let i = 0; i < samples.length; i++) {
-		const sample = Math.max(-1, Math.min(1, samples[i]));
-		const int16 = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-		view.setInt16(offset, int16, true);
-		offset += 2;
-	}
-
-	return new Blob([buffer], { type: "audio/wav" });
+	return buffer;
 }
 
 function writeString({

@@ -1,14 +1,17 @@
 declare module "soundtouchjs" {
-	export class PitchShifter {
-		constructor(
-			context: BaseAudioContext,
-			buffer: AudioBuffer,
-			bufferSize: number,
-			onEnd?: () => void,
-		);
+	interface FifoSampleBuffer {
+		readonly frameCount: number;
+		putSamples(samples: Float32Array, position: number, frames: number): void;
+		receiveSamples(target: Float32Array, frames: number): void;
+	}
+
+	export class SoundTouch {
 		tempo: number;
-		pitch: number;
-		connect(destination: AudioNode): void;
-		off(): void;
+		readonly inputBuffer: FifoSampleBuffer;
+		readonly outputBuffer: FifoSampleBuffer;
+		readonly stretch: {
+			setParameters(sampleRate: number, sequenceMs: number, seekWindowMs: number, overlapMs: number): void;
+		};
+		process(): void;
 	}
 }

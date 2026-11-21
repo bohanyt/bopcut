@@ -26,8 +26,7 @@ type ExportParams = {
 	fps: FrameRate;
 	format: ExportFormat;
 	quality: ExportQuality;
-	shouldIncludeAudio?: boolean;
-	audioBuffer?: AudioBuffer;
+	audio?: { first: AudioBuffer; blocks: AsyncGenerator<AudioBuffer, void, unknown> };
 	onMediaFailure?: (mediaId: string, error: unknown) => void;
 };
 
@@ -52,8 +51,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 	private renderer: CanvasRenderer;
 	private format: ExportFormat;
 	private quality: ExportQuality;
-	private shouldIncludeAudio: boolean;
-	private audioBuffer?: AudioBuffer;
+	private audio: ExportParams["audio"];
 
 	constructor({
 		width,
@@ -61,8 +59,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		fps,
 		format,
 		quality,
-		shouldIncludeAudio,
-		audioBuffer,
+		audio,
 		onMediaFailure,
 	}: ExportParams) {
 		super();
@@ -76,8 +73,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 
 		this.format = format;
 		this.quality = quality;
-		this.shouldIncludeAudio = shouldIncludeAudio ?? false;
-		this.audioBuffer = audioBuffer;
+		this.audio = audio;
 	}
 
 	async export({
@@ -103,6 +99,13 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			target: new BufferTarget(),
 		});
 
+		let cancelling = false;
+		const cancelOutput = () => {
+			if (cancelling || (output.state !== "pending" && output.state !== "started")) return;
+			cancelling = true;
+			void output.cancel().catch((error) => console.warn("Failed to cancel export output:", error));
+		};
+		signal?.addEventListener("abort", cancelOutput, { once: true });
 		try {
 			const videoSource = new CanvasSource(this.renderer.getOutputCanvas(), {
 				codec: this.format === "webm" ? "vp9" : "avc",
@@ -114,14 +117,14 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			output.addVideoTrack(videoSource, this.format === "webm" ? { frameRate: fpsFloat } : {});
 
 			let audioSource: AudioBufferSource | null = null;
-			if (this.shouldIncludeAudio && this.audioBuffer) {
+			if (this.audio) {
 				let audioCodec: "aac" | "opus" = this.format === "webm" ? "opus" : "aac";
 
 				if (audioCodec === "aac" && typeof AudioEncoder !== "undefined") {
 					const { supported } = await waitWithAbort(AudioEncoder.isConfigSupported({
 						codec: "mp4a.40.2",
-						sampleRate: this.audioBuffer.sampleRate,
-						numberOfChannels: this.audioBuffer.numberOfChannels,
+						sampleRate: this.audio.first.sampleRate,
+						numberOfChannels: this.audio.first.numberOfChannels,
 						bitrate: 192000,
 					}), signal);
 					if (!supported) audioCodec = "opus";
@@ -136,15 +139,28 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 
 			await waitWithAbort(output.start(), signal);
 
-			if (audioSource && this.audioBuffer) {
+			let audioFrames = 0;
+			const addAudioBlock = async (buffer: AudioBuffer) => {
 				signal?.throwIfAborted();
-				await waitWithAbort(audioSource.add(this.audioBuffer), signal);
-				audioSource.close();
-			}
+				await waitWithAbort(audioSource!.add(buffer), signal);
+				audioFrames += buffer.length;
+			};
+			if (audioSource && this.audio) await addAudioBlock(this.audio.first);
 
 			for (let i = 0; i < frameCount; i++) {
 				const timeTicks = Math.min(rootNode.duration - 1, Math.round((i * frameTicksNumerator) / fps.numerator));
 				const timeSeconds = (i * fps.denominator) / fps.numerator;
+				// Keep encoded audio close to video so the muxer can interleave without
+				// retaining the entire compressed soundtrack before the first frame.
+				if (audioSource && this.audio && audioFrames / this.audio.first.sampleRate <= timeSeconds) {
+					const next = await this.audio.blocks.next();
+					if (next.done) {
+						audioSource.close();
+						audioSource = null;
+					} else {
+						await addAudioBlock(next.value);
+					}
+				}
 				const sampleDuration = this.format === "mp4" && i === frameCount - 1
 					? Math.max(MP4_MIN_SAMPLE_DURATION, Math.min(frameDuration, duration - timeSeconds))
 					: frameDuration;
@@ -156,6 +172,11 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 				this.emit("progress", i / frameCount);
 			}
 
+			// A low frame rate can leave multiple audio blocks after the last video timestamp.
+			if (audioSource && this.audio) {
+				for await (const buffer of this.audio.blocks) await addAudioBlock(buffer);
+				audioSource.close();
+			}
 			signal?.throwIfAborted();
 			videoSource.close();
 			await waitWithAbort(output.finalize(), signal);
@@ -171,13 +192,12 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			this.emit("complete", buffer);
 			return buffer;
 		} catch (error) {
-			if (output.state === "pending" || output.state === "started") {
-				void output.cancel().catch((cleanup) => console.warn("Failed to cancel export output:", cleanup));
-			}
+			cancelOutput();
 			if (!signal?.aborted) throw error;
 			this.emit("cancelled");
 			return null;
 		} finally {
+			signal?.removeEventListener("abort", cancelOutput);
 			this.renderer.videoCache.clear();
 		}
 	}
