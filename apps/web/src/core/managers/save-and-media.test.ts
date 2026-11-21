@@ -307,7 +307,6 @@ describe("navigation and thumbnails", () => {
 				getTracksScrollEl: () => scroller,
 				getRulerScrollEl: () => null,
 				getCurrentPlayheadTime: () => editor.playback.getCurrentTime(),
-				seek: () => {},
 				setTimelineViewState: (viewState) => editor.project.setTimelineViewState({ viewState }),
 			} },
 		});

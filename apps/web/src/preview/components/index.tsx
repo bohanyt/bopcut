@@ -207,13 +207,10 @@ function PreviewCanvas({
 		outputCanvas.style.display = "block";
 		outputCanvas.style.width = "100%";
 		outputCanvas.style.height = "100%";
-		mount.appendChild(outputCanvas);
+		if (!mount.firstChild) mount.appendChild(outputCanvas);
 		return () => {
 			renderSignalRef.current = null;
 			controller.abort();
-			if (outputCanvas.parentElement === mount) {
-				mount.removeChild(outputCanvas);
-			}
 		};
 	}, [renderer, sessionSignal]);
 
@@ -248,6 +245,14 @@ function PreviewCanvas({
 		lastSceneRef.current = renderTree;
 		lastFrameRef.current = frame;
 		task
+			.then(() => {
+				// Keep the previous frame visible while the new render target is waiting.
+				const mount = canvasMountRef.current;
+				const outputCanvas = renderer.getOutputCanvas();
+				if (!signal.aborted && mount && outputCanvas.parentElement !== mount) {
+					mount.replaceChildren(outputCanvas);
+				}
+			})
 			.catch((error) => {
 				if (!signal.aborted) console.error("Preview render failed:", error);
 			})

@@ -16,7 +16,7 @@ import { Onboarding } from "@/components/editor/onboarding";
 import { MigrationDialog } from "@/project/components/migration-dialog";
 import { usePanelStore } from "@/editor/panel-store";
 import { usePasteMedia } from "@/media/use-paste-media";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { installAgentBridge } from "@/agent/bridge";
 import { useEditor } from "@/editor/use-editor";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
@@ -79,6 +79,7 @@ function DegradedRendererBanner() {
 
 function EditorLayout() {
 	usePasteMedia();
+	const editor = useEditor();
 	const isPreviewRight = usePanelStore((state) => state.layout === "preview-right");
 	const activeScene = useEditor((editor) =>
 		editor.scenes.getActiveSceneOrNull(),
@@ -89,6 +90,13 @@ function EditorLayout() {
 	const setOverlayVisibility = usePreviewStore(
 		(state) => state.setOverlayVisibility,
 	);
+
+	useLayoutEffect(() => {
+		// Restore the saved position on editor entry, even if the timeline remounts later.
+		const { playheadTime } = editor.project.getTimelineViewState();
+		if (playheadTime !== undefined) editor.playback.seek({ time: playheadTime });
+	}, [editor]);
+
 	const showBookmarkNotes = isPreviewOverlayVisible({
 		overlay: bookmarkNotesPreviewOverlay,
 		overlays,

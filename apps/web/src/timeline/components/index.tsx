@@ -180,7 +180,6 @@ export function Timeline() {
 			minZoom: minZoomLevel,
 			initialZoom: savedViewState?.zoomLevel,
 			initialScrollLeft: savedViewState?.scrollLeft,
-			initialPlayheadTime: savedViewState?.playheadTime,
 			tracksScrollRef,
 			rulerScrollRef,
 		});

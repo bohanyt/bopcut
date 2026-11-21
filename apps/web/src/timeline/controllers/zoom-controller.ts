@@ -13,7 +13,6 @@ export interface ZoomConfig {
 	getTracksScrollEl: () => HTMLDivElement | null;
 	getRulerScrollEl: () => HTMLDivElement | null;
 	getCurrentPlayheadTime: () => MediaTime;
-	seek: (time: MediaTime) => void;
 	setTimelineViewState: (viewState: {
 		zoomLevel: number;
 		scrollLeft: number;
@@ -41,7 +40,6 @@ export class ZoomController {
 
 	private zoomLevelValue: number;
 	private hasInitialized = false;
-	private hasRestoredPlayhead = false;
 	private hasRestoredScroll = false;
 	private previousZoom: number;
 	private preZoomScrollLeft = 0;
@@ -249,14 +247,6 @@ export class ZoomController {
 		});
 		observer.observe(scrollElement);
 		return () => observer.disconnect();
-	}
-
-	restoreInitialPlayheadIfNeeded(initialPlayheadTime?: MediaTime): void {
-		if (initialPlayheadTime === undefined) return;
-		if (this.hasRestoredPlayhead) return;
-
-		this.hasRestoredPlayhead = true;
-		this.config.seek(initialPlayheadTime);
 	}
 
 	bindPreventBrowserZoom(): () => void {
