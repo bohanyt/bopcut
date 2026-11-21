@@ -95,6 +95,19 @@ test("navigation survives content saves without changing project bytes or their 
 	expect(await fs.stat(projectPath(id)).catch(() => null)).toBeNull();
 });
 
+test("lists older projects with numeric-keyed tracks even when duration is missing", async () => {
+	const { duration: _duration, ...metadata } = fixture("numeric-tracks", 25).metadata;
+	await writeLegacy({
+		...fixture(metadata.id, 25),
+		metadata,
+		scenes: [{ isMain: true, tracks: { 0: { elements: [{ startTime: 120_000, duration: 360_000 }] }, 1: {} } }],
+	});
+	await expect((await route("GET")).json()).resolves.toContainEqual({
+		metadata: { ...metadata, duration: 480_000 },
+		version: 25,
+	});
+});
+
 test("serves old inline thumbnails as images and keeps them out of subsequent content writes", async () => {
 	const id = "legacy-thumbnail";
 	const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(80_000)]);
@@ -112,8 +125,10 @@ test("serves old inline thumbnails as images and keeps them out of subsequent co
 	expect((await route("PUT", id, "", { headers: { "if-match": first.headers.get("etag")! }, body })).ok).toBe(true);
 	expect((await fs.stat(projectPath(id))).size).toBeLessThan(1024);
 	const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
-	expect((await route("PUT", id, "thumbnail", { body: jpeg })).status).toBe(204);
+	const upload = await route("PUT", id, "thumbnail", { body: jpeg });
+	expect(upload.status).toBe(204);
 	const updated = await route("GET", id, "thumbnail");
+	expect(upload.headers.get("etag")).toBe(updated.headers.get("etag"));
 	expect(updated.headers.get("content-type")).toBe("image/jpeg");
 	expect(new Uint8Array(await updated.arrayBuffer())).toEqual(jpeg);
 	expect((await route("GET", id, "thumbnail", {

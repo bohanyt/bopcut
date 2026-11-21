@@ -69,6 +69,7 @@ export class ProjectManager {
 	};
 	private exportController: AbortController | null = null;
 	private thumbnailGeneration = 0;
+	private thumbnailUploads = new Map<string, Promise<void>>();
 
 	constructor(private editor: EditorCore) {}
 
@@ -600,7 +601,7 @@ export class ProjectManager {
 					if (!thumbnail?.startsWith("/api/storage/projects/")) return;
 					newProject.metadata.thumbnail = undefined;
 					try {
-						const response = await fetch(thumbnail);
+						const response = await fetch(thumbnail, { signal: AbortSignal.timeout(10_000) });
 						if (response.ok) {
 							newProject.metadata.thumbnail = await storageService.saveProjectThumbnail({
 								id: newProjectId, thumbnail: await response.blob(),
@@ -701,7 +702,7 @@ export class ProjectManager {
 		if (!this.active) return;
 
 		try {
-			await this.updateThumbnailFromTimeline();
+			await this.updateThumbnailFromTimeline({ backgroundUpload: true });
 		} catch (error) {
 			console.error("Failed to generate project thumbnail on exit:", error);
 		}
@@ -871,7 +872,7 @@ export class ProjectManager {
 		return true;
 	}
 
-	private async updateThumbnailFromTimeline(): Promise<boolean> {
+	private async updateThumbnailFromTimeline({ backgroundUpload = false } = {}): Promise<boolean> {
 		const activeScene = this.editor.scenes.getActiveSceneOrNull();
 		if (!this.active || !activeScene || typeof document === "undefined") return false;
 		const id = this.active.metadata.id;
@@ -907,12 +908,38 @@ export class ProjectManager {
 		const thumbnail = await new Promise<Blob | null>((resolve) =>
 			renderer.getOutputCanvas().toBlob(resolve, "image/webp", 0.78),
 		);
-		if (!thumbnail || signal.aborted || generation !== this.thumbnailGeneration) return false;
-		const url = await storageService.saveProjectThumbnail({ id, thumbnail });
-		if (!this.active || signal.aborted || generation !== this.thumbnailGeneration) return false;
-		this.active = { ...this.active, metadata: { ...this.active.metadata, thumbnail: url } };
-		this.updateMetadata(this.active);
+		const metadata = this.active?.metadata;
+		if (!thumbnail || metadata?.id !== id || signal.aborted || generation !== this.thumbnailGeneration) return false;
+		const upload = this.publishThumbnail(metadata, thumbnail);
+		if (backgroundUpload) {
+			void upload.catch((error) => console.error("Failed to save project thumbnail on exit:", error));
+		} else {
+			await upload;
+		}
 		return true;
+	}
+
+	private async publishThumbnail(metadata: TProjectMetadata, thumbnail: Blob): Promise<void> {
+		const id = metadata.id;
+		const previous = this.thumbnailUploads.get(id) ?? Promise.resolve();
+		// An opening thumbnail still uploading must not replace a newer thumbnail from Exit.
+		const upload = previous.catch(() => {}).then(async () => {
+			if (this.deleted.has(id)) return;
+			const url = await storageService.saveProjectThumbnail({ id, thumbnail });
+			if (this.deleted.has(id)) return;
+			const saved = this.savedProjects.find((entry) => entry.id === id) ?? metadata;
+			this.updateSavedMetadata({ ...saved, thumbnail: url });
+			if (this.active?.metadata.id === id) {
+				this.active = { ...this.active, metadata: { ...this.active.metadata, thumbnail: url } };
+			}
+			this.notify();
+		});
+		this.thumbnailUploads.set(id, upload);
+		try {
+			await upload;
+		} finally {
+			if (this.thumbnailUploads.get(id) === upload) this.thumbnailUploads.delete(id);
+		}
 	}
 
 	/** Project list entry only, without notifying (the editor does not show the list). */

@@ -354,6 +354,7 @@ describe("navigation and thumbnails", () => {
 		const rendering = gate();
 		const render = spyOn(CanvasRenderer.prototype, "renderToCanvas").mockImplementation(() => rendering.promise);
 		const saving = mock(async () => "/api/storage/projects/4k/thumbnail");
+		const uploading = Promise.withResolvers<string>();
 		const stored = project("4k", new Date(0));
 		stored.metadata.thumbnail = undefined;
 		stored.settings.canvasSize = { width: 3840, height: 2160 };
@@ -374,8 +375,23 @@ describe("navigation and thumbnails", () => {
 			expect(encode).toHaveBeenCalledWith(expect.any(Function), "image/webp", 0.78);
 			expect(saving).toHaveBeenCalledWith({ id: "4k", thumbnail: expect.any(Blob) });
 			expect(disk.writes).toEqual([]);
+
+			const snapshot = editor.project.snapshotActive()!;
+			const duration = roundMediaTime({ time: 480_000 });
+			expect(await editor.project.persistProject({
+				...snapshot, metadata: { ...snapshot.metadata, duration },
+			})).toBeNull();
+			saving.mockImplementationOnce(() => uploading.promise);
+			const exiting = editor.project.prepareExit();
+			expect(await Promise.race([exiting.then(() => true), wait(100).then(() => false)])).toBe(true);
+			editor.project.closeProject();
+			const refreshed = "/api/storage/projects/4k/thumbnail?v=exit";
+			uploading.resolve(refreshed);
+			await until(() => editor.project.getSavedProjects()[0]?.thumbnail === refreshed);
+			expect(editor.project.getSavedProjects()[0]?.duration).toBe(duration);
 		} finally {
 			rendering.open();
+			uploading.resolve("/api/storage/projects/4k/thumbnail");
 			await opening;
 			render.mockRestore();
 			if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);

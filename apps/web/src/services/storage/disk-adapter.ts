@@ -52,8 +52,11 @@ export class DiskAdapter {
 	}
 	async saveThumbnail(id: string, thumbnail: Blob): Promise<string> {
 		const url = `${projectUrl(id)}/thumbnail`;
-		await checked(await fetch(url, { method: "PUT", body: thumbnail }));
-		return url;
+		const response = await checked(await fetch(url, {
+			method: "PUT", body: thumbnail, signal: AbortSignal.timeout(10_000),
+		}));
+		const etag = response.headers.get("etag");
+		return etag ? `${url}?v=${encodeURIComponent(etag)}` : url;
 	}
 	async set({
 		key,

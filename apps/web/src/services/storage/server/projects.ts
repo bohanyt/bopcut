@@ -1,6 +1,7 @@
 import { promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 import type { ProjectNavigation, ProjectSummary, SerializedProject } from "../types";
+import { isRecord } from "../migrations/transformers/utils";
 import { atomicWrite, projectDir, readJson, retryTransient, revision, statFile, withProjectLock } from "./files";
 
 export const projectFile = (id: string) => path.join(projectDir(id), "project.json");
@@ -32,20 +33,27 @@ function summarize(id: string, project: SerializedProject | null): ProjectSummar
 	return {
 		version: project.version,
 		metadata: {
-			id, name, duration: duration ?? legacyDuration(project), createdAt, updatedAt,
+			id, name, duration: Number.isFinite(duration) ? duration : legacyDuration(project), createdAt, updatedAt,
 			thumbnail: inlineThumbnail(thumbnail) ? thumbnailUrl(id) : storedThumbnail(thumbnail),
 		},
 	};
 }
 
 function legacyDuration(project: SerializedProject): number {
-	const scenes = project.scenes ?? [];
+	const scenes = Array.isArray(project.scenes) ? project.scenes.filter(isRecord) : [];
 	const tracks = (scenes.find((scene) => scene.isMain) ?? scenes[0])?.tracks;
-	if (!tracks) return 0;
-	const ordered = Array.isArray(tracks) ? tracks : [tracks.main, ...tracks.overlay, ...tracks.audio];
+	if (!isRecord(tracks)) return 0;
+	const ordered: unknown[] = Array.isArray(tracks.overlay) && Array.isArray(tracks.audio)
+		? [tracks.main, ...tracks.overlay, ...tracks.audio]
+		: Object.values(tracks);
 	let duration = 0;
 	for (const track of ordered) {
-		for (const element of track.elements) duration = Math.max(duration, element.startTime + element.duration);
+		if (!isRecord(track) || !Array.isArray(track.elements)) continue;
+		for (const element of track.elements) {
+			if (!isRecord(element) || typeof element.startTime !== "number" || typeof element.duration !== "number") continue;
+			const end = element.startTime + element.duration;
+			if (Number.isFinite(end)) duration = Math.max(duration, end);
+		}
 	}
 	return duration;
 }
@@ -162,8 +170,10 @@ function imageType(bytes: Uint8Array): "image/jpeg" | "image/png" | "image/webp"
 
 export async function writeProjectThumbnail(id: string, bytes: Uint8Array) {
 	if (!imageType(bytes)) return new Response(null, { status: 400 });
-	await atomicWrite(thumbnailFile(id), bytes);
-	return new Response(null, { status: 204 });
+	const file = thumbnailFile(id);
+	await atomicWrite(file, bytes);
+	const stat = await statFile(file);
+	return new Response(null, { status: 204, headers: stat ? { ETag: `"${stamp(stat)}"` } : undefined });
 }
 
 export async function readProjectThumbnail(id: string, ifNoneMatch: string | null) {
