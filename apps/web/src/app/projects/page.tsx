@@ -1,6 +1,6 @@
 "use client";
 
-import Image from "next/image";
+import { ProjectThumbnail } from "@/project/components/project-thumbnail";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { KeyboardEvent, MouseEvent } from "react";
@@ -580,12 +580,7 @@ function ProjectItem({
 			<div className="bg-muted relative aspect-video">
 				<div className="absolute inset-0">
 					{project.thumbnail ? (
-						<Image
-							src={project.thumbnail}
-							alt="Project thumbnail"
-							fill
-							className="object-cover"
-						/>
+						<ProjectThumbnail src={project.thumbnail} />
 					) : (
 						<div className="flex size-full items-center justify-center">
 							<OcVideoIcon className="text-muted-foreground size-12 shrink-0" />
@@ -616,12 +611,7 @@ function ProjectItem({
 		<div className="flex items-center gap-3 flex-1 min-w-0">
 			<div className="bg-muted relative size-10 rounded overflow-hidden shrink-0">
 				{project.thumbnail ? (
-					<Image
-						src={project.thumbnail}
-						alt="Project thumbnail"
-						fill
-						className="object-cover"
-					/>
+					<ProjectThumbnail src={project.thumbnail} />
 				) : (
 					<div className="flex size-full items-center justify-center">
 						<OcVideoIcon className="text-muted-foreground size-5 shrink-0" />
