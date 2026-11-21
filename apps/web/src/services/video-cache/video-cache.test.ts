@@ -60,78 +60,16 @@ describe("video frames", () => {
 		expect(frames.map(at)).toEqual([0.15, 1.2, 2.8]);
 	});
 
-	test("a same-clip preview completes before an abandoned export decode settles", async () => {
-		const cache = new VideoCache();
-		const sinks = (cache as unknown as { sinks: Map<string, unknown> }).sinks;
-		const started = Promise.withResolvers<void>();
-		const release = Promise.withResolvers<void>();
-		const closed = Promise.withResolvers<void>();
-		const disposed: number[] = [];
-		let sinkCount = 0;
-		Object.assign(cache, {
-			ensureSink: async ({ mediaId }: { mediaId: string }) => {
-				if (sinks.has(mediaId)) return;
-				const sinkNumber = ++sinkCount;
-				sinks.set(mediaId, {
-					file,
-					input: {
-						disposed: false,
-						dispose() {
-							this.disposed = true;
-							disposed.push(sinkNumber);
-						},
-					},
-					sink: {
-						async *canvases(time: number) {
-							try {
-								if (sinkNumber === 1) {
-									started.resolve();
-									await release.promise;
-								}
-								yield { timestamp: time, duration: 0.5 };
-							} finally {
-								if (sinkNumber === 1) closed.resolve();
-							}
-						},
-					},
-				});
-			},
-		});
-
-		const controller = new AbortController();
-		const abandoned = cache.getFrameAt({
-			mediaId: "m", file, time: 1, exact: true, signal: controller.signal,
-		}).catch((error: unknown) => error);
-		try {
-			await started.promise;
-			controller.abort();
-			const preview = () => cache.getFrameAt({ mediaId: "m", file, time: 2 });
-			const frame = await Promise.race([preview(), Bun.sleep(0).then(() => null)]);
-			expect(at(frame)).toBe(2);
-			expect(await abandoned).toBe(controller.signal.reason);
-
-			release.resolve();
-			await closed.promise;
-			expect(await preview()).toBe(frame);
-			expect(disposed).toEqual([1]);
-		} finally {
-			release.resolve();
-			cache.clearAll();
-		}
-	});
-
 	test("export reads report seek errors and tracks that decode no frames", async () => {
 		const cache = new VideoCache();
 		const sinks = (cache as unknown as { sinks: Map<string, unknown> }).sinks;
-		const input = { disposed: false };
 		sinks.set("m", {
 			file,
-			input,
 			sink: { async *canvases() { throw new Error("Invalid packet"); } },
 		});
 		const read = () => cache.getFrameAt({ mediaId: "m", file, time: 0, exact: true, throwOnSeekError: true });
 		await expect(read()).rejects.toThrow("Invalid packet");
-		sinks.set("m", { file, input, sink: { async *canvases() {} } });
+		sinks.set("m", { file, sink: { async *canvases() {} } });
 		await expect(read()).rejects.toThrow("No video frames could be decoded");
 	});
 });

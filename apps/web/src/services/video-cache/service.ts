@@ -5,7 +5,6 @@ import {
 	CanvasSink,
 	type WrappedCanvas,
 } from "mediabunny";
-import { waitWithAbort } from "@/utils/abort";
 
 interface VideoSinkData {
 	file: File;
@@ -59,23 +58,12 @@ export class VideoCache {
 		if (generation !== null) this.seekGenerations.set(mediaId, generation);
 
 		const previous = this.frameChain.get(mediaId) ?? Promise.resolve();
-		const current = previous.then(async () => {
+		const current = previous.then(() => {
 			signal?.throwIfAborted();
-			if (this.sinks.get(mediaId) !== sinkData) return null;
 			if (generation !== null && this.seekGenerations.get(mediaId) !== generation) {
 				return sinkData.currentFrame ?? null;
 			}
-
-			// Release the queue on abort so the next request can open its own decoder.
-			const retire = () => {
-				if (this.sinks.get(mediaId) === sinkData) this.clearVideo({ mediaId });
-			};
-			signal?.addEventListener("abort", retire, { once: true });
-			try {
-				return await waitWithAbort(this.resolveFrame({ sinkData, time, throwOnSeekError }), signal);
-			} finally {
-				signal?.removeEventListener("abort", retire);
-			}
+			return this.resolveFrame({ sinkData, time, throwOnSeekError });
 		});
 		this.frameChain.set(
 			mediaId,
@@ -155,7 +143,6 @@ export class VideoCache {
 				if (sinkData.prefetching && sinkData.prefetchPromise) {
 					await sinkData.prefetchPromise;
 				}
-				if (sinkData.input.disposed) return null;
 
 				// Check if the nextFrame (which might have just arrived) is what we need
 				if (
@@ -167,7 +154,7 @@ export class VideoCache {
 				} else {
 					const { value: frame, done } = await sinkData.iterator.next();
 
-					if (done || !frame || sinkData.input.disposed) break;
+					if (done || !frame) break;
 
 					sinkData.currentFrame = frame;
 				}
@@ -184,7 +171,6 @@ export class VideoCache {
 				if (frame.timestamp > targetTime + 1.0) break;
 			}
 		} catch (error) {
-			if (sinkData.input.disposed) return null;
 			console.warn("Iterator failed, will restart:", error);
 			sinkData.iterator = null;
 		}
@@ -206,11 +192,9 @@ export class VideoCache {
 			}
 
 			if (sinkData.iterator) {
-				const iterator = sinkData.iterator;
+				await sinkData.iterator.return();
 				sinkData.iterator = null;
-				await iterator.return();
 			}
-			if (sinkData.input.disposed) return null;
 
 			sinkData.nextFrame = null;
 			sinkData.iterator = sinkData.sink.canvases(time);
@@ -218,7 +202,6 @@ export class VideoCache {
 
 			// Fetch current frame
 			const { value: frame } = await sinkData.iterator.next();
-			if (sinkData.input.disposed) return null;
 
 			if (frame) {
 				sinkData.currentFrame = frame;
@@ -227,7 +210,6 @@ export class VideoCache {
 			}
 			if (throwOnSeekError) throw new Error("No video frames could be decoded");
 		} catch (error) {
-			if (sinkData.input.disposed) return null;
 			if (throwOnSeekError) throw error;
 			console.warn("Failed to seek video:", error);
 		}
@@ -258,15 +240,20 @@ export class VideoCache {
 		try {
 			const { value: frame, done } = await sinkData.iterator.next();
 
-			if (!done && frame && !sinkData.input.disposed) {
-				sinkData.nextFrame = frame;
+			if (done || !frame) {
+				sinkData.prefetching = false;
+				sinkData.prefetchPromise = null;
+				return;
 			}
-		} catch (error) {
-			if (!sinkData.input.disposed) console.warn("Prefetch failed:", error);
-			sinkData.iterator = null;
-		} finally {
+
+			sinkData.nextFrame = frame;
 			sinkData.prefetching = false;
 			sinkData.prefetchPromise = null;
+		} catch (error) {
+			console.warn("Prefetch failed:", error);
+			sinkData.prefetching = false;
+			sinkData.prefetchPromise = null;
+			sinkData.iterator = null;
 		}
 	}
 	private async ensureSink({
@@ -342,15 +329,18 @@ export class VideoCache {
 
 	clearVideo({ mediaId }: { mediaId: string }): void {
 		const sinkData = this.sinks.get(mediaId);
-		this.sinks.delete(mediaId);
+		if (sinkData) {
+			if (sinkData.iterator) {
+				void sinkData.iterator.return();
+			}
+
+			sinkData.input.dispose();
+			this.sinks.delete(mediaId);
+		}
+
 		this.initPromises.delete(mediaId);
 		this.frameChain.delete(mediaId);
 		this.seekGenerations.delete(mediaId);
-		if (sinkData) {
-			sinkData.input.dispose();
-			void sinkData.iterator?.return().catch(() => {});
-			sinkData.iterator = null;
-		}
 	}
 
 	clearAll(): void {
