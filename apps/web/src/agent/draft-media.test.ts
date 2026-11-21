@@ -801,6 +801,69 @@ describe("basedOn is checked before anything is imported", () => {
 
 
 describe("media import lifecycle", () => {
+	test.each([
+		[30, 60, 60_000 / 1_001],
+		[24, 30, 30_000 / 1_001],
+		[30, 30, 30_000 / 1_001],
+	])("a first paste keeps a faster source already published to the bin (%f → %f, then %f)", async (initialFps, faster, slower) => {
+		const editor = setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const { AddMediaAssetCommand, BatchCommand, InsertElementCommand } = await import("@/commands");
+		const { buildElementFromMedia } = await import("@/timeline/element-utils");
+		await editor.project.updateSettings({ settings: { fps: { numerator: initialFps, denominator: 1 } }, pushHistory: false });
+		const current = editor.scenes.getActiveScene();
+		const empty = { ...current, tracks: { ...current.tracks, main: { ...current.tracks.main, elements: [] }, overlay: [] } };
+		editor.scenes.setScenes({ scenes: [empty], activeSceneId: empty.id });
+		const importVideo = (fps: number) => editor.media.addMediaAsset({
+			projectId: "p",
+			asset: { name: `${fps}.mp4`, type: "video", file: new File(["footage"], `${fps}.mp4`), fps, width: 640, height: 360 },
+		});
+		expect(await importVideo(faster)).not.toBeNull();
+		const source = await importVideo(slower);
+		if (!source) throw new Error("Expected a saved import");
+		editor.command.execute({ command: new BatchCommand([
+			new AddMediaAssetCommand({ projectId: "p", assetId: source.id }),
+			new InsertElementCommand({
+				element: buildElementFromMedia({ mediaId: source.id, mediaType: source.type, name: source.name, startTime: T(0), duration: T(1) }),
+				placement: { mode: "explicit", trackId: empty.tracks.main.id },
+			}),
+		]) });
+		const expectFasterRate = () => expect(editor.project.getActive().settings.fps).toEqual({ numerator: faster, denominator: 1 });
+		expectFasterRate();
+		editor.command.undo();
+		expectFasterRate();
+		editor.command.redo();
+		expectFasterRate();
+		await editor.media.settleBinWrites("p");
+	});
+
+	test.each([30, 31])("first video can initialize a default or incompatible project rate (%d)", async (initialFps) => {
+		const editor = setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const { InsertElementCommand } = await import("@/commands");
+		const { buildElementFromMedia } = await import("@/timeline/element-utils");
+		await editor.project.updateSettings({ settings: { fps: { numerator: initialFps, denominator: 1 } }, pushHistory: false });
+		const current = editor.scenes.getActiveScene();
+		const empty = { ...current, tracks: { ...current.tracks, main: { ...current.tracks.main, elements: [] }, overlay: [] } };
+		editor.scenes.setScenes({ scenes: [empty], activeSceneId: empty.id });
+		const source = await editor.media.addMediaAsset({
+			projectId: "p", asset: { name: "footage.mp4", type: "video", file: new File(["footage"], "footage.mp4"), fps: 30_000 / 1_001 },
+		});
+		if (!source) throw new Error("Expected a saved import");
+		const command = new InsertElementCommand({
+			element: buildElementFromMedia({ mediaId: source.id, mediaType: source.type, name: source.name, startTime: T(0), duration: T(1) }),
+			placement: { mode: "explicit", trackId: empty.tracks.main.id },
+		});
+		editor.command.execute({ command });
+		expect(editor.project.getActive().settings.fps).toEqual({ numerator: 30_000, denominator: 1_001 });
+		editor.command.undo();
+		expect(editor.project.getActive().settings.fps).toEqual({ numerator: initialFps, denominator: 1 });
+		editor.command.redo();
+		expect(editor.project.getActive().settings.fps).toEqual({ numerator: 30_000, denominator: 1_001 });
+	});
+
 	test("a stalled upload does not hold the next import in the same project", async () => {
 		const editor = setup();
 		const started = gate();

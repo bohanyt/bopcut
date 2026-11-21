@@ -23,6 +23,10 @@ export function frameRateToFloat(rate: FrameRate): number {
 	return rate.numerator / rate.denominator;
 }
 
+export function frameRateHasWholeTicks({ numerator, denominator }: FrameRate): boolean {
+	return numerator > 0 && denominator > 0 && (TICKS_PER_SECOND * denominator) % numerator === 0;
+}
+
 export function frameRatesEqual({
 	a,
 	b,
@@ -60,8 +64,7 @@ export function importedVideoProjectRate(fps: number): FrameRate | null {
 	const rate = floatToFrameRate(fps);
 	// Both the source frame grid and the nominal clock used for frame timecode must be exact.
 	if (
-		rate.numerator > 0 && rate.numerator <= 0xffffffff &&
-		(TICKS_PER_SECOND * rate.denominator) % rate.numerator === 0 &&
+		rate.numerator <= 0xffffffff && frameRateHasWholeTicks(rate) &&
 		TICKS_PER_SECOND % Math.ceil(frameRateToFloat(rate)) === 0
 	) {
 		return rate;
