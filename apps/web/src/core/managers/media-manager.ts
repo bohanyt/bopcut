@@ -77,7 +77,7 @@ export class MediaManager {
 			: storageService.deleteMediaAsset({ projectId, id })
 		).finally(() => {
 			if (projectWrites.get(id)?.done === done) projectWrites.delete(id);
-			if (!projectWrites.size) this.binWrites.delete(projectId);
+			if (!projectWrites.size && this.binWrites.get(projectId) === projectWrites) this.binWrites.delete(projectId);
 		});
 		projectWrites.set(id, { asset, done });
 		if (this.loadingBinChanges?.projectId === projectId) this.loadingBinChanges.changes.set(id, asset);

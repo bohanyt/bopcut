@@ -1066,6 +1066,35 @@ describe("media import lifecycle", () => {
 		expect(save).toHaveBeenCalledTimes(1);
 	});
 
+	test("an older delete response cannot forget a newer pending bin removal", async () => {
+		const editor = setup();
+		const project = editor.project.getActive();
+		const firstResponse = gate();
+		const secondResponse = gate();
+		const remove = spyOn(storageService, "deleteMediaAsset").mockImplementation(({ id }) =>
+			id === "m-old" ? firstResponse.promise : secondResponse.promise,
+		);
+		const save = spyOn(storageService, "saveMediaAsset").mockResolvedValue();
+		const load = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([asset("m-old"), asset("m-new")]);
+		restore = () => { remove.mockRestore(); save.mockRestore(); load.mockRestore(); };
+		editor.media.removeMediaAsset({ projectId: "p", id: "m-old" });
+		editor.command.undo();
+		await editor.media.settleBinWrites("p");
+		editor.media.removeMediaAsset({ projectId: "p", id: "m-new" });
+		firstResponse.open();
+		await Bun.sleep(0);
+		editor.project.closeProject();
+		editor.project.setActiveProject({ project });
+		editor.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+		try {
+			await editor.media.loadProjectMedia({ projectId: "p" });
+			expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["m-old"]);
+		} finally {
+			secondResponse.open();
+			await editor.media.settleBinWrites("p");
+		}
+	});
+
 	test.each([false, true])("a late upload does not duplicate or revive a loaded entry (removed: %s)", async (removed) => {
 		const editor = setup();
 		const file = new File(["png"], "upload.png", { type: "image/png" });
