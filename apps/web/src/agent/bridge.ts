@@ -180,26 +180,29 @@ export function installAgentBridge() {
 	if (installed || typeof window === "undefined") return;
 	installed = true;
 	const editor = EditorCore.getInstance();
+	let mounted = true;
+	const unsubscribes: (() => void)[] = [];
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	editLogger = createEditLogger(editSnapshot, () => editor.timeline.isPreviewActive(), (lines) => {
 		fetch("/api/agent/edits", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lines) }).catch(() => {});
 	});
+	const syncNow = () => {
+		timer = undefined;
+		const snap = agentSnapshot();
+		if (!snap) return;
+		// Remember what this snapshot showed so a draft can protect later user edits.
+		snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), stateMeta(snap.sceneId));
+		return fetch("/api/agent/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snap) }).catch(() => {});
+	};
 	const sync = () => {
 		clearTimeout(timer);
-		timer = setTimeout(() => {
-			const snap = agentSnapshot();
-			if (!snap) return;
-			// Remember what this snapshot showed, so a draft `basedOn` it can tell the user's later edits apart.
-			snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), stateMeta(snap.sceneId));
-			fetch("/api/agent/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snap) }).catch(() => {});
-		}, 800);
+		timer = setTimeout(syncNow, 800);
 	};
 	const push = () => {
 		editLogger?.changed();
 		sync();
 	};
-	editor.timeline.subscribe(push);
-	editor.scenes.subscribe(push);
+	unsubscribes.push(editor.timeline.subscribe(push), editor.scenes.subscribe(push));
 	// selection.json: what the user points at, written shortly after the selection or the playhead settles.
 	let selectionTimer: ReturnType<typeof setTimeout> | undefined;
 	let lastSelection = "";
@@ -215,11 +218,10 @@ export function installAgentBridge() {
 			});
 		}, 250);
 	};
-	editor.selection.subscribe(pushSelection);
-	editor.playback.subscribe(pushSelection);
-	editor.timeline.subscribe(pushSelection);
-	editor.scenes.subscribe(pushSelection);
-	editor.project.subscribe(pushSelection);
+	unsubscribes.push(
+		editor.selection.subscribe(pushSelection), editor.playback.subscribe(pushSelection),
+		editor.timeline.subscribe(pushSelection), editor.scenes.subscribe(pushSelection), editor.project.subscribe(pushSelection),
+	);
 	pushSelection();
 	// Re-sync when readiness changes (media finished loading, a save landed) so the snapshot tells the truth.
 	let readiness = "";
@@ -231,9 +233,9 @@ export function installAgentBridge() {
 			sync();
 		}
 	};
-	editor.save.subscribe(readinessChanged);
-	editor.media.subscribe(readinessChanged);
-	editor.project.subscribe(readinessChanged);
+	unsubscribes.push(
+		editor.save.subscribe(readinessChanged), editor.media.subscribe(readinessChanged), editor.project.subscribe(readinessChanged),
+	);
 	// A snapshot taken in the console is remembered like a synced one, so a draft can be basedOn it.
 	const consoleSnapshot = () => {
 		const snap = agentSnapshot();
@@ -242,14 +244,29 @@ export function installAgentBridge() {
 	};
 	(window as any).agent = { editor, snapshot: consoleSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
 	push();
-	setInterval(() => {
-		void pollDraft();
+	const polling = setInterval(() => {
+		void pollDraft(() => mounted);
 		if (!runningCliJob) {
 			trackLegacyPass(pollFrames(agentReadiness));
 			trackLegacyPass(pollChanges());
 			trackLegacyPass(pollExport());
 		}
 	}, 2000);
+	return async () => {
+		mounted = false;
+		installed = false;
+		const project = editor.project.getActiveOrNull()?.metadata.id;
+		const flush = timer !== undefined || applying || runningCliJob;
+		clearInterval(polling);
+		clearTimeout(timer);
+		clearTimeout(selectionTimer);
+		for (const unsubscribe of unsubscribes) unsubscribe();
+		editLogger?.stop();
+		delete (window as Window & { agent?: unknown }).agent;
+		await draftPass;
+		await draftQueue;
+		if (flush && project && editor.project.getActiveOrNull()?.metadata.id === project) await syncNow();
+	};
 }
 
 const legacyPasses = new Set<Promise<unknown>>();
@@ -506,8 +523,16 @@ export async function pollChanges(job?: JobTransport) {
 // Times are in seconds; inside a compound clip they are relative to its content. The whole draft is one Undo step.
 let applying = false;
 let runningCliJob = false;
+let draftPass: Promise<void> | null = null;
 /** Picks up draft.json for the open project (every 2 s; exported for tests). */
-export async function pollDraft() {
+export function pollDraft(mounted = () => true): Promise<void> {
+	if (draftPass || !mounted() || runningCliJob) return Promise.resolve();
+	const pass = readDraft(mounted).finally(() => { if (draftPass === pass) draftPass = null; });
+	draftPass = pass;
+	return pass;
+}
+
+async function readDraft(mounted: () => boolean) {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	if (!project || applying) return;
@@ -523,7 +548,7 @@ export async function pollDraft() {
 	let draft: Draft | null = null;
 	try {
 		const response = await fetch("/api/agent/draft", {
-			cache: "no-store", headers: {
+			cache: "no-store", signal: AbortSignal.timeout(10_000), headers: {
 				"x-bopencut-tab": editorTab, "x-bopencut-project": project.metadata.id, "x-bopencut-stage": stage,
 				"x-bopencut-graphics": rendererDevice.status.state, "x-bopencut-draft-ready": String(legacyReady),
 			},
@@ -534,11 +559,12 @@ export async function pollDraft() {
 			runningCliJob = true;
 			try {
 				await runClaimedJob(claimed, false, async (job) => {
-					if (draftSessionError({ draft: { projectId: claimed.projectId }, queued: session, now: currentSession() })) {
+					if (!mounted() || draftSessionError({ draft: { projectId: claimed.projectId }, queued: session, now: currentSession() })) {
 						throw new Error("The editor switched projects. Reopen the original project and retry.");
 					}
 					await waitWithAbort(Promise.allSettled(legacyPasses), job.signal);
 					job.signal.throwIfAborted();
+					if (!mounted()) throw new Error("The editor was closed. Run the command again.");
 					await runEditorJob(claimed, job, { session, rootSceneId });
 				});
 			} finally {
@@ -551,7 +577,7 @@ export async function pollDraft() {
 	} catch {
 		return;
 	}
-	if (!draft?.rev || (draft.projectId && draft.projectId !== project.metadata.id)) return;
+	if (!mounted() || runningCliJob || !draft?.rev || (draft.projectId && draft.projectId !== project.metadata.id)) return;
 	if (draftSessionError({ draft, queued: session, now: currentSession() })) return;
 	// A root switch can also make the editor unready. Refuse this draft before a later poll can retarget it.
 	if (rootSceneId === (agentRootScene()?.id ?? null) && !agentReadiness().ready) return;

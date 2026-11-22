@@ -17,7 +17,7 @@ import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
 import { handleExportFile, handleExportResult } from "@/agent/export-server";
 import { handleCli, offerVisibleJob, requestKey } from "@/agent/cli-api";
-import { finishJob, getJob, JobError, writeWorkspaceSnapshot } from "@/agent/cli-job-server";
+import { finishJob, getJob, JobError, prepareJobOutput, writeWorkspaceSnapshot } from "@/agent/cli-job-server";
 import { JOB_HEADER, type AgentJob } from "@/agent/cli-jobs";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -137,7 +137,8 @@ async function writeJobResult(req: Request, job: AgentJob, action: string) {
 		}
 		if (action === "export-file") {
 			job.progress("saving");
-			return handleExportFile(req, WORKSPACE, { signal: job.signal, finish: (body) => finishJob(job, body) });
+			const dir = await prepareJobOutput(job, WORKSPACE, "exports");
+			return handleExportFile(req, WORKSPACE, { dir, signal: job.signal, finish: (body) => finishJob(job, body) });
 		}
 	}
 	if (job.command === "frames" && action === "frame") return saveFrame(req, job);
@@ -159,9 +160,9 @@ async function saveFrame(req: Request, job?: AgentJob) {
 		job?.signal.throwIfAborted();
 		const folder = job?.id ?? rev;
 		const file = `frames/${folder}/${name}`;
-		await fs.mkdir(path.join(WORKSPACE, "frames", folder), { recursive: true });
-		const target = path.join(WORKSPACE, "frames", folder, name);
-		job?.frameFiles.add(target);
+		const dir = job ? await prepareJobOutput(job, WORKSPACE, "frames") : path.join(WORKSPACE, "frames", folder);
+		await fs.mkdir(dir, { recursive: true });
+		const target = path.join(dir, name);
 		await fs.writeFile(target, Buffer.from(await image.arrayBuffer()), { signal: job?.signal });
 		return Response.json({ file });
 }

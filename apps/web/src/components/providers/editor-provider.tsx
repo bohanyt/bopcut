@@ -15,6 +15,7 @@ import { useEditorActions } from "@/actions/use-editor-actions";
 import { loadFontAtlas } from "@/fonts/google-fonts";
 import { rendererDevice } from "@/services/renderer/renderer-device";
 import { connectEditor } from "@/agent/cli-browser";
+import { installAgentBridge } from "@/agent/bridge";
 
 interface EditorProviderProps {
 	projectId: string;
@@ -38,6 +39,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 		let cancelled = false;
 		const editor = EditorCore.getInstance();
 		const presence = connectEditor(projectId);
+		let stopBridge: (() => Promise<void>) | undefined;
 
 		const loadProject = async () => {
 			try {
@@ -49,6 +51,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 				if (cancelled) return;
 
+				stopBridge = installAgentBridge();
 				setIsLoading(false);
 				loadFontAtlas();
 			} catch (err) {
@@ -87,15 +90,17 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 		return () => {
 			cancelled = true;
-			// Keep the registration while a departing project still has a write in flight.
-			if (!editor.save.hasUnsavedChangesOf(projectId)) presence.close();
-			else {
+			// Stop taking jobs before withdrawing presence. A draft already accepted can still be saving.
+			const unregister = () => {
+				if (!editor.save.hasUnsavedChangesOf(projectId)) return presence.close();
 				const unsubscribe = editor.save.subscribe(() => {
 					if (editor.save.hasUnsavedChangesOf(projectId)) return;
 					unsubscribe();
 					presence.close();
 				});
-			}
+			};
+			if (stopBridge) void stopBridge().then(unregister, unregister);
+			else unregister();
 			if (editor.playback.getIsPlaying()) editor.playback.pause();
 		};
 	}, [projectId, router]);

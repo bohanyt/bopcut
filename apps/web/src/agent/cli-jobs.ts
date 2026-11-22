@@ -11,7 +11,8 @@ export class AgentJob {
 	readonly released = Promise.withResolvers<void>();
 	readonly pending = new Set<Promise<unknown>>();
 	readonly staged = new Set<string>();
-	readonly frameFiles = new Set<string>();
+	output?: Promise<string>;
+	keepsOutput = false;
 	readonly words = new Map<string, unknown>();
 	readonly expires: ReturnType<typeof setTimeout>;
 	owner: string | null = null;
@@ -79,6 +80,7 @@ export class AgentJob {
 
 export class AgentJobs {
 	active: AgentJob | null = null;
+	private readonly failedCleanup = new Set<string>();
 	private readonly cancelled = new Map<string, number>();
 	private readonly tabs = new Map<string, Map<string, object>>();
 
@@ -103,11 +105,17 @@ export class AgentJobs {
 	async beforeOpen(projectId: string): Promise<void> {
 		const job = this.active;
 		if (job?.hidden && job.command === "draft" && job.projectId === projectId) await job.released.promise;
+		this.checkRecovery(projectId);
+	}
+
+	checkRecovery(projectId: string) {
+		if (this.failedCleanup.has(projectId)) throw new Error("Draft recovery could not finish. Restart the editor server before opening or changing this project.");
 	}
 
 	create(projectId: string, command: JobCommand, body: JobBody, timeoutMs: number, id: string = randomUUID()): AgentJob {
 		for (const [key, expiry] of this.cancelled) if (expiry <= Date.now()) this.cancelled.delete(key);
 		if (this.cancelled.has(id)) throw new Error("The command was cancelled. Submit a new job to retry.");
+		this.checkRecovery(projectId);
 		if (this.active) throw new Error("An agent command is already running. Wait for it to finish and try again.");
 		const job = new AgentJob(projectId, command, body, !this.serving(projectId), timeoutMs, () => {
 			void this.close(job).catch((error) => console.error("Agent cleanup failed:", error));
@@ -129,6 +137,9 @@ export class AgentJobs {
 			try {
 				await Promise.allSettled(job.pending);
 				await this.cleanup(job);
+			} catch (error) {
+				if (job.hidden && job.command === "draft") this.failedCleanup.add(job.projectId);
+				throw error;
 			} finally {
 				if (this.active === job) this.active = null;
 				job.released.resolve();

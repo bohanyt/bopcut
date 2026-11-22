@@ -539,6 +539,27 @@ describe("malformed element trees", () => {
 });
 
 describe("the draft poller", () => {
+	test("leaving the editor before a legacy read finishes leaves the draft untouched", async () => {
+		setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const reply = gate();
+		let mounted = true;
+		const original = fetch;
+		globalThis.fetch = (async (url, init) => {
+			if (url === "/api/agent/draft") {
+				await reply.promise;
+				return Response.json(draft([{ op: "delete", match: { agentId: "old" } }]));
+			}
+			return original(url, init);
+		}) as typeof fetch;
+		const running = pollDraft(() => mounted);
+		mounted = false;
+		reply.open();
+		await running;
+		expect(backend.state.results).toEqual([]);
+	});
+
 	test("a claimed CLI job waits for an in-flight file pass", async () => {
 		setup();
 		const backend = fakeBackend();
@@ -546,10 +567,12 @@ describe("the draft poller", () => {
 		const existing = gate();
 		const watching = gate();
 		let started = false;
+		let reads = 0;
 		trackLegacyPass(existing.promise);
 		const original = fetch;
 		globalThis.fetch = (async (url, init) => {
 			if (url === "/api/agent/draft") {
+				reads++;
 				return new Response("null", { headers: { "x-bopencut-claim": JSON.stringify({ id: "job", command: "draft", projectId: "p" }) } });
 			}
 			if (url === "/api/agent/cli/watch/job") {
@@ -565,8 +588,11 @@ describe("the draft poller", () => {
 		}) as typeof fetch;
 		const running = pollDraft();
 		await watching.promise;
-		try { expect(started).toBe(false); }
-		finally { existing.open(); await running; }
+		try {
+			await pollDraft();
+			expect(reads).toBe(1);
+			expect(started).toBe(false);
+		} finally { existing.open(); await running; }
 		expect(started).toBe(true);
 		expect(backend.state.results[0]).toMatchObject({ applied: true });
 	});

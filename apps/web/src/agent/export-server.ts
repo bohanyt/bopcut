@@ -99,7 +99,7 @@ export async function handleExportResult(req: Request, workspace: string): Promi
 }
 
 /** POST export-file: saves the video, then writes the final answer with it (one request, so neither is lost). */
-export async function handleExportFile(req: Request, workspace: string, job?: { signal: AbortSignal; finish: (body: Result) => Promise<void> }): Promise<Response> {
+export async function handleExportFile(req: Request, workspace: string, job?: { dir: string; signal: AbortSignal; finish: (body: Result) => Promise<void> }): Promise<Response> {
 	const query = new URL(req.url).searchParams;
 	const rev = query.get("rev") ?? "";
 	let done: Record<string, unknown> = {};
@@ -112,9 +112,10 @@ export async function handleExportFile(req: Request, workspace: string, job?: { 
 	if (Number(req.headers.get("content-length") ?? 0) > MAX_EXPORT_BYTES) return Response.json({ error: "Export too large" }, { status: 413 });
 	// Not saved again once the request has its answer (for example from another tab).
 	if (!job && isFinal(await readResult(workspace), rev)) return refused("answered");
-	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, signal: job?.signal });
+	const dir = job?.dir ?? path.join(workspace, "exports");
+	const saved = await saveExport({ dir, name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, signal: job?.signal });
 	if ("error" in saved) return Response.json({ error: saved.error }, { status: saved.status });
-	const file = `exports/${saved.file}`;
+	const file = path.relative(workspace, path.join(dir, saved.file)).split(path.sep).join("/");
 	const fields = Object.fromEntries(DONE_FIELDS.filter((key) => key in done).map((key) => [key, done[key]]));
 	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file, bytes: saved.bytes, ...fields };
 	try {

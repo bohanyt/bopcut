@@ -30,7 +30,7 @@ Use `--project-id ID` to select a project. The default is the project in the inp
 
 Drafts, frames and exports use the open editor if it is serving the project. Otherwise the CLI runs one job in an installed Chrome or Edge browser and closes it. Set `BOPENCUT_BROWSER` to an executable path to override detection. If the hidden browser cannot render or encode the video, open the project in the editor and retry. A hidden draft saves before a visible editor opening the same project starts loading it. Comparisons and `basedOn` tokens from an earlier tab require that tab's history.
 
-Export defaults to MP4 at high quality with audio. Options are `--format mp4|webm`, `--quality low|medium|high|very_high`, `--fps N`, `--no-audio` and `--allow-missing`. The result's `file` is relative to `AGENT_WORKSPACE`, as are frame paths.
+Export defaults to MP4 at high quality with audio. Options are `--format mp4|webm`, `--quality low|medium|high|very_high`, `--fps N`, `--no-audio` and `--allow-missing`. The result's `file` is relative to `AGENT_WORKSPACE`, as are frame paths. Each CLI export has its own folder under `exports/` and keeps the requested file name inside it.
 
 ## Agent workspace (`apps/web/.env.local`)
 ```

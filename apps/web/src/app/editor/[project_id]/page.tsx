@@ -19,8 +19,7 @@ import { Onboarding } from "@/components/editor/onboarding";
 import { MigrationDialog } from "@/project/components/migration-dialog";
 import { usePanelStore } from "@/editor/panel-store";
 import { usePasteMedia } from "@/media/use-paste-media";
-import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
-import { installAgentBridge } from "@/agent/bridge";
+import { useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { Button } from "@/components/ui/button";
 import { rendererDevice } from "@/services/renderer/renderer-device";
@@ -41,7 +40,6 @@ import {
 export default function Editor() {
 	const params = useParams();
 	const projectId = params.project_id as string;
-	useEffect(() => installAgentBridge(), []);
 
 	return (
 			<EditorProvider projectId={projectId}>

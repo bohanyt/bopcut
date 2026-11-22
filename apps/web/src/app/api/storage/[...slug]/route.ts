@@ -124,6 +124,7 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 		}
 		if (s[0] === "projects" && s[1]) {
 			const id = safeId(s[1]);
+			if (!job) agentJobs.checkRecovery(id);
 			if (s.length === 2 && method === "GET") {
 				if (!job) await agentJobs.beforeOpen(id);
 				const project = await readProject(id);

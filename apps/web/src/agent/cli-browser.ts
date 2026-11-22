@@ -12,6 +12,10 @@ export function connectEditor(projectId: string) {
 	const source = new EventSource(`${base}/presence?${params}`);
 	const { promise: ready, resolve, reject } = Promise.withResolvers<void>();
 	source.addEventListener("registered", () => resolve(), { once: true });
+	source.addEventListener("recovery-error", (event: MessageEvent<string>) => {
+		source.close();
+		reject(new Error(JSON.parse(event.data).message));
+	}, { once: true });
 	source.addEventListener("error", () => {
 		// A connected editor automatically registers again after the local server restarts.
 		if (source.readyState === EventSource.CLOSED) reject(new Error("Could not register the editor. Reload this project."));

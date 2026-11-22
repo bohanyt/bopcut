@@ -90,8 +90,21 @@ test("a real editor waits for a hidden draft's durable write before opening", as
 	save();
 	await Promise.all([writing, ending, opening]);
 	expect(opened).toBe(true);
-	expect(jobs.create("project", "export", {}, 1000).hidden).toBe(false);
+	const visible = jobs.create("project", "export", {}, 1000);
+	expect(visible.hidden).toBe(false);
+	await jobs.close(visible);
 	release();
+});
+
+test("a failed rollback refuses the waiting editor and later project writes", async () => {
+	const jobs = new AgentJobs(async () => { throw new Error("busy file"); });
+	const job = jobs.create("project", "draft", {}, 1000);
+	const opening = jobs.beforeOpen("project").catch((error: Error) => error.message);
+	const closing = jobs.close(job).catch((error: Error) => error.message);
+	expect(await closing).toBe("busy file");
+	expect(await opening).toContain("Draft recovery could not finish");
+	expect(() => jobs.checkRecovery("project")).toThrow("Restart the editor server");
+	expect(() => jobs.checkRecovery("other")).not.toThrow();
 });
 
 test("a hidden frame or export does not block a visible editor from opening", async () => {

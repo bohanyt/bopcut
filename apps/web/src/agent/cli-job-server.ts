@@ -10,6 +10,37 @@ const globals = globalThis as typeof globalThis & { bopencutAgentJobs?: AgentJob
 const recovered = globals.bopencutAgentRecovery ??= new Map();
 const recoveryDir = () => path.join(dataRoot(), ".agent-jobs");
 const recoveryFile = (jobId: string) => path.join(recoveryDir(), safeId(jobId) + ".recovery");
+const resultFile = (jobId: string) => path.join(recoveryDir(), safeId(jobId) + ".json");
+const outputFile = (jobId: string) => path.join(recoveryDir(), safeId(jobId) + ".outputs");
+type JobOutput = { workspace: string; kind: "frames" | "exports" };
+
+async function outputDir(id: string, output: JobOutput) {
+	if (!path.isAbsolute(output.workspace) || (output.kind !== "frames" && output.kind !== "exports")) {
+		throw new Error("Invalid agent output recovery record.");
+	}
+	const parent = path.join(output.workspace, output.kind);
+	const info = await fs.lstat(parent).catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT") return null;
+		throw error;
+	});
+	if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error("Use a regular frames or exports folder for agent output.");
+	return path.join(parent, safeId(id));
+}
+
+function completedOutput(body: JobBody | null) {
+	return body?.status === "done" || (Array.isArray(body?.files) && body.files.length > 0) ||
+		(Array.isArray(body?.compare) && body.compare.length > 0);
+}
+
+export function prepareJobOutput(job: AgentJob, workspace: string, kind: JobOutput["kind"]) {
+	return job.output ??= (async () => {
+		const output = { workspace, kind };
+		const dir = await outputDir(job.id, output);
+		await atomicWrite(outputFile(job.id), JSON.stringify(output));
+		job.signal.throwIfAborted();
+		return dir;
+	})();
+}
 
 export async function rememberDraft(job: AgentJob) {
 	const data: DraftRecovery = { projectId: job.projectId, staged: [...job.staged], words: [...job.words] };
@@ -45,6 +76,16 @@ export function recoverAgentJobs() {
 			if (error.code === "ENOENT") return [];
 			throw error;
 		});
+		// Reconcile output journals while the completion files still exist.
+		for (const name of files.filter((name) => name.endsWith(".outputs"))) {
+			const id = safeId(name.slice(0, -".outputs".length));
+			const file = outputFile(id);
+			const output: JobOutput | null = await readJson(file);
+			if (output && !completedOutput(await readJson(resultFile(id)))) {
+				await fs.rm(await outputDir(id, output), { recursive: true, force: true });
+			}
+			await fs.rm(file, { force: true });
+		}
 		for (const name of files) {
 			const match = /^([a-zA-Z0-9_-]{1,128})\.(recovery|json)$/.exec(name);
 			if (!match) continue;
@@ -61,12 +102,12 @@ export function recoverAgentJobs() {
 	return scan;
 }
 export const agentJobs = globals.bopencutAgentJobs ??= new AgentJobs(async (job) => {
-	if (job.resultFile) await fs.rm(job.resultFile, { force: true });
-	if (!job.update.done && job.frameFiles.size) {
-		await Promise.all([...job.frameFiles].map((file) => fs.rm(file, { force: true })));
-		const [file] = job.frameFiles;
-		await fs.rmdir(path.dirname(file));
+	if (job.output) {
+		const output: JobOutput | null = await readJson(outputFile(job.id));
+		if (output && !job.keepsOutput) await fs.rm(await outputDir(job.id, output), { recursive: true, force: true });
+		await fs.rm(outputFile(job.id), { force: true });
 	}
+	if (job.resultFile) await fs.rm(job.resultFile, { force: true });
 	if (job.hidden && job.command === "draft" && (job.staged.size || job.words.size)) {
 		if (!job.committed || !job.update.done) await rollbackDraft(job.id, { projectId: job.projectId, staged: [...job.staged], words: [...job.words] });
 		await fs.rm(recoveryFile(job.id), { force: true });
@@ -86,10 +127,11 @@ export function getJob(id: string) {
 export async function finishJob(job: AgentJob, body: JobBody) {
 	job.signal.throwIfAborted();
 	if (job.update.done) return;
-	const file = path.join(dataRoot(), ".agent-jobs", job.id + ".json");
+	const file = resultFile(job.id);
 	job.resultFile = file;
 	await atomicWrite(file, JSON.stringify({ ...body, rev: job.body.rev, projectId: job.projectId }));
 	job.signal.throwIfAborted();
+	job.keepsOutput = completedOutput(body);
 	job.progress(job.update.stage, job.update.percent, true);
 }
 
@@ -128,8 +170,17 @@ export function editorPresence(req: Request, projectId: string, tab: string) {
 		async start(controller) {
 			req.signal.addEventListener("abort", close, { once: true });
 			if (req.signal.aborted) return close();
-			await agentJobs.beforeOpen(projectId);
-			if (!req.signal.aborted) controller.enqueue(new TextEncoder().encode("event: registered\ndata: {}\n\n"));
+			const announce = (event: string, data: object) => {
+				if (!req.signal.aborted) controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+			};
+			try {
+				await agentJobs.beforeOpen(projectId);
+				announce("registered", {});
+			} catch (error) {
+				announce("recovery-error", { message: error instanceof Error ? error.message : "Restart the editor server to recover this project." });
+				close();
+				if (!req.signal.aborted) controller.close();
+			}
 		},
 		cancel: close,
 	}), { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store, no-transform" } });
