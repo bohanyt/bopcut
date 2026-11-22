@@ -1,4 +1,4 @@
-import { localizeErrorDetail } from "@/i18n/error-details";
+import { getDraftRejectionDescription, localizeErrorDetail } from "@/i18n/error-details";
 import { getBrowserTranslator } from "@/i18n/browser";
 // Every timeline change is written to AGENT_WORKSPACE/project.json (seconds, pixels),
 // so the agent can see each item's location, time, and position without opening the browser.
@@ -819,8 +819,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	if (error) {
 		const cleanup = await discard();
 		const t = getBrowserTranslator();
-		const reason = localizeErrorDetail(error, t);
-		const description = cleanup?.failed.length ? [reason, t("agentToast.cleanupFailed")].join(" ") : reason;
+		const description = getDraftRejectionDescription({ error, stale, cleanupFailed: Boolean(cleanup?.failed.length) }, t);
 		toast.error(t("agentToast.notApplied", { name: draft.label ?? draft.rev }), { description });
 		await report({ sceneId: root.id, ok: false, applied: false, ...(stale ? { stale: true } : {}), error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
 		return;

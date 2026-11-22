@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { normalizeSectionRequest } from "@/retrieval/time";
-import { localizeErrorDetail } from "./error-details";
+import { getDraftRejectionDescription, localizeErrorDetail } from "./error-details";
 import { createTranslator } from "./translate";
 
 const t = createTranslator("id");
@@ -23,6 +23,20 @@ test("localizes snapshot and draft errors without dropping what the user can do 
 	expect(localizeErrorDetail("Project is empty", t)).toBe(t("export.empty"));
 	expect(localizeErrorDetail("Clipboard image copy is not supported in this browser", t))
 		.toBe(t("preview.clipboardUnavailable"));
-	expect(localizeErrorDetail("every op was stale; nothing was applied (re-read the snapshot and resend)", t))
-		.toContain("Baca ulang snapshot lalu kirim ulang draf.");
+	expect(localizeErrorDetail("Some selected elements were not found in the scene", t))
+		.toBe(t("timeline.compoundSelectionMissing"));
+	expect(localizeErrorDetail("The 9000 × 1080 canvas exceeds this graphics device’s limit of 8192 pixels per side. Reduce the canvas size in Project Settings.", t))
+		.toBe(t("settings.canvasOverLimit", { width: 9000, height: 1080, max: 8192 }));
+});
+
+test("keeps a stale atomic draft reason, recovery instructions, result file and cleanup warning together", () => {
+	const error = "an op of this atomic draft failed; nothing was applied";
+	expect(getDraftRejectionDescription({ error, stale: true, cleanupFailed: true }, t)).toBe([
+		t("agentToast.atomicFailed"),
+		t("agentToast.retryDraft"),
+		t("agentToast.draftDetails"),
+		t("agentToast.cleanupFailed"),
+	].join(" "));
+	expect(getDraftRejectionDescription({ error, stale: false, cleanupFailed: false }, t))
+		.toBe([t("agentToast.atomicFailed"), t("agentToast.draftDetails")].join(" "));
 });

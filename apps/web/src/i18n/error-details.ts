@@ -1,3 +1,4 @@
+import { getCanvasIssueMessage } from "./canvas-messages";
 import type { createTranslator, StaticMessageKey } from "./translate";
 
 // Protocol messages are stable. Translate known details where they are shown to people.
@@ -59,6 +60,15 @@ const messageKeys = new Map<string, StaticMessageKey>([
 	["basedOn must be the syncedAt string of a snapshot", "agentToast.invalidBase"],
 	["basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend", "agentToast.unknownBase"],
 	["basedOn belongs to a different project or root scene; re-read the snapshot and resend", "agentToast.wrongBase"],
+	["Canvas width and height must be positive whole numbers.", "settings.canvasInvalid"],
+	["Graphics device is starting or recovering. Try again when it is ready.", "export.graphicsNotReady"],
+	["Graphics device was lost. Try again after graphics recovery.", "export.graphicsLost"],
+	["The graphics surface is temporarily unavailable. Try again.", "export.graphicsSurface"],
+	["Failed to get target canvas context", "preview.canvasContextFailed"],
+	["No active scene.", "timeline.noActiveScene"],
+	["No elements to put in a compound clip", "timeline.compoundEmpty"],
+	["Some selected elements were not found in the scene", "timeline.compoundSelectionMissing"],
+	["Compound clip not found", "timeline.compoundNotFound"],
 ]);
 
 export function localizeErrorDetail(detail: string, t: ReturnType<typeof createTranslator>): string {
@@ -66,6 +76,14 @@ export function localizeErrorDetail(detail: string, t: ReturnType<typeof createT
 	if (key) return t(key);
 
 	let match: RegExpExecArray | null;
+	if ((match = /^The (\d+) × (\d+) canvas exceeds this graphics device’s limit of (\d+) pixels per side\. Reduce the canvas size in Project Settings\.$/.exec(detail))) {
+		return getCanvasIssueMessage({
+			kind: "canvasOverLimit",
+			width: Number(match[1]),
+			height: Number(match[2]),
+			max: Number(match[3]),
+		}, t);
+	}
 	if ((match = /^section is (\d+) s; the limit is (\d+) s \(whole videos are not fetched\)$/.exec(detail))) {
 		return t("retrieval.sectionLimit", { seconds: match[1], limit: match[2] });
 	}
@@ -126,5 +144,35 @@ export function localizeErrorDetail(detail: string, t: ReturnType<typeof createT
 		return t("agentToast.wrongProject", { id: match[1] });
 	}
 
+	if ((match = /^Preview and export are unavailable\. Retry graphics initialization\.(?: ([\s\S]+))?$/.exec(detail))) {
+		return [t("export.graphicsUnavailable"), match[1] ? localizeErrorDetail(match[1], t) : null].filter(Boolean).join(" ");
+	}
+	if ((match = /^Scene not found: (.+)$/.exec(detail))) {
+		return t("timeline.sceneIdNotFound", { id: match[1] });
+	}
+	if ((match = /^Compound scene not found: (.+)$/.exec(detail))) {
+		return t("timeline.compoundSceneIdNotFound", { id: match[1] });
+	}
+	if ((match = /^Compound clip cycle: scene (.+) would contain itself \(directly or through nested compound clips\)$/.exec(detail))) {
+		return t("timeline.compoundCycle", { id: match[1] });
+	}
+
 	return detail;
+}
+
+export function getDraftRejectionDescription({
+	error,
+	stale,
+	cleanupFailed,
+}: {
+	error: string;
+	stale: boolean;
+	cleanupFailed: boolean;
+}, t: ReturnType<typeof createTranslator>): string {
+	return [
+		localizeErrorDetail(error, t),
+		stale ? t("agentToast.retryDraft") : null,
+		t("agentToast.draftDetails"),
+		cleanupFailed ? t("agentToast.cleanupFailed") : null,
+	].filter(Boolean).join(" ");
 }
