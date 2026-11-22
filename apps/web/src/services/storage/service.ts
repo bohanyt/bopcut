@@ -260,12 +260,15 @@ class StorageService {
 
 	async loadProject({
 		id,
+		readOnly = false,
 	}: {
 		id: string;
+		readOnly?: boolean;
 	}): Promise<{ project: TProject } | null> {
-		await this.ensureMigrations();
+		if (!readOnly) await this.ensureMigrations();
 		let serializedProject = await this.projectsAdapter.get(id);
 		if (serializedProject && typeof serializedProject.version === "number" && serializedProject.version < CURRENT_PROJECT_VERSION) {
+			if (readOnly) throw new Error("This project needs migration. Open it in the editor once and retry.");
 			// Transform the exact copy whose revision is checked by the write. On a conflict, retry
 			// against the latest copy, which may already have been migrated in another tab.
 			serializedProject = await this.projectsAdapter.update(id, (current) =>

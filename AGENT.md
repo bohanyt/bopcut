@@ -17,6 +17,8 @@ With the editor server running, use these commands from the repository root:
 bun run agent status
 bun run agent selection
 bun run agent notes
+bun run agent export --name "Final" --format mp4
+bun run agent frames --times 0,1,2 --width 960
 ```
 
 `status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. A chosen project (`--project-id`) answers from its own snapshot, or from the last synced one when that is the same project. Reads stay inside the agent workspace: a link that leads out of it is refused. Read the preference files directly (see *Preferences*).
@@ -25,7 +27,9 @@ The agent routes trust every request that reaches the server, so keep the server
 
 Status and notes default to the last project that synced. Use `--project-id ID` to choose a project or filter the selection. Use `--url` or `BOPENCUT_URL` to change the server origin from `http://127.0.0.1:3000`. The command writes JSON to stdout and errors to stderr. Use `--timeout SECONDS` to change the 30-second request limit.
 
-Use the file protocol below for drafts, frames, changes, and exports.
+Render commands default to a 600-second timeout. They print progress to stderr and the result JSON to stdout. Use `--project-id ID` to choose the project. For export, use `--quality low|medium|high|very_high` and `--fps N` to override the defaults below. For frames, pass comma-separated seconds to `--times`, or use one or more `--element ID` flags to capture the start of a root timeline element by its ID or agent ID. Both commands accept `--allow-missing`.
+
+Use the file protocol below for drafts, changes, historical frames, and comparisons.
 
 ## Agent workspace (`apps/web/.env.local`)
 ```
@@ -263,6 +267,8 @@ A preset is a setting of the clip (the params `animation.in`, `animation.inDurat
 ## Exports for agents
 
 Write `export-request.json` to get a finished video file without a browser download: `{rev:"export-1", name?, format?:"mp4"|"webm", quality?:"low"|"medium"|"high"|"very_high", fps?, includeAudio?, projectId?, allowMissing?}`.
+- The CLI gives an open editor for that project the first chance to render. If no tab takes the request within a few seconds, it uses the saved project in a hidden Chrome or Edge and closes the browser when the command ends. Set `BOPENCUT_BROWSER` to choose an installed browser executable. The separate profile lives in `BOPENCUT_DATA/.render-browser` or, if the data folder is read-only, `AGENT_WORKSPACE/.render-browser`.
+- The CLI uses the same request and result formats inside a job folder and returns the final JSON on stdout. The workspace request and result files belong to the direct-file workflow. Only one CLI render can run against a server at a time. Interrupt it with Ctrl+C. The hidden browser needs graphics, a video encoder for export, and media it can read without retrieval or GIF conversion. Open the editor to render inputs that require those steps.
 - The open editor exports the root timeline (also while the user is inside a compound clip) once per `rev`, with the project's canvas, and the frame rate given or the project's. Defaults: mp4, high quality, with sound. It waits until the project is ready (loaded and saved). If a source used in the export is unavailable, `export-result.json` lists it under `missingMedia`. After restoring the files, pass that array to `window.agent.retryMissingMedia(missingMedia)` to reload stored files, then submit a new `rev`. The new export fetches library audio again. Use `allowMissing:true` to explicitly allow an incomplete export. Browser downloads also require confirmation to export with missing media.
 - MP4 requires an even canvas width and height. Choose WebM or adjust the project canvas if either dimension is odd. Export keeps the final frame when the timeline ends between frame boundaries. MP4 shortens that sample to the timeline end within the container's timing precision. WebM keeps the nominal frame duration, so the file can extend to the next frame boundary. The reported `duration` is the timeline length.
 - The file goes to `AGENT_WORKSPACE/exports/<name>.<format>`. The default name is the project's name and the local time. An existing file is never overwritten: the next one is `<name> (2).<format>`.

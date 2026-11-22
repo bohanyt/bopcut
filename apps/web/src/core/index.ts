@@ -29,7 +29,7 @@ export class EditorCore {
 	public readonly clipboard: ClipboardManager;
 	public readonly diagnostics: DiagnosticsManager;
 
-	private constructor() {
+	private constructor(public readonly renderOnly = false) {
 		registerDefaultEffects();
 		registerDefaultMasks();
 		this.command = new CommandManager(this);
@@ -65,7 +65,12 @@ export class EditorCore {
 				this.timeline.updateTracks(prunedTracks);
 			}
 		});
-		this.save.start();
+		if (!renderOnly) this.save.start();
+	}
+
+	static createRenderOnly(): EditorCore {
+		if (EditorCore.instance) throw new Error("A render-only core needs its own page.");
+		return EditorCore.instance = new EditorCore(true);
 	}
 
 	static getInstance(): EditorCore {

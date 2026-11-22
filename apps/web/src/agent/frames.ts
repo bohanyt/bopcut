@@ -1,15 +1,16 @@
 import { EditorCore } from "@/core";
-import { calculateTotalDuration } from "@/timeline";
-import { lastFrameMediaTime, mediaTimeFromSeconds } from "@/wasm";
+import { calculateTotalDuration, type TimelineElement } from "@/timeline";
+import { lastFrameMediaTime, mediaTimeFromSeconds, TICKS_PER_SECOND } from "@/wasm";
 import type { MediaLoadFailure } from "@/media/types";
-import { getRendererLimits, isGraphicsInitializing } from "@/services/renderer/renderer-device";
+import { getRendererLimits, isGraphicsInitializing, rendererDevice } from "@/services/renderer/renderer-device";
 import { fitSurfaceSize } from "@/services/renderer/scale";
 import { getRootScene } from "./scene-graph";
 import { isForOtherProject, parseStateRef, resolveState, type TimelineState } from "./history";
 import { markAnswered, wasAnswered } from "./answered";
+import { readRenderRequest, renderTransport, type RenderFetch, type RenderTransport } from "./render-transport";
+import { MAX_FRAMES } from "./render-input";
 
-/** At most this many frames per request (times, doubled with `compare`). */
-export const MAX_FRAMES = 64;
+export { MAX_FRAMES } from "./render-input";
 
 /**
  * The timeline states a frames request renders: `state` (default: the timeline now) and, with `compare`,
@@ -31,11 +32,11 @@ export function framesStates(request: { state?: unknown; compare?: unknown }, pr
 
 let busy = false;
 let refusedMissing: string | null = null;
-type PendingCancellation = { rev: string; projectId: string; key: string };
+type PendingCancellation = { rev: string; projectId: string; key: string; send: RenderFetch };
 let pendingCancellation: PendingCancellation | null = null;
 
-function postFramesResult({ rev, projectId }: { rev: string; projectId: string }, body: Record<string, unknown>) {
-	return fetch("/api/agent/frames-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev, projectId, ...body }) });
+function postFramesResult({ rev, projectId, send }: { rev: string; projectId: string; send: RenderFetch }, body: Record<string, unknown>) {
+	return send("/api/agent/frames-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev, projectId, ...body }) });
 }
 
 async function postCancellation(cancellation: PendingCancellation) {
@@ -47,15 +48,17 @@ async function postCancellation(cancellation: PendingCancellation) {
 }
 
 /** Reads and renders a frame request against one project session and a fixed timeline for each pass. */
-export async function pollFrames(readiness: () => { ready: boolean; missingMedia: MediaLoadFailure[] }) {
+export async function pollFrames(readiness: () => { ready: boolean; missingMedia: MediaLoadFailure[] }, source?: Response, transport?: RenderTransport) {
 	const editor = EditorCore.getInstance();
-	if (busy) return;
-	if (!pendingCancellation && (!editor.project.getActiveOrNull() || editor.timeline.isPreviewActive() || isGraphicsInitializing() || !readiness().ready)) return;
-	const signal = editor.project.getSessionSignal();
+	const before = editor.project.getActiveOrNull();
+	if (busy || (editor.renderOnly && !source)) return;
+	if (!pendingCancellation && (!before || editor.timeline.isPreviewActive() || isGraphicsInitializing() || !readiness().ready)) return;
+	const session = editor.project.getSessionSignal();
 	busy = true;
 	try {
-		const request = await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json() as {
-			rev?: string; times?: unknown; width?: number; projectId?: unknown; allowMissing?: boolean; state?: unknown; compare?: unknown;
+		const response = source ?? await readRenderRequest("frames", before?.metadata.id ?? "", !pendingCancellation);
+		const request = await response.json() as {
+			rev?: string; times?: unknown; elements?: string[]; width?: number; projectId?: unknown; allowMissing?: boolean; state?: unknown; compare?: unknown;
 		} | null;
 		if (!request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev)) return;
 		// The workspace has a single result file. Retry a failed cancellation while its request is current.
@@ -63,22 +66,30 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			if (request.rev === pendingCancellation.rev) return await postCancellation(pendingCancellation);
 			pendingCancellation = null;
 		}
-		if (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0) || (request.width !== undefined && (!Number.isInteger(request.width) || request.width < 1 || request.width > 4096))) return;
+		const { request: send, signal: jobSignal } = transport ?? renderTransport(response);
+		const signal = jobSignal ? AbortSignal.any([session, jobSignal]) : session;
+		const elements = jobSignal ? request.elements : undefined;
+		if (!elements && (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0))) return;
+		if (request.width !== undefined && (!Number.isInteger(request.width) || request.width < 1 || request.width > 4096)) return;
 		// A request read across a session switch has not been picked up by either project yet.
 		const project = editor.project.getActiveOrNull();
-		if (!project || signal.aborted || editor.timeline.isPreviewActive() || isGraphicsInitializing()) return;
+		if (!project || session.aborted || editor.timeline.isPreviewActive() || isGraphicsInitializing() || !readiness().ready) {
+			if (jobSignal && before) await postFramesResult({ rev: request.rev, projectId: before.metadata.id, send }, { files: [], error: "The editor changed before taking the frame request. Retry." });
+			return;
+		}
 		const { ready, missingMedia } = readiness();
 		if (!ready) return;
 		const projectId = project.metadata.id;
 		const { rev, width } = request;
 		const key = `agent-frames-${projectId}`;
-		if (wasAnswered(key, rev) || isForOtherProject(request, [request.state, request.compare], projectId)) return;
+		if ((!editor.renderOnly && wasAnswered(key, rev)) || isForOtherProject(request, [request.state, request.compare], projectId)) return;
 		// An unscoped request answered across a switch must not start over in the newly opened project.
 		const switchKey = typeof request.projectId === "string" ? key : "agent-frames-answered-on-switch";
-		if (switchKey !== key && wasAnswered(switchKey, rev)) return;
-		const result = (body: Record<string, unknown>) => postFramesResult({ rev, projectId }, body);
+		if (!editor.renderOnly && switchKey !== key && wasAnswered(switchKey, rev)) return;
+		const result = (body: Record<string, unknown>) => postFramesResult({ rev, projectId, send }, body);
 		const cancel = () => {
-			pendingCancellation = { rev, projectId, key: switchKey };
+			if (jobSignal) return jobSignal.aborted ? undefined : result({ files: [], error: "cancelled: the project session changed during the frame request" });
+			pendingCancellation = { rev, projectId, key: switchKey, send };
 			return postCancellation(pendingCancellation);
 		};
 		const finish = async (body: Record<string, unknown>) => {
@@ -89,7 +100,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 				if (signal.aborted) return await cancel();
 				throw error;
 			}
-			markAnswered(signal.aborted ? switchKey : key, rev);
+			if (!editor.renderOnly) markAnswered(signal.aborted ? switchKey : key, rev);
 		};
 		const refuse = (error: string) => finish({ files: [], error });
 		if (missingMedia.length && request.allowMissing !== true) {
@@ -108,12 +119,21 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const { canvasSize, background, fps } = project.settings;
 		const settings = { canvasSize, background, fps };
 		const root = getRootScene(scenes, activeSceneId);
+		const times = request.times as number[] ?? [];
+		if (elements) {
+			const items = root ? [...root.tracks.overlay, root.tracks.main, ...root.tracks.audio].flatMap<TimelineElement>((track) => track.elements) : [];
+			for (const id of elements) {
+				const matches = items.filter((item) => item.id === id || item.agentId === id);
+				if (matches.length !== 1) return await refuse(`Expected one root timeline element matching ${id}, found ${matches.length}.`);
+				times.push(matches[0].startTime / TICKS_PER_SECOND);
+			}
+		}
 		const live = root ? { projectId, scenes, rootSceneId: root.id, settings, media: new Map(assets.map((asset) => [asset.id, asset.name])) } : null;
 		const primary = states.state ?? live;
 		if (!primary) return await refuse("No scene");
 		const passes: [TimelineState, "compare"?][] = [[primary]];
 		if (states.compare) passes.push([states.compare, "compare"]);
-		if (request.times.length * passes.length > MAX_FRAMES) return await refuse(`at most ${MAX_FRAMES} frames per request (times x states)`);
+		if (times.length * passes.length > MAX_FRAMES) return await refuse(`at most ${MAX_FRAMES} frames per request (times x states)`);
 		const missing = (state: TimelineState) => {
 			if (state === live && editor.media.getAssets() === assets) return null;
 			const removed = removedMedia(state, state === live);
@@ -127,7 +147,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const compared: string[] = [];
 		// A time a state cannot show (outside its timeline, or an empty one) is reported; the others go on.
 		const errors: { time: number; variant?: string; error: string }[] = [];
-		for (const time of request.times as number[]) {
+		for (const time of times) {
 			for (const [state, variant] of passes) {
 				if (signal.aborted) return await cancel();
 				try {
@@ -135,10 +155,13 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 					if (error) throw new Error(error);
 					const before = editor.media.getAssets();
 					(variant ? compared : files).push(await renderFrame({
-						request: { rev, width }, time, state, variant, settings: state.settings ?? settings, signal,
+						request: { rev, width }, time, state, variant, settings: state.settings ?? settings, signal, send,
 						checkMedia: () => editor.media.getAssets() === before ? null : missing(state),
 					}));
 				} catch (error) {
+					if (editor.renderOnly && rendererDevice.status.state !== "ready") {
+						return await refuse("Graphics became unavailable in the hidden browser. Open the editor once and retry.");
+					}
 					errors.push({ time, ...(variant ? { variant } : {}), error: error instanceof Error ? error.message : String(error) });
 				}
 			}
@@ -180,9 +203,9 @@ export function removedMedia(state: TimelineState, onlyPreviouslyPresent = false
 }
 
 /** Renders and saves one frame from the state chosen for this pass. */
-async function renderFrame({ request, time, state, variant, settings, signal, checkMedia }: {
+async function renderFrame({ request, time, state, variant, settings, signal, checkMedia, send }: {
 	request: { rev: string; width?: number }; time: number; state: TimelineState; variant?: string;
-	settings: NonNullable<TimelineState["settings"]>; signal: AbortSignal; checkMedia: () => string | null;
+	settings: NonNullable<TimelineState["settings"]>; signal: AbortSignal; checkMedia: () => string | null; send: RenderFetch;
 }): Promise<string> {
 	const editor = EditorCore.getInstance();
 	const { scenes, rootSceneId } = state;
@@ -221,7 +244,7 @@ async function renderFrame({ request, time, state, variant, settings, signal, ch
 	form.set("rev", request.rev); form.set("time", String(time)); form.set("image", blob);
 	if (variant) form.set("variant", variant);
 	signal.throwIfAborted();
-	const response = await fetch("/api/agent/frame", { method: "POST", body: form, signal });
+	const response = await send("/api/agent/frame", { method: "POST", body: form, signal });
 	if (!response.ok) throw new Error(await response.text());
 	return (await response.json()).file;
 }

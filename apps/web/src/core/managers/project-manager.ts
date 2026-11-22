@@ -145,6 +145,24 @@ export class ProjectManager {
 		}
 	}
 
+	async loadForRender(id: string, loadingMedia: () => Promise<void>) {
+		if (!this.editor.renderOnly || this.active) throw new Error("This page cannot load a render job.");
+		const loaded = await storageService.loadProject({ id, readOnly: true });
+		if (!loaded || loaded.project.metadata.id !== id) throw new Error("The saved project was not found.");
+		this.active = loaded.project;
+		this.editor.scenes.initializeScenes({ scenes: this.active.scenes, currentSceneId: this.active.currentSceneId });
+		await loadingMedia();
+		await this.editor.media.loadProjectMedia({ projectId: id });
+		if (!this.editor.media.isProjectMediaLoaded({ projectId: id })) throw new Error("Could not load the project's media.");
+		await this.loadProjectFonts(this.active);
+		this.isLoading = false;
+	}
+
+	private loadProjectFonts(project: TProject) {
+		const families = (project.scenes ?? []).flatMap((scene) => getElementFontFamilies({ tracks: scene.tracks }));
+		return loadFonts({ families: [...new Set(families)] });
+	}
+
 	async loadProject({ id }: { id: string }): Promise<void> {
 		if (!this.isInitialized) {
 			this.isLoading = true;
@@ -236,15 +254,7 @@ export class ProjectManager {
 			await this.editor.media.loadProjectMedia({ projectId: id });
 			if (replaced()) return;
 
-			await loadFonts({
-				families: [
-					...new Set(
-						(project.scenes ?? []).flatMap((scene) =>
-							getElementFontFamilies({ tracks: scene.tracks }),
-						),
-					),
-				],
-			});
+			await this.loadProjectFonts(project);
 
 			if (replaced()) return;
 

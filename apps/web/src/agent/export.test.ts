@@ -615,6 +615,53 @@ describe("the export poller", () => {
 			}
 		});
 
+	test("an expired CLI answer does not block the next direct-file export", async () => {
+		await withServer({ request: { rev: "legacy-next" } }, async (log) => {
+			const fetchLegacy = globalThis.fetch;
+			const fetchCli = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+				const url = String(input);
+				if (url.includes("action=watch")) return new Promise<Response>(() => {});
+				if (url.includes("action=export-file")) return Promise.resolve(new Response(null, { status: 404 }));
+				if (url.includes("action=export-result")) {
+					const body = JSON.parse(String(init?.body));
+					return Promise.resolve(new Response(null, { status: body.status === "exporting" ? 200 : 404 }));
+				}
+				return fetchLegacy(input, init);
+			};
+			const report = spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetchCli, { preconnect: fetchLegacy.preconnect }));
+			try {
+				await pollExport(Response.json({ rev: "cli-expired" }, { headers: { "x-bopencut-render-token": "expired" } }));
+				await pollExport();
+				expect(log.gets).toBe(1);
+				expect((await log.result())?.rev).toBe("legacy-next");
+			} finally {
+				report.mockRestore();
+			}
+		});
+	});
+
+	test.each([false, true])("a CLI export error is retried while its lease is alive (hidden: %s)", async (hidden) => {
+		await withServer({ request: null }, async () => {
+			const fetchLegacy = globalThis.fetch;
+			let attempts = 0;
+			const fetchCli = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+				const url = String(input);
+				if (url.includes("action=watch")) return new Promise<Response>(() => {});
+				if (url.includes("action=export-result")) return Promise.resolve(new Response(null, { status: ++attempts === 1 ? 500 : 200 }));
+				return fetchLegacy(input, init);
+			};
+			const report = spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetchCli, { preconnect: fetchLegacy.preconnect }));
+			try {
+				const headers = { "x-bopencut-render-token": "live", ...(hidden && { "x-bopencut-render-kind": "export" }) };
+				await pollExport(Response.json({ rev: "cli-transient", format: "bad" }, { headers }));
+				if (!hidden) await pollExport();
+				expect(attempts).toBe(2);
+			} finally {
+				report.mockRestore();
+			}
+		});
+	});
+
 	test("browser export uses the parent in the breadcrumb for nested compound clips", async () => {
 		const editor = open("p", 2, { nested: true });
 		editor.save.stop();

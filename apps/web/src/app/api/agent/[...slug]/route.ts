@@ -16,6 +16,7 @@ import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
 import { handleExportFile, handleExportResult } from "@/agent/export-server";
 import { handleCli } from "@/agent/cli-api";
+import { renderPresence, renderRequest, renderWorker } from "@/agent/render-server";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 const FILES_ROOT = path.resolve(process.env.AGENT_FILES_ROOT ?? WORKSPACE);
@@ -39,6 +40,7 @@ const foreignOrigin = isForeignOrigin;
 
 export async function GET(req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
 	const { slug } = await params;
+	if (slug[0] === "cli" && slug[1] === "render" && slug.length === 2) return renderWorker(req, WORKSPACE);
 	if (slug[0] === "cli" && slug.length === 2) return handleCli(req, slug[1], WORKSPACE);
 	try {
 		if (slug[0] === "bundle") return json(await fs.readFile(path.join(WORKSPACE, "bundle", "bundle.json")));
@@ -53,13 +55,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 			if (!file) return Response.json({ error: "Not found" }, { status: 404 });
 			return new Response(new Uint8Array(await fs.readFile(file)), { headers: { "Content-Type": TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
 		}
-		if (slug[0] === "frames-request") {
-			try { return json(await fs.readFile(path.join(WORKSPACE, "frames-request.json"))); } catch { return Response.json(null); }
-		}
-		if (slug[0] === "export-request") {
-			try { return json(await fs.readFile(path.join(WORKSPACE, "export-request.json"))); } catch { return Response.json(null); }
-		}
+		if (slug[0] === "frames-request") return renderRequest(req, "frames", WORKSPACE);
+		if (slug[0] === "export-request") return renderRequest(req, "export", WORKSPACE);
 		if (slug[0] === "changes-request") {
+			renderPresence(req);
 			try { return json(await fs.readFile(path.join(WORKSPACE, "changes-request.json"))); } catch { return Response.json(null); }
 		}
 		if (slug[0] === "draft") {
@@ -74,6 +73,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
 	const { slug } = await params;
 	if (foreignOrigin(req)) return Response.json({ error: "Requests must come from the editor itself" }, { status: 403 });
+	if (slug[0] === "cli" && slug[1] === "render" && slug.length === 2) {
+		return new URL(req.url).searchParams.has("action") ? renderWorker(req, WORKSPACE) : handleCli(req, "render", WORKSPACE);
+	}
 	if (slug[0] === "frame") {
 		const form = await req.formData();
 		const rev = form.get("rev"); const time = form.get("time"); const image = form.get("image"); const variant = form.get("variant");

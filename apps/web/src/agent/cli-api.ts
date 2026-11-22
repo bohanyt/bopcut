@@ -3,6 +3,7 @@ import path from "node:path";
 import { projectDir, readJson } from "@/services/storage/server/files";
 import { fileInside } from "./inside";
 import { isForeignOrigin } from "./origin";
+import { startRender } from "./render-server";
 
 type Snapshot = { projectId?: string; notes?: unknown; syncedAt?: string };
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -34,6 +35,16 @@ export async function handleCli(req: Request, action: string, workspace: string)
 		if (action === "selection") {
 			const selected = await readInside(workspace, "selection.json");
 			return json({ selection: !requested || requested === selected?.projectId ? selected : null });
+		}
+		if (action === "render" && req.method === "POST") {
+			return startRender(req, workspace, async () => {
+				const projectId = requested ?? (await readSnapshot(workspace, "project.json"))?.projectId;
+				if (!projectId || !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) throw new Error("No project has synced yet. Pass --project-id or open the project in the editor.");
+				await fs.access(path.join(projectDir(projectId), "project.json")).catch(() => {
+					throw new Error("Project was not found on disk. Pass a valid --project-id.");
+				});
+				return projectId;
+			});
 		}
 		if (action === "status" || action === "notes") {
 			// A plain request answers from the last synced snapshot. A chosen project reads its own snapshot

@@ -49,12 +49,15 @@ export async function retryTransient<T>(
 	}
 }
 
-export const renameWithRetry = (from: string, to: string) =>
-	retryTransient(() => fs.rename(from, to));
+export const renameWithRetry = (from: string, to: string, signal?: AbortSignal) =>
+	retryTransient(() => {
+		signal?.throwIfAborted();
+		return fs.rename(from, to);
+	});
 
 // Writes to one file run one after another (two renames onto the same target race on Windows).
 const fileQueues = new Map<string, Promise<void>>();
-export async function atomicWrite(file: string, data: string | Uint8Array): Promise<void> {
+export async function atomicWrite(file: string, data: string | Uint8Array, signal?: AbortSignal): Promise<void> {
 	const key = path.resolve(file).toLowerCase();
 	const previous = fileQueues.get(key) ?? Promise.resolve();
 	const current = previous.catch(() => undefined).then(async () => {
@@ -62,7 +65,7 @@ export async function atomicWrite(file: string, data: string | Uint8Array): Prom
 		const temp = `${file}.${randomUUID()}.tmp`;
 		try {
 			await fs.writeFile(temp, data);
-			await renameWithRetry(temp, file);
+			await renameWithRetry(temp, file, signal);
 		} finally {
 			await fs.rm(temp, { force: true });
 		}
