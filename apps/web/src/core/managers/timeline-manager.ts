@@ -1,4 +1,5 @@
 import type { EditorCore } from "@/core";
+import { registerCanceller } from "@/editor/cancel-interaction";
 import { reconcileCaptionEdit } from "@/text/caption";
 import type { ElementBounds } from "@/preview/element-bounds";
 import type { ParamValues } from "@/params";
@@ -69,10 +70,16 @@ import type {
 	PlannedTrackCreation,
 } from "@/timeline/group-move";
 
+export interface PreviewGesture {
+	finish(): void;
+	cancel(): void;
+}
+
 export class TimelineManager {
 	private listeners = new Set<() => void>();
 	private previewOverlay = new Map<string, Partial<TimelineElement>>();
 	private previewTracks: SceneTracks | null = null;
+	private previewGesture: PreviewGesture | null = null;
 	private durations = new WeakMap<SceneTracks, MediaTime>();
 	public readonly dragSource = new TimelineDragSource();
 
@@ -738,6 +745,31 @@ export class TimelineManager {
 		this.editor.command.execute({ command });
 	}
 
+	// Register at pointer down so replay can also cancel a gesture before its first move.
+	beginPreviewGesture = (onCancel: () => void): PreviewGesture => {
+		this.cancelPreviewGesture();
+		const gesture: PreviewGesture = {
+			finish: () => {
+				if (this.previewGesture !== gesture) return;
+				this.previewGesture = null;
+				unregister();
+			},
+			cancel: () => {
+				if (this.previewGesture !== gesture) return;
+				gesture.finish();
+				onCancel();
+				this.discardPreview();
+			},
+		};
+		const unregister = registerCanceller({ fn: gesture.cancel });
+		this.previewGesture = gesture;
+		return gesture;
+	};
+
+	cancelPreviewGesture(): void {
+		this.previewGesture?.cancel();
+	}
+
 	isPreviewActive(): boolean {
 		return this.previewOverlay.size > 0;
 	}
@@ -970,6 +1002,7 @@ export class TimelineManager {
 	}
 
 	updateTracks(newTracks: SceneTracks): void {
+		this.cancelPreviewGesture();
 		this.previewOverlay.clear();
 		this.previewTracks = null;
 		this.editor.scenes.updateSceneTracks({ tracks: newTracks });

@@ -780,6 +780,7 @@ function MaskNumberField({
 	icon?: React.ReactNode;
 	className?: string;
 }) {
+	const { timeline } = useEditor();
 	const isPercent = param.unit === "percent";
 	const percentMax = param.max ?? 100;
 	const displayMultiplier = isPercent
@@ -830,6 +831,7 @@ function MaskNumberField({
 			onBlur={draft.onBlur}
 			onScrub={previewFromDisplay}
 			onScrubEnd={onCommit}
+			beginScrubGesture={timeline.beginPreviewGesture}
 		/>
 	);
 }

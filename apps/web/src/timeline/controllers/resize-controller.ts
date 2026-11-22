@@ -1,4 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
+import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import { BASE_TIMELINE_PIXELS_PER_SECOND } from "@/timeline/scale";
 import {
 	addMediaTime,
@@ -62,6 +63,7 @@ export interface ResizeConfig {
 	getActiveProjectFps: () => FrameRate | null;
 	selectedElements: ElementRef[];
 	discardPreview: () => void;
+	beginPreviewGesture: TimelineManager["beginPreviewGesture"];
 	previewElements: (updates: GroupResizeUpdate[]) => void;
 	commitElements: (updates: GroupResizeUpdate[]) => void;
 	onSnapPointChange?: (snapPoint: SnapPoint | null) => void;
@@ -167,6 +169,7 @@ function hasResizeChanges({
 
 export class ResizeController {
 	private session: Session = { kind: "idle" };
+	private gestureOwner: PreviewGesture | null = null;
 	private readonly subscribers = new Set<() => void>();
 	private readonly configRef: ResizeConfigRef;
 
@@ -190,14 +193,9 @@ export class ResizeController {
 		return () => this.subscribers.delete(fn);
 	}
 
-	cancel(): void {
-		this.config.discardPreview();
-		this.finishSession();
-	}
-
 	destroy(): void {
-		this.deactivate();
 		this.subscribers.clear();
+		this.gestureOwner?.cancel();
 	}
 
 	onResizeStart({
@@ -216,7 +214,7 @@ export class ResizeController {
 
 		// UI should prevent this, but be explicit: a new resize start
 		// means the previous one is abandoned, not silently replaced.
-		if (this.session.kind === "active") this.cancel();
+		this.gestureOwner?.cancel();
 
 		const fps = this.config.getActiveProjectFps();
 		if (!fps) return;
@@ -235,6 +233,7 @@ export class ResizeController {
 		if (members.length === 0) return;
 
 		this.config.discardPreview();
+		this.gestureOwner = this.config.beginPreviewGesture(() => this.finishSession());
 
 		this.session = {
 			kind: "active",
@@ -264,6 +263,8 @@ export class ResizeController {
 	}
 
 	private finishSession(): void {
+		this.gestureOwner?.finish();
+		this.gestureOwner = null;
 		this.session = { kind: "idle" };
 		this.deactivate();
 		this.config.onSnapPointChange?.(null);
@@ -373,6 +374,7 @@ export class ResizeController {
 		if (this.session.kind !== "active") return;
 		const session = this.session;
 
+		this.finishSession();
 		this.config.discardPreview();
 
 		if (
@@ -381,7 +383,5 @@ export class ResizeController {
 		) {
 			this.config.commitElements(session.result.updates);
 		}
-
-		this.finishSession();
 	}
 }

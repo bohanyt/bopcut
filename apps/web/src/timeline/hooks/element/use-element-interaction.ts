@@ -3,7 +3,6 @@ import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
 import { useElementSelection } from "@/timeline/hooks/element/use-element-selection";
-import { registerCanceller } from "@/editor/cancel-interaction";
 import {
 	ElementInteractionController,
 	type ElementInteractionDeps,
@@ -58,6 +57,7 @@ export function useElementInteraction({
 		},
 		timeline: {
 			moveElements: (args) => editor.timeline.moveElements(args),
+			beginPreviewGesture: editor.timeline.beginPreviewGesture,
 		},
 		snap: {
 			isEnabled: () => snappingEnabled,
@@ -71,11 +71,6 @@ export function useElementInteraction({
 
 	const [, rerender] = useReducer((n: number) => n + 1, 0);
 	useEffect(() => controller.subscribe(rerender), [controller]);
-
-	useEffect(() => {
-		if (!controller.isActive) return;
-		return registerCanceller({ fn: () => controller.cancel() });
-	}, [controller.isActive, controller]);
 
 	useEffect(() => () => controller.destroy(), [controller]);
 

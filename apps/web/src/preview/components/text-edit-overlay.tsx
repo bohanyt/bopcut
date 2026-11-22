@@ -17,14 +17,12 @@ import {
 } from "@/text/measure-element";
 
 export function TextEditOverlay({
-	trackId,
-	elementId,
 	element,
+	onPreview,
 	onCommit,
 }: {
-	trackId: string;
-	elementId: string;
 	element: TextElement;
+	onPreview: (text: string) => void;
 	onCommit: () => void;
 }) {
 	const editor = useEditor();
@@ -45,11 +43,8 @@ export function TextEditOverlay({
 	const handleInput = useCallback(() => {
 		const div = divRef.current;
 		if (!div) return;
-		const text = div.innerText;
-		editor.timeline.previewElements({
-			updates: [{ trackId, elementId, updates: { params: { content: text } } }],
-		});
-	}, [editor.timeline, trackId, elementId]);
+		onPreview(div.innerText);
+	}, [onPreview]);
 
 	const handleKeyDown = useCallback(
 		({ event }: { event: React.KeyboardEvent }) => {

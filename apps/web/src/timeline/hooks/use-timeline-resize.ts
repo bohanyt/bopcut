@@ -4,7 +4,6 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
 import { useElementSelection } from "@/timeline/hooks/element/use-element-selection";
 import { useTimelineStore } from "@/timeline/timeline-store";
-import { registerCanceller } from "@/editor/cancel-interaction";
 import {
 	ResizeController,
 	type ResizeConfig,
@@ -38,6 +37,7 @@ export function useTimelineResize({
 		getActiveProjectFps: () => editor.project.getActive()?.settings.fps ?? null,
 		selectedElements,
 		discardPreview: () => editor.timeline.discardPreview(),
+		beginPreviewGesture: editor.timeline.beginPreviewGesture,
 		previewElements: (updates) =>
 			editor.timeline.previewElements({
 				updates: updates.map(({ trackId, elementId, patch }) => ({
@@ -67,11 +67,6 @@ export function useTimelineResize({
 
 	const [, rerender] = useReducer((n: number) => n + 1, 0);
 	useEffect(() => controller.subscribe(rerender), [controller]);
-
-	useEffect(() => {
-		if (!controller.isResizing) return;
-		return registerCanceller({ fn: () => controller.cancel() });
-	}, [controller.isResizing, controller]);
 
 	useEffect(() => () => controller.destroy(), [controller]);
 

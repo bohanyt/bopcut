@@ -24,6 +24,7 @@ import {
 import { usePropertyDraft } from "../hooks/use-property-draft";
 import { KeyframeToggle } from "./keyframe-toggle";
 import { Textarea } from "@/components/ui/textarea";
+import { useEditor } from "@/editor/use-editor";
 
 export function PropertyParamField({
 	param,
@@ -171,6 +172,7 @@ function NumberParamField({
 	onPreview: (value: number) => void;
 	onCommit: () => void;
 }) {
+	const { timeline } = useEditor();
 	const { min, max, step, displayMultiplier = 1 } = param;
 	const displayValue = value * displayMultiplier;
 	const clampDisplayValue = (nextDisplayValue: number) =>
@@ -218,6 +220,7 @@ function NumberParamField({
 			onBlur={draft.onBlur}
 			onScrub={previewFromDisplay}
 			onScrubEnd={onCommit}
+			beginScrubGesture={timeline.beginPreviewGesture}
 			onReset={handleReset}
 		/>
 	);

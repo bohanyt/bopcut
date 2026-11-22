@@ -70,7 +70,7 @@ export function SpeedTab({
 	});
 	const isPitchPreserveAvailable = canMaintainPitch({ rate });
 	const maintainPitch = element.retime?.maintainPitch ?? false;
-	const pendingRateRef = useRef(rate);
+	const pendingRateRef = useRef<number | null>(null);
 
 	const commitRetime = ({
 		rate: nextRate,
@@ -104,7 +104,11 @@ export function SpeedTab({
 			});
 		},
 		onCommit: () => {
-			commitRetime({ rate: pendingRateRef.current, maintainPitch });
+			const pendingRate = pendingRateRef.current;
+			pendingRateRef.current = null;
+			if (pendingRate !== null) {
+				commitRetime({ rate: pendingRate, maintainPitch });
+			}
 		},
 	});
 
@@ -126,13 +130,17 @@ export function SpeedTab({
 							]}
 							scrubClamp={{ min: MIN_RETIME_RATE, max: MAX_RETIME_RATE }}
 							onFocus={() => {
-								pendingRateRef.current = rate;
+								pendingRateRef.current = null;
 								speedDraft.onFocus();
 							}}
 							onChange={speedDraft.onChange}
 							onBlur={speedDraft.onBlur}
 							onScrub={speedDraft.scrubTo}
 							onScrubEnd={speedDraft.commitScrub}
+							onScrubCancel={() => {
+								pendingRateRef.current = null;
+							}}
+							beginScrubGesture={editor.timeline.beginPreviewGesture}
 							onReset={() =>
 								commitRetime({ rate: DEFAULT_RETIME_RATE, maintainPitch })
 							}

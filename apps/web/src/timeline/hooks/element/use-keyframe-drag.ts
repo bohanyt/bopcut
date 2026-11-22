@@ -2,7 +2,6 @@ import { useEffect, useReducer, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useKeyframeSelection } from "./use-keyframe-selection";
-import { registerCanceller } from "@/editor/cancel-interaction";
 import {
 	KeyframeDragController,
 	type KeyframeDragConfig,
@@ -42,6 +41,7 @@ export function useKeyframeDrag({
 		toggleKeyframeSelection,
 		selectKeyframeRange,
 		executeCommand: (command) => editor.command.execute({ command }),
+		beginPreviewGesture: editor.timeline.beginPreviewGesture,
 		seek: ({ time }) => editor.playback.seek({ time }),
 		getTotalDuration: () => editor.timeline.getTotalDuration(),
 	};
@@ -52,11 +52,6 @@ export function useKeyframeDrag({
 
 	const [, rerender] = useReducer((n: number) => n + 1, 0);
 	useEffect(() => controller.subscribe(rerender), [controller]);
-
-	useEffect(() => {
-		if (!controller.isActive) return;
-		return registerCanceller({ fn: () => controller.cancel() });
-	}, [controller.isActive, controller]);
 
 	useEffect(() => () => controller.destroy(), [controller]);
 

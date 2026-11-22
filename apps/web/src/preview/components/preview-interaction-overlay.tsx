@@ -36,6 +36,7 @@ export function PreviewInteractionOverlay() {
 		onDoubleClick,
 		editingText,
 		commitTextEdit,
+		previewTextEdit,
 	} = usePreviewInteraction({
 		onSnapLinesChange: setSnapLines,
 		isMaskMode,
@@ -82,14 +83,14 @@ export function PreviewInteractionOverlay() {
 				onPointerMove={handlePointerMove}
 				onPointerUp={handlePointerUp}
 				onPointerCancel={handlePointerUp}
+				onLostPointerCapture={onPointerUp}
 				onDoubleClick={onDoubleClick}
 				onDragStart={(e) => e.preventDefault()}
 			/>
 			{editingText ? (
 				<TextEditOverlay
-					trackId={editingText.trackId}
-					elementId={editingText.elementId}
 					element={editingText.element}
+					onPreview={previewTextEdit}
 					onCommit={commitTextEdit}
 				/>
 			) : isMaskMode ? (

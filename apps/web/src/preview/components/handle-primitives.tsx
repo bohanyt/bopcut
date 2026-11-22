@@ -56,6 +56,8 @@ export function HandleButton({
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
+			onPointerCancel={onPointerUp}
+			onLostPointerCapture={onPointerUp}
 			onPointerLeave={onPointerUp}
 			onKeyDown={(event) => event.key === "Enter" && event.preventDefault()}
 			onKeyUp={(event) => event.key === "Enter" && event.preventDefault()}
@@ -238,6 +240,8 @@ export function BoundingBoxOutline({
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
+			onPointerCancel={onPointerUp}
+			onLostPointerCapture={onPointerUp}
 			onPointerLeave={onPointerUp}
 		>
 			<rect
@@ -295,6 +299,8 @@ export function ShapeOutline({
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
+			onPointerCancel={onPointerUp}
+			onLostPointerCapture={onPointerUp}
 			onPointerLeave={onPointerUp}
 		>
 			<path
@@ -346,6 +352,8 @@ export function CanvasPathOutline({
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
+			onPointerCancel={onPointerUp}
+			onLostPointerCapture={onPointerUp}
 			onPointerLeave={onPointerUp}
 		>
 			<g
@@ -409,6 +417,8 @@ export function LineOverlay({
 					onPointerDown={onPointerDown}
 					onPointerMove={onPointerMove}
 					onPointerUp={onPointerUp}
+					onPointerCancel={onPointerUp}
+					onLostPointerCapture={onPointerUp}
 					onPointerLeave={onPointerUp}
 				/>
 			)}

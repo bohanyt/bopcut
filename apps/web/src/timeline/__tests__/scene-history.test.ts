@@ -5,6 +5,9 @@ import type { MediaAsset } from "@/media/types";
 import { buildEffectParamPath, getKeyframeAtTime } from "@/animation";
 import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
+import { cancelInteraction } from "@/editor/cancel-interaction";
+import { PreviewInteractionController } from "@/preview/controllers/preview-interaction-controller";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { allElements, allTracks, fixture, getHost, refs, t, video } from "./compound-fixtures";
 
 // Another test file replaces opencut-wasm with a partial mock and Bun keeps that module shape,
@@ -289,6 +292,120 @@ test("an animation duration drag previews every change and commits one undo entr
 	expect(editor.command.canUndo()).toBe(false);
 	editor.command.redo();
 	expect(clip().params[PRESET_PARAM.inDuration]).toBe(1.25);
+});
+
+describe("preview gesture history boundaries", () => {
+	for (const boundary of ["undo", "redo", "track replacement", "scene-list replacement"] as const) {
+		test(`a held canvas drag cannot overwrite ${boundary}`, () => {
+			const { editor, first, main, tracks } = setupSplitHistory();
+			editor.timeline.updateElements({ updates: [{ ...first, patch: { params: { opacity: 0.4 } } }] });
+			if (boundary === "redo") editor.command.undo();
+			const controller = new PreviewInteractionController({
+				depsRef: {
+					current: {
+						viewport: {
+							screenToCanvas: ({ clientX, clientY }) => ({ x: clientX, y: clientY }),
+							screenPixelsToLogicalThreshold: () => ({ x: 0, y: 0 }),
+						},
+						input: { isShiftHeld: () => true },
+						scene: {
+							getTracks: tracks,
+							getCurrentTime: () => 0,
+							getMediaAssets: () => [],
+							getCanvasSize: () => ({ width: 1920, height: 1080 }),
+						},
+						selection: {
+							getSelected: () => editor.selection.getSelectedElements(),
+							setSelected: (elements) => editor.selection.setSelectedElements({ elements: [...elements] }),
+							clearSelection: () => editor.selection.clearSelection(),
+						},
+						timeline: {
+							getElementsWithTracks: ({ elements }) => editor.timeline.getElementsWithTracks({ elements: [...elements] }),
+							previewElements: (updates) => editor.timeline.previewElements({ updates }),
+							commitPreview: () => editor.timeline.commitPreview(),
+							beginPreviewGesture: editor.timeline.beginPreviewGesture,
+						},
+						playback: { getIsPlaying: () => false, subscribe: () => () => {} },
+						preview: { isMaskMode: () => false },
+					},
+				},
+			});
+			let captured = false;
+			const currentTarget = {
+				setPointerCapture: () => { captured = true; },
+				hasPointerCapture: () => captured,
+				releasePointerCapture: () => { captured = false; },
+			};
+			const pointer = (x: number, type: string) => ({
+				clientX: x, clientY: 540, pointerId: 1, button: 0, type, currentTarget,
+			}) as unknown as ReactPointerEvent;
+			try {
+				controller.onPointerDown(pointer(960, "pointerdown"));
+				controller.onPointerMove(pointer(980, "pointermove"));
+				expect(editor.timeline.isPreviewActive()).toBe(true);
+
+				const replacement = {
+					...tracks(),
+					main: {
+						...tracks().main,
+						elements: [{ ...main()[0], params: { opacity: 0.7 } }, main()[1]],
+					},
+				};
+				if (boundary === "undo") editor.command.undo();
+				else if (boundary === "redo") editor.command.redo();
+				else if (boundary === "track replacement") editor.timeline.updateTracks(replacement);
+				else editor.scenes.setScenes({ scenes: [{ ...editor.scenes.getActiveScene(), tracks: replacement }] });
+				const after = tracks();
+				expect(captured).toBe(false);
+				controller.onPointerMove(pointer(1040, "pointermove"));
+				controller.onPointerUp(pointer(1040, "pointerup"));
+				expect(editor.timeline.isPreviewActive()).toBe(false);
+				expect(tracks()).toBe(after);
+				if (boundary === "undo") {
+					expect(editor.command.canRedo()).toBe(true);
+					editor.command.redo();
+					expect(main()[0].params.opacity).toBe(0.4);
+				}
+			} finally {
+				controller.destroy();
+			}
+		});
+	}
+
+	test("a replay without track changes cancels a gesture even before its first preview", async () => {
+		const { editor, tracks } = setupSplitHistory();
+		const before = tracks();
+		await editor.scenes.toggleBookmark({ time: t(1) });
+		let canceled = 0;
+		editor.timeline.beginPreviewGesture(() => { canceled++; });
+		editor.command.redo();
+		expect(canceled).toBe(0);
+		editor.command.undo();
+		expect(tracks()).toBe(before);
+		expect(canceled).toBe(1);
+		expect(cancelInteraction()).toBe(false);
+	});
+
+	test("Cancel clears the preview, and a finished gesture can commit one history entry", () => {
+		const { editor, first, main } = setupSplitHistory();
+		let canceled = 0;
+		editor.timeline.beginPreviewGesture(() => { canceled++; });
+		editor.timeline.previewElements({ updates: [{ ...first, updates: { duration: t(1) } }] });
+		expect(cancelInteraction()).toBe(true);
+		expect(canceled).toBe(1);
+		expect(editor.timeline.isPreviewActive()).toBe(false);
+		expect(editor.command.canUndo()).toBe(false);
+
+		const owner = editor.timeline.beginPreviewGesture(() => { canceled++; });
+		editor.timeline.previewElements({ updates: [{ ...first, updates: { duration: t(1) } }] });
+		owner.finish();
+		editor.timeline.commitPreview();
+		expect(main()[0].duration).toBe(t(1));
+		expect(canceled).toBe(1);
+		editor.command.undo();
+		expect(main()[0].duration).toBe(t(2));
+		expect(editor.command.canUndo()).toBe(false);
+	});
 });
 
 describe("generated ids in history", () => {
