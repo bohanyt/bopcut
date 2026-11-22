@@ -1,31 +1,9 @@
 import {
 	applyEffectPasses,
 	applyMaskFeather as applyMaskFeatherWasm,
-	initializeGpu,
 } from "opencut-wasm";
 import type { EffectPass, EffectUniformValue } from "@/effects/types";
-
-let gpuAvailable = false;
-let initPromise: Promise<void> | null = null;
-
-export function initializeGpuRenderer(): Promise<void> {
-	if (!initPromise) {
-		initPromise = initializeGpu()
-			.then(() => {
-				gpuAvailable = true;
-			})
-			.catch((error: unknown) => {
-				gpuAvailable = false;
-				const message = error instanceof Error ? error.message : String(error);
-				console.warn(`GPU renderer unavailable: ${message}`);
-			});
-	}
-	return initPromise;
-}
-
-export function isGpuAvailable(): boolean {
-	return gpuAvailable;
-}
+import { checkGraphicsContext, rendererDevice, rethrowGraphicsFailure } from "./renderer-device";
 
 export const gpuRenderer = {
 	applyEffect({
@@ -39,16 +17,21 @@ export const gpuRenderer = {
 		height: number;
 		passes: EffectPass[];
 	}): OffscreenCanvas {
-		if (passes.length === 0 || !gpuAvailable) {
+		if (passes.length === 0 || rendererDevice.status.state !== "ready") {
 			return source;
 		}
 
-		return applyEffectPasses({
-			source,
-			width,
-			height,
-			passes: serializeEffectPasses(passes),
-		});
+		try {
+			checkGraphicsContext();
+			return applyEffectPasses({
+				source,
+				width,
+				height,
+				passes: serializeEffectPasses(passes),
+			});
+		} catch (error) {
+			rethrowGraphicsFailure(error);
+		}
 	},
 
 	applyMaskFeather({
@@ -62,10 +45,7 @@ export const gpuRenderer = {
 		height: number;
 		feather: number;
 	}): OffscreenCanvas {
-		if (!gpuAvailable) {
-			return maskCanvas;
-		}
-
+		checkGraphicsContext();
 		return applyMaskFeatherWasm({
 			mask: maskCanvas,
 			width,

@@ -1,6 +1,33 @@
 import { expect, test } from "bun:test";
 import { createPreviewFrameScheduler } from "./frame-scheduler";
 
+test("a paused recoverable failure retries once per invalidation", async () => {
+	const clock = frameClock();
+	const error = new Error("temporary surface failure");
+	const failed = Promise.reject(error);
+	void failed.catch(() => {});
+	let renders = 0;
+	const options = {
+		...clock,
+		render: () => { renders++; return failed; },
+		shouldRetry: (failure: unknown) => failure === error,
+	};
+	const scheduler = createPreviewFrameScheduler(options);
+	scheduler.request();
+	clock.tick();
+	await Promise.resolve();
+	expect(clock.pending()).toBe(1);
+	clock.tick();
+	await Promise.resolve();
+	expect(renders).toBe(2);
+	expect(clock.pending()).toBe(0);
+	scheduler.request();
+	clock.tick();
+	await Promise.resolve();
+	expect(renders).toBe(3);
+	expect(clock.pending()).toBe(1);
+});
+
 function frameClock() {
 	const pending = new Map<number, () => void>();
 	let id = 0;

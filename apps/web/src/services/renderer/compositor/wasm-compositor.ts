@@ -46,6 +46,12 @@ class WasmCompositor {
 	private initializedSize: { width: number; height: number } | null = null;
 	private cache = new Map<string, RenderedCacheEntry | ExternalCacheEntry>();
 
+	reset() {
+		this.canvas = null;
+		this.initializedSize = null;
+		this.cache.clear();
+	}
+
 	ensureInitialized({ width, height }: { width: number; height: number }) {
 		if (!this.canvas) {
 			initCompositor(width, height);

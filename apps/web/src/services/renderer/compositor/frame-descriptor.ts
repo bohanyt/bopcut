@@ -33,15 +33,18 @@ import type {
 	TextureUploadDescriptor,
 } from "./types";
 import { DEFAULT_GRAPHIC_SOURCE_SIZE } from "@/graphics";
+import { checkGraphicsContext } from "../renderer-device";
 
 export async function buildFrameDescriptor({
 	node,
 	renderer,
 	path = "root",
+	signal,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
 	path?: string;
+	signal?: AbortSignal;
 }): Promise<{
 	frame: FrameDescriptor;
 	textures: TextureUploadDescriptor[];
@@ -55,6 +58,7 @@ export async function buildFrameDescriptor({
 		path,
 		items,
 		textures,
+		signal,
 	});
 
 	incrementCounter({ name: "frameItems", by: items.length });
@@ -79,13 +83,16 @@ async function collectNode({
 	path,
 	items,
 	textures,
+	signal,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
 	path: string;
 	items: FrameItemDescriptor[];
 	textures: Map<string, TextureUploadDescriptor>;
+	signal?: AbortSignal;
 }): Promise<void> {
+	signal?.throwIfAborted();
 	if (node instanceof RootNode) {
 		for (let index = 0; index < node.children.length; index++) {
 			await collectNode({
@@ -94,6 +101,7 @@ async function collectNode({
 				path: `${path}:${index}`,
 				items,
 				textures,
+				signal,
 			});
 		}
 		return;
@@ -214,6 +222,7 @@ async function collectNode({
 			path,
 			items,
 			textures,
+			signal,
 		});
 		return;
 	}
@@ -335,12 +344,14 @@ async function collectCompoundNode({
 	path,
 	items,
 	textures,
+	signal,
 }: {
 	node: CompoundNode;
 	renderer: CanvasRenderer;
 	path: string;
 	items: FrameItemDescriptor[];
 	textures: Map<string, TextureUploadDescriptor>;
+	signal?: AbortSignal;
 }) {
 	if (!node.resolved) {
 		return;
@@ -351,7 +362,9 @@ async function collectCompoundNode({
 		node: node.params.content,
 		renderer,
 		path: contentPath,
+		signal,
 	});
+	signal?.throwIfAborted();
 	if (frame.items.length === 0) {
 		return;
 	}
@@ -360,6 +373,7 @@ async function collectCompoundNode({
 	}
 
 	const { outputWidth: width, outputHeight: height } = renderer;
+	if (signal) checkGraphicsContext();
 	wasmCompositor.ensureInitialized({ width, height });
 	wasmCompositor.syncTextures(nestedTextures, { releaseUnused: false });
 	const source = wasmCompositor.renderToTransparentCanvas(frame);

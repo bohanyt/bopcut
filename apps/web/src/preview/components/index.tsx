@@ -7,6 +7,9 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
+import { RecoverableSurfaceError, rendererDevice } from "@/services/renderer/renderer-device";
+import { modelGraphics } from "@/model3d/render";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import { buildScene } from "@/services/renderer/scene-builder";
@@ -216,7 +219,7 @@ function PreviewCanvas({
 	}, [renderer, sessionSignal]);
 
 	const render = useCallback(() => {
-		if (!renderTree) return;
+		if (!renderTree || rendererDevice.status.state !== "ready") return;
 		if (lastRendererRef.current !== renderer) {
 			lastRendererRef.current = renderer;
 			lastFrameRef.current = -1;
@@ -240,21 +243,24 @@ function PreviewCanvas({
 
 		const signal = renderSignalRef.current;
 		if (!signal) return;
+		const graphics = rendererDevice.signal;
 		const task = editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
 		if (!task) return;
-		lastSceneRef.current = renderTree;
-		lastFrameRef.current = frame;
 		return task
 			.then(() => {
 				// Keep the previous frame visible while the new render target is waiting.
 				const mount = canvasMountRef.current;
+				if (signal.aborted || graphics.aborted || !mount) return;
 				const outputCanvas = renderer.getOutputCanvas();
-				if (!signal.aborted && mount && outputCanvas.parentElement !== mount) {
-					mount.replaceChildren(outputCanvas);
-				}
+				if (outputCanvas.parentElement !== mount) mount.replaceChildren(outputCanvas);
+				lastSceneRef.current = renderTree;
+				lastFrameRef.current = frame;
 			})
 			.catch((error) => {
-				if (!signal.aborted) console.error("Preview render failed:", error);
+				if (!signal.aborted && !graphics.aborted && error instanceof RecoverableSurfaceError) throw error;
+				if (!signal.aborted && !(error instanceof GraphicsDeviceError)) {
+					console.error("Preview render failed:", error);
+				}
 			});
 	}, [renderer, renderTree, editor.playback, editor.renderer, editor.timeline]);
 
@@ -264,16 +270,26 @@ function PreviewCanvas({
 			render: () => renderRef.current(),
 			requestFrame: requestAnimationFrame,
 			cancelFrame: cancelAnimationFrame,
+			shouldRetry: (error) => error instanceof RecoverableSurfaceError,
 		});
 		schedulerRef.current = scheduler;
+		const redraw = () => {
+			lastFrameRef.current = -1;
+			scheduler.request();
+		};
+		const onVisibility = () => { if (!document.hidden) redraw(); };
+		document.addEventListener("visibilitychange", onVisibility);
 		const unsubscribe = [
 			editor.playback.onUpdate(scheduler.playbackTick),
 			editor.playback.onSeek(scheduler.request),
 			editor.renderer.subscribe(scheduler.request),
+			rendererDevice.subscribe(() => { if (rendererDevice.status.state === "ready") redraw(); }),
+			modelGraphics.subscribe(() => { if (!modelGraphics.getSnapshot()) redraw(); }),
 		];
 		return () => {
 			schedulerRef.current = null;
 			scheduler.dispose();
+			document.removeEventListener("visibilitychange", onVisibility);
 			for (const remove of unsubscribe) remove();
 		};
 	}, [editor, renderRef]);

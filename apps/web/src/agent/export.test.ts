@@ -21,6 +21,7 @@ const { RootNode } = await import("@/services/renderer/nodes/root-node");
 const { SceneExporter } = await import("@/services/renderer/scene-exporter");
 const { resolveRenderTree } = await import("@/services/renderer/resolve");
 const { VideoCache } = await import("@/services/video-cache/service");
+const { rendererDevice } = await import("@/services/renderer/renderer-device");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
 
@@ -323,6 +324,24 @@ async function inTemp(run: (dir: string, fs: typeof import("node:fs").promises, 
 }
 
 describe("the result file", () => {
+	test("only the current tab can release its own revision and project", () =>
+		inTemp(async (workspace) => {
+			const write = (result: { rev: string; status: string; tab: string; projectId: string }, now?: number) =>
+				writeExportResult({ workspace, result, now });
+			const original = { rev: "owned", status: "exporting", tab: "a", projectId: "p" };
+			await write(original, 1000);
+			await write({ ...original, tab: "b" }, 1000 + CLAIM_MS);
+			for (const release of [
+				{ ...original, status: "release" },
+				{ ...original, status: "release", tab: "b", projectId: "q" },
+				{ ...original, status: "release", tab: "b", rev: "earlier" },
+			]) {
+				expect(await write(release)).toEqual({ ok: false, reason: "claimed" });
+			}
+			expect(await write({ ...original, status: "release", tab: "b" })).toEqual({ ok: true });
+			expect(await write(original)).toEqual({ ok: true });
+		}));
+
 	test("a final answer is never replaced; a running export belongs to the tab that took it", () =>
 		inTemp(async (workspace, fs, path) => {
 			const t0 = 1_000_000;
@@ -521,9 +540,13 @@ describe("the export poller", () => {
 				}
 				return new Response("{}");
 			}) as typeof fetch;
+			Object.defineProperty(rendererDevice, "status", { configurable: true, value: { state: "ready" } });
+			const graphics = spyOn(rendererDevice, "requireReady").mockReturnValue(rendererDevice.signal);
 			try {
 				await run(log);
 			} finally {
+				graphics.mockRestore();
+				Reflect.deleteProperty(rendererDevice, "status");
 				globalThis.fetch = realFetch;
 				(globalThis as any).localStorage = previousStorage;
 			}
@@ -972,6 +995,37 @@ describe("the export poller", () => {
 			}
 		}));
 
+	test("graphics loss during encoding fails the export and releases its slot", () =>
+		withFrameResolution(async ({ cancel, finalize }) => {
+			const editor = open("p", 0.1);
+			editor.save.stop();
+			const generation = new AbortController();
+			const decode = spyOn(VideoCache.prototype, "getFrameAt").mockResolvedValue(null);
+			const entered = Promise.withResolvers<void>();
+			const encoder = Promise.withResolvers<void>();
+			const add = spyOn(CanvasSource.prototype, "add").mockImplementation(() => {
+				entered.resolve();
+				return encoder.promise;
+			});
+			Object.defineProperty(rendererDevice, "signal", { configurable: true, value: generation.signal });
+			const options = { format: "mp4", quality: "high", includeAudio: false } as const;
+			const exporting = editor.renderer.exportProject({ options });
+			try {
+				await Promise.race([entered.promise, exporting.then(() => { throw new Error("Export did not reach encoding"); })]);
+				generation.abort(new Error("Graphics device was lost"));
+				expect(await exporting).toEqual({ success: false, error: "Graphics device was lost" });
+				expect(cancel).toHaveBeenCalledTimes(1);
+				expect(finalize).not.toHaveBeenCalled();
+				expect(editor.renderer.isExportRunning()).toBe(false);
+			} finally {
+				encoder.resolve();
+				await exporting;
+				Reflect.deleteProperty(rendererDevice, "signal");
+				add.mockRestore();
+				decode.mockRestore();
+			}
+		}));
+
 	test("a cancelled frame read releases the slot before the decoder settles", () =>
 		withFrameResolution(async ({ cancel }) => {
 			const editor = open("p", 0.1);
@@ -1154,12 +1208,57 @@ describe("the export poller", () => {
 			expect(await log.result()).toMatchObject({ status: "done", duration: 5 });
 		}));
 
+	test("does not claim a queued export until graphics are ready", () => {
+		let state = "starting";
+		let loseOnRead = true;
+		return withServer({ request: { rev: "graphics-wait" }, onRequest: () => { if (loseOnRead) state = "recovering"; } }, async (log) => {
+			Object.defineProperty(rendererDevice, "status", { configurable: true, get: () => ({ state }) });
+			try {
+				await pollExport();
+				expect(log.gets).toBe(0);
+				state = "unavailable";
+				await pollExport();
+				expect(log.gets).toBe(0);
+				state = "ready";
+				await pollExport();
+				expect(log.posts).toEqual([]);
+				expect(log.exports).toEqual([]);
+				loseOnRead = false;
+				state = "ready";
+				await pollExport();
+				expect(log.posts).toHaveLength(1);
+				expect(log.exports).toHaveLength(1);
+				expect(await log.result()).toMatchObject({ rev: "graphics-wait", status: "done" });
+			} finally {
+				Reflect.deleteProperty(rendererDevice, "status");
+			}
+		});
+	});
+
 	test("takes the editor as it is once the request is taken", () =>
 		withServer({ request: { rev: "e1" }, onClaim: () => open("p", 7) }, async (log) => {
 			await pollExport();
 			expect(log.exports[0].duration).toBe(T(7));
 			expect(await log.result()).toMatchObject({ status: "done", duration: 7 });
 		}));
+
+	test.each(["recovering", "unavailable"])("releases a claim when graphics becomes %s before the export", (next) => {
+		let state = "ready";
+		return withServer({ request: { rev: "release-on-recovery" }, onClaim: () => { state = next; } }, async (log) => {
+			Object.defineProperty(rendererDevice, "status", { configurable: true, get: () => ({ state }) });
+			try {
+				await pollExport();
+				expect(log.exports).toHaveLength(0);
+				expect(await log.result()).toBeNull();
+				state = "ready";
+				await pollExport();
+				expect(log.exports).toHaveLength(1);
+				expect(await log.result()).toMatchObject({ rev: "release-on-recovery", status: "done" });
+			} finally {
+				Reflect.deleteProperty(rendererDevice, "status");
+			}
+		});
+	});
 
 	test("a project switch while the request is read leaves the request alone", () =>
 		withServer({ request: { rev: "e1", projectId: "p" }, onRequest: () => open("q") }, async (log) => {

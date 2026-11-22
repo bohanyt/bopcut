@@ -14,6 +14,7 @@ import { isElementMuted } from "@/timeline/audio-state";
 import type { TCanvasSize } from "@/project/types";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
+import { rendererDevice } from "@/services/renderer/renderer-device";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
@@ -25,21 +26,10 @@ function unavailableMedia(missingMedia: MediaLoadFailure[]): ExportResult {
 
 export class RendererManager {
 	private renderTree: RootNode | null = null;
-	private _isDegraded = false;
 	private exportRunning = false;
 	private listeners = new Set<() => void>();
 
 	constructor(private editor: EditorCore) {}
-
-	get isDegraded(): boolean {
-		return this._isDegraded;
-	}
-
-	setDegraded(degraded: boolean): void {
-		if (this._isDegraded === degraded) return;
-		this._isDegraded = degraded;
-		this.notify();
-	}
 
 	setRenderTree({ renderTree }: { renderTree: RootNode | null }): void {
 		this.renderTree = renderTree;
@@ -266,7 +256,7 @@ export class RendererManager {
 	}): Promise<ExportResult> {
 		const { format, quality, fps, includeAudio, sceneId, allowMissing } = options;
 		const mediaFailure = new AbortController();
-		const signal = AbortSignal.any([callerSignal, mediaFailure.signal]);
+		const signal = AbortSignal.any([callerSignal, mediaFailure.signal, rendererDevice.signal]);
 		let audioBlocks: ReturnType<typeof mixTimelineAudio> | undefined;
 		const failures = new Map<string, MediaLoadFailure>();
 
@@ -311,6 +301,7 @@ export class RendererManager {
 
 			const preflight = this.checkExport({ format, allowMissing, includeAudio, scene: exported, scenes, canvasSize, duration });
 			if (preflight) return preflight;
+			if (rendererDevice.status.state !== "idle") rendererDevice.requireReady();
 			const mediaAssets = media.getAssets();
 
 			let firstAudioBlock: AudioBuffer | undefined;

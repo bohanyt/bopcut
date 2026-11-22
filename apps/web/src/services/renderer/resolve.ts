@@ -398,7 +398,7 @@ async function resolveModel3dNode({ node, context }: { node: Model3dNode; contex
 		params[definition.key] = resolveAnimationPathValueAtTime({ animations: node.params.animations, propertyPath: definition.key, localTime: visualState.localTime, fallbackValue: params[definition.key] ?? definition.default });
 	}
 	const source = await waitWithAbort(
-		renderModel3d({ id: node.params.mediaId, file: node.params.file, params, size }),
+		renderModel3d({ id: node.params.mediaId, file: node.params.file, params, size, signal: context.signal }),
 		context.signal,
 	);
 	return { ...visualState, source, sourceWidth: size, sourceHeight: size };

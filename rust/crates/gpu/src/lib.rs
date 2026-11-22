@@ -18,4 +18,16 @@ pub enum GpuError {
     CreateSurface(#[from] wgpu::CreateSurfaceError),
     #[error("The output surface does not support the required texture format")]
     UnsupportedSurfaceFormat,
+    #[error("The graphics surface was lost")]
+    SurfaceLost,
+    #[error("The graphics surface is temporarily unavailable")]
+    SurfaceUnavailable,
+    #[error("Graphics surface validation failed")]
+    SurfaceValidation,
+    #[error("WebGL2 operation failed: {0}")]
+    WebGlOperation(String),
+    #[error("Could not read the source canvas for texture upload")]
+    CanvasRead,
+    #[error("WebGPU initialization failed ({webgpu}); WebGL2 initialization failed ({webgl})")]
+    BackendsUnavailable { webgpu: String, webgl: String },
 }

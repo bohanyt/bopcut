@@ -11,6 +11,7 @@ import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { storageService } from "@/services/storage/service";
+import { rendererDevice } from "@/services/renderer/renderer-device";
 import { parseSourceWords, type SourceWord } from "@/media/words";
 import { toast } from "sonner";
 import { pollFrames } from "./frames";
@@ -304,14 +305,14 @@ function exportable() {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const root = agentRootScene();
-	if (!project || !root || timelineBusy() || editor.renderer.isExportRunning()) return null;
+	if (!project || !root || timelineBusy() || editor.renderer.isExportRunning() || rendererDevice.status.state !== "ready") return null;
 	return agentReadiness().ready ? { project, root } : null;
 }
 
 async function answerExport() {
 	if (unposted) return await postUnposted();
 	const editor = EditorCore.getInstance();
-	if (!editor.project.getActiveOrNull() || editor.renderer.isExportRunning()) return;
+	if (!editor.project.getActiveOrNull() || editor.renderer.isExportRunning() || rendererDevice.status.state !== "ready") return;
 	let raw: unknown = null;
 	try {
 		raw = await (await fetch("/api/agent/export-request", { cache: "no-store", signal: AbortSignal.timeout(REQUEST_WAIT_MS) })).json();
@@ -355,7 +356,10 @@ async function answerExport() {
 	if (claim === "answered") return markAnswered(key, rev);
 	if (claim !== "ok") return;
 	const now = exportable();
-	if (!now || now.project.metadata.id !== projectId) return; // taken again on the next poll
+	if (!now || now.project.metadata.id !== projectId) {
+		await sendExportResult({ rev, projectId, status: "release" });
+		return;
+	}
 	const { project, root } = now;
 	const settings = project.settings;
 	const fps = request.fps ? { numerator: Math.round(request.fps * 1000), denominator: 1000 } : settings.fps;

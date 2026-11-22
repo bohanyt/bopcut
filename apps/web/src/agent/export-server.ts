@@ -16,7 +16,7 @@ export const CLAIM_MS = 60_000;
 
 const RESULT_FILE = "export-result.json";
 const REV = /^[a-zA-Z0-9_-]{1,100}$/;
-const STATUSES = new Set(["exporting", "done", "error"]);
+const STATUSES = new Set(["exporting", "done", "error", "release"]);
 /** The fields of a final answer the editor sends along with the video. */
 const DONE_FIELDS = ["format", "quality", "width", "height", "fps", "duration", "seconds"] as const;
 
@@ -54,6 +54,14 @@ export function writeExportResult({ workspace, result, now = Date.now() }: { wor
 	return oneAtATime(async () => {
 		const current = await readResult(workspace);
 		if (isFinal(current, result.rev)) return { ok: false, reason: "answered" } as const;
+		if (result.status === "release") {
+			if (current?.rev !== result.rev || current.status !== "exporting" ||
+				current.tab !== result.tab || current.projectId !== result.projectId) {
+				return { ok: false, reason: "claimed" } as const;
+			}
+			await fs.rm(path.join(workspace, RESULT_FILE), { force: true });
+			return { ok: true } as const;
+		}
 		if (
 			result.status === "exporting" && current?.rev === result.rev && current.status === "exporting" && current.tab !== result.tab &&
 			now - Date.parse(String(current.updatedAt)) < CLAIM_MS
@@ -82,6 +90,9 @@ export async function handleExportResult(req: Request, workspace: string): Promi
 	if (!result || typeof result !== "object" || typeof result.rev !== "string" || !REV.test(result.rev) || !STATUSES.has(result.status) || result.status === "done") {
 		// "done" is written with the video (POST export-file), never on its own.
 		return Response.json({ error: "Invalid result" }, { status: 400 });
+	}
+	if (result.status === "release" && (typeof result.tab !== "string" || !result.tab || typeof result.projectId !== "string" || !result.projectId)) {
+		return Response.json({ error: "Invalid claim release" }, { status: 400 });
 	}
 	const written = await writeExportResult({ workspace, result });
 	return written.ok ? Response.json({ ok: true }) : refused(written.reason);

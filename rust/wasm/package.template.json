@@ -1,0 +1,17 @@
+{
+  "name": "opencut-wasm",
+  "type": "module",
+  "description": "Shared video editor logic compiled to WebAssembly",
+  "version": "0.2.10-bopencut.5",
+  "license": "MIT",
+  "files": [
+    "opencut_wasm_bg.wasm",
+    "opencut_wasm.js",
+    "opencut_wasm_bg.js",
+    "opencut_wasm.d.ts",
+    "snippets/"
+  ],
+  "main": "opencut_wasm.js",
+  "types": "opencut_wasm.d.ts",
+  "sideEffects": ["./opencut_wasm.js", "./snippets/*"]
+}

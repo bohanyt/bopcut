@@ -3,6 +3,7 @@ import { effectsRegistry, resolveEffectPasses } from "@/effects";
 import { buildDefaultParamValues } from "@/params/registry";
 import type { ParamValues } from "@/params";
 import { gpuRenderer } from "./gpu-renderer";
+import { rendererDevice } from "./renderer-device";
 
 const PREVIEW_SIZE = 160;
 const PREVIEW_IMAGE_PATH = "/effects/preview.jpg";
@@ -20,7 +21,13 @@ class EffectPreviewService {
 
 	onPreviewImageReady({ callback }: { callback: () => void }): () => void {
 		this.onReadyCallbacks.add(callback);
-		return () => this.onReadyCallbacks.delete(callback);
+		const unsubscribe = rendererDevice.subscribe(() => {
+			if (rendererDevice.status.state === "ready") callback();
+		});
+		return () => {
+			unsubscribe();
+			this.onReadyCallbacks.delete(callback);
+		};
 	}
 
 	renderPreview({

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { EditorCore } from "@/core";
@@ -10,10 +10,7 @@ import { useKeybindingsStore } from "@/actions/keybindings-store";
 import { useTimelineStore } from "@/timeline/timeline-store";
 import { useEditorActions } from "@/actions/use-editor-actions";
 import { loadFontAtlas } from "@/fonts/google-fonts";
-import {
-	initializeGpuRenderer,
-	isGpuAvailable,
-} from "@/services/renderer/gpu-renderer";
+import { rendererDevice } from "@/services/renderer/renderer-device";
 
 interface EditorProviderProps {
 	projectId: string;
@@ -38,8 +35,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 		const loadProject = async () => {
 			try {
 				setIsLoading(true);
-				await initializeGpuRenderer();
-				editor.renderer.setDegraded(!isGpuAvailable());
+				void rendererDevice.start();
 				await editor.project.loadProject({ id: projectId });
 
 				if (cancelled) return;
@@ -131,6 +127,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 function EditorRuntimeBindings() {
 	const editor = useEditor();
 	const thumbnailSession = useEditor((e) => e.project.getIsLoading() ? null : e.project.getSession());
+	const graphics = useSyncExternalStore(rendererDevice.subscribe, rendererDevice.getSnapshot, rendererDevice.getSnapshot);
 	const rippleEditingEnabled = useTimelineStore(
 		(state) => state.rippleEditingEnabled,
 	);
@@ -140,8 +137,10 @@ function EditorRuntimeBindings() {
 	}, [editor, rippleEditingEnabled]);
 
 	useEffect(() => {
-		if (thumbnailSession !== null) void editor.project.ensureThumbnail({ session: thumbnailSession });
-	}, [editor, thumbnailSession]);
+		if (thumbnailSession !== null && graphics.state === "ready") {
+			void editor.project.ensureThumbnail({ session: thumbnailSession });
+		}
+	}, [editor, thumbnailSession, graphics.state]);
 
 	// Leaving the page with unsaved changes is guarded by the save manager itself (also after the editor
 	// page is gone, while a closed project's last changes are written).

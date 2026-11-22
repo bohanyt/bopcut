@@ -3,15 +3,18 @@ export function createPreviewFrameScheduler({
 	render,
 	requestFrame,
 	cancelFrame,
+	shouldRetry,
 }: {
 	render: () => Promise<void> | void;
 	requestFrame: (callback: () => void) => number;
 	cancelFrame: (id: number) => void;
+	shouldRetry?: (error: unknown) => boolean;
 }) {
 	let frame: number | null = null;
 	let rendering = false;
 	let dirty = false;
 	let disposed = false;
+	let retried = false;
 
 	function draw(): void {
 		if (disposed) return;
@@ -23,14 +26,19 @@ export function createPreviewFrameScheduler({
 		const task = render();
 		if (!task) return;
 		rendering = true;
-		const finish = () => {
+		const finish = (retry = false) => {
 			rendering = false;
-			if (dirty) request();
+			if (dirty) {
+				queueFrame();
+			} else if (retry && !retried) {
+				retried = true;
+				queueFrame();
+			}
 		};
-		void task.then(finish, finish);
+		void task.then(() => finish(), (error) => finish(shouldRetry?.(error)));
 	}
 
-	function request(): void {
+	function queueFrame(): void {
 		if (disposed || frame !== null) return;
 		if (rendering) {
 			dirty = true;
@@ -49,8 +57,12 @@ export function createPreviewFrameScheduler({
 	}
 
 	return {
-		request,
+		request: () => {
+			retried = false;
+			queueFrame();
+		},
 		playbackTick: () => {
+			retried = false;
 			clearFrame();
 			draw();
 		},

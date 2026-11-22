@@ -2,6 +2,7 @@ import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
 import { lastFrameMediaTime, mediaTimeFromSeconds } from "@/wasm";
 import type { MediaLoadFailure } from "@/media/types";
+import { isGraphicsInitializing } from "@/services/renderer/renderer-device";
 import { getRootScene } from "./scene-graph";
 import { isForOtherProject, parseStateRef, resolveState, type TimelineState } from "./history";
 import { markAnswered, wasAnswered } from "./answered";
@@ -48,7 +49,7 @@ async function postCancellation(cancellation: PendingCancellation) {
 export async function pollFrames(readiness: () => { ready: boolean; missingMedia: MediaLoadFailure[] }) {
 	const editor = EditorCore.getInstance();
 	if (busy) return;
-	if (!pendingCancellation && (!editor.project.getActiveOrNull() || editor.timeline.isPreviewActive() || !readiness().ready)) return;
+	if (!pendingCancellation && (!editor.project.getActiveOrNull() || editor.timeline.isPreviewActive() || isGraphicsInitializing() || !readiness().ready)) return;
 	const signal = editor.project.getSessionSignal();
 	busy = true;
 	try {
@@ -64,7 +65,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		if (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0) || (request.width !== undefined && (!Number.isInteger(request.width) || request.width < 1 || request.width > 4096))) return;
 		// A request read across a session switch has not been picked up by either project yet.
 		const project = editor.project.getActiveOrNull();
-		if (!project || signal.aborted || editor.timeline.isPreviewActive()) return;
+		if (!project || signal.aborted || editor.timeline.isPreviewActive() || isGraphicsInitializing()) return;
 		const { ready, missingMedia } = readiness();
 		if (!ready) return;
 		const projectId = project.metadata.id;
