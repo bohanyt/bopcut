@@ -313,32 +313,32 @@ export function SettingsView() {
 							))}
 							<div className="pb-2">
 								<AspectRatioItem
-									key="custom"
 									label="Custom"
 									previewIcon={<OcSquarePlusIcon />}
 									isSelected={isCustomSelected}
 									onClick={selectCustomCanvasSize}
-									uiOptions={
-										<div className=" flex items-center gap-2 text-foreground">
-											<NumberField
-												value={widthDraft.displayValue}
-												className="w-full"
-												aria-label="Canvas width"
-												onFocus={widthDraft.onFocus}
-												onChange={widthDraft.onChange}
-												onBlur={widthDraft.onBlur}
-											/>
-											<NumberField
-												value={heightDraft.displayValue}
-												className="w-full"
-												aria-label="Canvas height"
-												onFocus={heightDraft.onFocus}
-												onChange={heightDraft.onChange}
-												onBlur={heightDraft.onBlur}
-											/>
-										</div>
-									}
+									className={isCustomSelected ? "rounded-b-none border-b-0" : undefined}
 								/>
+								{isCustomSelected && (
+									<div className="flex items-center gap-2 rounded-b-md border border-t-0 border-secondary-border bg-secondary px-2 pb-2 text-foreground">
+										<NumberField
+											value={widthDraft.displayValue}
+											className="w-full"
+											aria-label="Canvas width"
+											onFocus={widthDraft.onFocus}
+											onChange={widthDraft.onChange}
+											onBlur={widthDraft.onBlur}
+										/>
+										<NumberField
+											value={heightDraft.displayValue}
+											className="w-full"
+											aria-label="Canvas height"
+											onFocus={heightDraft.onFocus}
+											onChange={heightDraft.onChange}
+											onBlur={heightDraft.onBlur}
+										/>
+									</div>
+								)}
 							</div>
 						</SectionContent>
 					</Section>
@@ -354,13 +354,13 @@ function AspectRatioItem({
 	previewIcon,
 	isSelected,
 	onClick,
-	uiOptions,
+	className,
 }: {
 	label: string;
 	previewIcon: React.ReactNode;
 	isSelected: boolean;
 	onClick: () => void;
-	uiOptions?: React.ReactNode;
+	className?: string;
 }) {
 	return (
 		<Button
@@ -368,6 +368,7 @@ function AspectRatioItem({
 			className={cn(
 				"px-2 py-0 flex flex-col h-fit w-full",
 				!isSelected && "border border-transparent opacity-75!",
+				className,
 			)}
 			onClick={onClick}
 		>
@@ -382,9 +383,6 @@ function AspectRatioItem({
 					{isSelected && <HugeiconsIcon icon={Tick02Icon} className="size-4" />}
 				</div>
 			</div>
-			{uiOptions && isSelected && (
-				<div className="w-full pb-2">{uiOptions}</div>
-			)}
 		</Button>
 	);
 }
