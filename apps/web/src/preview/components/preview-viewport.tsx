@@ -84,6 +84,15 @@ interface PreviewViewportContextValue {
 const PreviewViewportContext =
 	createContext<PreviewViewportContextValue | null>(null);
 
+export function usePreviewCaptureTarget() {
+	const { pointerCapture } = usePreviewViewport();
+	return useCallback((target: Element | null) => {
+		if (!target) return;
+		// Removing a handle before capture takes effect may produce no browser event.
+		return () => pointerCapture.cancelCaptureOn(target);
+	}, [pointerCapture]);
+}
+
 interface PreviewViewportProviderProps {
 	children: React.ReactNode;
 	value: PreviewViewportContextValue;

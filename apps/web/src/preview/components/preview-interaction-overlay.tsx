@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { usePreviewViewport } from "@/preview/components/preview-viewport";
+import { usePreviewCaptureTarget, usePreviewViewport } from "@/preview/components/preview-viewport";
 import { usePreviewInteraction } from "@/preview/hooks/use-preview-interaction";
 import type { SnapLine } from "@/preview/preview-snap";
 import { TransformHandles } from "./transform-handles";
@@ -13,6 +13,7 @@ export function PreviewInteractionOverlay() {
 	const [snapLines, setSnapLines] = useState<SnapLine[]>([]);
 	const editor = useEditor();
 	const viewport = usePreviewViewport();
+	const captureTarget = usePreviewCaptureTarget();
 	const selectedElements = useEditor((e) => e.selection.getSelectedElements());
 	const activeTabPerType = usePropertiesStore((s) => s.activeTabPerType);
 
@@ -53,6 +54,7 @@ export function PreviewInteractionOverlay() {
 	return (
 		<div className="absolute inset-0">
 			<div
+				ref={captureTarget}
 				className="absolute inset-0 pointer-events-auto"
 				role="application"
 				aria-label="Preview canvas"

@@ -101,6 +101,7 @@ function fixture() {
 		selection,
 		event,
 		captured,
+		captureTarget: target as unknown as Element,
 		loseCapture(pointerId: number) {
 			captured.delete(pointerId);
 			ownerDocument.dispatchEvent(Object.assign(new Event("lostpointercapture"), { pointerId }));
@@ -136,6 +137,29 @@ function createTransformController(f: ReturnType<typeof fixture>) {
 }
 
 describe("preview canvas pointer ownership", () => {
+	test("detaching a transform handle retires pending capture without a browser event", () => {
+		const f = fixture();
+		const canvas = createCanvasController(f);
+		const handle = createTransformController(f);
+		f.selection.setSelected([{ trackId: "t", elementId: "a" }]);
+		try {
+			handle.onCornerPointerDown({ event: f.event(450, 550, 2), corner: "bottom-right" });
+			expect(handle.activeHandle).toBe("bottom-right");
+			f.viewport.pointerCapture.cancelCaptureOn({} as Element);
+			expect(handle.activeHandle).toBe("bottom-right");
+			f.captured.delete(2);
+			f.viewport.pointerCapture.cancelCaptureOn(f.captureTarget);
+			expect(handle.activeHandle).toBeNull();
+			handle.onPointerUp(f.event(450, 550, 2));
+			expect(f.commits()).toBe(0);
+			canvas.onPointerDown(f.event(400, 500));
+			expect(f.captured).toEqual(new Set([1]));
+		} finally {
+			canvas.destroy();
+			handle.destroy();
+		}
+	});
+
 	test("document-level loss cancels the transform after its captured handle disappears", () => {
 		const f = fixture();
 		const canvas = createCanvasController(f);
