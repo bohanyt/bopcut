@@ -31,6 +31,7 @@ import type { SaveSession } from "@/core/managers/save-manager";
 import type { TProject } from "@/project/types";
 import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
+import { readRenderRequest, renderTransport, type RenderFetch } from "./render-transport";
 
 export type { Draft, DraftOp } from "./draft";
 
@@ -175,8 +176,9 @@ export { snapshotHistory };
 let installed = false;
 export function installAgentBridge() {
 	if (installed || typeof window === "undefined") return;
-	installed = true;
 	const editor = EditorCore.getInstance();
+	if (editor.renderOnly) return;
+	installed = true;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	editLogger = createEditLogger(editSnapshot, () => editor.timeline.isPreviewActive(), (lines) => {
 		fetch("/api/agent/edits", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lines) }).catch(() => {});
@@ -259,11 +261,11 @@ export function retryMissingMedia(failures?: MediaLoadFailure[]): Promise<MediaL
  * Answers `export-request.json`: exports the root timeline (once per rev and project) into the workspace's
  * `exports/` folder and reports progress and the result in `export-result.json`. Exported for tests.
  */
-export async function pollExport() {
+export async function pollExport(source?: Response) {
 	if (exporting) return;
 	exporting = true;
 	try {
-		await answerExport();
+		await answerExport(source);
 	} finally {
 		exporting = false;
 	}
@@ -275,12 +277,12 @@ const EXPORT_TAB = typeof crypto !== "undefined" && "randomUUID" in crypto ? cry
 /** How long a small request to the editor's server may take (it is local; a stalled one is given up). */
 const REQUEST_WAIT_MS = 10_000;
 /** An error answer not posted yet (the server did not answer): posted again on the next poll. */
-let unposted: { key: string; rev: string; body: Record<string, unknown> } | null = null;
+let unposted: { key: string; rev: string; body: Record<string, unknown>; send: RenderFetch } | null = null;
 
 /** Posts progress or an error; says whether it was written, or the request was answered or taken by another tab. */
-async function sendExportResult(body: Record<string, unknown>): Promise<"ok" | "answered" | "claimed" | "failed"> {
+async function sendExportResult(body: Record<string, unknown>, send: RenderFetch): Promise<"ok" | "answered" | "claimed" | "failed"> {
 	try {
-		const response = await fetch("/api/agent/export-result", {
+		const response = await send("/api/agent/export-result", {
 			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, tab: EXPORT_TAB }), signal: AbortSignal.timeout(REQUEST_WAIT_MS),
 		});
 		if (response.ok) return "ok";
@@ -295,10 +297,10 @@ async function sendExportResult(body: Record<string, unknown>): Promise<"ok" | "
 async function postUnposted() {
 	const answer = unposted;
 	if (!answer) return;
-	const sent = await sendExportResult(answer.body);
+	const sent = await sendExportResult(answer.body, answer.send);
 	if (sent === "failed") return;
 	// "claimed": another tab took the request meanwhile; it answers.
-	if (sent !== "claimed") markAnswered(answer.key, answer.rev);
+	if (sent !== "claimed" && !EditorCore.getInstance().renderOnly) markAnswered(answer.key, answer.rev);
 	if (unposted === answer) unposted = null;
 }
 
@@ -311,27 +313,35 @@ function exportable() {
 	return agentReadiness().ready ? { project, root } : null;
 }
 
-async function answerExport() {
+async function answerExport(source?: Response) {
 	if (unposted) return await postUnposted();
 	const editor = EditorCore.getInstance();
-	if (!editor.project.getActiveOrNull() || editor.renderer.isExportRunning() || rendererDevice.status.state !== "ready") return;
+	const projectBeforeRead = editor.project.getActiveOrNull();
+	if (!projectBeforeRead || (editor.renderOnly && !source)) return;
+	if (editor.renderer.isExportRunning() || rendererDevice.status.state !== "ready") return;
 	let raw: unknown = null;
+	let response: Response;
 	try {
-		raw = await (await fetch("/api/agent/export-request", { cache: "no-store", signal: AbortSignal.timeout(REQUEST_WAIT_MS) })).json();
+		response = source ?? await readRenderRequest("export", projectBeforeRead.metadata.id, !!exportable(), AbortSignal.timeout(REQUEST_WAIT_MS));
+		raw = await response.json();
 	} catch {
 		return;
 	}
 	const rev = raw && typeof raw === "object" && typeof (raw as { rev?: unknown }).rev === "string" ? (raw as { rev: string }).rev : null;
 	if (!rev || !/^[a-zA-Z0-9_-]{1,100}$/.test(rev)) return;
-	const projectId = editor.project.getActiveOrNull()?.metadata.id;
-	if (!projectId) return;
+	const projectId = projectBeforeRead.metadata.id;
 	if (typeof (raw as { projectId?: unknown }).projectId === "string" && (raw as { projectId: string }).projectId !== projectId) return; // another project's
 	const key = `agent-export-${projectId}`;
-	if (wasAnswered(key, rev)) return;
+	const remember = () => { if (!editor.renderOnly) markAnswered(key, rev); };
+	if (!editor.renderOnly && wasAnswered(key, rev)) return;
+	const { request: send, signal: jobSignal } = renderTransport(response);
 	const before = exportable();
-	if (!before || before.project.metadata.id !== projectId) return;
+	if (!before || before.project.metadata.id !== projectId) {
+		if (jobSignal) await sendExportResult({ rev, projectId, status: "release" }, send);
+		return;
+	}
 	const answer = async (body: Record<string, unknown>) => {
-		unposted = { key, rev, body: { rev, projectId, ...body } };
+		unposted = { key, rev, body: { rev, projectId, ...body }, send };
 		await postUnposted();
 	};
 	const request = parseExportRequest(raw);
@@ -345,7 +355,8 @@ async function answerExport() {
 				missingMedia,
 			});
 		}
-		return answer({ status: "error", error: cancelled ? "cancelled: the project was closed during the export" : error ?? "export failed" });
+		const detail = cancelled ? "cancelled: the project was closed during the export" : error ?? "export failed";
+		return answer({ status: "error", error: editor.renderOnly && /graphics|encod|codec|webcodecs/i.test(detail) ? `${detail} Open the project in the editor once and retry.` : detail });
 	};
 	const preflight = editor.renderer.checkExport({
 		format: request.format, allowMissing: request.allowMissing, includeAudio: request.includeAudio, scene: before.root,
@@ -354,12 +365,12 @@ async function answerExport() {
 	if (preflight) return await reportFailure(preflight);
 	// The request is taken first (another tab may be exporting it, or it may be answered already, for example
 	// before a reload), then the editor is checked again: it may have changed meanwhile.
-	const claim = await sendExportResult({ rev, projectId, status: "exporting", progress: 0 });
-	if (claim === "answered") return markAnswered(key, rev);
+	const claim = await sendExportResult({ rev, projectId, status: "exporting", progress: 0 }, send);
+	if (claim === "answered") return remember();
 	if (claim !== "ok") return;
 	const now = exportable();
 	if (!now || now.project.metadata.id !== projectId) {
-		await sendExportResult({ rev, projectId, status: "release" });
+		await sendExportResult({ rev, projectId, status: "release" }, send);
 		return;
 	}
 	const { project, root } = now;
@@ -377,7 +388,7 @@ async function answerExport() {
 	const progress = (value: number) => {
 		if (!running || posting || Date.now() - lastPost < 2000) return;
 		lastPost = Date.now();
-		posting = sendExportResult({ rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000 })
+		posting = sendExportResult({ rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000 }, send)
 			.then((sent) => {
 				if (sent === "answered" || sent === "claimed") claimController.abort();
 			})
@@ -393,7 +404,7 @@ async function answerExport() {
 		result = await editor.renderer.exportProject({
 			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
 			onProgress: ({ progress: value }) => progress(value),
-			signal: claimController.signal,
+			signal: jobSignal ? AbortSignal.any([claimController.signal, jobSignal]) : claimController.signal,
 		});
 	} catch (error) {
 		result = { success: false, error: errorText(error) };
@@ -402,7 +413,7 @@ async function answerExport() {
 		await posting;
 		toast.dismiss(toastId);
 	}
-	if (claimController.signal.aborted) return;
+	if (claimController.signal.aborted || jobSignal?.aborted) return;
 	if (!result.success || !result.buffer) {
 		return await reportFailure(result);
 	}
@@ -413,9 +424,9 @@ async function answerExport() {
 	};
 	try {
 		const query = new URLSearchParams({ rev, projectId, tab: EXPORT_TAB, name, format: request.format, result: JSON.stringify(done) });
-		const saved = await fetch(`/api/agent/export-file?${query}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: result.buffer });
+		const saved = await send(`/api/agent/export-file?${query}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: result.buffer });
 		const reply = (await saved.json().catch(() => ({}))) as { error?: string; answered?: boolean };
-		if (saved.ok || reply.answered) return markAnswered(key, rev);
+		if (saved.ok || reply.answered) return remember();
 		return await answer({ status: "error", error: `the file could not be saved: ${reply.error ?? saved.status}` });
 	} catch (error) {
 		// If the server saved it and only its reply was lost, this error is refused (the request has its answer).
@@ -439,16 +450,16 @@ export async function pollChanges() {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const root = agentRootScene();
-	if (!project || !root || changesBusy || editor.project.getIsLoading() || timelineBusy()) return;
+	if (!project || !root || changesBusy) return;
 	changesBusy = true;
 	try {
 		let request: { rev?: unknown; since?: unknown; draft?: unknown } | null = null;
 		try {
-			request = await (await fetch("/api/agent/changes-request", { cache: "no-store" })).json();
+			request = await (await fetch("/api/agent/changes-request", { cache: "no-store", headers: { "x-bopencut-project": project.metadata.id } })).json();
 		} catch {
 			return;
 		}
-		if (!request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev)) return;
+		if (editor.project.getIsLoading() || timelineBusy() || !request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev)) return;
 		const key = `agent-changes-${project.metadata.id}`;
 		if (wasAnswered(key, request.rev)) return;
 		// The project read before the request may have been replaced meanwhile: answer for the open one.

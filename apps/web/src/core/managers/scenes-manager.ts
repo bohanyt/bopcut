@@ -321,7 +321,7 @@ export class ScenesManager {
 		this.notify();
 
 		const hasAddedMainScene = ensuredScenes.length > scenes.length;
-		if (hasAddedMainScene) {
+		if (hasAddedMainScene && !this.editor.renderOnly) {
 			const activeProject = this.editor.project.getActive();
 
 			if (activeProject) {

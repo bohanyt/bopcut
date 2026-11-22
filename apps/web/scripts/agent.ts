@@ -1,17 +1,29 @@
 import { parseArgs as parse } from "node:util";
+import { parseExportRequest } from "../src/agent/export";
+import { parseFrameInput } from "../src/agent/render-input";
+import { runRender } from "./agent-render";
 
-const commands = ["status", "selection", "notes"] as const;
+const commands = ["status", "selection", "notes", "export", "frames"] as const;
 type Command = typeof commands[number];
-const usage = "Use: bun run agent <status|selection|notes> [--project-id ID] [--timeout SECONDS]";
+const usage = "Use: bun run agent <status|selection|notes|export|frames> [--project-id ID] [--timeout SECONDS]";
 
 export function parseArgs(args: string[]) {
 	const [command, ...rest] = args;
 	if (!commands.some((supported) => supported === command)) throw new Error(usage);
+	if (command === "frames" && rest.some((arg) => /^--(?:state|compare)(?:=|$)/.test(arg))) {
+		throw new Error("For historical or comparison frames, open the editor and use frames-request.json.");
+	}
+	const render = command === "export" || command === "frames";
 	const { values } = parse({
 		args: rest,
-		options: { "project-id": { type: "string" }, timeout: { type: "string" }, url: { type: "string" } },
+		options: {
+			"project-id": { type: "string" }, timeout: { type: "string" }, url: { type: "string" },
+			...(render && { "allow-missing": { type: "boolean" } }),
+			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
+			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" } }),
+		},
 	});
-	const seconds = Number(values.timeout ?? 30);
+	const seconds = Number(values.timeout ?? (render ? 600 : 30));
 	if (!Number.isFinite(seconds) || seconds < 0.001 || seconds > 86400) throw new Error("Set --timeout to a positive number of seconds, up to 86400.");
 	const projectId = values["project-id"];
 	if (projectId !== undefined && !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) throw new Error("Pass a valid project ID to --project-id.");
@@ -20,36 +32,65 @@ export function parseArgs(args: string[]) {
 		url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
 		throw new Error("Set --url to the local editor origin, for example http://127.0.0.1:3000.");
 	}
-	return { command: command as Command, projectId, timeoutMs: Math.round(seconds * 1000), origin: url.origin };
+	let request: Record<string, unknown> | undefined;
+	const allowMissing = values["allow-missing"] === true;
+	if (command === "export") {
+		const parsed = parseExportRequest({ rev: "cli", name: values.name, format: values.format, quality: values.quality, fps: values.fps === undefined ? undefined : Number(values.fps), allowMissing });
+		if (!parsed || typeof parsed === "string") throw new Error(parsed ?? "Invalid export.");
+		const { rev: _rev, ...options } = parsed;
+		request = options;
+	}
+	if (command === "frames") {
+		const times = typeof values.times === "string" ? values.times.split(",").map((time) => time.trim() ? Number(time) : NaN) : undefined;
+		const elements = Array.isArray(values.element) || typeof values.elements === "string"
+			? [...(Array.isArray(values.element) ? values.element : []), ...(typeof values.elements === "string" ? values.elements.split(",") : [])] : undefined;
+		request = parseFrameInput({ times, elements, width: values.width === undefined ? undefined : Number(values.width), allowMissing });
+	}
+	return { command: command as Command, projectId, timeoutMs: Math.round(seconds * 1000), origin: url.origin, ...(request && { request }) };
 }
 
 async function main(args: string[]) {
-	const { command, projectId, timeoutMs, origin } = parseArgs(args);
-	const target = new URL(`/api/agent/cli/${command}`, origin);
+	const { command, projectId, timeoutMs, origin, request } = parseArgs(args);
+	const target = new URL(`/api/agent/cli/${request ? "render" : command}`, origin);
 	if (projectId) target.searchParams.set("projectId", projectId);
-	const signal = AbortSignal.timeout(timeoutMs);
+	const interrupt = new AbortController();
+	const stop = () => interrupt.abort(new Error("Interrupted by Ctrl+C."));
+	if (request) process.on("SIGINT", stop);
+	const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), interrupt.signal]);
 	try {
-		const response = await fetch(target, { signal, redirect: "error" }).catch(() => {
+		const response = await fetch(target, {
+			signal, redirect: "error",
+			...(request && { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command, request, timeoutMs }) }),
+		}).catch(() => {
 			signal.throwIfAborted();
 			throw new Error(`Cannot reach the editor at ${origin}. Start it from apps/web with bunx next dev --turbopack -H 127.0.0.1 -p ${target.port || "80"}, then retry.`);
 		});
+		if (request && response.ok) return await runRender(response, { signal });
 		const body = await response.json().catch(() => null);
 		signal.throwIfAborted();
 		if (!response.ok || !body) throw new Error(body?.error ?? "The server did not answer the agent CLI. Start this version of the editor and retry.");
 		return body;
 	} catch (error) {
-		if (signal.aborted) throw new Error("Timed out while reading from the editor. Check the server or increase --timeout.");
+		if (signal.aborted && !request) throw new Error("Timed out while reading from the editor. Check the server or increase --timeout.");
+		if (request && error === signal.reason && signal.reason?.name === "TimeoutError") throw new Error("Timed out while waiting for a tab.");
 		throw error;
+	} finally {
+		process.removeListener("SIGINT", stop);
 	}
 }
 
 if (import.meta.main) {
 	try {
-		console.log(JSON.stringify(await main(process.argv.slice(2))));
+		const result = await main(process.argv.slice(2));
+		console.log(JSON.stringify(result));
+		if (result.error || result.status === "error") {
+			console.error(String(result.error).replace(/\s+/g, " "));
+			process.exitCode = 1;
+		}
 	} catch (error) {
 		const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
 		console.error(message);
-		console.log(JSON.stringify({ error: message }));
+		if (!["export", "frames"].includes(process.argv[2])) console.log(JSON.stringify({ error: message }));
 		process.exitCode = 1;
 	}
 }

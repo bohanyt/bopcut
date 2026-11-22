@@ -7,9 +7,11 @@ mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompo
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { EditorCore } = await import("@/core");
 const { pollFrames } = await import("./frames");
+const { installAgentBridge, pollExport } = await import("./bridge");
 const { snapshotHistory } = await import("./history");
 const graphics = await import("@/services/renderer/renderer-device");
 const { rendererDevice } = graphics;
+const { storageService } = await import("@/services/storage/service");
 
 const T = (seconds: number) => mediaTimeFromSeconds({ seconds });
 const date = new Date(0);
@@ -101,6 +103,31 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
 	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 	EditorCore.reset();
+});
+
+test("a render-only core hydrates a saved project without opening a save session or installing the bridge", async () => {
+	EditorCore.reset();
+	const editor = EditorCore.createRenderOnly();
+	expect(() => EditorCore.createRenderOnly()).toThrow("own page");
+	const project: TProject = {
+		metadata: { id: "render", name: "Render", duration: T(0), createdAt: date, updatedAt: date },
+		currentSceneId: "", scenes: [], settings, version: 31,
+	};
+	const load = spyOn(storageService, "loadProject").mockResolvedValue({ project });
+	const media = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([]);
+	cleanups.push(() => { load.mockRestore(); media.mockRestore(); });
+	const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+	const window = {};
+	Object.defineProperty(globalThis, "window", { value: window, configurable: true });
+	cleanups.push(() => previousWindow ? Object.defineProperty(globalThis, "window", previousWindow) : Reflect.deleteProperty(globalThis, "window"));
+	installAgentBridge();
+	expect(window).toEqual({});
+	await editor.project.loadForRender("render", async () => {});
+	expect(load).toHaveBeenCalledWith({ id: "render", readOnly: true });
+	expect(editor.save.getCurrent()).toBeNull();
+	expect(editor.scenes.getScenes()).toHaveLength(1);
+	await pollFrames(() => { throw new Error("render-only poll read an unassigned request"); });
+	await pollExport();
 });
 
 const ready = () => ({ ready: true, missingMedia: [] });

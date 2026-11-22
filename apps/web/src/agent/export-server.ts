@@ -99,7 +99,9 @@ export async function handleExportResult(req: Request, workspace: string): Promi
 }
 
 /** POST export-file: saves the video, then writes the final answer with it (one request, so neither is lost). */
-export async function handleExportFile(req: Request, workspace: string): Promise<Response> {
+export async function handleExportFile(req: Request, workspace: string, job?: {
+	signal: AbortSignal; temp: string; finish(result: Result): Promise<void>;
+}): Promise<Response> {
 	const query = new URL(req.url).searchParams;
 	const rev = query.get("rev") ?? "";
 	let done: Record<string, unknown> = {};
@@ -112,12 +114,13 @@ export async function handleExportFile(req: Request, workspace: string): Promise
 	if (Number(req.headers.get("content-length") ?? 0) > MAX_EXPORT_BYTES) return Response.json({ error: "Export too large" }, { status: 413 });
 	// Not saved again once the request has its answer (for example from another tab).
 	if (isFinal(await readResult(workspace), rev)) return refused("answered");
-	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body });
+	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, temp: job?.temp, signal: job?.signal });
 	if ("error" in saved) return Response.json({ error: saved.error }, { status: saved.status });
 	const file = `exports/${saved.file}`;
 	const fields = Object.fromEntries(DONE_FIELDS.filter((key) => key in done).map((key) => [key, done[key]]));
 	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file, bytes: saved.bytes, ...fields };
-	await writeExportResult({ workspace, result });
+	if (job) await job.finish({ ...result, updatedAt: new Date().toISOString() });
+	else await writeExportResult({ workspace, result });
 	return Response.json({ file, bytes: saved.bytes });
 }
 
@@ -128,14 +131,15 @@ export type SavedExport = { file: string; bytes: number } | { error: string; sta
  * earlier export is never overwritten, also when two saves of one name run at once). Refuses a body over
  * `maxBytes` and an exports folder that is a link (it could point anywhere).
  */
-export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPORT_BYTES }: { dir: string; name: string; format: string; body: ReadableStream<Uint8Array>; maxBytes?: number }): Promise<SavedExport> {
+export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPORT_BYTES, temp = path.join(dir, `.${randomUUID()}.part`), signal }: {
+	dir: string; name: string; format: string; body: ReadableStream<Uint8Array>; maxBytes?: number; temp?: string; signal?: AbortSignal;
+}): Promise<SavedExport> {
 	const safe = safeName(name);
 	if ((format !== "mp4" && format !== "webm") || !safe) return { error: "Invalid export", status: 400 };
 	await fs.mkdir(dir, { recursive: true });
 	const folder = await fs.lstat(dir);
 	if (folder.isSymbolicLink() || !folder.isDirectory()) return { error: "The exports folder must be a folder, not a link", status: 403 };
 	// Each save writes its own new file first; it gets its name only when it is complete.
-	const temp = path.join(dir, `.${randomUUID()}.part`);
 	let bytes = 0;
 	const count = new Transform({
 		transform(chunk: Buffer, _encoding, done) {
@@ -145,13 +149,14 @@ export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPOR
 	});
 	try {
 		try {
-			await pipeline(Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream), count, createWriteStream(temp, { flags: "wx" }));
+			await pipeline(Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream), count, createWriteStream(temp, { flags: "wx" }), { signal });
 		} catch (error) {
 			if (error instanceof TooLarge) return { error: `Export larger than ${maxBytes} bytes`, status: 413 };
 			throw error;
 		}
 		let hardLinks = true;
 		for (let n = 1; n <= 999; ) {
+			signal?.throwIfAborted();
 			const file = `${safe}${n > 1 ? ` (${n})` : ""}.${format}`;
 			const target = path.join(dir, file);
 			try {
