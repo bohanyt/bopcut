@@ -1,7 +1,6 @@
 import { localizeErrorDetail } from "@/i18n/error-details";
 import { getBrowserTranslator } from "@/i18n/browser";
 import { releaseMediaAssetUrls } from "@/media/url-release";
-import type { AgentFetch } from "@/agent/cli-transport";
 import { processMediaFile } from "@/media/processing";
 import type { EditorCore } from "@/core";
 import { toast } from "sonner";
@@ -12,11 +11,19 @@ import { waveformCache } from "@/services/waveform-cache/service";
 import { BatchCommand, RemoveMediaAssetCommand } from "@/commands";
 
 /** Media ids used by elements anywhere in these scenes. */
-import { mediaIdsInScenes } from "@/media/project-media";
+export function mediaIdsInScenes(scenes: readonly { tracks: { main: { elements: readonly unknown[] }; overlay: readonly { elements: readonly unknown[] }[]; audio: readonly { elements: readonly unknown[] }[] } }[]): Set<string> {
+	const ids = new Set<string>();
+	for (const scene of scenes) {
+		for (const track of [scene.tracks.main, ...scene.tracks.overlay, ...scene.tracks.audio]) {
+			for (const element of track.elements as { mediaId?: unknown }[]) if (typeof element.mediaId === "string") ids.add(element.mediaId);
+		}
+	}
+	return ids;
+}
 
 /** Outcome of discarding staged imports: ids removed from storage, and those that could not be. */
 export type DiscardResult = { removed: string[]; failed: { id: string; error: string }[] };
-export type MediaImportSession = { projectId: string; signal: AbortSignal; cancel?: AbortSignal };
+export type MediaImportSession = { projectId: string; signal: AbortSignal };
 
 type MediaRetry = {
 	original: MediaAsset | undefined;
@@ -54,8 +61,8 @@ export class MediaManager {
 		return projectId && project.canImportMedia(projectId) ? { projectId, signal: project.getSessionSignal() } : null;
 	}
 
-	private isCurrentImport({ projectId, signal, cancel }: MediaImportSession): boolean {
-		return !signal.aborted && !cancel?.aborted && this.editor.project.getSessionSignal() === signal &&
+	private isCurrentImport({ projectId, signal }: MediaImportSession): boolean {
+		return !signal.aborted && this.editor.project.getSessionSignal() === signal &&
 			this.editor.project.canImportMedia(projectId);
 	}
 
@@ -83,18 +90,17 @@ export class MediaManager {
 		await Promise.allSettled([...(this.binWrites.get(projectId)?.values() ?? [])].map(({ done }) => done));
 	}
 
-	async importFile({ session, file, name, words, ratchetFps = true, stagedIds, convertGif }: {
+	async importFile({ session, file, name, words, ratchetFps = true, stagedIds }: {
 		session: MediaImportSession;
 		file: File;
 		name?: string;
 		words?: MediaAsset["words"];
 		ratchetFps?: boolean;
 		stagedIds?: string[];
-		convertGif?: AgentFetch;
 	}): Promise<MediaAsset | null> {
 		if (!this.isCurrentImport(session)) return null;
 		const { projectId, signal } = session;
-		const processed = await processMediaFile({ file, convertGif, signal: session.cancel ? AbortSignal.any([signal, session.cancel]) : signal });
+		const processed = await processMediaFile({ file, signal });
 		if (!processed) return null;
 		if (!this.isCurrentImport(session)) {
 			releaseMediaAssetUrls(processed);

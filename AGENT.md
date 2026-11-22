@@ -16,21 +16,15 @@ With the editor server running, use these commands from the repository root:
 ```sh
 bun run agent status
 bun run agent selection
-bun run agent prefs
 bun run agent notes
-bun run agent draft edits.json
-bun run agent frames frames.json
-bun run agent changes --draft my-edit
-bun run agent export --name "Final cut"
+bun run agent prefs
 ```
 
-A draft JSON file contains `ops`, for example `{"ops":[{"op":"set","match":{"agentId":"intro"},"start":0}]}`. A frame JSON file contains `times` in seconds and an optional `width`, for example `{"times":[0,1.5],"width":960}`. The CLI generates a request revision if the input omits it. Use `changes --since <syncedAt>` or `changes --draft <rev>` with the editor tab that holds that history. `status` includes the most recent snapshot and whether a visible tab is serving the project. `selection` reports the last selection from the visible editor.
+`status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. `prefs` reports the contents of `AGENT_PREFS/PREFERENCES.md` and `AGENT_WORKSPACE/PREFERENCES.md` and marks each missing file.
 
-Use `--project-id ID` to select a project. The default is the project in the input or the last project synced by a visible editor. `--url` or `BOPENCUT_URL` changes the default server origin (`http://127.0.0.1:3000`). Progress goes to stderr and the result is JSON on stdout. Use `--timeout SECONDS` to override the defaults of 120 seconds for drafts and frames, 900 seconds for export, and 30 seconds for other commands.
+Status and notes default to the last project that synced. Use `--project-id ID` to choose a project or filter the selection. Use `--url` or `BOPENCUT_URL` to change the server origin from `http://127.0.0.1:3000`. The command writes JSON to stdout and errors to stderr. Use `--timeout SECONDS` to change the 30-second request limit.
 
-Drafts, frames and exports use the open editor if it is serving the project. Otherwise the CLI runs one job in an installed Chrome or Edge browser and closes it. Set `BOPENCUT_BROWSER` to an executable path to override detection. If the hidden browser cannot render or encode the video, open the project in the editor and retry. A hidden draft saves before a visible editor opening the same project starts loading it. Comparisons and `basedOn` tokens from an earlier tab require that tab's history.
-
-Export defaults to MP4 at high quality with audio. Options are `--format mp4|webm`, `--quality low|medium|high|very_high`, `--fps N`, `--no-audio` and `--allow-missing`. The result's `file` is relative to `AGENT_WORKSPACE`, as are frame paths. Each CLI export has its own folder under `exports/` and keeps the requested file name inside it.
+Use the file protocol below for drafts, frames, changes, and exports.
 
 ## Agent workspace (`apps/web/.env.local`)
 ```

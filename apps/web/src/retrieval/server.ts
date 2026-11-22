@@ -240,7 +240,7 @@ function once(key: string, work: () => Promise<RetrievedFile>): Promise<Retrieve
 	return promise;
 }
 
-export type RetrievalDeps = { filesRoot: string; tools?: RetrievalTools; runner?: Runner; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; jobId?: string };
+export type RetrievalDeps = { filesRoot: string; tools?: RetrievalTools; runner?: Runner; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch };
 
 /** Download a section with yt-dlp into `<dir>/<key>.part.<ext>`; returns the file and the info JSON. */
 async function download({ url, start, end, height, audioOnly, dir, key, tools, runner }: { url: string; start: number; end: number; height: number; audioOnly?: boolean; dir: string; key: string; tools: RetrievalTools; runner: Runner }): Promise<{ file: string; info: Probe }> {
@@ -272,13 +272,13 @@ async function download({ url, start, end, height, audioOnly, dir, key, tools, r
  * range, height and audioOnly; `<key>.json` next to the media keeps the source (title, page link at
  * the start time) for credits.
  */
-export async function fetchSection(request: SectionRequest, { filesRoot, tools = toolsFromEnv(), runner = defaultRunner, jobId }: RetrievalDeps): Promise<RetrievedFile> {
+export async function fetchSection(request: SectionRequest, { filesRoot, tools = toolsFromEnv(), runner = defaultRunner }: RetrievalDeps): Promise<RetrievedFile> {
 	const height = request.height ?? tools.defaultHeight;
 	const key = cacheKey(["section", request.url, request.start, request.end, height, Boolean(request.audioOnly)]);
 	const dir = path.join(filesRoot, "retrieved");
 	const media = path.join(dir, key + (request.audioOnly ? ".m4a" : ".mp4"));
 	const meta = path.join(dir, `${key}.json`);
-	return once(`${filesRoot}|${jobId ?? ""}|${key}`, async () => {
+	return once(key, async () => {
 		const cached = await readCached(media, meta);
 		if (cached) return cached;
 		const { file, info } = await download({ url: request.url, start: request.start, end: request.end, height, audioOnly: request.audioOnly, dir, key, tools, runner });
@@ -298,13 +298,13 @@ export async function fetchSection(request: SectionRequest, { filesRoot, tools =
  * One frame of an online video at `time`, as JPEG in `<filesRoot>/retrieved/frames/`, to look before
  * fetching a section. Downloads one second at 720p and keeps only its first frame.
  */
-export async function fetchFrame(request: FrameRequest, { filesRoot, tools = toolsFromEnv(), runner = defaultRunner, jobId }: RetrievalDeps): Promise<RetrievedFile> {
+export async function fetchFrame(request: FrameRequest, { filesRoot, tools = toolsFromEnv(), runner = defaultRunner }: RetrievalDeps): Promise<RetrievedFile> {
 	const width = request.width ?? 960;
 	const key = cacheKey(["frame", request.url, request.time, width]);
 	const dir = path.join(filesRoot, "retrieved", "frames");
 	const image = path.join(dir, `${key}.jpg`);
 	const meta = path.join(dir, `${key}.json`);
-	return once(`${filesRoot}|${jobId ?? ""}|${key}`, async () => {
+	return once(key, async () => {
 		const cached = await readCached(image, meta);
 		if (cached) return cached;
 		const { file, info } = await download({ url: request.url, start: request.time, end: request.time + 1, height: 720, dir, key, tools, runner });

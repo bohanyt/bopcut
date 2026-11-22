@@ -5,7 +5,6 @@
 // AGENT_FILES_ROOT  bundle asset root (default = AGENT_WORKSPACE). Files outside this root are not served.
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { jobRunner } from "@/retrieval/job-runner";
 import { handleRetrieve } from "@/retrieval/server";
 import { handleGif } from "@/media/gif-server";
 import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
@@ -16,9 +15,7 @@ import { consumeAppliedDraft } from "@/agent/draft-store";
 import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
 import { handleExportFile, handleExportResult } from "@/agent/export-server";
-import { handleCli, offerVisibleJob, requestKey } from "@/agent/cli-api";
-import { finishJob, getJob, JobError, prepareJobOutput, writeWorkspaceSnapshot } from "@/agent/cli-job-server";
-import { JOB_HEADER, type AgentJob } from "@/agent/cli-jobs";
+import { handleCli } from "@/agent/cli-api";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 const FILES_ROOT = path.resolve(process.env.AGENT_FILES_ROOT ?? WORKSPACE);
@@ -42,13 +39,7 @@ const foreignOrigin = isForeignOrigin;
 
 export async function GET(req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
 	const { slug } = await params;
-	if (slug[0] === "cli") return handleCli(req, slug, WORKSPACE);
-	if (slug[0] === "job") {
-		try {
-			const job = ownedJob(req, slug[1]);
-			return Response.json(slug[2] === requestKey(job.command) ? job.body : null);
-		} catch (error) { return jobError(error); }
-	}
+	if (slug[0] === "cli" && slug.length === 2) return handleCli(req, slug[1], WORKSPACE);
 	try {
 		if (slug[0] === "bundle") return json(await fs.readFile(path.join(WORKSPACE, "bundle", "bundle.json")));
 		if (slug[0] === "file") {
@@ -72,9 +63,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 			try { return json(await fs.readFile(path.join(WORKSPACE, "changes-request.json"))); } catch { return Response.json(null); }
 		}
 		if (slug[0] === "draft") {
-			const offer = !foreignOrigin(req) && offerVisibleJob(req);
-			if (offer) return Response.json(null, { headers: { "x-bopencut-claim": JSON.stringify(offer), "Cache-Control": "no-store" } });
-			if (req.headers.get("x-bopencut-draft-ready") === "false") return Response.json(null);
 			try { return json(await fs.readFile(path.join(WORKSPACE, "draft.json"))); } catch { return Response.json(null); }
 		}
 	} catch (error) {
@@ -86,88 +74,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
 	const { slug } = await params;
 	if (foreignOrigin(req)) return Response.json({ error: "Requests must come from the editor itself" }, { status: 403 });
-	if (slug[0] === "cli") return handleCli(req, slug, WORKSPACE);
-	if (slug[0] === "job") {
-		try {
-			const job = ownedJob(req, slug[1]);
-			return await job.use(() => writeJobResult(req, job, slug[2]));
-		} catch (error) { return jobError(error); }
-	}
-	if (slug[0] === "frame") return saveFrame(req);
-	return legacyPost(req, slug);
-}
-
-function ownedJob(req: Request, id: string) {
-	const job = getJob(id);
-	if (!job.owner || req.headers.get(JOB_HEADER) !== job.owner) throw new JobError("The job belongs to another tab.", 403);
-	return job;
-}
-
-function jobError(error: unknown) {
-	return Response.json({ error: error instanceof Error ? error.message : "Agent job failed" }, { status: error instanceof JobError ? error.status : 500 });
-}
-
-async function writeJobResult(req: Request, job: AgentJob, action: string) {
-	if (job.update.done) return Response.json({ answered: true }, { status: 409 });
-	const finish = async (body: Record<string, unknown>) => {
-		const editorHint = " Open the project in the editor once and retry.";
-		const unsupported = (error: unknown) => typeof error === "string" && /codec|encod|graphics|webgl|webgpu/i.test(error);
-		if (job.hidden && unsupported(body.error)) body.error += editorHint;
-		if (job.hidden && Array.isArray(body.errors)) {
-			for (const frame of body.errors) if (frame && unsupported(frame.error)) frame.error += editorHint;
-		}
-		await finishJob(job, body);
-		return Response.json({ ok: true });
-	};
-	if (job.command === "draft") {
-		const runner = jobRunner(job.signal);
-		if (action === "gif") return handleGif(req, runner);
-		if (action === "retrieve" || action === "music" || action === "sfx") {
-			const handler = action === "retrieve" ? handleRetrieve : action === "music" ? handleMusic : handleSfx;
-			const result = await handler(await req.json().catch(() => null), { filesRoot: FILES_ROOT, runner, jobId: job.id });
-			return Response.json(result.body, { status: result.status });
-		}
-	}
-	if (job.command === "export") {
-		if (action === "export-result") {
-			const body = await req.json();
-			if (body.status === "exporting") job.progress("encoding", Math.round(body.progress * 100));
-			if (body.status === "error") return finish(body);
-			return Response.json({ ok: true });
-		}
-		if (action === "export-file") {
-			job.progress("saving");
-			const dir = await prepareJobOutput(job, WORKSPACE, "exports");
-			return handleExportFile(req, WORKSPACE, { dir, signal: job.signal, finish: (body) => finishJob(job, body) });
-		}
-	}
-	if (job.command === "frames" && action === "frame") return saveFrame(req, job);
-	if ((job.command === "draft" && action === "applied") || action === job.command + "-result") return finish(await req.json());
-	if (job.hidden && job.command === "draft" && action === "sync" && job.committed) {
-		const body = await req.json();
-		await writeWorkspaceSnapshot(WORKSPACE, body, true);
-		return Response.json({ ok: true });
-	}
-	return Response.json({ error: "Invalid result for this job" }, { status: 400 });
-}
-
-async function saveFrame(req: Request, job?: AgentJob) {
+	if (slug[0] === "frame") {
 		const form = await req.formData();
 		const rev = form.get("rev"); const time = form.get("time"); const image = form.get("image"); const variant = form.get("variant");
 		if (typeof rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(rev) || typeof time !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(time) || !(image instanceof File) || image.type !== "image/jpeg" || (variant !== null && variant !== "compare")) return Response.json({ error: "Invalid frame" }, { status: 400 });
 		// A compared state's frame (before/after pairs) sits next to the frame of the same time.
 		const name = variant === "compare" ? `${time}-compare.jpg` : `${time}.jpg`;
-		job?.signal.throwIfAborted();
-		const folder = job?.id ?? rev;
-		const file = `frames/${folder}/${name}`;
-		const dir = job ? await prepareJobOutput(job, WORKSPACE, "frames") : path.join(WORKSPACE, "frames", folder);
-		await fs.mkdir(dir, { recursive: true });
-		const target = path.join(dir, name);
-		await fs.writeFile(target, Buffer.from(await image.arrayBuffer()), { signal: job?.signal });
+		const file = `frames/${rev}/${name}`;
+		await fs.mkdir(path.join(WORKSPACE, "frames", rev), { recursive: true });
+		await fs.writeFile(path.join(WORKSPACE, "frames", rev, name), Buffer.from(await image.arrayBuffer()));
 		return Response.json({ file });
-}
-
-async function legacyPost(req: Request, slug: string[]) {
+	}
 	if (slug[0] === "frames-result") {
 		await writeAtomic(path.join(WORKSPACE, "frames-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
@@ -183,7 +100,11 @@ async function legacyPost(req: Request, slug: string[]) {
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "sync") {
-		await writeWorkspaceSnapshot(WORKSPACE, await req.json());
+		const body = await req.json();
+		const text = JSON.stringify(body, null, 1);
+		const safe = String(body.projectId ?? "tanpa-id").replace(/[^a-zA-Z0-9-]/g, "");
+		await writeAtomic(path.join(WORKSPACE, "sync", `${safe}.json`), text);
+		await writeAtomic(path.join(WORKSPACE, "project.json"), text);
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "edits") {

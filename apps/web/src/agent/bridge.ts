@@ -26,14 +26,11 @@ import { AgentDraftCommand } from "./draft-command";
 import { getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildAllEditItems, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { NO_SELECTION } from "./selection-payload";
-import { mediaIdsInScenes } from "@/media/project-media";
+import { mediaIdsInScenes } from "@/core/managers/media-manager";
 import type { SaveSession } from "@/core/managers/save-manager";
 import type { TProject } from "@/project/types";
 import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
-import { editorTab, runClaimedJob, type ClaimedJob } from "./cli-browser";
-import type { AgentFetch, JobTransport } from "./cli-transport";
-import { waitWithAbort } from "@/utils/abort";
 
 export type { Draft, DraftOp } from "./draft";
 
@@ -180,29 +177,26 @@ export function installAgentBridge() {
 	if (installed || typeof window === "undefined") return;
 	installed = true;
 	const editor = EditorCore.getInstance();
-	let mounted = true;
-	const unsubscribes: (() => void)[] = [];
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	editLogger = createEditLogger(editSnapshot, () => editor.timeline.isPreviewActive(), (lines) => {
 		fetch("/api/agent/edits", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lines) }).catch(() => {});
 	});
-	const syncNow = () => {
-		timer = undefined;
-		const snap = agentSnapshot();
-		if (!snap) return;
-		// Remember what this snapshot showed so a draft can protect later user edits.
-		snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), stateMeta(snap.sceneId));
-		return fetch("/api/agent/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snap) }).catch(() => {});
-	};
 	const sync = () => {
 		clearTimeout(timer);
-		timer = setTimeout(syncNow, 800);
+		timer = setTimeout(() => {
+			const snap = agentSnapshot();
+			if (!snap) return;
+			// Remember what this snapshot showed, so a draft `basedOn` it can tell the user's later edits apart.
+			snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), stateMeta(snap.sceneId));
+			fetch("/api/agent/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(snap) }).catch(() => {});
+		}, 800);
 	};
 	const push = () => {
 		editLogger?.changed();
 		sync();
 	};
-	unsubscribes.push(editor.timeline.subscribe(push), editor.scenes.subscribe(push));
+	editor.timeline.subscribe(push);
+	editor.scenes.subscribe(push);
 	// selection.json: what the user points at, written shortly after the selection or the playhead settles.
 	let selectionTimer: ReturnType<typeof setTimeout> | undefined;
 	let lastSelection = "";
@@ -218,10 +212,11 @@ export function installAgentBridge() {
 			});
 		}, 250);
 	};
-	unsubscribes.push(
-		editor.selection.subscribe(pushSelection), editor.playback.subscribe(pushSelection),
-		editor.timeline.subscribe(pushSelection), editor.scenes.subscribe(pushSelection), editor.project.subscribe(pushSelection),
-	);
+	editor.selection.subscribe(pushSelection);
+	editor.playback.subscribe(pushSelection);
+	editor.timeline.subscribe(pushSelection);
+	editor.scenes.subscribe(pushSelection);
+	editor.project.subscribe(pushSelection);
 	pushSelection();
 	// Re-sync when readiness changes (media finished loading, a save landed) so the snapshot tells the truth.
 	let readiness = "";
@@ -233,9 +228,9 @@ export function installAgentBridge() {
 			sync();
 		}
 	};
-	unsubscribes.push(
-		editor.save.subscribe(readinessChanged), editor.media.subscribe(readinessChanged), editor.project.subscribe(readinessChanged),
-	);
+	editor.save.subscribe(readinessChanged);
+	editor.media.subscribe(readinessChanged);
+	editor.project.subscribe(readinessChanged);
 	// A snapshot taken in the console is remembered like a synced one, so a draft can be basedOn it.
 	const consoleSnapshot = () => {
 		const snap = agentSnapshot();
@@ -244,49 +239,14 @@ export function installAgentBridge() {
 	};
 	(window as any).agent = { editor, snapshot: consoleSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
 	push();
-	const polling = setInterval(() => {
-		void pollDraft(() => mounted);
-		if (!runningCliJob) {
-			trackLegacyPass(pollFrames(agentReadiness));
-			trackLegacyPass(pollChanges());
-			trackLegacyPass(pollExport());
-		}
+	setInterval(pollDraft, 2000);
+	// Frames wait for media and saves too: otherwise a frame can miss content that is still loading.
+	// One timer for frame and change requests (two small reads of the workspace every 2 s).
+	setInterval(() => {
+		void pollFrames(agentReadiness);
+		void pollChanges();
+		void pollExport();
 	}, 2000);
-	return async () => {
-		mounted = false;
-		installed = false;
-		const project = editor.project.getActiveOrNull()?.metadata.id;
-		const flush = timer !== undefined || applying || runningCliJob;
-		clearInterval(polling);
-		clearTimeout(timer);
-		clearTimeout(selectionTimer);
-		for (const unsubscribe of unsubscribes) unsubscribe();
-		editLogger?.stop();
-		delete (window as Window & { agent?: unknown }).agent;
-		await draftPass;
-		await draftQueue;
-		if (flush && project && editor.project.getActiveOrNull()?.metadata.id === project) await syncNow();
-	};
-}
-
-const legacyPasses = new Set<Promise<unknown>>();
-
-export function trackLegacyPass(pass: Promise<unknown>) {
-	legacyPasses.add(pass);
-	const clear = () => legacyPasses.delete(pass);
-	void pass.then(clear, clear);
-}
-
-export async function runEditorJob(claimed: ClaimedJob, job: JobTransport, target = {
-	session: currentSession(), rootSceneId: agentRootScene()?.id ?? null,
-}) {
-	if (claimed.command === "frames") return pollFrames(agentReadiness, job);
-	if (claimed.command === "export") return pollExport(job);
-	if (claimed.command === "changes") return pollChanges(job);
-	const response = await job.request("/api/agent/draft");
-	if (!response.ok) throw new Error("The draft is unavailable. Check the project and submit it again.");
-	const draft: Draft = await response.json();
-	await applyDraft(draft, { ...target, job });
 }
 
 export function retryMissingMedia(failures?: MediaLoadFailure[]): Promise<MediaLoadFailure[]> {
@@ -299,11 +259,11 @@ export function retryMissingMedia(failures?: MediaLoadFailure[]): Promise<MediaL
  * Answers `export-request.json`: exports the root timeline (once per rev and project) into the workspace's
  * `exports/` folder and reports progress and the result in `export-result.json`. Exported for tests.
  */
-export async function pollExport(job?: JobTransport) {
+export async function pollExport() {
 	if (exporting) return;
 	exporting = true;
 	try {
-		await answerExport(job);
+		await answerExport();
 	} finally {
 		exporting = false;
 	}
@@ -318,9 +278,9 @@ const REQUEST_WAIT_MS = 10_000;
 let unposted: { key: string; rev: string; body: Record<string, unknown> } | null = null;
 
 /** Posts progress or an error; says whether it was written, or the request was answered or taken by another tab. */
-async function sendExportResult(body: Record<string, unknown>, send: AgentFetch = fetch): Promise<"ok" | "answered" | "claimed" | "failed"> {
+async function sendExportResult(body: Record<string, unknown>): Promise<"ok" | "answered" | "claimed" | "failed"> {
 	try {
-		const response = await send("/api/agent/export-result", {
+		const response = await fetch("/api/agent/export-result", {
 			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, tab: EXPORT_TAB }), signal: AbortSignal.timeout(REQUEST_WAIT_MS),
 		});
 		if (response.ok) return "ok";
@@ -351,15 +311,13 @@ function exportable() {
 	return agentReadiness().ready ? { project, root } : null;
 }
 
-async function answerExport(job?: JobTransport) {
-	if (!job && unposted) return await postUnposted();
-	const send = job?.request ?? fetch;
-	const post = (body: Record<string, unknown>) => sendExportResult(body, send);
+async function answerExport() {
+	if (unposted) return await postUnposted();
 	const editor = EditorCore.getInstance();
 	if (!editor.project.getActiveOrNull() || editor.renderer.isExportRunning() || rendererDevice.status.state !== "ready") return;
 	let raw: unknown = null;
 	try {
-		raw = await (await send("/api/agent/export-request", { cache: "no-store", signal: AbortSignal.timeout(REQUEST_WAIT_MS) })).json();
+		raw = await (await fetch("/api/agent/export-request", { cache: "no-store", signal: AbortSignal.timeout(REQUEST_WAIT_MS) })).json();
 	} catch {
 		return;
 	}
@@ -369,11 +327,10 @@ async function answerExport(job?: JobTransport) {
 	if (!projectId) return;
 	if (typeof (raw as { projectId?: unknown }).projectId === "string" && (raw as { projectId: string }).projectId !== projectId) return; // another project's
 	const key = `agent-export-${projectId}`;
-	if (!job && wasAnswered(key, rev)) return;
+	if (wasAnswered(key, rev)) return;
 	const before = exportable();
 	if (!before || before.project.metadata.id !== projectId) return;
 	const answer = async (body: Record<string, unknown>) => {
-		if (job) { await post({ rev, projectId, ...body }); return; }
 		unposted = { key, rev, body: { rev, projectId, ...body } };
 		await postUnposted();
 	};
@@ -397,12 +354,12 @@ async function answerExport(job?: JobTransport) {
 	if (preflight) return await reportFailure(preflight);
 	// The request is taken first (another tab may be exporting it, or it may be answered already, for example
 	// before a reload), then the editor is checked again: it may have changed meanwhile.
-	const claim = await post({ rev, projectId, status: "exporting", progress: 0 });
+	const claim = await sendExportResult({ rev, projectId, status: "exporting", progress: 0 });
 	if (claim === "answered") return markAnswered(key, rev);
 	if (claim !== "ok") return;
 	const now = exportable();
 	if (!now || now.project.metadata.id !== projectId) {
-		await post({ rev, projectId, status: "release" });
+		await sendExportResult({ rev, projectId, status: "release" });
 		return;
 	}
 	const { project, root } = now;
@@ -420,9 +377,9 @@ async function answerExport(job?: JobTransport) {
 	const progress = (value: number) => {
 		if (!running || posting || Date.now() - lastPost < 2000) return;
 		lastPost = Date.now();
-		posting = post({ rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000 })
+		posting = sendExportResult({ rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000 })
 			.then((sent) => {
-				if (sent === "answered" || sent === "claimed" || (job && sent === "failed")) claimController.abort();
+				if (sent === "answered" || sent === "claimed") claimController.abort();
 			})
 			.finally(() => {
 				posting = null;
@@ -436,7 +393,7 @@ async function answerExport(job?: JobTransport) {
 		result = await editor.renderer.exportProject({
 			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
 			onProgress: ({ progress: value }) => progress(value),
-			signal: job ? AbortSignal.any([job.signal, claimController.signal]) : claimController.signal,
+			signal: claimController.signal,
 		});
 	} catch (error) {
 		result = { success: false, error: errorText(error) };
@@ -456,12 +413,9 @@ async function answerExport(job?: JobTransport) {
 	};
 	try {
 		const query = new URLSearchParams({ rev, projectId, tab: EXPORT_TAB, name, format: request.format, result: JSON.stringify(done) });
-		const saved = await send(`/api/agent/export-file?${query}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: result.buffer });
+		const saved = await fetch(`/api/agent/export-file?${query}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: result.buffer });
 		const reply = (await saved.json().catch(() => ({}))) as { error?: string; answered?: boolean };
-		if (saved.ok || reply.answered) {
-			if (!job) markAnswered(key, rev);
-			return;
-		}
+		if (saved.ok || reply.answered) return markAnswered(key, rev);
 		return await answer({ status: "error", error: `the file could not be saved: ${reply.error ?? saved.status}` });
 	} catch (error) {
 		// If the server saved it and only its reply was lost, this error is refused (the request has its answer).
@@ -481,8 +435,7 @@ function stateMeta(rootSceneId: string) {
  * `changes-result.json`, once per rev and project. Exported for tests.
  */
 let changesBusy = false;
-export async function pollChanges(job?: JobTransport) {
-	const send = job?.request ?? fetch;
+export async function pollChanges() {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const root = agentRootScene();
@@ -491,13 +444,13 @@ export async function pollChanges(job?: JobTransport) {
 	try {
 		let request: { rev?: unknown; since?: unknown; draft?: unknown } | null = null;
 		try {
-			request = await (await send("/api/agent/changes-request", { cache: "no-store" })).json();
+			request = await (await fetch("/api/agent/changes-request", { cache: "no-store" })).json();
 		} catch {
 			return;
 		}
 		if (!request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev)) return;
 		const key = `agent-changes-${project.metadata.id}`;
-		if (!job && wasAnswered(key, request.rev)) return;
+		if (wasAnswered(key, request.rev)) return;
 		// The project read before the request may have been replaced meanwhile: answer for the open one.
 		const open = editor.project.getActiveOrNull();
 		const openRoot = agentRootScene();
@@ -505,13 +458,13 @@ export async function pollChanges(job?: JobTransport) {
 		const now = { ...stateMeta(openRoot.id), scenes: editor.scenes.getScenes() };
 		const result = changesResult({ ...request, rev: request.rev }, { now, mediaName: mediaNames() });
 		if (!result) return; // for another project: left for it
-		const post = (body: unknown) => send("/api/agent/changes-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+		const post = (body: unknown) => fetch("/api/agent/changes-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 		let response = await post(result);
 		// Stored: its state becomes a snapshot to chain from.
 		if (response.ok && "syncedAt" in result && !("error" in result)) keepAnswerState(now, result.syncedAt);
 		// Not stored (too large): answered with the reason instead of being worked out again every poll.
 		if (!response.ok) response = await post({ rev: request.rev, projectId: open.metadata.id, error: `the answer could not be stored (${response.status}); ask with a newer since` });
-		if (response.ok && !job) markAnswered(key, request.rev);
+		if (response.ok) markAnswered(key, request.rev);
 	} catch (error) {
 		console.error("Agent changes failed:", error);
 	} finally {
@@ -522,62 +475,24 @@ export async function pollChanges(job?: JobTransport) {
 // An agent draft is a list of per-item operations, protecting human edits (see AGENT.md and draft.ts).
 // Times are in seconds; inside a compound clip they are relative to its content. The whole draft is one Undo step.
 let applying = false;
-let runningCliJob = false;
-let draftPass: Promise<void> | null = null;
 /** Picks up draft.json for the open project (every 2 s; exported for tests). */
-export function pollDraft(mounted = () => true): Promise<void> {
-	if (draftPass || !mounted() || runningCliJob) return Promise.resolve();
-	const pass = readDraft(mounted).finally(() => { if (draftPass === pass) draftPass = null; });
-	draftPass = pass;
-	return pass;
-}
-
-async function readDraft(mounted: () => boolean) {
+export async function pollDraft() {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	if (!project || applying) return;
-	const readiness = agentReadiness();
-	const legacyReady = readiness.ready && !timelineBusy();
-	const stage = editor.project.getIsLoading() ? (readiness.mediaLoaded ? "loading the project" : "loading media")
-		: !readiness.mediaLoaded ? "loading media" : readiness.pendingSave || readiness.saveError ? "saving"
-			: timelineBusy() || runningCliJob || editor.renderer.isExportRunning() ? "waiting for the editor" : "ready";
+	if (timelineBusy()) return; // a human is dragging: wait until release
+	if (!agentReadiness().ready) return; // media still loading or a save pending: the draft waits
 	// The session is taken before the fetch: a project opened while draft.json is read is not the
 	// one this poll was for, and the draft is left for the next poll (not marked seen, not refused).
 	const session = currentSession();
 	const rootSceneId = agentRootScene()?.id ?? null;
 	let draft: Draft | null = null;
 	try {
-		const response = await fetch("/api/agent/draft", {
-			cache: "no-store", signal: AbortSignal.timeout(10_000), headers: {
-				"x-bopencut-tab": editorTab, "x-bopencut-project": project.metadata.id, "x-bopencut-stage": stage,
-				"x-bopencut-graphics": rendererDevice.status.state, "x-bopencut-draft-ready": String(legacyReady),
-			},
-		});
-		const offer = response.headers?.get("x-bopencut-claim");
-		if (offer) {
-			const claimed = JSON.parse(offer) as ClaimedJob;
-			runningCliJob = true;
-			try {
-				await runClaimedJob(claimed, false, async (job) => {
-					if (!mounted() || draftSessionError({ draft: { projectId: claimed.projectId }, queued: session, now: currentSession() })) {
-						throw new Error("The editor switched projects. Reopen the original project and retry.");
-					}
-					await waitWithAbort(Promise.allSettled(legacyPasses), job.signal);
-					job.signal.throwIfAborted();
-					if (!mounted()) throw new Error("The editor was closed. Run the command again.");
-					await runEditorJob(claimed, job, { session, rootSceneId });
-				});
-			} finally {
-				runningCliJob = false;
-			}
-			return;
-		}
-		if (!legacyReady) return;
-		draft = await response.json();
+		draft = await (await fetch("/api/agent/draft", { cache: "no-store" })).json();
 	} catch {
 		return;
 	}
-	if (!mounted() || runningCliJob || !draft?.rev || (draft.projectId && draft.projectId !== project.metadata.id)) return;
+	if (!draft?.rev || (draft.projectId && draft.projectId !== project.metadata.id)) return;
 	if (draftSessionError({ draft, queued: session, now: currentSession() })) return;
 	// A root switch can also make the editor unready. Refuse this draft before a later poll can retarget it.
 	if (rootSceneId === (agentRootScene()?.id ?? null) && !agentReadiness().ready) return;
@@ -614,9 +529,9 @@ const opLabel = (op: DraftOp) => (op?.op === "add" ? { name: op.element?.name } 
  * Once applied, the project is saved before the result is written, so `draft-result.json` with
  * `saved: true` means the change is in project.json on disk.
  */
-export function applyDraft(draft: Draft, { session = currentSession(), rootSceneId = agentRootScene()?.id ?? null, job }: { session?: DraftSession | null; rootSceneId?: string | null; job?: JobTransport } = {}): Promise<void> {
+export function applyDraft(draft: Draft, { session = currentSession(), rootSceneId = agentRootScene()?.id ?? null }: { session?: DraftSession | null; rootSceneId?: string | null } = {}): Promise<void> {
 	// A queued draft keeps its project session and root.
-	const run = draftQueue.then(() => applyDraftNow(draft, session, rootSceneId, job));
+	const run = draftQueue.then(() => applyDraftNow(draft, session, rootSceneId));
 	draftQueue = run.catch(() => {});
 	return run;
 }
@@ -641,10 +556,7 @@ export function draftSessionError({ draft, queued, now }: { draft: Pick<Draft, "
 	return null;
 }
 
-async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSceneId: string | null, job?: JobTransport) {
-	const send = job?.request ?? fetch;
-	job?.signal.throwIfAborted();
-	const progress = (stage: string) => job?.progress(stage).catch(() => {});
+async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSceneId: string | null) {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const active = editor.scenes.getActiveSceneOrNull();
@@ -655,7 +567,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), {
 			description: localizeErrorDetail(refused, getBrowserTranslator()),
 		});
-		await send("/api/agent/applied", {
+		await fetch("/api/agent/applied", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ok: false, applied: false, error: refused, results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) }),
@@ -665,16 +577,14 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	const rootBefore = agentRootScene()?.id;
 	if (!project || !active || !rootBefore) return;
 	const projectId = project.metadata.id;
-	const importSession = { projectId, signal: editor.project.getSessionSignal(), cancel: job?.signal };
+	const importSession = { projectId, signal: editor.project.getSessionSignal() };
 	const ops: DraftOp[] = Array.isArray(draft?.ops) ? structuredClone(draft.ops) : [];
-	const report = async (body: Record<string, unknown>) => {
-		if (job && body.saved === true) await job.publishSnapshot?.();
-		return send("/api/agent/applied", {
+	const report = (body: Record<string, unknown>) =>
+		fetch("/api/agent/applied", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ...body }),
 		}).catch(() => {});
-	};
 
 	// A draft's base must describe the target timeline before anything is imported.
 	const snapshot = typeof draft.basedOn === "string" ? snapshotHistory.state(draft.basedOn) : null;
@@ -698,7 +608,6 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		return;
 	}
 
-	await progress("loading media");
 	// Load icons and assets first (async), then change the timeline at once.
 	const media = new Map<AgentElement, LoadedMedia>();
 	const byPath = new Map<string, Promise<LoadedMedia>>();
@@ -743,7 +652,6 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		return failed;
 	};
 	for (const [i, op] of ops.entries()) {
-		if (job?.signal.aborted) break;
 		const errors: string[] = [];
 		const walked = opElements[i];
 		if (walked instanceof Error) {
@@ -789,7 +697,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 					const asset = e.asset;
 					const key = assetKey(asset);
 					const withWords = wordsByAsset.has(key) ? { ...asset, words: wordsByAsset.get(key) as SourceWord[] } : asset;
-					if (!byPath.has(key)) byPath.set(key, loadAgentAsset({ session: importSession, asset: withWords, stagedIds: staged, send: job?.request }));
+					if (!byPath.has(key)) byPath.set(key, loadAgentAsset({ session: importSession, asset: withWords, stagedIds: staged }));
 					media.set(e, await byPath.get(key)!);
 				}
 			} catch (error) {
@@ -818,8 +726,6 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 			words ? `; the words of ${words} ${words === 1 ? "media file" : "media files"} could not be put back` : "",
 		].join("");
 	};
-	await progress("applying");
-	if (job?.signal.aborted) { await discard(); return; }
 	// The user started dragging while assets loaded: committing now would cancel the drag, so the draft
 	// waits for the release (at most a minute).
 	if (timelineBusy() && !(await whenPreviewEnds({ timeoutMs: 60000 }))) {
@@ -827,7 +733,6 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		await report({ ok: false, applied: false, error: "the user kept dragging on the timeline; nothing was applied, resend" + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
 	}
-	if (job?.signal.aborted) { await discard(); return; }
 	// Loading (for example a slow URL section) took a while. If another project is open now, its timeline
 	// is not the one this draft was made for, and the staged imports belong to the first project: stop here.
 	if (draftSessionError({ draft, queued: session, now: currentSession() })) {
@@ -919,7 +824,6 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		await report({ sceneId: root.id, ok: false, applied: false, ...(stale ? { stale: true } : {}), error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
 		return;
 	}
-	const saving = progress("saving");
 	const cleanup = await discard(new Set(publish));
 	// Words the draft set (already stored) are the media's words in the editor from now on.
 	for (const [mediaId, words] of outcome.words) editor.media.setMediaWords({ id: mediaId, words });
@@ -953,7 +857,6 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids });
 		if (promoteError) console.warn("Staged media not promoted (they still load because the timeline uses them):", promoteError);
 	});
-	await saving;
 	const saved = await ownSession.settle(revision);
 	if (saved) await promotion;
 	const failed = outcome.results.filter((r) => !r?.ok).length;

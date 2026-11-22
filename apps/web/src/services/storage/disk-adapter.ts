@@ -1,4 +1,3 @@
-import { diskFetch, hasHiddenStorageJob } from "@/agent/cli-transport";
 import { getBrowserTranslator } from "@/i18n/browser";
 import { toast } from "sonner";
 import type { SerializedProject, MediaAssetData, ProjectNavigation, ProjectSummary } from "./types";
@@ -26,7 +25,7 @@ export class DiskAdapter {
 	}
 	/** Reads a project with the revision of that copy (the shared cache can move on meanwhile). */
 	private async read(id: string): Promise<{ value: SerializedProject; revision: string } | null> {
-		const response = await diskFetch(projectUrl(id), { cache: "no-store" });
+		const response = await fetch(projectUrl(id), { cache: "no-store" });
 		if (response.status === 404) {
 			if (this.revisions.has(id)) this.gone.add(id);
 			this.revisions.delete(id);
@@ -38,14 +37,14 @@ export class DiskAdapter {
 		return { value: await response.json(), revision };
 	}
 	async summaries(): Promise<ProjectSummary[]> {
-		return (await checked(await diskFetch(base, { cache: "no-store" }))).json();
+		return (await checked(await fetch(base, { cache: "no-store" }))).json();
 	}
 	async list(): Promise<string[]> {
 		return (await this.summaries()).map((project) => project.metadata.id);
 	}
 	async saveNavigation(id: string, value: ProjectNavigation): Promise<void> {
 		await this.queued(id, async () => {
-			await checked(await diskFetch(`${projectUrl(id)}/navigation`, {
+			await checked(await fetch(`${projectUrl(id)}/navigation`, {
 				method: "PUT",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(value),
@@ -54,7 +53,7 @@ export class DiskAdapter {
 	}
 	async saveThumbnail(id: string, thumbnail: Blob): Promise<string> {
 		const url = `${projectUrl(id)}/thumbnail`;
-		const response = await checked(await diskFetch(url, {
+		const response = await checked(await fetch(url, {
 			method: "PUT", body: thumbnail, signal: AbortSignal.timeout(10_000),
 		}));
 		const etag = response.headers.get("etag");
@@ -90,7 +89,7 @@ export class DiskAdapter {
 				}
 				// The revision of the copy that was changed, not the shared cache: another read may have moved
 				// that on (to a newer copy, or to "gone"), and the write must not pass on its strength.
-				const response = await diskFetch(projectUrl(key), {
+				const response = await fetch(projectUrl(key), {
 					method: "PUT",
 					headers: { "Content-Type": "application/json", "If-Match": current.revision },
 					body: JSON.stringify(next),
@@ -127,13 +126,13 @@ export class DiskAdapter {
 			expected = this.revisions.get(key) ?? "new";
 		}
 		const write = (version: string) =>
-			diskFetch(projectUrl(key), {
+			fetch(projectUrl(key), {
 				method: "PUT",
 				headers: { "Content-Type": "application/json", "If-Match": version },
 				body: JSON.stringify(value),
 			});
 		let response = await write(expected);
-		if (response.status === 409 && !hasHiddenStorageJob()) {
+		if (response.status === 409) {
 			toast.warning(
 				getBrowserTranslator()("storage.conflict"),
 			);
@@ -148,7 +147,7 @@ export class DiskAdapter {
 	}
 	async migrate(value: SerializedProject): Promise<boolean> {
 		const response = await checked(
-			await diskFetch(projectUrl(value.metadata.id), {
+			await fetch(projectUrl(value.metadata.id), {
 				method: "PUT",
 				headers: { "Content-Type": "application/json", "X-Migration": "1" },
 				body: JSON.stringify(value),
@@ -160,13 +159,13 @@ export class DiskAdapter {
 		return (
 			await (
 				await checked(
-					await diskFetch(`${projectUrl(id)}/migration`, { cache: "no-store" }),
+					await fetch(`${projectUrl(id)}/migration`, { cache: "no-store" }),
 				)
 			).json()
 		).exists;
 	}
 	async remove(id: string): Promise<void> {
-		await checked(await diskFetch(projectUrl(id), { method: "DELETE" }));
+		await checked(await fetch(projectUrl(id), { method: "DELETE" }));
 		this.revisions.delete(id);
 		this.gone.add(id);
 	}
@@ -176,7 +175,7 @@ export class DiskAdapter {
 	async mediaList(id: string): Promise<MediaAssetData[]> {
 		return (
 			await checked(
-				await diskFetch(`${projectUrl(id)}/media`, { cache: "no-store" }),
+				await fetch(`${projectUrl(id)}/media`, { cache: "no-store" }),
 			)
 		).json();
 	}
@@ -184,7 +183,7 @@ export class DiskAdapter {
 		return `${projectUrl(id)}/media/${encodeURIComponent(mediaId)}`;
 	}
 	async hasStoredMediaAsset(id: string, mediaId: string, signal: AbortSignal): Promise<boolean> {
-		const response = await diskFetch(this.mediaUrl(id, mediaId), { method: "HEAD", cache: "no-store", signal });
+		const response = await fetch(this.mediaUrl(id, mediaId), { method: "HEAD", cache: "no-store", signal });
 		if (response.status === 404) return false;
 		await checked(response);
 		return true;
@@ -199,10 +198,9 @@ export class DiskAdapter {
 			id: metadata.id,
 			fileName: metadata.fileName,
 			fileType: metadata.fileType,
-			...(metadata.staged ? { staged: true } : {}),
 		};
 		await checked(
-			await diskFetch(url, {
+			await fetch(url, {
 				method: "PUT",
 				headers: {
 					"X-Media-Metadata": encodeURIComponent(JSON.stringify(minimal)),
@@ -211,7 +209,7 @@ export class DiskAdapter {
 			}),
 		);
 		await checked(
-			await diskFetch(url, {
+			await fetch(url, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(metadata),
@@ -221,7 +219,7 @@ export class DiskAdapter {
 	/** Replaces the metadata of stored media (its file stays). */
 	async updateMediaMetadata(id: string, metadata: MediaAssetData): Promise<void> {
 		await checked(
-			await diskFetch(this.mediaUrl(id, metadata.id), {
+			await fetch(this.mediaUrl(id, metadata.id), {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(metadata),
@@ -230,23 +228,23 @@ export class DiskAdapter {
 	}
 	async removeMedia(id: string, mediaId: string): Promise<void> {
 		await checked(
-			await diskFetch(this.mediaUrl(id, mediaId), { method: "DELETE" }),
+			await fetch(this.mediaUrl(id, mediaId), { method: "DELETE" }),
 		);
 	}
 	async removeProjectMedia(id: string): Promise<void> {
-		await checked(await diskFetch(`${projectUrl(id)}/media`, { method: "DELETE" }));
+		await checked(await fetch(`${projectUrl(id)}/media`, { method: "DELETE" }));
 	}
 }
 
 export class DiskSoundsAdapter<T> {
 	async get(_key: string): Promise<T | null> {
 		return (
-			await checked(await diskFetch("/api/storage/sounds", { cache: "no-store" }))
+			await checked(await fetch("/api/storage/sounds", { cache: "no-store" }))
 		).json();
 	}
 	async set({ value }: { key: string; value: T }): Promise<void> {
 		await checked(
-			await diskFetch("/api/storage/sounds", {
+			await fetch("/api/storage/sounds", {
 				method: "PUT",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(value),
@@ -255,7 +253,7 @@ export class DiskSoundsAdapter<T> {
 	}
 	async migrate(value: T): Promise<void> {
 		await checked(
-			await diskFetch("/api/storage/sounds", {
+			await fetch("/api/storage/sounds", {
 				method: "PUT",
 				headers: { "Content-Type": "application/json", "If-None-Match": "*" },
 				body: JSON.stringify(value),
@@ -263,6 +261,6 @@ export class DiskSoundsAdapter<T> {
 		);
 	}
 	async remove(_key: string): Promise<void> {
-		await checked(await diskFetch("/api/storage/sounds", { method: "DELETE" }));
+		await checked(await fetch("/api/storage/sounds", { method: "DELETE" }));
 	}
 }

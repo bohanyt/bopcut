@@ -27,7 +27,7 @@ import { DEFAULTS } from "@/timeline/defaults";
 import { getElementFontFamilies } from "@/timeline/element-utils";
 import { frameRateToFloat, getRaisedProjectFpsForImportedMedia } from "@/fps/utils";
 import type { MediaAsset } from "@/media/types";
-import { mediaIdsInScenes } from "@/media/project-media";
+import { mediaIdsInScenes } from "./media-manager";
 
 export interface MigrationState {
 	isMigrating: boolean;

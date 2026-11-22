@@ -7,7 +7,6 @@ import { fitSurfaceSize } from "@/services/renderer/scale";
 import { getRootScene } from "./scene-graph";
 import { isForOtherProject, parseStateRef, resolveState, type TimelineState } from "./history";
 import { markAnswered, wasAnswered } from "./answered";
-import type { AgentFetch, JobTransport } from "./cli-transport";
 
 /** At most this many frames per request (times, doubled with `compare`). */
 export const MAX_FRAMES = 64;
@@ -35,8 +34,8 @@ let refusedMissing: string | null = null;
 type PendingCancellation = { rev: string; projectId: string; key: string };
 let pendingCancellation: PendingCancellation | null = null;
 
-function postFramesResult({ rev, projectId }: { rev: string; projectId: string }, body: Record<string, unknown>, send: AgentFetch = fetch) {
-	return send("/api/agent/frames-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev, projectId, ...body }) });
+function postFramesResult({ rev, projectId }: { rev: string; projectId: string }, body: Record<string, unknown>) {
+	return fetch("/api/agent/frames-result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev, projectId, ...body }) });
 }
 
 async function postCancellation(cancellation: PendingCancellation) {
@@ -48,21 +47,19 @@ async function postCancellation(cancellation: PendingCancellation) {
 }
 
 /** Reads and renders a frame request against one project session and a fixed timeline for each pass. */
-export async function pollFrames(readiness: () => { ready: boolean; missingMedia: MediaLoadFailure[] }, job?: JobTransport) {
-	const send = job?.request ?? fetch;
+export async function pollFrames(readiness: () => { ready: boolean; missingMedia: MediaLoadFailure[] }) {
 	const editor = EditorCore.getInstance();
 	if (busy) return;
 	if (!pendingCancellation && (!editor.project.getActiveOrNull() || editor.timeline.isPreviewActive() || isGraphicsInitializing() || !readiness().ready)) return;
-	const session = editor.project.getSessionSignal();
-	const signal = job ? AbortSignal.any([session, job.signal]) : session;
+	const signal = editor.project.getSessionSignal();
 	busy = true;
 	try {
-		const request = await (await send("/api/agent/frames-request", { cache: "no-store" })).json() as {
+		const request = await (await fetch("/api/agent/frames-request", { cache: "no-store" })).json() as {
 			rev?: string; times?: unknown; width?: number; projectId?: unknown; allowMissing?: boolean; state?: unknown; compare?: unknown;
 		} | null;
 		if (!request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev)) return;
 		// The workspace has a single result file. Retry a failed cancellation while its request is current.
-		if (!job && pendingCancellation) {
+		if (pendingCancellation) {
 			if (request.rev === pendingCancellation.rev) return await postCancellation(pendingCancellation);
 			pendingCancellation = null;
 		}
@@ -75,14 +72,12 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const projectId = project.metadata.id;
 		const { rev, width } = request;
 		const key = `agent-frames-${projectId}`;
-		if (!job && (wasAnswered(key, rev) || isForOtherProject(request, [request.state, request.compare], projectId))) return;
-		if (job && request.projectId !== projectId) return;
+		if (wasAnswered(key, rev) || isForOtherProject(request, [request.state, request.compare], projectId)) return;
 		// An unscoped request answered across a switch must not start over in the newly opened project.
 		const switchKey = typeof request.projectId === "string" ? key : "agent-frames-answered-on-switch";
 		if (switchKey !== key && wasAnswered(switchKey, rev)) return;
-		const result = (body: Record<string, unknown>) => postFramesResult({ rev, projectId }, body, send);
+		const result = (body: Record<string, unknown>) => postFramesResult({ rev, projectId }, body);
 		const cancel = () => {
-			if (job) return result({ files: [], error: "The project switched during rendering. Reopen the target project and retry." });
 			pendingCancellation = { rev, projectId, key: switchKey };
 			return postCancellation(pendingCancellation);
 		};
@@ -94,14 +89,14 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 				if (signal.aborted) return await cancel();
 				throw error;
 			}
-			if (!job) markAnswered(signal.aborted ? switchKey : key, rev);
+			markAnswered(signal.aborted ? switchKey : key, rev);
 		};
 		const refuse = (error: string) => finish({ files: [], error });
 		if (missingMedia.length && request.allowMissing !== true) {
 			// The same request may run after the missing assets have been reloaded.
 			const missingKey = JSON.stringify([projectId, rev]);
-			if ((job || refusedMissing !== missingKey) && (await result({ files: [], missingMedia, error: `${missingMedia.length} stored media could not be loaded; retry them (window.agent.retryMissingMedia()) or send allowMissing:true` })).ok) {
-				if (!job) refusedMissing = missingKey;
+			if (refusedMissing !== missingKey && (await result({ files: [], missingMedia, error: `${missingMedia.length} stored media could not be loaded; retry them (window.agent.retryMissingMedia()) or send allowMissing:true` })).ok) {
+				refusedMissing = missingKey;
 			}
 			return;
 		}
@@ -128,7 +123,6 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			const error = missing(state);
 			if (error) return await refuse(error);
 		}
-		await job?.progress("rendering frames");
 		const files: string[] = [];
 		const compared: string[] = [];
 		// A time a state cannot show (outside its timeline, or an empty one) is reported; the others go on.
@@ -141,7 +135,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 					if (error) throw new Error(error);
 					const before = editor.media.getAssets();
 					(variant ? compared : files).push(await renderFrame({
-						request: { rev, width }, time, state, variant, settings: state.settings ?? settings, signal, send,
+						request: { rev, width }, time, state, variant, settings: state.settings ?? settings, signal,
 						checkMedia: () => editor.media.getAssets() === before ? null : missing(state),
 					}));
 				} catch (error) {
@@ -150,7 +144,6 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			}
 		}
 		if (signal.aborted) return await cancel();
-		await job?.progress("saving");
 		await finish({ files, ...(states.compare ? { compare: compared } : {}), ...(errors.length ? { errors } : {}) });
 	} catch (error) { console.error("Agent frame failed:", error); }
 	finally { busy = false; }
@@ -187,9 +180,9 @@ export function removedMedia(state: TimelineState, onlyPreviouslyPresent = false
 }
 
 /** Renders and saves one frame from the state chosen for this pass. */
-async function renderFrame({ request, time, state, variant, settings, signal, send, checkMedia }: {
+async function renderFrame({ request, time, state, variant, settings, signal, checkMedia }: {
 	request: { rev: string; width?: number }; time: number; state: TimelineState; variant?: string;
-	settings: NonNullable<TimelineState["settings"]>; signal: AbortSignal; send: AgentFetch; checkMedia: () => string | null;
+	settings: NonNullable<TimelineState["settings"]>; signal: AbortSignal; checkMedia: () => string | null;
 }): Promise<string> {
 	const editor = EditorCore.getInstance();
 	const { scenes, rootSceneId } = state;
@@ -228,7 +221,7 @@ async function renderFrame({ request, time, state, variant, settings, signal, se
 	form.set("rev", request.rev); form.set("time", String(time)); form.set("image", blob);
 	if (variant) form.set("variant", variant);
 	signal.throwIfAborted();
-	const response = await send("/api/agent/frame", { method: "POST", body: form, signal });
+	const response = await fetch("/api/agent/frame", { method: "POST", body: form, signal });
 	if (!response.ok) throw new Error(await response.text());
 	return (await response.json()).file;
 }

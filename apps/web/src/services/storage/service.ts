@@ -5,7 +5,6 @@ import type { MediaAsset, MediaLoadFailure } from "@/media/types";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import { DiskAdapter, DiskSoundsAdapter } from "./disk-adapter";
-import { hasHiddenStorageJob } from "@/agent/cli-transport";
 import { toast } from "sonner";
 import { parseSourceWords } from "@/media/words";
 import { getProjectId } from "./migrations/transformers/utils";
@@ -264,10 +263,9 @@ class StorageService {
 	}: {
 		id: string;
 	}): Promise<{ project: TProject } | null> {
-		if (!hasHiddenStorageJob()) await this.ensureMigrations();
+		await this.ensureMigrations();
 		let serializedProject = await this.projectsAdapter.get(id);
 		if (serializedProject && typeof serializedProject.version === "number" && serializedProject.version < CURRENT_PROJECT_VERSION) {
-			if (hasHiddenStorageJob()) throw new Error("Open the editor once to upgrade this project, then retry.");
 			// Transform the exact copy whose revision is checked by the write. On a conflict, retry
 			// against the latest copy, which may already have been migrated in another tab.
 			serializedProject = await this.projectsAdapter.update(id, (current) =>

@@ -1,7 +1,5 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { agentJobs, getJob, JobError, recoverAgentJobs, rememberDraft } from "@/agent/cli-job-server";
-import { JOB_HEADER, type AgentJob } from "@/agent/cli-jobs";
 import {
 	atomicWrite,
 	dataRoot,
@@ -52,32 +50,8 @@ async function handle(
 ): Promise<Response> {
 	if (!allowed(req))
 		return Response.json({ error: "Origin ditolak" }, { status: 403 });
-	const s = (await params).slug;
 	try {
-		await recoverAgentJobs();
-		const owner = req.headers.get(JOB_HEADER);
-		if (owner) {
-			const job = getJob(owner);
-			if (!job.hidden || job.owner !== owner || s[0] !== "projects" || s[1] !== job.projectId) {
-				throw new JobError("The worker can only access its assigned project.", 403);
-			}
-			if (req.method === "GET" || req.method === "HEAD") return await storage(req, s, job);
-			const draftWrite = (req.method === "PUT" && (s.length === 2 || (s.length === 3 && s[2] === "navigation"))) ||
-				(s.length === 4 && s[2] === "media" && ["PUT", "POST", "DELETE"].includes(req.method));
-			if (job.command !== "draft" || req.headers.has("x-migration") || !draftWrite) {
-				throw new JobError("Open the editor once to finish preparing this project, then retry.", 409);
-			}
-			return await job.use(() => storage(req, s, job));
-		}
-		return await storage(req, s);
-	} catch (error) {
-		if (error instanceof JobError) return Response.json({ error: error.message }, { status: error.status });
-		console.error("Storage:", error);
-		return Response.json({ error: String(error) }, { status: 400 });
-	}
-}
-
-async function storage(req: Request, s: string[], job?: AgentJob): Promise<Response> {
+		const s = (await params).slug;
 		const method = req.method;
 		if (s[0] === "sounds" && s.length === 1) {
 			const file = path.join(dataRoot(), "sounds.json");
@@ -124,9 +98,7 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 		}
 		if (s[0] === "projects" && s[1]) {
 			const id = safeId(s[1]);
-			if (!job) agentJobs.checkRecovery(id);
 			if (s.length === 2 && method === "GET") {
-				if (!job) await agentJobs.beforeOpen(id);
 				const project = await readProject(id);
 				return project
 					? Response.json(project.value, { headers: { ETag: project.etag } })
@@ -135,7 +107,6 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 			if (s.length === 2 && method === "PUT")
 				return await withProjectLock(id, async () => {
 					const value = await req.json();
-					job?.signal.throwIfAborted();
 					if (value?.metadata?.id !== id)
 						return Response.json(
 							{ error: "Project ID mismatch" },
@@ -148,9 +119,7 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 					const expected = req.headers.get("if-match");
 					if (!migrating && expected !== (current ? revision(current) : "new"))
 						return Response.json({ error: "Project changed" }, { status: 409 });
-					job?.signal.throwIfAborted();
-					const etag = await writeProject(id, value, current, job?.id);
-					if (job) job.committed = true;
+					const etag = await writeProject(id, value, current);
 					if (migrating)
 						await atomicWrite(marker(id), JSON.stringify({ migrated: true }));
 					return Response.json(
@@ -262,13 +231,7 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 						const metadata = JSON.parse(
 							decodeURIComponent(req.headers.get("x-media-metadata") ?? ""),
 						);
-						job?.signal.throwIfAborted();
-						if (job) {
-							if (metadata.staged !== true) throw new JobError("Open the editor to migrate this project's media, then retry.", 409);
-							job.staged.add(mediaId);
-							await rememberDraft(job);
-						}
-						await saveMedia(id, mediaId, metadata, req.body, job?.signal);
+						await saveMedia(id, mediaId, metadata, req.body);
 						return Response.json({ ok: true });
 					});
 				if (method === "POST")
@@ -279,11 +242,6 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 						const metadata = await req.json();
 						if (!old || metadata.id !== mediaId)
 							return new Response(null, { status: 400 });
-						job?.signal.throwIfAborted();
-						if (job && !job.committed && !job.staged.has(mediaId) && !job.words.has(mediaId)) {
-							job.words.set(mediaId, old.words);
-							await rememberDraft(job);
-						}
 						await atomicWrite(
 							file,
 							JSON.stringify({ ...metadata, diskFile: old.diskFile }),
@@ -298,6 +256,10 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 			}
 		}
 		return new Response(null, { status: 404 });
+	} catch (error) {
+		console.error("Storage:", error);
+		return Response.json({ error: String(error) }, { status: 400 });
+	}
 }
 export const GET = handle;
 export const PUT = handle;

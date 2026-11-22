@@ -97,7 +97,6 @@ export function createEditLogger(capture: () => EditSnapshot | null, preview: ()
 		else baseline = null;
 	};
 	return {
-		stop() { clearTimeout(timer); if (!preview()) settle(); },
 		changed() { if (!suppressed) { clearTimeout(timer); timer = setTimeout(settle, 800); } },
 		agent(action: () => void) { clearTimeout(timer); settle(); suppressed = true; try { action(); } finally { baseline = capture(); suppressed = false; } },
 	};

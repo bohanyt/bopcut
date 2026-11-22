@@ -28,5 +28,3 @@ target/
 rust-migration-notes.md
 # local agent workspace
 workspace/
-.agent-browser/
-.agent-jobs/

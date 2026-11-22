@@ -14,8 +14,6 @@ import { useTimelineStore } from "@/timeline/timeline-store";
 import { useEditorActions } from "@/actions/use-editor-actions";
 import { loadFontAtlas } from "@/fonts/google-fonts";
 import { rendererDevice } from "@/services/renderer/renderer-device";
-import { connectEditor } from "@/agent/cli-browser";
-import { installAgentBridge } from "@/agent/bridge";
 
 interface EditorProviderProps {
 	projectId: string;
@@ -38,20 +36,15 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 	useEffect(() => {
 		let cancelled = false;
 		const editor = EditorCore.getInstance();
-		const presence = connectEditor(projectId);
-		let stopBridge: (() => Promise<void>) | undefined;
 
 		const loadProject = async () => {
 			try {
 				setIsLoading(true);
-				await presence.ready;
-				if (cancelled) return;
 				void rendererDevice.start();
 				await editor.project.loadProject({ id: projectId });
 
 				if (cancelled) return;
 
-				stopBridge = installAgentBridge();
 				setIsLoading(false);
 				loadFontAtlas();
 			} catch (err) {
@@ -90,17 +83,6 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 		return () => {
 			cancelled = true;
-			// Stop taking jobs before withdrawing presence. A draft already accepted can still be saving.
-			const unregister = () => {
-				if (!editor.save.hasUnsavedChangesOf(projectId)) return presence.close();
-				const unsubscribe = editor.save.subscribe(() => {
-					if (editor.save.hasUnsavedChangesOf(projectId)) return;
-					unsubscribe();
-					presence.close();
-				});
-			};
-			if (stopBridge) void stopBridge().then(unregister, unregister);
-			else unregister();
 			if (editor.playback.getIsPlaying()) editor.playback.pause();
 		};
 	}, [projectId, router]);

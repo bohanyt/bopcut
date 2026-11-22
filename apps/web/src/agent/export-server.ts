@@ -99,7 +99,7 @@ export async function handleExportResult(req: Request, workspace: string): Promi
 }
 
 /** POST export-file: saves the video, then writes the final answer with it (one request, so neither is lost). */
-export async function handleExportFile(req: Request, workspace: string, job?: { dir: string; signal: AbortSignal; finish: (body: Result) => Promise<void> }): Promise<Response> {
+export async function handleExportFile(req: Request, workspace: string): Promise<Response> {
 	const query = new URL(req.url).searchParams;
 	const rev = query.get("rev") ?? "";
 	let done: Record<string, unknown> = {};
@@ -111,23 +111,13 @@ export async function handleExportFile(req: Request, workspace: string, job?: { 
 	if (!REV.test(rev) || !req.body || !done || typeof done !== "object" || (query.get("result") ?? "").length > 4096) return Response.json({ error: "Invalid export" }, { status: 400 });
 	if (Number(req.headers.get("content-length") ?? 0) > MAX_EXPORT_BYTES) return Response.json({ error: "Export too large" }, { status: 413 });
 	// Not saved again once the request has its answer (for example from another tab).
-	if (!job && isFinal(await readResult(workspace), rev)) return refused("answered");
-	const dir = job?.dir ?? path.join(workspace, "exports");
-	const saved = await saveExport({ dir, name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, signal: job?.signal });
+	if (isFinal(await readResult(workspace), rev)) return refused("answered");
+	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body });
 	if ("error" in saved) return Response.json({ error: saved.error }, { status: saved.status });
-	const file = path.relative(workspace, path.join(dir, saved.file)).split(path.sep).join("/");
+	const file = `exports/${saved.file}`;
 	const fields = Object.fromEntries(DONE_FIELDS.filter((key) => key in done).map((key) => [key, done[key]]));
 	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file, bytes: saved.bytes, ...fields };
-	try {
-		if (job) {
-			job.signal.throwIfAborted();
-			await job.finish(result);
-		}
-		else await writeExportResult({ workspace, result });
-	} catch (error) {
-		if (job) await fs.rm(path.join(workspace, file), { force: true });
-		throw error;
-	}
+	await writeExportResult({ workspace, result });
 	return Response.json({ file, bytes: saved.bytes });
 }
 
@@ -138,7 +128,7 @@ export type SavedExport = { file: string; bytes: number } | { error: string; sta
  * earlier export is never overwritten, also when two saves of one name run at once). Refuses a body over
  * `maxBytes` and an exports folder that is a link (it could point anywhere).
  */
-export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPORT_BYTES, signal }: { dir: string; name: string; format: string; body: ReadableStream<Uint8Array>; maxBytes?: number; signal?: AbortSignal }): Promise<SavedExport> {
+export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPORT_BYTES }: { dir: string; name: string; format: string; body: ReadableStream<Uint8Array>; maxBytes?: number }): Promise<SavedExport> {
 	const safe = safeName(name);
 	if ((format !== "mp4" && format !== "webm") || !safe) return { error: "Invalid export", status: 400 };
 	await fs.mkdir(dir, { recursive: true });
@@ -155,12 +145,11 @@ export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPOR
 	});
 	try {
 		try {
-			await pipeline(Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream), count, createWriteStream(temp, { flags: "wx" }), { signal });
+			await pipeline(Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream), count, createWriteStream(temp, { flags: "wx" }));
 		} catch (error) {
 			if (error instanceof TooLarge) return { error: `Export larger than ${maxBytes} bytes`, status: 413 };
 			throw error;
 		}
-		signal?.throwIfAborted();
 		let hardLinks = true;
 		for (let n = 1; n <= 999; ) {
 			const file = `${safe}${n > 1 ? ` (${n})` : ""}.${format}`;

@@ -9,13 +9,13 @@ function gcd(left: number, right: number): number {
 	return left;
 }
 
-export async function handleGif(request: Request, runner = defaultRunner): Promise<Response> {
+export async function handleGif(request: Request): Promise<Response> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "oc-gif-"));
 	try {
 		const input = path.join(dir, "in.gif");
 		await fs.writeFile(input, Buffer.from(await request.arrayBuffer()));
 		const { ffmpeg } = toolsFromEnv();
-		const run = (args: string[]) => runTool(runner, ffmpeg, [
+		const run = (args: string[]) => runTool(defaultRunner, ffmpeg, [
 			"-hide_banner", "-loglevel", "error", "-nostdin", ...args,
 		], "ffmpeg");
 		const source = ["-f", "gif", "-i", input];
