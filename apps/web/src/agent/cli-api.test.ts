@@ -30,23 +30,37 @@ test("the local CLI reads the last project and filters selection without writing
 	}
 });
 
-test("preferences mark missing files and reject requests from another origin", async () => {
+test("preferences are not served, and requests from another origin are refused", async () => {
 	const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "agent-prefs-test-"));
-	const prefs = process.env.AGENT_PREFS;
-	process.env.AGENT_PREFS = path.join(workspace, "general");
-	const endpoint = "http://localhost:3100/api/agent/cli/prefs";
+	const endpoint = "http://localhost:3100/api/agent/cli/";
 	try {
 		await fs.writeFile(path.join(workspace, "PREFERENCES.md"), "Use plain captions.");
-		const result = await handleCli(new Request(endpoint), "prefs", workspace);
-		expect(await result.json()).toEqual({
-			general: { missing: true, content: null },
-			workspace: { missing: false, content: "Use plain captions." },
-		});
-		const foreign = await handleCli(new Request(endpoint, { headers: { Origin: "http://localhost:4100" } }), "prefs", workspace);
+		const prefs = await handleCli(new Request(endpoint + "prefs"), "prefs", workspace);
+		expect(prefs.status).toBe(404);
+		expect(JSON.stringify(await prefs.json())).not.toContain("plain captions");
+		const foreign = await handleCli(new Request(endpoint + "status", { headers: { Origin: "http://localhost:4100" } }), "status", workspace);
 		expect(foreign.status).toBe(403);
 	} finally {
-		if (prefs === undefined) delete process.env.AGENT_PREFS;
-		else process.env.AGENT_PREFS = prefs;
+		await fs.rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test("a chosen project reads its own snapshot even when the last synced snapshot is unreadable", async () => {
+	const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "agent-cli-own-"));
+	const data = process.env.BOPENCUT_DATA;
+	process.env.BOPENCUT_DATA = workspace;
+	try {
+		await fs.mkdir(path.join(workspace, "projects", "demo"), { recursive: true });
+		await fs.writeFile(path.join(workspace, "projects", "demo", "project.json"), "{}");
+		await fs.mkdir(path.join(workspace, "sync"));
+		const snapshot = { projectId: "demo", syncedAt: "own", notes: [] };
+		await fs.writeFile(path.join(workspace, "sync", "demo.json"), JSON.stringify(snapshot));
+		await fs.writeFile(path.join(workspace, "project.json"), "{ not json");
+		const result = await handleCli(new Request("http://127.0.0.1:3100/api/agent/cli/status?projectId=demo"), "status", workspace);
+		expect(await result.json()).toEqual({ projectId: "demo", snapshot });
+	} finally {
+		if (data === undefined) delete process.env.BOPENCUT_DATA;
+		else process.env.BOPENCUT_DATA = data;
 		await fs.rm(workspace, { recursive: true, force: true });
 	}
 });

@@ -1,4 +1,7 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { parseArgs as parse } from "node:util";
+import { fileInside } from "../src/agent/inside";
 
 const commands = ["status", "selection", "notes", "prefs"] as const;
 type Command = typeof commands[number];
@@ -23,8 +26,41 @@ export function parseArgs(args: string[]) {
 	return { command: command as Command, projectId, timeoutMs: Math.round(seconds * 1000), origin: url.origin };
 }
 
+const WEB_DIR = path.resolve(import.meta.dir, "..");
+
+/** `KEY=value` lines of a dotenv file, as the editor server reads them (quotes, comments, `export`). */
+export function parseEnvFile(text: string): Record<string, string> {
+	const values: Record<string, string> = {};
+	for (const line of text.split(/\r?\n/)) {
+		const match = /^\s*(?:export\s+)?([\w.-]+)\s*=\s*("(?:\\"|[^"])*"|'(?:\\'|[^'])*'|[^#]*)/.exec(line);
+		if (!match) continue;
+		const raw = match[2].trim();
+		values[match[1]] = /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw;
+	}
+	return values;
+}
+
+/**
+ * Both preference files, read here rather than through the server, so private preferences are never
+ * served over HTTP. Paths come from this process's environment, then `apps/web/.env.local`, as for the editor.
+ */
+export async function readPreferences(env: Record<string, string | undefined> = process.env, webDir = WEB_DIR) {
+	let file: Record<string, string> = {};
+	try { file = parseEnvFile(await fs.readFile(path.join(webDir, ".env.local"), "utf8")); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+	const setting = (key: string) => env[key] || file[key] || undefined;
+	const workspace = path.resolve(webDir, setting("AGENT_WORKSPACE") ?? path.join("..", "..", "workspace"));
+	const general = setting("AGENT_PREFS");
+	const read = async (root?: string) => {
+		const found = root ? await fileInside(path.resolve(webDir, root), "PREFERENCES.md") : null;
+		return found ? { missing: false, content: await fs.readFile(found, "utf8") } : { missing: true, content: null };
+	};
+	return { general: await read(general), workspace: await read(workspace) };
+}
+
 async function main(args: string[]) {
 	const { command, projectId, timeoutMs, origin } = parseArgs(args);
+	if (command === "prefs") return readPreferences();
 	const target = new URL(`/api/agent/cli/${command}`, origin);
 	if (projectId) target.searchParams.set("projectId", projectId);
 	const signal = AbortSignal.timeout(timeoutMs);

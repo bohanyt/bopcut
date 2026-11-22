@@ -1,34 +1,11 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { projectDir, readJson } from "@/services/storage/server/files";
+import { fileInside } from "./inside";
 import { isForeignOrigin } from "./origin";
 
 type Snapshot = { projectId?: string; notes?: unknown; syncedAt?: string };
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
-
-/**
- * The real path of a regular file under `root`, or null when either is missing. A link that leads out
- * of the root, or anything that is not a regular file, is refused, so these reads stay in their folder.
- */
-async function fileInside(root: string, ...parts: string[]): Promise<string | null> {
-	try {
-		const base = await fs.realpath(root);
-		const file = await fs.realpath(path.join(base, ...parts));
-		const relative = path.relative(base, file);
-		if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !(await fs.stat(file)).isFile()) {
-			throw new Error("not a file inside its folder");
-		}
-		return file;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-		throw error;
-	}
-}
-
-async function preference(root?: string) {
-	const file = root ? await fileInside(root, "PREFERENCES.md") : null;
-	return file ? { missing: false, content: await fs.readFile(file, "utf8") } : { missing: true, content: null };
-}
 
 const readInside = async (root: string, ...parts: string[]) => {
 	const file = await fileInside(root, ...parts);
@@ -45,13 +22,13 @@ export async function handleCli(req: Request, action: string, workspace: string)
 		return json({ error: "Pass a valid --project-id or open a project in the editor." }, 400);
 	}
 	try {
-		if (action === "prefs") return json({ general: await preference(process.env.AGENT_PREFS), workspace: await preference(workspace) });
 		if (action === "selection") {
 			const selected = await readInside(workspace, "selection.json");
 			return json({ selection: !requested || requested === selected?.projectId ? selected : null });
 		}
 		if (action === "status" || action === "notes") {
-			const latest: Snapshot | null = await readInside(workspace, "project.json");
+			// A chosen project reads its own snapshot first; the last synced snapshot is only a fallback.
+			let latest: Snapshot | null | undefined = requested ? undefined : await readInside(workspace, "project.json");
 			const projectId = requested ?? latest?.projectId;
 			if (!projectId || !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) {
 				return json({ error: "No project has synced yet. Open a project in the editor or pass --project-id." }, 404);
@@ -63,6 +40,7 @@ export async function handleCli(req: Request, action: string, workspace: string)
 			}
 			const key = projectId.replaceAll("_", "");
 			const byProject: Snapshot | null = await readInside(workspace, "sync", key + ".json");
+			if (byProject?.projectId !== projectId && latest === undefined) latest = await readInside(workspace, "project.json");
 			const snapshot = byProject?.projectId === projectId ? byProject : latest?.projectId === projectId ? latest : null;
 			return json(action === "status"
 				? { projectId, snapshot }
@@ -71,5 +49,5 @@ export async function handleCli(req: Request, action: string, workspace: string)
 	} catch {
 		return json({ error: "Could not read editor data. Check that the workspace files are readable and retry." }, 500);
 	}
-	return json({ error: "Use status, selection, notes, or prefs." }, 404);
+	return json({ error: "Use status, selection, or notes." }, 404);
 }

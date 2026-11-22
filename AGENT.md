@@ -20,7 +20,7 @@ bun run agent notes
 bun run agent prefs
 ```
 
-`status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. `prefs` reports the contents of `AGENT_PREFS/PREFERENCES.md` and `AGENT_WORKSPACE/PREFERENCES.md` and marks each missing file. The editor server reads these paths, so set `AGENT_PREFS` in its environment (`apps/web/.env.local`), not in the shell that runs the command. Reads stay inside their folders: a link that leads out of one is refused.
+`status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. `prefs` reports the contents of `AGENT_PREFS/PREFERENCES.md` and `AGENT_WORKSPACE/PREFERENCES.md` and marks each missing file. `prefs` reads the files itself and never asks the server, so preferences are never sent over HTTP. It takes `AGENT_PREFS` and `AGENT_WORKSPACE` from its own environment first, then from `apps/web/.env.local`. A link that leads out of a folder is refused, and so are the reads of `status`, `selection` and `notes`.
 
 The agent routes trust every request that reaches the server, so keep the server on `127.0.0.1` (as in *Running* above) and never expose its port to a network.
 
@@ -210,7 +210,7 @@ The settings are in the Transform tab of the properties panel. Preview and expor
 
 ## Preferences
 
-Before assembling a bundle or draft, read the general `PREFERENCES.md` in `AGENT_PREFS` and the project/channel `AGENT_WORKSPACE/PREFERENCES.md`, if present. Both files are private and are not stored in the repository. The editor does not read them.
+Before assembling a bundle or draft, read the general `PREFERENCES.md` in `AGENT_PREFS` and the project/channel `AGENT_WORKSPACE/PREFERENCES.md`, if present. Both files are private and are not stored in the repository. The editor does not read them; `bun run agent prefs` prints both (see *Agent CLI*).
 
 Human edits are logged in `AGENT_WORKSPACE/edits/<projectId>.jsonl`. Run `bun apps/web/scripts/edits-summary.ts <AGENT_WORKSPACE> [other workspace...]` (add `--json` for JSON, including `ruleCandidate`). Write a new rule only when a pattern appears at least 3 times. Each rule includes the rule, evidence with counts and projects, and date; the human may edit or delete it. See `PREFERENCES.example.md` for an example.
 
