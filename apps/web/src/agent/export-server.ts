@@ -113,7 +113,7 @@ export async function handleExportFile(req: Request, workspace: string, job?: {
 	if (!REV.test(rev) || !req.body || !done || typeof done !== "object" || (query.get("result") ?? "").length > 4096) return Response.json({ error: "Invalid export" }, { status: 400 });
 	if (Number(req.headers.get("content-length") ?? 0) > MAX_EXPORT_BYTES) return Response.json({ error: "Export too large" }, { status: 413 });
 	// Not saved again once the request has its answer (for example from another tab).
-	if (isFinal(await readResult(workspace), rev)) return refused("answered");
+	if (!job && isFinal(await readResult(workspace), rev)) return refused("answered");
 	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, temp: job?.temp, signal: job?.signal, beforePublish: job?.beforePublish });
 	if ("error" in saved) return Response.json({ error: saved.error }, { status: saved.status });
 	const file = `exports/${saved.file}`;

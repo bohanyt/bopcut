@@ -640,7 +640,7 @@ describe("the export poller", () => {
 		});
 	});
 
-	test("a CLI export error is retried while its lease is alive", async () => {
+	test.each([false, true])("a CLI export error is retried while its lease is alive (hidden: %s)", async (hidden) => {
 		await withServer({ request: null }, async () => {
 			const fetchLegacy = globalThis.fetch;
 			let attempts = 0;
@@ -652,8 +652,9 @@ describe("the export poller", () => {
 			};
 			const report = spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetchCli, { preconnect: fetchLegacy.preconnect }));
 			try {
-				await pollExport(Response.json({ rev: "cli-transient", format: "bad" }, { headers: { "x-bopencut-render-token": "live" } }));
-				await pollExport();
+				const headers = { "x-bopencut-render-token": "live", ...(hidden && { "x-bopencut-render-kind": "export" }) };
+				await pollExport(Response.json({ rev: "cli-transient", format: "bad" }, { headers }));
+				if (!hidden) await pollExport();
 				expect(attempts).toBe(2);
 			} finally {
 				report.mockRestore();

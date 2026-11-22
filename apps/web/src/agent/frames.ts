@@ -7,7 +7,7 @@ import { fitSurfaceSize } from "@/services/renderer/scale";
 import { getRootScene } from "./scene-graph";
 import { isForOtherProject, parseStateRef, resolveState, type TimelineState } from "./history";
 import { markAnswered, wasAnswered } from "./answered";
-import { readRenderRequest, renderTransport, type RenderFetch } from "./render-transport";
+import { readRenderRequest, renderTransport, type RenderFetch, type RenderTransport } from "./render-transport";
 import { MAX_FRAMES } from "./render-input";
 
 export { MAX_FRAMES } from "./render-input";
@@ -48,7 +48,7 @@ async function postCancellation(cancellation: PendingCancellation) {
 }
 
 /** Reads and renders a frame request against one project session and a fixed timeline for each pass. */
-export async function pollFrames(readiness: () => { ready: boolean; missingMedia: MediaLoadFailure[] }, source?: Response) {
+export async function pollFrames(readiness: () => { ready: boolean; missingMedia: MediaLoadFailure[] }, source?: Response, transport?: RenderTransport) {
 	const editor = EditorCore.getInstance();
 	const before = editor.project.getActiveOrNull();
 	if (busy || (editor.renderOnly && !source)) return;
@@ -66,7 +66,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			if (request.rev === pendingCancellation.rev) return await postCancellation(pendingCancellation);
 			pendingCancellation = null;
 		}
-		const { request: send, signal: jobSignal } = renderTransport(response);
+		const { request: send, signal: jobSignal } = transport ?? renderTransport(response);
 		const signal = jobSignal ? AbortSignal.any([session, jobSignal]) : session;
 		const elements = jobSignal ? request.elements : undefined;
 		if (!elements && (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0))) return;

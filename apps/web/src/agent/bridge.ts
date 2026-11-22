@@ -31,7 +31,7 @@ import type { SaveSession } from "@/core/managers/save-manager";
 import type { TProject } from "@/project/types";
 import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
-import { readRenderRequest, renderTabHeaders, renderTransport, type RenderFetch } from "./render-transport";
+import { readRenderRequest, renderTabHeaders, renderTransport, type RenderFetch, type RenderTransport } from "./render-transport";
 
 export type { Draft, DraftOp } from "./draft";
 
@@ -261,11 +261,11 @@ export function retryMissingMedia(failures?: MediaLoadFailure[]): Promise<MediaL
  * Answers `export-request.json`: exports the root timeline (once per rev and project) into the workspace's
  * `exports/` folder and reports progress and the result in `export-result.json`. Exported for tests.
  */
-export async function pollExport(source?: Response) {
+export async function pollExport(source?: Response, transport?: RenderTransport) {
 	if (exporting) return;
 	exporting = true;
 	try {
-		await answerExport(source);
+		await answerExport(source, transport);
 	} finally {
 		exporting = false;
 	}
@@ -323,7 +323,7 @@ function exportable() {
 	return agentReadiness().ready ? { project, root } : null;
 }
 
-async function answerExport(source?: Response) {
+async function answerExport(source?: Response, transport?: RenderTransport) {
 	if (unposted) return await postUnposted();
 	const editor = EditorCore.getInstance();
 	const projectBeforeRead = editor.project.getActiveOrNull();
@@ -344,7 +344,7 @@ async function answerExport(source?: Response) {
 	const key = `agent-export-${projectId}`;
 	const remember = () => { if (!editor.renderOnly) markAnswered(key, rev); };
 	if (!editor.renderOnly && wasAnswered(key, rev)) return;
-	const { request: send, signal: jobSignal, release } = renderTransport(response);
+	const { request: send, signal: jobSignal, release } = transport ?? renderTransport(response);
 	const before = exportable();
 	if (!before || before.project.metadata.id !== projectId) {
 		if (jobSignal) await sendExportResult({ rev, projectId, status: "release" }, send);

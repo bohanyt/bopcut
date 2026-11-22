@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { renderPresence, renderRequest, renderWorker, startRender } from "./render-server";
-import { commitOutput, profileDirectory, recordOutput, recoverRenderJobs } from "./render-output";
+import { profileDirectory, recordOutput, recoverRenderJobs } from "./render-output";
 
 const url = "http://127.0.0.1/api/agent/cli/render";
 const tokenHeader = "x-bopencut-render-token";
@@ -67,7 +67,7 @@ for (const owner of ["visible", "hidden"] as const) {
 			const { result } = await next();
 			expect(await (await saved).json()).toEqual({ file: "exports/Final.mp4", bytes: 5 });
 			expect(result).toMatchObject({ rev: request.rev, projectId: "project", status: "done", fps: 30 });
-			expect(JSON.parse(await readFile(resultPath, "utf8"))).toEqual(result);
+			expect(JSON.parse(await readFile(resultPath, "utf8"))).toEqual({ rev: "legacy", status: "done" });
 			expect(await readFile(path.join(workspace, result.file), "utf8")).toBe("video");
 		} finally {
 			await reader?.cancel();
@@ -168,11 +168,15 @@ test.each(["unready", "disconnected", "expired"] as const)("the hidden worker ta
 test("a failed result publication removes the promoted export", async () => {
 	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-publish-"));
 	const controller = new AbortController();
+	const renameFile = fs.rename;
+	const failedRename = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+		if (typeof to === "string" && to.endsWith("export-result.json")) throw new Error("Could not publish result");
+		await renameFile(from, to);
+	});
 	try {
 		const response = await startRender(begin(controller.signal), workspace, async () => "project");
 		const claim = await renderRequest(visible(), "export", workspace);
 		const { rev } = await claim.json();
-		await mkdir(path.join(workspace, ".render-jobs", rev, "export-result.json"));
 		const query = new URLSearchParams({ action: "export-file", rev, projectId: "project", name: "Uncommitted", format: "mp4" });
 		const uploaded = await renderWorker(new Request(`${url}?${query}`, {
 			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! }, body: "video",
@@ -181,6 +185,7 @@ test("a failed result publication removes the promoted export", async () => {
 		expect(await readdir(path.join(workspace, "exports"))).toEqual([]);
 		await response.body!.cancel();
 	} finally {
+		failedRename.mockRestore();
 		controller.abort();
 		await rm(workspace, { recursive: true, force: true });
 	}
@@ -202,9 +207,9 @@ test("recovery rolls back a promoted file only when it is owned and uncommitted"
 			await recordOutput(workspace, scratch, target, source);
 			if (name === "existing") await writeFile(target, "legacy");
 			else await rename(source, target);
-			if (name === "completed") await writeFile(path.join(workspace, "export-result.json"), JSON.stringify({ rev, status: "done", file: `exports/${name}.mp4` }));
+			if (name === "completed") await writeFile(path.join(scratch, "export-result.json"), JSON.stringify({ rev, status: "done", file: `exports/${name}.mp4` }));
 		}
-		await recoverRenderJobs(workspace, true);
+		await recoverRenderJobs(workspace);
 		expect((await readdir(output)).sort()).toEqual(["completed.mp4", "existing.mp4"]);
 		expect(await readdir(path.join(workspace, ".render-jobs"))).toEqual([]);
 	} finally {
@@ -229,28 +234,20 @@ test("the profile falls back to the writable workspace when its usual path is in
 	}
 });
 
-test("a late direct-file request keeps the workspace result while the CLI commits its own answer", async () => {
-	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-mirror-"));
+test("recovery retains the output and journal while the canonical result is unreadable", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-unreadable-"));
 	const scratch = path.join(workspace, ".render-jobs", "cli-01234567-0000-0000-0000-012345678901");
-	const resultFile = path.join(workspace, "export-result.json");
-	const requestFile = path.join(workspace, "export-request.json");
-	await writeFile(resultFile, '{"rev":"legacy"}');
-	const write = fs.writeFile;
-	let wroteCanonical = false;
-	const lateRequest = spyOn(fs, "writeFile").mockImplementation(async (file, ...args) => {
-		if (typeof file === "string" && file.startsWith(path.join(scratch, "export-result.json."))) {
-			if (wroteCanonical) await write(requestFile, '{"rev":"late"}');
-			wroteCanonical = true;
-		}
-		await write(file, ...args);
-	});
+	const file = path.join(workspace, "exports", "Protected.mp4");
+	const resultFile = path.join(scratch, "export-result.json");
 	try {
-		await commitOutput(workspace, scratch, "export", { rev: "cli" }, new AbortController().signal);
-		expect(JSON.parse(await readFile(resultFile, "utf8"))).toEqual({ rev: "legacy" });
-		expect(JSON.parse(await readFile(path.join(scratch, "export-result.json"), "utf8"))).toEqual({ rev: "cli" });
-		expect(await readdir(scratch)).toEqual(["export-result.json"]);
+		await mkdir(path.dirname(file), { recursive: true });
+		await writeFile(file, "video");
+		await recordOutput(workspace, scratch, file, file);
+		await mkdir(resultFile); // The result path exists but cannot be read as JSON.
+		await expect(recoverRenderJobs(workspace)).rejects.toThrow();
+		expect(await readFile(file, "utf8")).toBe("video");
+		expect(await readdir(scratch)).toContain("output.json");
 	} finally {
-		lateRequest.mockRestore();
 		await rm(workspace, { recursive: true, force: true });
 	}
 });

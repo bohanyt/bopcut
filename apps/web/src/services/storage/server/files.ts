@@ -57,17 +57,14 @@ export const renameWithRetry = (from: string, to: string, signal?: AbortSignal) 
 
 // Writes to one file run one after another (two renames onto the same target race on Windows).
 const fileQueues = new Map<string, Promise<void>>();
-export async function atomicWrite(file: string, data: string | Uint8Array, signal?: AbortSignal, options?: {
-	stagingDir: string; shouldPublish(): Promise<boolean>;
-}): Promise<void> {
+export async function atomicWrite(file: string, data: string | Uint8Array, signal?: AbortSignal): Promise<void> {
 	const key = path.resolve(file).toLowerCase();
 	const previous = fileQueues.get(key) ?? Promise.resolve();
 	const current = previous.catch(() => undefined).then(async () => {
 		await fs.mkdir(path.dirname(file), { recursive: true });
-		const temp = path.join(options?.stagingDir ?? path.dirname(file), `${path.basename(file)}.${randomUUID()}.tmp`);
+		const temp = `${file}.${randomUUID()}.tmp`;
 		try {
 			await fs.writeFile(temp, data);
-			if (options && !(await options.shouldPublish())) return;
 			await renameWithRetry(temp, file, signal);
 		} finally {
 			await fs.rm(temp, { force: true });

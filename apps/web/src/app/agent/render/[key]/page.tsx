@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useParams } from "next/navigation";
 import { agentReadiness, agentRootScene, pollExport } from "@/agent/bridge";
 import { pollFrames } from "@/agent/frames";
+import { renderTransport } from "@/agent/render-transport";
 import { EditorCore } from "@/core";
 import { mediaIdsInScenes } from "@/core/managers/media-manager";
 import { collectAudibleCandidates } from "@/media/audio";
@@ -16,10 +17,10 @@ let started = false;
 async function render(key: string) {
 	const endpoint = "/api/agent/cli/render";
 	const claimed = await fetch(`${endpoint}?key=${encodeURIComponent(key)}`, { cache: "no-store" });
-	const token = claimed.headers.get("x-bopencut-render-token");
-	if (!claimed.ok || !token) return;
-	const send = (action: string, body: object) => fetch(`${endpoint}?action=${action}`, {
-		method: "POST", headers: { "Content-Type": "application/json", "x-bopencut-render-token": token }, body: JSON.stringify(body),
+	if (!claimed.ok || !claimed.headers.has("x-bopencut-render-token")) return;
+	const job = renderTransport(claimed);
+	const send = (action: string, body: object) => job.request(`/api/agent/${action}`, {
+		method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
 	});
 	try {
 		const kind = claimed.headers.get("x-bopencut-render-kind");
@@ -44,11 +45,11 @@ async function render(key: string) {
 		if (rendererDevice.status.state !== "ready" || (kind === "export" && typeof VideoEncoder === "undefined")) {
 			throw new Error("Graphics or video encoding is unavailable in the hidden browser. Open the editor once and retry.");
 		}
-		if (kind === "export") await pollExport(claimed);
-		else await pollFrames(agentReadiness, claimed);
-		await send("failure", { error: "The hidden browser could not finish the render. Open the editor once and retry." });
+		if (kind === "export") await pollExport(claimed, job);
+		else await pollFrames(agentReadiness, claimed, job);
+		if (!job.signal?.aborted) await send("failure", { error: "The hidden browser could not finish the render. Open the editor once and retry." });
 	} catch (error) {
-		await send("failure", { error: error instanceof Error ? error.message : String(error) });
+		if (!job.signal?.aborted) await send("failure", { error: error instanceof Error ? error.message : String(error) });
 	}
 }
 

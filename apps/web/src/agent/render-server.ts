@@ -6,7 +6,7 @@ import { CLAIM_MS, handleExportFile } from "./export-server";
 import { parseExportRequest } from "./export";
 import { parseFrameInput } from "./render-input";
 import { isForeignOrigin } from "./origin";
-import { commitOutput, profileDirectory, recordOutput, recoverRenderJobs, renderJobsDir, rollbackOutput } from "./render-output";
+import { profileDirectory, recordOutput, recoverRenderJobs, renderJobsDir, rollbackOutput } from "./render-output";
 
 type Kind = "export" | "frames";
 const json = Response.json;
@@ -53,7 +53,7 @@ export async function renderRequest(req: Request, kind: Kind, workspace: string)
 		return json(job.request, { headers: { [tokenHeader]: job.token, "Cache-Control": "no-store" } });
 	}
 	const request = await readJson(path.join(workspace, `${kind}-request.json`)).catch(() => null);
-	return json(request?.cliJob ? null : request, { headers: { "Cache-Control": "no-store" } });
+	return json(request, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function startRender(req: Request, workspace: string, resolveProject: () => Promise<string>,
@@ -75,7 +75,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		if (!parsed || typeof parsed === "string") throw new Error(parsed ?? "Invalid export.");
 		if (options.state !== undefined || options.compare !== undefined) throw new Error("For historical or comparison frames, open the editor.");
 		const request = { ...parsed, rev, projectId };
-		await recoverRenderJobs(workspace, true);
+		await recoverRenderJobs(workspace);
 		const scratch = path.join(renderJobsDir(workspace), rev);
 		await atomicWrite(path.join(scratch, `${kind}-request.json`), JSON.stringify(request));
 		const controller = new AbortController();
@@ -123,7 +123,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 				if (!closed) stream.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
 			},
 			async finish(result, signal) {
-				await commitOutput(workspace, scratch, kind, result, signal);
+				await atomicWrite(path.join(scratch, `${kind}-result.json`), JSON.stringify(result, null, 1), signal);
 				committed = true;
 				job.send({ result });
 				close();
@@ -134,7 +134,12 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 				expiry = setTimeout(() => job.abandon(token), claim);
 			},
 			abandon(token) {
-				if (closed || job.lease.signal.aborted || !job.owner || job.owner === "hidden" || token !== job.token) return;
+				if (closed || job.lease.signal.aborted || !job.owner || token !== job.token) return;
+				if (job.owner === "hidden") {
+					job.send({ result: { rev, projectId, error: "The hidden browser lost its render connection before delivering a result." } });
+					close();
+					return;
+				}
 				clearTimeout(expiry);
 				clearTimeout(handoff);
 				job.lease.abort();
