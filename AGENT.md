@@ -9,6 +9,24 @@ cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
 ```
 No account or database is required. Projects and media are stored in `<repo>/workspace/projects/<projectId>/`: `project.json`, `media/<mediaId>.<ext>`, and media metadata. Git ignores `workspace/`. Old browser projects and their media are automatically copied the first time they are opened; the browser copies are not deleted. Deleting a disk project does not trigger another copy.
 
+## Agent CLI
+
+With the editor server running, use these commands from the repository root:
+
+```sh
+bun run agent status
+bun run agent selection
+bun run agent notes
+```
+
+`status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. A chosen project (`--project-id`) answers from its own snapshot, or from the last synced one when that is the same project. Reads stay inside the agent workspace: a link that leads out of it is refused. Read the preference files directly (see *Preferences*).
+
+The agent routes trust every request that reaches the server, so keep the server on `127.0.0.1` (as in *Running* above) and never expose its port to a network.
+
+Status and notes default to the last project that synced. Use `--project-id ID` to choose a project or filter the selection. Use `--url` or `BOPENCUT_URL` to change the server origin from `http://127.0.0.1:3000`. The command writes JSON to stdout and errors to stderr. Use `--timeout SECONDS` to change the 30-second request limit.
+
+Use the file protocol below for drafts, frames, changes, and exports.
+
 ## Agent workspace (`apps/web/.env.local`)
 ```
 BOPENCUT_DATA=/path/to/data-folder      # Default: <repo>/workspace

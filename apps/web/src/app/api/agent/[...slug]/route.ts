@@ -15,6 +15,7 @@ import { consumeAppliedDraft } from "@/agent/draft-store";
 import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
 import { handleExportFile, handleExportResult } from "@/agent/export-server";
+import { handleCli } from "@/agent/cli-api";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 const FILES_ROOT = path.resolve(process.env.AGENT_FILES_ROOT ?? WORKSPACE);
@@ -38,6 +39,7 @@ const foreignOrigin = isForeignOrigin;
 
 export async function GET(req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
 	const { slug } = await params;
+	if (slug[0] === "cli" && slug.length === 2) return handleCli(req, slug[1], WORKSPACE);
 	try {
 		if (slug[0] === "bundle") return json(await fs.readFile(path.join(WORKSPACE, "bundle", "bundle.json")));
 		if (slug[0] === "file") {

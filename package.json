@@ -6,6 +6,7 @@
     "packages/*"
   ],
   "scripts": {
+    "agent": "bun apps/web/scripts/agent.ts",
     "build:wasm": "wasm-pack build rust/wasm --target bundler --out-dir pkg",
     "build:web": "turbo run build --filter=@opencut/web",
     "deploy:web": "turbo run deploy --filter=@opencut/web",
