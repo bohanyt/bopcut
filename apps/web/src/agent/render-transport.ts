@@ -20,8 +20,8 @@ export function renderTransport(response: Response) {
 		const headers = new Headers(init?.headers);
 		headers.set(tokenHeader, token);
 		const url = `${endpoint}?${params}`;
-		const terminal = hidden && (action === "frames-result" || action === "failure" ||
-			(action === "export-result" && typeof init?.body === "string" && JSON.parse(init.body).status === "error"));
+		const terminal = action === "frames-result" || (hidden && (action === "failure" ||
+			(action === "export-result" && typeof init?.body === "string" && JSON.parse(init.body).status === "error")));
 		if (!terminal) return fetch(url, { ...init, headers });
 		for (let attempt = 0; attempt < 3 && !controller.signal.aborted; attempt++) {
 			const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);

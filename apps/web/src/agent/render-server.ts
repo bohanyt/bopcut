@@ -19,10 +19,12 @@ type Job = {
 	kind: Kind; rev: string; projectId: string; token: string; launchKey: string;
 	request: Record<string, unknown>; scratch: string; signal: AbortSignal;
 	owner?: string; offered: boolean; finishing: boolean;
+	framesPromoted: boolean;
 	lease: AbortController;
 	writes: Set<Promise<Response>>;
 	send(event: object): void; finish(result: object, signal: AbortSignal): Promise<void>;
 	heartbeat(): void; abandon(token: string): void;
+	awaitWatch(): void; watchRegistered(): void;
 };
 
 let active: Job | undefined;
@@ -57,8 +59,8 @@ export async function renderRequest(req: Request, kind: Kind, workspace: string)
 }
 
 export async function startRender(req: Request, workspace: string, resolveProject: () => Promise<string>,
-	{ grace = 2500, seen = presenceMs, claim = CLAIM_MS, profileRoot }: {
-		grace?: number; seen?: number; claim?: number; profileRoot?: string;
+	{ grace = 2500, seen = presenceMs, claim = CLAIM_MS, watchRegistration = 5000, profileRoot }: {
+		grace?: number; seen?: number; claim?: number; watchRegistration?: number; profileRoot?: string;
 	} = {}) {
 	if (reserved) return json({ error: "A CLI render is already running." }, { status: 409 });
 	reserved = true;
@@ -81,9 +83,9 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		const controller = new AbortController();
 		const writes = new Set<Promise<Response>>();
 		let closed = false;
-		let committed = false;
 		let handoff: ReturnType<typeof setTimeout>;
 		let expiry: ReturnType<typeof setTimeout>;
+		let registration: ReturnType<typeof setTimeout>;
 		let deadline: ReturnType<typeof setTimeout>;
 		let stream: ReadableStreamDefaultController<Uint8Array>;
 		let cleanup: Promise<void> | undefined;
@@ -93,10 +95,11 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			controller.abort();
 			clearTimeout(handoff);
 			clearTimeout(expiry);
+			clearTimeout(registration);
 			clearTimeout(deadline);
 			req.signal.removeEventListener("abort", close);
 			cleanup = Promise.allSettled(writes).then(async () => {
-				if (!committed) await rollbackOutput(workspace, scratch);
+				await rollbackOutput(workspace, scratch);
 				await fs.rm(scratch, { recursive: true, force: true, maxRetries: 3 });
 			}).catch(console.error).finally(() => {
 				active = undefined;
@@ -119,14 +122,23 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		const job: Job = {
 			kind, projectId, rev, request, scratch, writes, signal: controller.signal,
 			token: randomUUID(), launchKey: randomUUID(), offered: false, finishing: false, lease: new AbortController(),
+			framesPromoted: false,
 			send(event) {
 				if (!closed) stream.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
 			},
 			async finish(result, signal) {
 				await atomicWrite(path.join(scratch, `${kind}-result.json`), JSON.stringify(result, null, 1), signal);
-				committed = true;
 				job.send({ result });
 				close();
+			},
+			awaitWatch() {
+				registration = setTimeout(() => {
+					job.send({ result: { rev, projectId, error: "The hidden browser did not register its render connection." } });
+					close();
+				}, watchRegistration);
+			},
+			watchRegistered() {
+				clearTimeout(registration);
 			},
 			heartbeat() {
 				clearTimeout(expiry);
@@ -148,6 +160,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 				void Promise.allSettled(writes).then(async () => {
 					if (closed) return;
 					await rollbackOutput(workspace, scratch);
+					job.framesPromoted = false;
 					await fs.rm(path.join(scratch, "frames"), { recursive: true, force: true, maxRetries: 3 });
 					job.owner = undefined;
 					job.lease = new AbortController();
@@ -195,11 +208,13 @@ export async function renderWorker(req: Request, workspace: string) {
 			leaseSignal.addEventListener("abort", close, { once: true });
 			req.signal.addEventListener("abort", disconnect, { once: true });
 			if (req.signal.aborted) disconnect();
+			else if (job.owner === "hidden") job.watchRegistered();
 		});
 	}
 	if (req.method === "GET") {
 		if (!job.offered || job.owner || url.searchParams.get("key") !== job.launchKey) return json(null, { status: 404 });
 		job.owner = "hidden";
+		job.awaitWatch();
 		job.send({ stage: "loading project" });
 		return json(job.request, { headers: { [tokenHeader]: job.token, "x-bopencut-render-kind": job.kind, "Cache-Control": "no-store" } });
 	}
@@ -216,6 +231,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 	try {
 		if (action === "failure" && job.owner === "hidden") {
 			const { error } = await body().json();
+			if (job.finishing) return json(null, { status: 409 });
 			await finish({ rev: job.rev, projectId: job.projectId, error, ...(job.kind === "frames" ? { files: [] } : {
 				status: "error", tab: job.owner, updatedAt: new Date().toISOString(),
 			}) });
@@ -229,7 +245,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 		if (job.kind === "export" && action === "export-result") {
 			const result = await body().json();
 			signal.throwIfAborted();
-			if (result.rev !== job.rev || result.projectId !== job.projectId) return json(null, { status: 409 });
+			if (job.finishing || result.rev !== job.rev || result.projectId !== job.projectId) return json(null, { status: 409 });
 			if (result.status === "exporting") {
 				if (job.owner !== "hidden") job.heartbeat();
 				job.send({ stage: `encoding ${Math.round(Number(result.progress) * 100)}%` });
@@ -249,7 +265,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 				return await handleExportFile(req, workspace, {
 					signal, temp: path.join(job.scratch, "video.part"),
 					beforePublish: (target, source) => recordOutput(workspace, job.scratch, target, source),
-					finish,
+					finish: (result) => job.finish(result, signal),
 				});
 			} catch (error) {
 				await rollbackOutput(workspace, job.scratch);
@@ -260,6 +276,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 		}
 		if (job.kind === "frames" && action === "frame") {
 			const form = await body().formData();
+			if (job.finishing || job.framesPromoted) return json(null, { status: 409 });
 			const time = form.get("time"), image = form.get("image");
 			if (form.get("rev") !== job.rev || typeof time !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(time) ||
 				!(image instanceof File) || image.type !== "image/jpeg" || form.has("variant")) return json({ error: "Invalid frame" }, { status: 400 });
@@ -272,21 +289,24 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 		if (job.kind === "frames" && action === "frames-result") {
 			const result = await body().json();
 			if (result.rev !== job.rev || result.projectId !== job.projectId) return json(null, { status: 409 });
-			if (result.files?.length) {
-				signal.throwIfAborted();
-				const frames = path.join(workspace, "frames");
-				await fs.mkdir(frames, { recursive: true });
-				if (!(await fs.lstat(frames)).isDirectory()) throw new Error("The frames folder must be a directory.");
-				const source = path.join(job.scratch, "frames");
-				const target = path.join(frames, job.rev);
-				await recordOutput(workspace, job.scratch, target, source);
-				signal.throwIfAborted();
-				await fs.rename(source, target);
-			}
-			try { await finish(result); }
-			catch (error) {
-				await rollbackOutput(workspace, job.scratch);
-				throw error;
+			if (job.finishing) return json(null, { status: 409 });
+			signal.throwIfAborted();
+			job.finishing = true;
+			try {
+				if (result.files?.length && !job.framesPromoted) {
+					const frames = path.join(workspace, "frames");
+					await fs.mkdir(frames, { recursive: true });
+					if (!(await fs.lstat(frames)).isDirectory()) throw new Error("The frames folder must be a directory.");
+					const source = path.join(job.scratch, "frames");
+					const target = path.join(frames, job.rev);
+					await recordOutput(workspace, job.scratch, target, source);
+					signal.throwIfAborted();
+					await fs.rename(source, target);
+					job.framesPromoted = true;
+				}
+				await job.finish(result, signal);
+			} finally {
+				job.finishing = false;
 			}
 			return json({ ok: true });
 		}

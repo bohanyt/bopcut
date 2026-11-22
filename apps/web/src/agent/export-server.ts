@@ -2,10 +2,8 @@
 // exports folder. The result file is the one record of each request (rev): progress, then one final
 // answer that nothing replaces, written by whichever editor tab took the request.
 import { randomUUID } from "node:crypto";
-import { createWriteStream, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { atomicWrite, renameWithRetry } from "@/services/storage/server/files";
 import { safeName } from "./export";
 
@@ -126,6 +124,39 @@ export async function handleExportFile(req: Request, workspace: string, job?: {
 
 export type SavedExport = { file: string; bytes: number } | { error: string; status: number };
 
+async function writeExportBody(temp: string, body: ReadableStream<Uint8Array>, maxBytes: number, signal?: AbortSignal) {
+	const reader = body.getReader();
+	// Cancel the pending web read directly when the render lease ends.
+	const cancel = () => { void reader.cancel(signal?.reason).catch(() => {}); };
+	signal?.addEventListener("abort", cancel, { once: true });
+	try {
+		const file = await fs.open(temp, "wx");
+		try {
+			let bytes = 0;
+			for (;;) {
+				signal?.throwIfAborted();
+				const { done, value: chunk } = await reader.read();
+				signal?.throwIfAborted();
+				if (done) return bytes;
+				if (bytes + chunk.byteLength > maxBytes) throw new TooLarge();
+				for (let offset = 0; offset < chunk.byteLength;) {
+					signal?.throwIfAborted();
+					const { bytesWritten } = await file.write(chunk, offset, chunk.byteLength - offset, bytes);
+					if (!bytesWritten) throw new Error("Could not write export data.");
+					offset += bytesWritten;
+					bytes += bytesWritten;
+				}
+			}
+		} finally {
+			await file.close();
+		}
+	} finally {
+		signal?.removeEventListener("abort", cancel);
+		cancel();
+		reader.releaseLock();
+	}
+}
+
 /**
  * Streams `body` into `<dir>/<name>.<format>`; if that name is taken, `<name> (2).<format>` and so on (an
  * earlier export is never overwritten, also when two saves of one name run at once). Refuses a body over
@@ -141,16 +172,10 @@ export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPOR
 	const folder = await fs.lstat(dir);
 	if (folder.isSymbolicLink() || !folder.isDirectory()) return { error: "The exports folder must be a folder, not a link", status: 403 };
 	// Each save writes its own new file first; it gets its name only when it is complete.
-	let bytes = 0;
-	const count = new Transform({
-		transform(chunk: Buffer, _encoding, done) {
-			bytes += chunk.length;
-			done(bytes > maxBytes ? new TooLarge() : null, chunk);
-		},
-	});
 	try {
+		let bytes: number;
 		try {
-			await pipeline(Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream), count, createWriteStream(temp, { flags: "wx" }), { signal });
+			bytes = await writeExportBody(temp, body, maxBytes, signal);
 		} catch (error) {
 			if (error instanceof TooLarge) return { error: `Export larger than ${maxBytes} bytes`, status: 413 };
 			throw error;

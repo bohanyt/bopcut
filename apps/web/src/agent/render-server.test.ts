@@ -69,6 +69,7 @@ for (const owner of ["visible", "hidden"] as const) {
 			expect(result).toMatchObject({ rev: request.rev, projectId: "project", status: "done", fps: 30 });
 			expect(JSON.parse(await readFile(resultPath, "utf8"))).toEqual({ rev: "legacy", status: "done" });
 			expect(await readFile(path.join(workspace, result.file), "utf8")).toBe("video");
+			expect(await reader.read()).toMatchObject({ done: true });
 		} finally {
 			await reader?.cancel();
 			await rm(workspace, { recursive: true, force: true });
@@ -88,14 +89,30 @@ test("a stopped CLI connection during publication aborts the upload and preserve
 		const claim = await renderRequest(visible(), "export", workspace);
 		const { rev } = await claim.json();
 		const query = new URLSearchParams({ action: "export-file", rev, projectId: "project", name: "Incomplete", format: "mp4" });
+		const stalled = Promise.withResolvers<void>();
+		const end = Promise.withResolvers<void>();
+		let cancelled = false;
 		const upload = renderWorker(new Request(`${url}?${query}`, {
 			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! },
-			body: new ReadableStream({ start: (body) => body.enqueue(new Uint8Array(1024)) }),
+			body: new ReadableStream({
+				start: (body) => body.enqueue(new Uint8Array(1024)),
+				pull: () => {
+					stalled.resolve();
+					return end.promise;
+				},
+				cancel: () => {
+					cancelled = true;
+					end.resolve();
+				},
+			}, { highWaterMark: 0 }),
 		}), workspace);
 		await reader.read(); // encoding 100%
 		await reader.read(); // saving
+		await stalled.promise;
 		controller.abort();
 		expect((await upload).ok).toBe(false);
+		expect(cancelled).toBe(true);
+		expect(await reader.read()).toMatchObject({ done: true });
 		expect(JSON.parse(await readFile(resultPath, "utf8"))).toEqual({ rev: "legacy", status: "done" });
 		expect(await readdir(path.join(workspace, "exports")).catch(() => [])).toEqual([]);
 	} finally {
@@ -139,10 +156,12 @@ test.each(["unready", "disconnected", "expired"] as const)("the hidden worker ta
 	const controller = new AbortController();
 	const disconnect = new AbortController();
 	let tick: ReturnType<typeof setInterval> | undefined;
+	let stream: ReadableStreamDefaultReader<Uint8Array> | undefined;
 	try {
 		renderPresence(visible());
 		const response = await startRender(begin(controller.signal), workspace, async () => "project", { grace: 40, seen: 40, claim: 40, profileRoot: workspace });
-		const stream = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+		expect(response.ok).toBe(true);
+		stream = response.body!.getReader();
 		await stream.read();
 		if (state === "unready") {
 			tick = setInterval(() => renderPresence(visible()), 5);
@@ -156,10 +175,10 @@ test.each(["unready", "disconnected", "expired"] as const)("the hidden worker ta
 				await watching;
 			}
 		}
-		expect(JSON.parse((await stream.read()).value!).launch).toContain("/agent/render/");
-		await stream.cancel();
+		expect(JSON.parse(new TextDecoder().decode((await stream.read()).value)).launch).toContain("/agent/render/");
 	} finally {
 		clearInterval(tick);
+		await stream?.cancel();
 		controller.abort();
 		await rm(workspace, { recursive: true, force: true });
 	}
@@ -188,6 +207,101 @@ test("a failed result publication removes the promoted export", async () => {
 		failedRename.mockRestore();
 		controller.abort();
 		await rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test.each(["retry", "cancel"] as const)("a promoted frame survives failed result publication until %s", async (outcome) => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-frame-retry-"));
+	const controller = new AbortController();
+	const renameFile = fs.rename;
+	const failedRename = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+		if (typeof to === "string" && to.endsWith("frames-result.json")) throw new Error("Could not publish result");
+		await renameFile(from, to);
+	});
+	let response: Response | undefined;
+	try {
+		response = await startRender(new Request(url, {
+			method: "POST", signal: controller.signal,
+			body: JSON.stringify({ command: "frames", request: { times: [0] }, timeoutMs: 10000 }),
+		}), workspace, async () => "project", { grace: 0, seen: 0, profileRoot: workspace });
+		const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+		await reader.read();
+		const { launch } = JSON.parse((await reader.read()).value!);
+		const key = new URL(launch).pathname.split("/").at(-1);
+		const claim = await renderWorker(new Request(`${url}?key=${key}`), workspace);
+		const { rev, projectId } = await claim.json();
+		const headers = { [tokenHeader]: claim.headers.get(tokenHeader)! };
+		const watching = renderWorker(new Request(`${url}?action=watch`, { headers }), workspace);
+		const post = (action: string, body: BodyInit) => renderWorker(new Request(`${url}?action=${action}`, {
+			method: "POST", headers, body,
+		}), workspace);
+		const form = new FormData();
+		form.set("rev", rev);
+		form.set("time", "0");
+		form.set("image", new File(["jpeg"], "0.jpg", { type: "image/jpeg" }));
+		const frame = await post("frame", form);
+		expect(frame.status).toBe(200);
+		const { file } = await frame.json();
+		const result = { rev, projectId, files: [file] };
+		const resultBody = JSON.stringify(result);
+		const rejected = await post("frames-result", resultBody);
+		expect(rejected.status).toBe(500);
+		expect(await rejected.json()).toEqual({ error: "Could not publish result" });
+		expect(await readFile(path.join(workspace, file), "utf8")).toBe("jpeg");
+		if (outcome === "retry") {
+			failedRename.mockRestore();
+			expect((await post("frames-result", resultBody)).ok).toBe(true);
+			expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "loading project" });
+			expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "saving" });
+			expect(JSON.parse((await reader.read()).value!)).toEqual({ result });
+			expect(await reader.read()).toMatchObject({ done: true });
+			expect(await readFile(path.join(workspace, file), "utf8")).toBe("jpeg");
+		} else {
+			controller.abort();
+			expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "loading project" });
+			expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "saving" });
+			expect(await reader.read()).toMatchObject({ done: true });
+			expect(await readdir(path.join(workspace, "frames"))).toEqual([]);
+		}
+		await watching;
+		expect(await readdir(path.join(workspace, ".render-jobs"))).toEqual([]);
+	} finally {
+		failedRename.mockRestore();
+		controller.abort();
+		await rm(workspace, { recursive: true, force: true, maxRetries: 3 });
+	}
+});
+
+test("a hidden claim without a watch reports a registration timeout and releases the render slot", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-watch-timeout-"));
+	const controller = new AbortController();
+	const watchdog = setTimeout(() => controller.abort(), 1000);
+	try {
+		const options = { grace: 0, seen: 0, watchRegistration: 40, profileRoot: workspace };
+		const response = await startRender(begin(controller.signal), workspace, async () => "project", options);
+		expect(response.ok).toBe(true);
+		const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+		await reader.read();
+		const { launch } = JSON.parse((await reader.read()).value!);
+		const key = new URL(launch).pathname.split("/").at(-1);
+		const claim = await renderWorker(new Request(`${url}?key=${key}`), workspace);
+		expect(claim.ok).toBe(true);
+		const { rev, projectId } = await claim.json();
+		expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "loading project" });
+		const terminal = await reader.read();
+		expect(terminal.done).toBe(false);
+		expect(JSON.parse(terminal.value!)).toEqual({ result: {
+			rev, projectId, error: "The hidden browser did not register its render connection.",
+		} });
+		expect(await reader.read()).toMatchObject({ done: true });
+		expect(await readdir(path.join(workspace, ".render-jobs"))).toEqual([]);
+		const next = await startRender(begin(), workspace, async () => "project", options);
+		expect(next.ok).toBe(true);
+		await next.body!.cancel();
+	} finally {
+		clearTimeout(watchdog);
+		controller.abort();
+		await rm(workspace, { recursive: true, force: true, maxRetries: 3 });
 	}
 });
 
