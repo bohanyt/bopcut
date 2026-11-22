@@ -45,6 +45,20 @@ const messageKeys = new Map<string, StaticMessageKey>([
 	["save did not finish; it is retried in the background", "storage.saveRetryBackground"],
 	["Unknown export error", "export.unknownError"],
 	["No active project", "projects.noneActive"],
+	["Project is empty", "export.empty"],
+	["Clipboard image copy is not supported in this browser", "preview.clipboardUnavailable"],
+	["No project or scene to capture", "preview.noSnapshotScene"],
+	["Scene not found", "timeline.sceneNotFound"],
+	["Failed to create image", "preview.imageCreationFailed"],
+	["Unknown error", "common.unknownError"],
+	["an op of this atomic draft failed; nothing was applied", "agentToast.atomicFailed"],
+	["every op was stale; nothing was applied (re-read the snapshot and resend)", "agentToast.allStale"],
+	["no op could be applied; nothing was applied", "agentToast.noOpsApplied"],
+	["another project was opened before the draft ran; nothing was applied", "agentToast.projectSwitched"],
+	["no project was open when the draft was queued", "agentToast.noProject"],
+	["basedOn must be the syncedAt string of a snapshot", "agentToast.invalidBase"],
+	["basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend", "agentToast.unknownBase"],
+	["basedOn belongs to a different project or root scene; re-read the snapshot and resend", "agentToast.wrongBase"],
 ]);
 
 export function localizeErrorDetail(detail: string, t: ReturnType<typeof createTranslator>): string {
@@ -103,6 +117,13 @@ export function localizeErrorDetail(detail: string, t: ReturnType<typeof createT
 		return match[2]
 			? t("media.codecUnsupportedSafari", { codec })
 			: t("media.codecUnsupported", { codec });
+	}
+
+	if ((match = /^media no longer in the project: (.+); nothing was applied$/.exec(detail))) {
+		return t("agentToast.mediaGone", { ids: match[1] });
+	}
+	if ((match = /^the draft is for project (.+), not the open one; nothing was applied$/.exec(detail))) {
+		return t("agentToast.wrongProject", { id: match[1] });
 	}
 
 	return detail;

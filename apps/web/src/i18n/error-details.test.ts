@@ -18,3 +18,11 @@ test("preserves interpolation values and unknown diagnostics", () => {
 	expect(localizeErrorDetail("Storage failed (500): EBUSY", t)).toBe("Penyimpanan gagal (HTTP 500): EBUSY");
 	expect(localizeErrorDetail("EIO", t)).toBe("EIO");
 });
+
+test("localizes snapshot and draft errors without dropping what the user can do next", () => {
+	expect(localizeErrorDetail("Project is empty", t)).toBe(t("export.empty"));
+	expect(localizeErrorDetail("Clipboard image copy is not supported in this browser", t))
+		.toBe(t("preview.clipboardUnavailable"));
+	expect(localizeErrorDetail("every op was stale; nothing was applied (re-read the snapshot and resend)", t))
+		.toContain("Baca ulang snapshot lalu kirim ulang draf.");
+});

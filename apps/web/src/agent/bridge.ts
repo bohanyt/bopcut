@@ -564,9 +564,9 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	if (refused) {
 		const projectId = session?.projectId ?? project?.metadata.id;
 		const ops: DraftOp[] = Array.isArray(draft?.ops) ? draft.ops : [];
-		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), { description: !session
-			? getBrowserTranslator()("agentToast.noProject")
-			: getBrowserTranslator()("agentToast.projectMismatch") });
+		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), {
+			description: localizeErrorDetail(refused, getBrowserTranslator()),
+		});
 		await fetch("/api/agent/applied", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -596,7 +596,9 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 				? "basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend"
 				: "basedOn belongs to a different project or root scene; re-read the snapshot and resend";
 		const results = ops.map((op) => ({ op: op?.op, ...opLabel(op), ...(op && "match" in op && op.match !== undefined ? { match: op.match } : {}), ok: false, stale: true, error }));
-		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), { description: getBrowserTranslator()("agentToast.stale") });
+		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), {
+			description: localizeErrorDetail(error, getBrowserTranslator()),
+		});
 		await report({ sceneId: rootBefore, ok: false, applied: false, stale: true, error, results });
 		return;
 	}
@@ -816,7 +818,10 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	}
 	if (error) {
 		const cleanup = await discard();
-		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), { description: cleanup?.failed.length ? getBrowserTranslator()("agentToast.cleanupFailed") : getBrowserTranslator()("agentToast.draftDetails") });
+		const t = getBrowserTranslator();
+		const reason = localizeErrorDetail(error, t);
+		const description = cleanup?.failed.length ? [reason, t("agentToast.cleanupFailed")].join(" ") : reason;
+		toast.error(t("agentToast.notApplied", { name: draft.label ?? draft.rev }), { description });
 		await report({ sceneId: root.id, ok: false, applied: false, ...(stale ? { stale: true } : {}), error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
 		return;
 	}

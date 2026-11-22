@@ -957,12 +957,9 @@ export const en = {
 	"agentToast.exporting": "Exporting a video for the agent",
 	"agentToast.exportWait": "The export button waits until it is done",
 	"agentToast.noProject": "No project was open when the draft was queued",
-	"agentToast.projectMismatch": "The draft does not match the current project session",
-	"agentToast.stale": "The draft is based on an invalid or out-of-date snapshot",
 	"agentToast.assetsFailed": "Assets for {count} operations failed to load. See draft-result.json for details.",
 	"agentToast.noScene": "No scene is open",
 	"agentToast.cleanupFailed": "Some imported files or captions could not be restored or removed.",
-	"agentToast.draftDetails": "See draft-result.json for details.",
 	"agentToast.partialSummary": "{count} changes applied and {failed} failed · changed items selected · Ctrl+Z to undo",
 	"agentToast.appliedSummary": "{count} changes applied · changed items selected · Ctrl+Z to undo",
 
@@ -1069,4 +1066,19 @@ export const en = {
 	"media.codecUnsupported": "{codec} cannot be decoded in this browser. Convert it to H.264 MP4.",
 
 	"common.errorDetails": "Error details",
+
+	"preview.clipboardUnavailable": "Clipboard image copy is not supported in this browser",
+	"preview.noSnapshotScene": "No project or scene to capture",
+	"timeline.sceneNotFound": "Scene not found",
+	"preview.imageCreationFailed": "Failed to create image",
+	"common.unknownError": "Unknown error",
+	"agentToast.atomicFailed": "an op of this atomic draft failed; nothing was applied",
+	"agentToast.allStale": "every op was stale; nothing was applied (re-read the snapshot and resend)",
+	"agentToast.noOpsApplied": "no op could be applied; nothing was applied",
+	"agentToast.projectSwitched": "another project was opened before the draft ran; nothing was applied",
+	"agentToast.invalidBase": "basedOn must be the syncedAt string of a snapshot",
+	"agentToast.unknownBase": "basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend",
+	"agentToast.wrongBase": "basedOn belongs to a different project or root scene; re-read the snapshot and resend",
+	"agentToast.mediaGone": "Media is no longer in the project: {ids}. The draft was not applied.",
+	"agentToast.wrongProject": "The draft is for project {id}. Open that project and resend the draft.",
 } as const;

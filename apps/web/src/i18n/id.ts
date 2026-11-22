@@ -959,12 +959,9 @@ export const id = {
 	"agentToast.exporting": "Mengekspor video untuk agen",
 	"agentToast.exportWait": "Tombol ekspor dapat digunakan lagi setelah proses selesai",
 	"agentToast.noProject": "Tidak ada proyek yang terbuka saat draf masuk antrean",
-	"agentToast.projectMismatch": "Draf tidak cocok dengan sesi proyek saat ini",
-	"agentToast.stale": "Draf menggunakan snapshot yang tidak valid atau sudah kedaluwarsa",
 	"agentToast.assetsFailed": "Aset untuk {count} operasi gagal dimuat. Lihat draft-result.json untuk detailnya.",
 	"agentToast.noScene": "Tidak ada scene yang terbuka",
 	"agentToast.cleanupFailed": "Beberapa file atau caption yang diimpor gagal dipulihkan atau dihapus.",
-	"agentToast.draftDetails": "Lihat draft-result.json untuk detailnya.",
 	"agentToast.partialSummary": "{count} perubahan diterapkan dan {failed} gagal · item yang diubah dipilih · Ctrl+Z untuk Undo",
 	"agentToast.appliedSummary": "{count} perubahan diterapkan · item yang diubah dipilih · Ctrl+Z untuk Undo",
 
@@ -1071,4 +1068,19 @@ export const id = {
 	"media.codecUnsupported": "{codec} tidak bisa didekode di browser ini. Ubah ke H.264 MP4.",
 
 	"common.errorDetails": "Detail kesalahan",
+
+	"preview.clipboardUnavailable": "Penyalinan gambar ke clipboard tidak didukung di browser ini",
+	"preview.noSnapshotScene": "Tidak ada proyek atau scene untuk diambil cuplikannya",
+	"timeline.sceneNotFound": "Scene tidak ditemukan",
+	"preview.imageCreationFailed": "Gambar gagal dibuat",
+	"common.unknownError": "Kesalahan tidak diketahui",
+	"agentToast.atomicFailed": "Salah satu operasi gagal. Seluruh draf dibatalkan.",
+	"agentToast.allStale": "Semua operasi sudah kedaluwarsa. Baca ulang snapshot lalu kirim ulang draf.",
+	"agentToast.noOpsApplied": "Tidak ada operasi yang bisa diterapkan.",
+	"agentToast.projectSwitched": "Proyek lain dibuka sebelum draf dijalankan. Tidak ada perubahan yang diterapkan.",
+	"agentToast.invalidBase": "Nilai basedOn harus berupa syncedAt dari snapshot.",
+	"agentToast.unknownBase": "Snapshot tidak dikenali karena editor dimuat ulang atau snapshot sudah terlalu lama. Baca ulang snapshot lalu kirim ulang draf.",
+	"agentToast.wrongBase": "Snapshot berasal dari proyek atau scene utama lain. Baca ulang snapshot lalu kirim ulang draf.",
+	"agentToast.mediaGone": "Media sudah tidak ada di proyek: {ids}. Draf gagal diterapkan.",
+	"agentToast.wrongProject": "Draf ini untuk proyek {id}. Buka proyek tersebut lalu kirim ulang draf.",
 } satisfies Record<keyof typeof en, string>;

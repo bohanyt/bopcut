@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { getBrowserTranslator } from "@/i18n/browser";
 
 import { useEffect, useState } from "react";
@@ -423,7 +425,9 @@ export function useEditorActions() {
 				editor.timeline.createCompound({ elements: selectedElements });
 			} catch (error) {
 				toast.error(
-					error instanceof Error ? error.message : getBrowserTranslator()("timeline.createCompoundFailed"),
+					error instanceof Error
+						? localizeErrorDetail(error.message, getBrowserTranslator())
+						: getBrowserTranslator()("timeline.createCompoundFailed"),
 				);
 			}
 		},
