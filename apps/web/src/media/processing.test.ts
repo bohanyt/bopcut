@@ -12,6 +12,44 @@ import { withFirstVideoFrame } from "./video-probe";
 const allowStorage = () => spyOn(storageService, "canStoreFile")
 	.mockResolvedValue({ canStore: true, availableBytes: null, reason: "estimate-unavailable" });
 
+test.each([
+	["video/webm", "webm", "application/octet-stream"],
+	["video/mp4", "mp4", "image/gif"],
+] as const)("imports a converted GIF as %s using the response type", async (mime, extension, originalMime) => {
+	const file = new File(["GIF"], "overlay.GIF", { type: originalMime });
+	const track: InputVideoTrack = Object.create(InputVideoTrack.prototype, {
+		displayWidth: { value: 16 },
+		displayHeight: { value: 16 },
+		canDecode: { value: async () => true },
+		getFirstTimestamp: { value: async () => 0 },
+		computeDuration: { value: async () => 1 },
+		computePacketStats: { value: async () => ({ averagePacketRate: 12 }) },
+	});
+	const stubs = [
+		allowStorage(),
+		spyOn(globalThis, "fetch").mockResolvedValue(new Response("converted", { headers: { "Content-Type": mime } })),
+		spyOn(Input.prototype, "getPrimaryVideoTrack").mockResolvedValue(track),
+		spyOn(Input.prototype, "getPrimaryAudioTrack").mockResolvedValue(null),
+		spyOn(EncodedPacketSink.prototype, "getPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 0, 1)),
+		spyOn(EncodedPacketSink.prototype, "getNextPacket").mockResolvedValue(null),
+		spyOn(VideoSampleSink.prototype, "samples").mockImplementation(async function* () {
+			yield Object.create(VideoSample.prototype, { close: { value: () => {} } });
+		}),
+	];
+	try {
+		const imported = await processMediaFile({ file, signal: new AbortController().signal });
+		try {
+			expect(imported).toMatchObject({ name: `overlay.${extension}`, type: "video", duration: 1, hasAudio: false });
+			expect(imported?.file.type).toBe(mime);
+			expect(await imported?.file.text()).toBe("converted");
+		} finally {
+			if (imported) releaseMediaAssetUrls(imported);
+		}
+	} finally {
+		for (const stub of stubs) stub.mockRestore();
+	}
+});
+
 test.each(["usable", "unsupported", "corrupt", "absent"] as const)("video import with %s audio retains the original and measured FPS without a thumbnail", async (audio) => {
 	const file = new File(["video"], "footage.mkv", { type: "application/octet-stream" });
 	const fps = 30_000 / 1_001;

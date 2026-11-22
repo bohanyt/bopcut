@@ -88,13 +88,17 @@ export async function processMediaFile({
 	signal: AbortSignal;
 }): Promise<ProcessedMediaAsset | null> {
 	if (signal.aborted) return null;
-	// Convert GIF to MP4 on the local server to preserve animation.
+	// Convert GIF to video on the local server to preserve animation and transparency.
 	let file = original;
 	if (original.type === "image/gif" || (hasGenericMediaMimeType(original) && /\.gif$/i.test(original.name))) {
 		try {
 			const res = await fetch("/api/agent/gif", { method: "POST", body: original, signal });
 			if (!res.ok) throw new Error(await res.text());
-			file = new File([await res.blob()], original.name.replace(/\.gif$/i, "") + ".mp4", { type: "video/mp4" });
+			const converted = await res.blob();
+			const type = converted.type;
+			if (type !== "video/mp4" && type !== "video/webm") throw new Error("Unexpected GIF conversion format");
+			const extension = type === "video/webm" ? "webm" : "mp4";
+			file = new File([converted], original.name.replace(/\.gif$/i, "") + "." + extension, { type });
 		} catch (error) {
 			if (signal.aborted) return null;
 			toast.error(`GIF ${original.name} could not be converted to video; using a still image`);
