@@ -2,6 +2,7 @@ const endpoint = "/api/agent/cli/render";
 const tab = globalThis.crypto.randomUUID();
 const tokenHeader = "x-bopencut-render-token";
 export type RenderFetch = (...args: Parameters<typeof fetch>) => Promise<Response>;
+export const renderTabHeaders = (projectId: string) => ({ "x-bopencut-render-tab": tab, "x-bopencut-project": projectId });
 
 export function renderTransport(response: Response) {
 	const token = response.headers.get(tokenHeader);
@@ -24,6 +25,6 @@ export async function readRenderRequest(kind: "export" | "frames", projectId: st
 	// Headers keep the legacy request URL unchanged.
 	return fetch(`/api/agent/${kind}-request`, {
 		cache: "no-store", signal,
-		headers: { "x-bopencut-render-tab": tab, "x-bopencut-project": projectId, "x-bopencut-ready": ready ? "1" : "0" },
+		headers: { ...renderTabHeaders(projectId), "x-bopencut-ready": ready ? "1" : "0" },
 	});
 }

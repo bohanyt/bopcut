@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { atomicWrite, dataRoot, readJson } from "@/services/storage/server/files";
-import { handleExportFile } from "./export-server";
+import { atomicWrite, readJson } from "@/services/storage/server/files";
+import { CLAIM_MS, handleExportFile } from "./export-server";
 import { parseExportRequest } from "./export";
 import { parseFrameInput } from "./render-input";
 import { isForeignOrigin } from "./origin";
+import { commitOutput, profileDirectory, recordOutput, recoverRenderJobs, renderJobsDir, rollbackOutput } from "./render-output";
 
 type Kind = "export" | "frames";
 const json = Response.json;
 const tabHeader = "x-bopencut-render-tab";
 const tokenHeader = "x-bopencut-render-token";
-const revPattern = /^cli-[a-f0-9-]{36}$/;
 const presence = new Map<string, number>();
 const presenceMs = 6000;
 
@@ -19,8 +19,10 @@ type Job = {
 	kind: Kind; rev: string; projectId: string; token: string; launchKey: string;
 	request: Record<string, unknown>; scratch: string; signal: AbortSignal;
 	owner?: string; offered: boolean; finishing: boolean;
+	lease: AbortController;
 	writes: Set<Promise<Response>>;
-	send(event: object): void; finish(result: object): Promise<void>; handoff(): void;
+	send(event: object): void; finish(result: object, signal: AbortSignal): Promise<void>;
+	heartbeat(): void; abandon(token: string): void;
 };
 
 let active: Job | undefined;
@@ -33,7 +35,7 @@ export function renderPresence(req: Request) {
 		const now = Date.now();
 		for (const [id, seen] of presence) if (now - seen >= presenceMs) presence.delete(id);
 		presence.set(projectId, now);
-		if (job?.projectId === projectId && !job.owner && !job.offered) job.handoff();
+		if (job?.projectId === projectId && job.owner && job.owner === req.headers.get(tabHeader)) job.heartbeat();
 	}
 	return projectId;
 }
@@ -42,17 +44,20 @@ export async function renderRequest(req: Request, kind: Kind, workspace: string)
 	const job = active;
 	const projectId = renderPresence(req);
 	const tab = req.headers.get(tabHeader);
-	if (job?.kind === kind) {
-		if (!tab || projectId !== job.projectId || job.offered || job.signal.aborted ||
-			req.headers.get("x-bopencut-ready") !== "1" || (job.owner && job.owner !== tab)) return json(null);
+	if (job?.kind === kind && tab && projectId === job.projectId && !job.offered && !job.signal.aborted && !job.lease.signal.aborted &&
+		req.headers.get("x-bopencut-ready") === "1" && (!job.owner || job.owner === tab)) {
 		job.owner = tab;
+		job.heartbeat();
 		return json(job.request, { headers: { [tokenHeader]: job.token, "Cache-Control": "no-store" } });
 	}
 	const request = await readJson(path.join(workspace, `${kind}-request.json`)).catch(() => null);
 	return json(request?.cliJob ? null : request, { headers: { "Cache-Control": "no-store" } });
 }
 
-export async function startRender(req: Request, workspace: string, resolveProject: () => Promise<string>) {
+export async function startRender(req: Request, workspace: string, resolveProject: () => Promise<string>,
+	{ grace = 2500, seen = presenceMs, claim = CLAIM_MS, profileRoot }: {
+		grace?: number; seen?: number; claim?: number; profileRoot?: string;
+	} = {}) {
 	if (reserved) return json({ error: "A CLI render is already running." }, { status: 409 });
 	reserved = true;
 	let running = false;
@@ -67,56 +72,79 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		if (!parsed || typeof parsed === "string") throw new Error(parsed ?? "Invalid export.");
 		if (options.state !== undefined || options.compare !== undefined) throw new Error("For historical or comparison frames, open the editor.");
 		const request = { ...parsed, rev, projectId };
-		const requestFile = path.join(workspace, `${kind}-request.json`);
-		const pending = await readJson(requestFile).catch(() => null);
-		const previous = await readJson(path.join(workspace, `${kind}-result.json`)).catch(() => null);
-		if (pending?.rev && !pending.cliJob && (pending.rev !== previous?.rev || previous.status === "exporting")) {
-			throw new Error(`An existing ${kind} request is pending. Finish it in the editor or clear its request file first.`);
-		}
-		const jobsDir = path.join(workspace, ".render-jobs");
-		await fs.mkdir(jobsDir, { recursive: true });
-		if (!(await fs.lstat(jobsDir)).isDirectory()) throw new Error("The render jobs folder must be a directory.");
-		for (const entry of await fs.readdir(jobsDir, { withFileTypes: true })) {
-			if (entry.isDirectory() && revPattern.test(entry.name)) await fs.rm(path.join(jobsDir, entry.name), { recursive: true, force: true });
-		}
-		const scratch = path.join(jobsDir, rev);
-		await atomicWrite(requestFile, JSON.stringify({ ...request, cliJob: true }));
+		await recoverRenderJobs(workspace);
+		const scratch = path.join(renderJobsDir(workspace), rev);
+		await atomicWrite(path.join(scratch, `${kind}-request.json`), JSON.stringify(request));
 		const controller = new AbortController();
 		const writes = new Set<Promise<Response>>();
 		let closed = false;
-		let lease: ReturnType<typeof setTimeout>;
+		let committed = false;
+		let handoff: ReturnType<typeof setTimeout>;
+		let expiry: ReturnType<typeof setTimeout>;
 		let deadline: ReturnType<typeof setTimeout>;
 		let stream: ReadableStreamDefaultController<Uint8Array>;
+		let cleanup: Promise<void> | undefined;
 		const close = () => {
-			if (closed) return;
+			if (closed) return cleanup;
 			closed = true;
 			controller.abort();
-			clearTimeout(lease);
+			clearTimeout(handoff);
+			clearTimeout(expiry);
 			clearTimeout(deadline);
 			req.signal.removeEventListener("abort", close);
-			try { stream.close(); } catch { /* Client disconnected. */ }
-			void Promise.allSettled(writes).then(async () => {
-				await fs.rm(scratch, { recursive: true, force: true });
-			}).catch(console.error).finally(() => { active = undefined; reserved = false; });
+			cleanup = Promise.allSettled(writes).then(async () => {
+				if (!committed) await rollbackOutput(workspace, scratch);
+				await fs.rm(scratch, { recursive: true, force: true, maxRetries: 3 });
+			}).catch(console.error).finally(() => {
+				active = undefined;
+				reserved = false;
+				try { stream.close(); } catch { /* Client disconnected. */ }
+			});
+			return cleanup;
+		};
+		const offer = async () => {
+			if (job.owner || closed || job.offered) return;
+			job.offered = true;
+			try {
+				const profile = await profileDirectory(workspace, profileRoot);
+				job.send({ launch: new URL(`/agent/render/${job.launchKey}`, req.url).href, profile });
+			} catch {
+				job.send({ result: { rev, projectId, error: "Could not prepare a writable browser profile. Open the editor once and retry." } });
+				close();
+			}
 		};
 		const job: Job = {
 			kind, projectId, rev, request, scratch, writes, signal: controller.signal,
-			token: randomUUID(), launchKey: randomUUID(), offered: false, finishing: false,
+			token: randomUUID(), launchKey: randomUUID(), offered: false, finishing: false, lease: new AbortController(),
 			send(event) {
 				if (!closed) stream.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
 			},
-			async finish(result) {
-				await atomicWrite(path.join(workspace, `${kind}-result.json`), JSON.stringify(result, null, 1));
+			async finish(result, signal) {
+				await commitOutput(workspace, scratch, kind, result, signal);
+				committed = true;
 				job.send({ result });
 				close();
 			},
-			handoff() {
-				clearTimeout(lease);
-				lease = setTimeout(() => {
-					if (job.owner || closed) return;
-					job.offered = true;
-					job.send({ launch: new URL(`/agent/render/${job.launchKey}`, req.url).href, profile: path.join(dataRoot(), ".render-browser") });
-				}, Date.now() - (presence.get(projectId) ?? 0) < presenceMs ? presenceMs : 2500);
+			heartbeat() {
+				clearTimeout(expiry);
+				const token = job.token;
+				expiry = setTimeout(() => job.abandon(token), claim);
+			},
+			abandon(token) {
+				if (closed || job.lease.signal.aborted || !job.owner || job.owner === "hidden" || token !== job.token) return;
+				clearTimeout(expiry);
+				clearTimeout(handoff);
+				job.lease.abort();
+				job.token = randomUUID();
+				// Keep the old owner fenced out until all of its writes have stopped.
+				void Promise.allSettled(writes).then(async () => {
+					if (closed) return;
+					await rollbackOutput(workspace, scratch);
+					await fs.rm(path.join(scratch, "frames"), { recursive: true, force: true, maxRetries: 3 });
+					job.owner = undefined;
+					job.lease = new AbortController();
+					await offer();
+				}).catch(() => close());
 			},
 		};
 		active = job;
@@ -124,7 +152,8 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			start(output) {
 				stream = output;
 				job.send({ stage: "waiting for a tab" });
-				job.handoff();
+				const recentlySeen = Date.now() - (presence.get(projectId) ?? 0) < presenceMs;
+				handoff = setTimeout(() => void offer(), recentlySeen ? seen : grace);
 				deadline = setTimeout(close, timeoutMs + 1000);
 				req.signal.addEventListener("abort", close, { once: true });
 				if (req.signal.aborted) close();
@@ -145,16 +174,19 @@ export async function renderWorker(req: Request, workspace: string) {
 	if (!["localhost", "127.0.0.1"].includes(url.hostname) || isForeignOrigin(req) || req.headers.get("sec-fetch-site") === "cross-site") return json(null, { status: 403 });
 	const job = active;
 	if (!job || job.signal.aborted) return json(null, { status: 404 });
+	const leaseSignal = AbortSignal.any([job.signal, job.lease.signal]);
 	if (req.method === "GET" && url.searchParams.get("action") === "watch" && req.headers.get(tokenHeader) === job.token) {
 		return new Promise<Response>((resolve) => {
+			const token = job.token;
+			const disconnect = () => { job.abandon(token); close(); };
 			const close = () => {
-				req.signal.removeEventListener("abort", close);
-				job.signal.removeEventListener("abort", close);
+				req.signal.removeEventListener("abort", disconnect);
+				leaseSignal.removeEventListener("abort", close);
 				resolve(json(null));
 			};
-			job.signal.addEventListener("abort", close, { once: true });
-			req.signal.addEventListener("abort", close, { once: true });
-			if (req.signal.aborted) close();
+			leaseSignal.addEventListener("abort", close, { once: true });
+			req.signal.addEventListener("abort", disconnect, { once: true });
+			if (req.signal.aborted) disconnect();
 		});
 	}
 	if (req.method === "GET") {
@@ -163,14 +195,14 @@ export async function renderWorker(req: Request, workspace: string) {
 		job.send({ stage: "loading project" });
 		return json(job.request, { headers: { [tokenHeader]: job.token, "x-bopencut-render-kind": job.kind, "Cache-Control": "no-store" } });
 	}
-	if (req.headers.get(tokenHeader) !== job.token || !job.owner || job.finishing) return json(null, { status: 409 });
-	const write = publish(job, req, url, workspace);
+	if (req.headers.get(tokenHeader) !== job.token || !job.owner || job.finishing || leaseSignal.aborted) return json(null, { status: 409 });
+	const write = publish(job, req, url, workspace, leaseSignal);
 	job.writes.add(write);
 	try { return await write; }
 	finally { job.writes.delete(write); }
 }
 
-async function publish(job: Job, req: Request, url: URL, workspace: string) {
+async function publish(job: Job, req: Request, url: URL, workspace: string, signal: AbortSignal) {
 	const action = url.searchParams.get("action");
 	try {
 		if (action === "failure" && job.owner === "hidden") {
@@ -187,13 +219,13 @@ async function publish(job: Job, req: Request, url: URL, workspace: string) {
 		}
 		if (job.kind === "export" && action === "export-result") {
 			const body = await req.json();
+			signal.throwIfAborted();
 			if (body.rev !== job.rev || body.projectId !== job.projectId) return json(null, { status: 409 });
 			if (body.status === "exporting") {
+				if (job.owner !== "hidden") job.heartbeat();
 				job.send({ stage: `encoding ${Math.round(Number(body.progress) * 100)}%` });
 			} else if (body.status === "release" && job.owner !== "hidden") {
-				job.owner = undefined;
-				job.token = randomUUID();
-				job.handoff();
+				job.abandon(job.token);
 			} else if (body.status === "error") {
 				await finish({ ...body, updatedAt: new Date().toISOString() });
 			}
@@ -205,7 +237,14 @@ async function publish(job: Job, req: Request, url: URL, workspace: string) {
 			job.send({ stage: "saving" });
 			try {
 				await fs.mkdir(job.scratch, { recursive: true });
-				return await handleExportFile(req, workspace, { signal: job.signal, temp: path.join(job.scratch, "video.part"), finish: job.finish });
+				return await handleExportFile(req, workspace, {
+					signal, temp: path.join(job.scratch, "video.part"),
+					beforePublish: (target, source) => recordOutput(workspace, job.scratch, target, source),
+					finish,
+				});
+			} catch (error) {
+				await rollbackOutput(workspace, job.scratch);
+				throw error;
 			} finally {
 				job.finishing = false;
 			}
@@ -215,23 +254,31 @@ async function publish(job: Job, req: Request, url: URL, workspace: string) {
 			const time = form.get("time"), image = form.get("image");
 			if (form.get("rev") !== job.rev || typeof time !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(time) ||
 				!(image instanceof File) || image.type !== "image/jpeg" || form.has("variant")) return json({ error: "Invalid frame" }, { status: 400 });
-			job.signal.throwIfAborted();
+			signal.throwIfAborted();
+			if (job.owner !== "hidden") job.heartbeat();
 			job.send({ stage: "saving" });
-			await atomicWrite(path.join(job.scratch, `${time}.jpg`), new Uint8Array(await image.arrayBuffer()));
+			await atomicWrite(path.join(job.scratch, "frames", `${time}.jpg`), new Uint8Array(await image.arrayBuffer()), signal);
 			return json({ file: `frames/${job.rev}/${time}.jpg` });
 		}
 		if (job.kind === "frames" && action === "frames-result") {
 			const body = await req.json();
 			if (body.rev !== job.rev || body.projectId !== job.projectId) return json(null, { status: 409 });
 			if (body.files?.length) {
-				job.signal.throwIfAborted();
+				signal.throwIfAborted();
 				const frames = path.join(workspace, "frames");
 				await fs.mkdir(frames, { recursive: true });
 				if (!(await fs.lstat(frames)).isDirectory()) throw new Error("The frames folder must be a directory.");
-				await fs.rename(job.scratch, path.join(frames, job.rev));
+				const source = path.join(job.scratch, "frames");
+				const target = path.join(frames, job.rev);
+				await recordOutput(workspace, job.scratch, target, source);
+				signal.throwIfAborted();
+				await fs.rename(source, target);
 			}
-			if (body.files?.length) await job.finish(body);
-			else await finish(body);
+			try { await finish(body); }
+			catch (error) {
+				await rollbackOutput(workspace, job.scratch);
+				throw error;
+			}
 			return json({ ok: true });
 		}
 		return json({ error: "This action does not belong to the render job." }, { status: 403 });
@@ -240,9 +287,9 @@ async function publish(job: Job, req: Request, url: URL, workspace: string) {
 	}
 
 	async function finish(result: object) {
-		job.signal.throwIfAborted();
+		signal.throwIfAborted();
 		job.finishing = true;
-		try { await job.finish(result); }
+		try { await job.finish(result, signal); }
 		catch (error) { job.finishing = false; throw error; }
 	}
 }

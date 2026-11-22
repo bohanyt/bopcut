@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { renderRequest, renderWorker, startRender } from "./render-server";
+import { renderPresence, renderRequest, renderWorker, startRender } from "./render-server";
+import { profileDirectory, recordOutput, recoverRenderJobs } from "./render-output";
 
 const url = "http://127.0.0.1/api/agent/cli/render";
 const tokenHeader = "x-bopencut-render-token";
@@ -22,11 +23,12 @@ for (const owner of ["visible", "hidden"] as const) {
 			await writeFile(resultPath, '{"rev":"legacy","status":"done"}');
 			const scratch = path.join(workspace, ".render-jobs");
 			await mkdir(path.join(scratch, "cli-01234567-0000-0000-0000-012345678901"), { recursive: true });
-			const response = await startRender(begin(), workspace, async () => "project");
+			const response = await startRender(begin(), workspace, async () => "project", { grace: 80, seen: 80, profileRoot: workspace });
 			reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
 			const next = async () => JSON.parse((await reader!.read()).value!);
 			expect(await next()).toEqual({ stage: "waiting for a tab" });
-			expect(await readdir(scratch)).toEqual([]);
+			expect(await readdir(scratch)).toHaveLength(1);
+			expect(await readdir(scratch)).not.toContain("cli-01234567-0000-0000-0000-012345678901");
 			expect((await startRender(begin(), workspace, async () => "project")).status).toBe(409);
 			let claim: Response;
 			if (owner === "hidden") {
@@ -97,6 +99,124 @@ test("a stopped CLI connection during publication aborts the upload and preserve
 		expect(await readdir(path.join(workspace, "exports")).catch(() => [])).toEqual([]);
 	} finally {
 		controller.abort();
+		await rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test("pending legacy frame requests retain both files during a CLI render", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-legacy-"));
+	const controller = new AbortController();
+	try {
+		const reqFile = path.join(workspace, "frames-request.json");
+		const resFile = path.join(workspace, "frames-result.json");
+		const legacy = { rev: "legacy", times: [0] };
+		const refusal = { rev: "legacy", files: [], missingMedia: [{ name: "clip" }] };
+		await writeFile(reqFile, JSON.stringify(legacy));
+		await writeFile(resFile, JSON.stringify(refusal));
+		const response = await startRender(new Request(url, {
+			method: "POST", signal: controller.signal,
+			body: JSON.stringify({ command: "frames", request: { times: [0] }, timeoutMs: 10000 }),
+		}), workspace, async () => "project");
+		expect(response.ok).toBe(true);
+		const claim = await renderRequest(visible(), "frames", workspace);
+		const { rev } = await claim.json();
+		await renderWorker(new Request(`${url}?action=frames-result`, {
+			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! },
+			body: JSON.stringify({ rev, projectId: "project", files: [] }),
+		}), workspace);
+		await response.text();
+		expect(JSON.parse(await readFile(reqFile, "utf8"))).toEqual(legacy);
+		expect(JSON.parse(await readFile(resFile, "utf8"))).toEqual(refusal);
+	} finally {
+		controller.abort();
+		await rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test.each(["unready", "disconnected", "expired"] as const)("the hidden worker takes over from a %s visible tab", async (state) => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-handoff-"));
+	const controller = new AbortController();
+	const disconnect = new AbortController();
+	let tick: ReturnType<typeof setInterval> | undefined;
+	try {
+		renderPresence(visible());
+		const response = await startRender(begin(controller.signal), workspace, async () => "project", { grace: 40, seen: 40, claim: 40, profileRoot: workspace });
+		const stream = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+		await stream.read();
+		if (state === "unready") {
+			tick = setInterval(() => renderPresence(visible()), 5);
+		} else {
+			const claim = await renderRequest(visible(), "export", workspace);
+			if (state === "disconnected") {
+				const watching = renderWorker(new Request(`${url}?action=watch`, {
+					signal: disconnect.signal, headers: { [tokenHeader]: claim.headers.get(tokenHeader)! },
+				}), workspace);
+				disconnect.abort();
+				await watching;
+			}
+		}
+		expect(JSON.parse((await stream.read()).value!).launch).toContain("/agent/render/");
+		await stream.cancel();
+	} finally {
+		clearInterval(tick);
+		controller.abort();
+		await rm(workspace, { recursive: true, force: true });
+	}
+}, 1500);
+
+test("a failed result publication removes the promoted export", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-publish-"));
+	const controller = new AbortController();
+	try {
+		const response = await startRender(begin(controller.signal), workspace, async () => "project");
+		const claim = await renderRequest(visible(), "export", workspace);
+		const { rev } = await claim.json();
+		await mkdir(path.join(workspace, "export-result.json"));
+		const query = new URLSearchParams({ action: "export-file", rev, projectId: "project", name: "Uncommitted", format: "mp4" });
+		const uploaded = await renderWorker(new Request(`${url}?${query}`, {
+			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! }, body: "video",
+		}), workspace);
+		expect(uploaded.ok).toBe(false);
+		expect(await readdir(path.join(workspace, "exports"))).toEqual([]);
+		await response.body!.cancel();
+	} finally {
+		controller.abort();
+		await rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test("recovery rolls back a promoted file only when it is owned and uncommitted", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-recovery-"));
+	try {
+		const output = path.join(workspace, "exports");
+		await mkdir(output);
+		for (const [index, name] of ["abandoned", "completed", "existing"].entries()) {
+			const rev = `cli-01234567-0000-0000-0000-01234567890${index}`;
+			const scratch = path.join(workspace, ".render-jobs", rev);
+			await mkdir(scratch, { recursive: true });
+			const source = path.join(scratch, "render.part");
+			await writeFile(source, "render");
+			const target = path.join(output, `${name}.mp4`);
+			await recordOutput(workspace, scratch, target, source);
+			if (name === "existing") await writeFile(target, "legacy");
+			else await rename(source, target);
+			if (name === "completed") await writeFile(path.join(workspace, "export-result.json"), JSON.stringify({ rev, status: "done", file: `exports/${name}.mp4` }));
+		}
+		await recoverRenderJobs(workspace);
+		expect((await readdir(output)).sort()).toEqual(["completed.mp4", "existing.mp4"]);
+		expect(await readdir(path.join(workspace, ".render-jobs"))).toEqual([]);
+	} finally {
+		await rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test("the profile falls back to the writable workspace when its usual path is inaccessible", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-profile-"));
+	try {
+		const data = path.join(workspace, "data");
+		await writeFile(data, "");
+		expect(await profileDirectory(workspace, data)).toBe(path.join(workspace, ".render-browser"));
+	} finally {
 		await rm(workspace, { recursive: true, force: true });
 	}
 });

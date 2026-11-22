@@ -79,12 +79,16 @@ async function main(args: string[]) {
 	}
 }
 
+export function renderFailed(command: string, result: Record<string, unknown>) {
+	return !!result.error || result.status === "error" || (command === "frames" && Array.isArray(result.files) && !result.files.length && Array.isArray(result.errors) && result.errors.length > 0);
+}
+
 if (import.meta.main) {
 	try {
 		const result = await main(process.argv.slice(2));
 		console.log(JSON.stringify(result));
-		if (result.error || result.status === "error") {
-			console.error(String(result.error).replace(/\s+/g, " "));
+		if (renderFailed(process.argv[2], result)) {
+			console.error(String(result.error ?? "No requested frame could be rendered.").replace(/\s+/g, " "));
 			process.exitCode = 1;
 		}
 	} catch (error) {

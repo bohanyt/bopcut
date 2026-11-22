@@ -40,7 +40,6 @@ export async function runRender(response: Response, { signal, launch = launchBro
 		throw error;
 	} finally {
 		signal.removeEventListener("abort", abort);
-		await reader.cancel().catch(() => {});
-		await browser?.stop();
+		await Promise.all([reader.cancel().catch(() => {}), browser?.stop()]);
 	}
 }

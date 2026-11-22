@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseArgs } from "./agent";
+import { parseArgs, renderFailed } from "./agent";
 import { runRender } from "./agent-render";
 
 test("validates render arguments before connecting", () => {
@@ -10,6 +10,11 @@ test("validates render arguments before connecting", () => {
 	expect(() => parseArgs(["frames", "--times", "1,-1"])).toThrow("times");
 	expect(parseArgs(["frames", "--element", "intro"]).request).toEqual({ elements: ["intro"], allowMissing: false });
 	expect(() => parseArgs(["status", "--name", "Final"])).toThrow();
+});
+
+test("fails a frame command when all requested frames have errors", () => {
+	expect(renderFailed("frames", { files: [], errors: [{ time: 30, error: "Time outside timeline" }] })).toBe(true);
+	expect(renderFailed("frames", { files: ["0.jpg"], errors: [{ time: 30, error: "Time outside timeline" }] })).toBe(false);
 });
 
 for (const mode of ["visible", "done", "error", "timeout", "interrupt", "server stop", "browser exit"] as const) {

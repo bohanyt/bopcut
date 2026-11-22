@@ -31,7 +31,7 @@ import type { SaveSession } from "@/core/managers/save-manager";
 import type { TProject } from "@/project/types";
 import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
-import { readRenderRequest, renderTransport, type RenderFetch } from "./render-transport";
+import { readRenderRequest, renderTabHeaders, renderTransport, type RenderFetch } from "./render-transport";
 
 export type { Draft, DraftOp } from "./draft";
 
@@ -277,7 +277,7 @@ const EXPORT_TAB = typeof crypto !== "undefined" && "randomUUID" in crypto ? cry
 /** How long a small request to the editor's server may take (it is local; a stalled one is given up). */
 const REQUEST_WAIT_MS = 10_000;
 /** An error answer not posted yet (the server did not answer): posted again on the next poll. */
-let unposted: { key: string; rev: string; body: Record<string, unknown>; send: RenderFetch } | null = null;
+let unposted: { key: string; rev: string; body: Record<string, unknown>; send: RenderFetch; signal?: AbortSignal } | null = null;
 
 /** Posts progress or an error; says whether it was written, or the request was answered or taken by another tab. */
 async function sendExportResult(body: Record<string, unknown>, send: RenderFetch): Promise<"ok" | "answered" | "claimed" | "failed"> {
@@ -297,8 +297,12 @@ async function sendExportResult(body: Record<string, unknown>, send: RenderFetch
 async function postUnposted() {
 	const answer = unposted;
 	if (!answer) return;
+	if (answer.signal?.aborted) {
+		unposted = null;
+		return;
+	}
 	const sent = await sendExportResult(answer.body, answer.send);
-	if (sent === "failed") return;
+	if (sent === "failed" && !answer.signal) return;
 	// "claimed": another tab took the request meanwhile; it answers.
 	if (sent !== "claimed" && !EditorCore.getInstance().renderOnly) markAnswered(answer.key, answer.rev);
 	if (unposted === answer) unposted = null;
@@ -341,7 +345,7 @@ async function answerExport(source?: Response) {
 		return;
 	}
 	const answer = async (body: Record<string, unknown>) => {
-		unposted = { key, rev, body: { rev, projectId, ...body }, send };
+		unposted = { key, rev, body: { rev, projectId, ...body }, send, signal: jobSignal };
 		await postUnposted();
 	};
 	const request = parseExportRequest(raw);
@@ -455,7 +459,7 @@ export async function pollChanges() {
 	try {
 		let request: { rev?: unknown; since?: unknown; draft?: unknown } | null = null;
 		try {
-			request = await (await fetch("/api/agent/changes-request", { cache: "no-store", headers: { "x-bopencut-project": project.metadata.id } })).json();
+			request = await (await fetch("/api/agent/changes-request", { cache: "no-store", headers: renderTabHeaders(project.metadata.id) })).json();
 		} catch {
 			return;
 		}
