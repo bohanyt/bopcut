@@ -3,6 +3,7 @@ import type { CompoundElement, TScene } from "@/timeline";
 import { calculateTotalDuration } from "@/timeline";
 import { collectCompoundScenes } from "@/timeline/compound";
 import type { MediaTime } from "@/wasm";
+import { previewCanvasSize } from "@/canvas/sizes";
 
 // Thumbnail strips of compound clips on the timeline: a few low-res renders of the nested
 // content, cached by content and rendered one at a time, only while playback is paused.
@@ -193,7 +194,8 @@ const loadCanvasThumbnailRenderer: LoadThumbnailRenderer = async ({
 		import("@/services/renderer/scene-builder"),
 		import("@/services/renderer/canvas-renderer"),
 	]);
-	const { canvasSize, fps, background } = editor.project.getActive().settings;
+	const { canvasSize: savedCanvasSize, fps, background } = editor.project.getActive().settings;
+	const canvasSize = previewCanvasSize(savedCanvasSize);
 	const tree = buildScene({
 		tracks: nested.tracks,
 		mediaAssets: editor.media.getAssets(),
@@ -209,13 +211,10 @@ const loadCanvasThumbnailRenderer: LoadThumbnailRenderer = async ({
 		renderScale: Math.min(1, THUMBNAIL_HEIGHT_PX / canvasSize.height),
 		exactFrames: true,
 	});
-	const canvas = document.createElement("canvas");
-	canvas.width = renderer.outputWidth;
-	canvas.height = renderer.outputHeight;
 	return {
 		async renderAt(time) {
-			await renderer.renderToCanvas({ node: tree, time, targetCanvas: canvas });
-			return canvas.toDataURL("image/jpeg", 0.7);
+			await renderer.render({ node: tree, time });
+			return renderer.getOutputCanvas().toDataURL("image/jpeg", 0.7);
 		},
 		dispose: () => renderer.videoCache.clear(),
 	};

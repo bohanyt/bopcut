@@ -111,6 +111,7 @@ pub struct GpuContext {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
+    max_texture_dimension_2d: u32,
     queue: wgpu::Queue,
     texture_format: wgpu::TextureFormat,
     fullscreen_quad: wgpu::Buffer,
@@ -251,6 +252,7 @@ impl GpuContext {
         Ok(Self {
             instance,
             adapter,
+            max_texture_dimension_2d: device.limits().max_texture_dimension_2d,
             device,
             queue,
             texture_format,
@@ -380,13 +382,26 @@ impl GpuContext {
         Ok((adapter, device, queue))
     }
 
+    pub fn max_texture_dimension_2d(&self) -> u32 {
+        self.max_texture_dimension_2d
+    }
+
+    pub fn validate_dimensions(&self, width: u32, height: u32) -> Result<(), GpuError> {
+        let max = self.max_texture_dimension_2d();
+        if width == 0 || height == 0 || width > max || height > max {
+            return Err(GpuError::InvalidDimensions { width, height, max });
+        }
+        Ok(())
+    }
+
     pub fn create_render_texture(
         &self,
         width: u32,
         height: u32,
         label: &'static str,
-    ) -> wgpu::Texture {
-        self.device.create_texture(&wgpu::TextureDescriptor {
+    ) -> Result<wgpu::Texture, GpuError> {
+        self.validate_dimensions(width, height)?;
+        Ok(self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
                 width,
@@ -402,7 +417,7 @@ impl GpuContext {
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
-        })
+        }))
     }
 
     pub fn instance(&self) -> &wgpu::Instance {
@@ -513,6 +528,7 @@ impl GpuContext {
         width: u32,
         height: u32,
     ) -> Result<(), GpuError> {
+        self.validate_dimensions(width, height)?;
         let config = self.build_surface_configuration(surface, width, height)?;
         #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
         if let Some(health) = &self.gl_health {
@@ -630,7 +646,11 @@ impl GpuContext {
         height: u32,
         label: &'static str,
     ) -> Result<wgpu::Texture, GpuError> {
-        let texture = self.create_render_texture(width, height, label);
+        self.validate_dimensions(width, height)?;
+        if width > canvas.width() || height > canvas.height() {
+            return Err(GpuError::CanvasUploadSize);
+        }
+        let texture = self.create_render_texture(width, height, label)?;
         self.check_render_result("upload texture allocation")?;
 
         if self.supports_external_texture_copies {
@@ -749,6 +769,7 @@ impl GpuContext {
         width: u32,
         height: u32,
     ) -> Result<&web_sys::HtmlCanvasElement, GpuError> {
+        self.validate_dimensions(width, height)?;
         let gl_canvas = self
             .gl_canvas
             .as_ref()

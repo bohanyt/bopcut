@@ -31,6 +31,9 @@ import { dimensionToAspectRatio } from "@/utils/geometry";
 import { formatNumberForDisplay } from "@/utils/math";
 import { OcSquarePlusIcon } from "@/components/icons";
 import type { TCanvasSize } from "@/project/types";
+import { toast } from "sonner";
+import { canvasSizeError, getRendererLimits } from "@/services/renderer/renderer-device";
+import { MIN_GPU_CANVAS_DIMENSION } from "@/canvas/sizes";
 
 type SettingsView = "project-info" | "background";
 
@@ -68,6 +71,16 @@ function parseCanvasDimension({ input }: { input: string }): number | null {
 
 	const rounded = Math.round(parsed);
 	return rounded > 0 ? rounded : null;
+}
+
+function customCanvasSizeError(size: TCanvasSize, changedDimension?: keyof TCanvasSize) {
+	// Let users repair the two sides of an oversized saved canvas independently.
+	const changedSize = changedDimension ? { width: 1, height: 1, [changedDimension]: size[changedDimension] } : size;
+	const { maxSurfaceDimension } = getRendererLimits();
+	if (canvasSizeError(changedSize, maxSurfaceDimension)) return canvasSizeError(size, maxSurfaceDimension);
+	if (maxSurfaceDimension === undefined && Math.max(changedSize.width, changedSize.height) > MIN_GPU_CANVAS_DIMENSION) {
+		return `Wait for graphics to be ready before setting a canvas dimension above ${MIN_GPU_CANVAS_DIMENSION} pixels.`;
+	}
 }
 
 function useCanvasDimensionDraft({
@@ -189,25 +202,35 @@ export function SettingsView() {
 	};
 
 	const selectCustomCanvasSize = () => {
-		updateCustomCanvasSize({
-			canvasSize: lastCustomCanvasSize ?? currentCanvasSize,
-		});
+		const canvasSize = lastCustomCanvasSize ?? currentCanvasSize;
+		if (customCanvasSizeError(canvasSize)) {
+			// Open the fields at the current size and keep the preference for a capable device.
+			if (canvasSizeMode !== "custom") {
+				editor.project.updateSettings({ settings: { canvasSizeMode: "custom" } });
+			}
+			return;
+		}
+		updateCustomCanvasSize({ canvasSize });
+	};
+
+	const commitDimension = (dimension: keyof TCanvasSize, value: number) => {
+		const canvasSize = { ...currentCanvasSize, [dimension]: value };
+		const error = customCanvasSizeError(canvasSize, dimension);
+		if (error) {
+			toast.error(error);
+			return;
+		}
+		updateCustomCanvasSize({ canvasSize });
 	};
 
 	const widthDraft = useCanvasDimensionDraft({
 		value: currentCanvasSize.width,
-		onCommit: (width) =>
-			updateCustomCanvasSize({
-				canvasSize: { width, height: currentCanvasSize.height },
-			}),
+		onCommit: (width) => commitDimension("width", width),
 	});
 
 	const heightDraft = useCanvasDimensionDraft({
 		value: currentCanvasSize.height,
-		onCommit: (height) =>
-			updateCustomCanvasSize({
-				canvasSize: { width: currentCanvasSize.width, height },
-			}),
+		onCommit: (height) => commitDimension("height", height),
 	});
 
 	const isCustomSelected = canvasSizeMode === "custom";
@@ -290,32 +313,32 @@ export function SettingsView() {
 							))}
 							<div className="pb-2">
 								<AspectRatioItem
-									key="custom"
 									label="Custom"
 									previewIcon={<OcSquarePlusIcon />}
 									isSelected={isCustomSelected}
 									onClick={selectCustomCanvasSize}
-									uiOptions={
-										<div className=" flex items-center gap-2 text-foreground">
-											<NumberField
-												value={widthDraft.displayValue}
-												className="w-full"
-												aria-label="Canvas width"
-												onFocus={widthDraft.onFocus}
-												onChange={widthDraft.onChange}
-												onBlur={widthDraft.onBlur}
-											/>
-											<NumberField
-												value={heightDraft.displayValue}
-												className="w-full"
-												aria-label="Canvas height"
-												onFocus={heightDraft.onFocus}
-												onChange={heightDraft.onChange}
-												onBlur={heightDraft.onBlur}
-											/>
-										</div>
-									}
+									className={isCustomSelected ? "rounded-b-none border-b-0" : undefined}
 								/>
+								{isCustomSelected && (
+									<div className="flex items-center gap-2 rounded-b-md border border-t-0 border-secondary-border bg-secondary px-2 pb-2 text-foreground">
+										<NumberField
+											value={widthDraft.displayValue}
+											className="w-full"
+											aria-label="Canvas width"
+											onFocus={widthDraft.onFocus}
+											onChange={widthDraft.onChange}
+											onBlur={widthDraft.onBlur}
+										/>
+										<NumberField
+											value={heightDraft.displayValue}
+											className="w-full"
+											aria-label="Canvas height"
+											onFocus={heightDraft.onFocus}
+											onChange={heightDraft.onChange}
+											onBlur={heightDraft.onBlur}
+										/>
+									</div>
+								)}
 							</div>
 						</SectionContent>
 					</Section>
@@ -331,13 +354,13 @@ function AspectRatioItem({
 	previewIcon,
 	isSelected,
 	onClick,
-	uiOptions,
+	className,
 }: {
 	label: string;
 	previewIcon: React.ReactNode;
 	isSelected: boolean;
 	onClick: () => void;
-	uiOptions?: React.ReactNode;
+	className?: string;
 }) {
 	return (
 		<Button
@@ -345,6 +368,7 @@ function AspectRatioItem({
 			className={cn(
 				"px-2 py-0 flex flex-col h-fit w-full",
 				!isSelected && "border border-transparent opacity-75!",
+				className,
 			)}
 			onClick={onClick}
 		>
@@ -359,9 +383,6 @@ function AspectRatioItem({
 					{isSelected && <HugeiconsIcon icon={Tick02Icon} className="size-4" />}
 				</div>
 			</div>
-			{uiOptions && isSelected && (
-				<div className="w-full pb-2">{uiOptions}</div>
-			)}
 		</Button>
 	);
 }

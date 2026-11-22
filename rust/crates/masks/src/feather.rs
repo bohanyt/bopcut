@@ -159,7 +159,7 @@ impl MaskFeatherPipeline {
             height,
             feather,
         }: ApplyMaskFeatherOptions<'_>,
-    ) -> wgpu::Texture {
+    ) -> Result<wgpu::Texture, gpu::GpuError> {
         let mut encoder =
             context
                 .device()
@@ -175,9 +175,9 @@ impl MaskFeatherPipeline {
                 height,
                 feather,
             },
-        );
+        )?;
         context.queue().submit([encoder.finish()]);
-        output
+        Ok(output)
     }
 
     pub fn apply_mask_feather_with_encoder(
@@ -190,11 +190,11 @@ impl MaskFeatherPipeline {
             height,
             feather,
         }: ApplyMaskFeatherOptions<'_>,
-    ) -> wgpu::Texture {
+    ) -> Result<wgpu::Texture, gpu::GpuError> {
         let sdf = self
             .sdf_pipeline
-            .compute_signed_distance_field_with_encoder(context, encoder, mask, width, height);
-        let output_texture = context.create_render_texture(width, height, "masks-feather-output");
+            .compute_signed_distance_field_with_encoder(context, encoder, mask, width, height)?;
+        let output_texture = context.create_render_texture(width, height, "masks-feather-output")?;
         let inside_view = sdf
             .inside_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -280,6 +280,6 @@ impl MaskFeatherPipeline {
             render_pass.set_bind_group(2, &uniform_bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
-        output_texture
+        Ok(output_texture)
     }
 }

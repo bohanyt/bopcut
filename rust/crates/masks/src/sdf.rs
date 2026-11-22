@@ -123,7 +123,7 @@ impl SdfPipeline {
         source_texture: &wgpu::Texture,
         width: u32,
         height: u32,
-    ) -> SignedDistanceFieldTextures {
+    ) -> Result<SignedDistanceFieldTextures, gpu::GpuError> {
         let mut encoder =
             context
                 .device()
@@ -136,9 +136,9 @@ impl SdfPipeline {
             source_texture,
             width,
             height,
-        );
+        )?;
         context.queue().submit([encoder.finish()]);
-        textures
+        Ok(textures)
     }
 
     pub fn compute_signed_distance_field_with_encoder(
@@ -148,11 +148,11 @@ impl SdfPipeline {
         source_texture: &wgpu::Texture,
         width: u32,
         height: u32,
-    ) -> SignedDistanceFieldTextures {
-        SignedDistanceFieldTextures {
-            inside_texture: self.run_jfa(context, encoder, source_texture, width, height, false),
-            outside_texture: self.run_jfa(context, encoder, source_texture, width, height, true),
-        }
+    ) -> Result<SignedDistanceFieldTextures, gpu::GpuError> {
+        Ok(SignedDistanceFieldTextures {
+            inside_texture: self.run_jfa(context, encoder, source_texture, width, height, false)?,
+            outside_texture: self.run_jfa(context, encoder, source_texture, width, height, true)?,
+        })
     }
 
     fn run_jfa(
@@ -163,9 +163,9 @@ impl SdfPipeline {
         width: u32,
         height: u32,
         is_inverted: bool,
-    ) -> wgpu::Texture {
-        let ping_texture = context.create_render_texture(width, height, "gpu-jfa-ping-texture");
-        let pong_texture = context.create_render_texture(width, height, "gpu-jfa-pong-texture");
+    ) -> Result<wgpu::Texture, gpu::GpuError> {
+        let ping_texture = context.create_render_texture(width, height, "gpu-jfa-ping-texture")?;
+        let pong_texture = context.create_render_texture(width, height, "gpu-jfa-pong-texture")?;
 
         self.run_pass(
             context,
@@ -209,11 +209,11 @@ impl SdfPipeline {
             source_is_ping = !source_is_ping;
         }
 
-        if source_is_ping {
+        Ok(if source_is_ping {
             ping_texture
         } else {
             pong_texture
-        }
+        })
     }
 
     fn run_pass(

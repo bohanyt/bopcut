@@ -2,7 +2,7 @@
   "name": "opencut-wasm",
   "type": "module",
   "description": "Shared video editor logic compiled to WebAssembly",
-  "version": "0.2.10-bopencut.5",
+  "version": "0.2.10-bopencut.6",
   "license": "MIT",
   "files": [
     "opencut_wasm_bg.wasm",

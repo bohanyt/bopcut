@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { CompoundElement, CreateCompoundElement, TScene } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
@@ -28,6 +28,7 @@ const { InsertElementCommand, MoveElementCommand, UpdateElementsCommand } = awai
 	"@/commands/timeline"
 );
 const { CompoundCycleError, expandCompoundAudioTracks } = await import("@/timeline/compound");
+const graphics = await import("@/services/renderer/renderer-device");
 
 function setup(scenes: TScene[] = fixture()) {
 	EditorCore.reset();
@@ -332,7 +333,7 @@ describe("compound clip commands", () => {
 });
 
 describe("insertion and batch rollback", () => {
-	function emptyProject() {
+	function emptyProject({ width = 1080, height = 1920 } = {}) {
 		const scenes = fixture();
 		const host = getHost(scenes);
 		host.tracks = {
@@ -348,8 +349,8 @@ describe("insertion and batch rollback", () => {
 				type: "video",
 				file: new File([], "clip.mp4"),
 				url: "blob:clip",
-				width: 1080,
-				height: 1920,
+				width,
+				height,
 				fps: 25,
 			} as MediaAsset,
 		];
@@ -402,5 +403,66 @@ describe("insertion and batch rollback", () => {
 		expect(settingsOf(editor)).toEqual(before);
 		editor.command.redo();
 		expect(settingsOf(editor)).toEqual(after);
+	});
+
+	test("first-media auto sizing fits the device and preserves even dimensions for MP4", () => {
+		const limits = spyOn(graphics, "getRendererLimits").mockReturnValue({
+			maxTextureDimension: 8192, maxSurfaceDimension: 4096,
+		});
+		try {
+			const editor = emptyProject({ width: 9000, height: 6000 });
+			const before = settingsOf(editor);
+			editor.command.execute({ command: firstVideo() });
+			const after = settingsOf(editor);
+			expect(after.canvasSize).toEqual({ width: 4096, height: 2730 });
+			expect(after.originalCanvasSize).toEqual(after.canvasSize);
+			editor.command.undo();
+			expect(settingsOf(editor)).toEqual(before);
+			editor.command.redo();
+			expect(settingsOf(editor)).toEqual(after);
+		} finally {
+			limits.mockRestore();
+		}
+	});
+
+	test.each(["ready", "undo", "retry"])("first-media sizing waits for graphics (%s)", (outcome) => {
+		const listeners = new Set<() => void>();
+		const subscription = spyOn(graphics.rendererDevice, "subscribe").mockImplementation((listener) => {
+			listeners.add(listener);
+			return () => { listeners.delete(listener); };
+		});
+		const limits = spyOn(graphics, "getRendererLimits").mockReturnValue({});
+		try {
+			const editor = emptyProject({ width: 7680, height: 4320 });
+			const before = settingsOf(editor);
+			editor.command.execute({ command: firstVideo() });
+			expect(editor.scenes.getActiveScene().tracks.main.elements).toHaveLength(1);
+			expect(settingsOf(editor).canvasSize).toEqual(before.canvasSize);
+			if (outcome === "undo") editor.command.undo();
+			if (outcome === "retry") {
+				Object.defineProperty(graphics.rendererDevice, "status", {
+					configurable: true, value: { state: "unavailable", detail: "Startup failed" },
+				});
+				for (const listener of listeners) listener();
+				expect(listeners.size).toBe(1);
+				expect(settingsOf(editor).canvasSize).toEqual(before.canvasSize);
+				Object.defineProperty(graphics.rendererDevice, "status", { configurable: true, value: { state: "ready" } });
+			}
+
+			limits.mockReturnValue({ maxTextureDimension: 4096, maxSurfaceDimension: 4096 });
+			for (const listener of listeners) listener();
+			expect(listeners.size).toBe(0);
+			if (outcome === "undo") {
+				expect(settingsOf(editor)).toEqual(before);
+				editor.command.redo();
+			}
+			expect(settingsOf(editor).canvasSize).toEqual({ width: 4096, height: 2304 });
+			editor.command.undo();
+			expect(settingsOf(editor)).toEqual(before);
+		} finally {
+			if (outcome === "retry") Reflect.deleteProperty(graphics.rendererDevice, "status");
+			limits.mockRestore();
+			subscription.mockRestore();
+		}
 	});
 });

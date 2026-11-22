@@ -312,7 +312,7 @@ impl Compositor {
             frame.width,
             frame.height,
             frame.clear.color,
-        );
+        )?;
 
         for item in &frame.items {
             match item {
@@ -368,7 +368,7 @@ impl Compositor {
             frame.width,
             frame.height,
             frame.clear.color,
-        );
+        )?;
 
         for item in &frame.items {
             match item {
@@ -423,7 +423,7 @@ impl Compositor {
 
         let mut current =
             self.texture_pool
-                .acquire(context, frame.width, frame.height, "compositor-layer");
+                .acquire(context, frame.width, frame.height, "compositor-layer")?;
         self.render_source_to_texture(
             context,
             encoder,
@@ -471,7 +471,7 @@ impl Compositor {
                     frame.width,
                     frame.height,
                 )
-            };
+            }?;
             current = self.apply_mask(
                 context,
                 encoder,
@@ -480,7 +480,7 @@ impl Compositor {
                 mask.inverted,
                 frame.width,
                 frame.height,
-            );
+            )?;
         }
 
         Ok(current)
@@ -495,7 +495,7 @@ impl Compositor {
         height: u32,
         effect_pass_groups: &[Vec<EffectPassDescriptor>],
     ) -> Result<wgpu::Texture, CompositorError> {
-        let mut current = self.copy_texture(context, encoder, source, width, height);
+        let mut current = self.copy_texture(context, encoder, source, width, height)?;
         for group in effect_pass_groups {
             let passes = map_effect_passes(group);
             current = self.effects.apply_with_encoder(
@@ -519,10 +519,10 @@ impl Compositor {
         width: u32,
         height: u32,
         clear_color: [f32; 4],
-    ) -> wgpu::Texture {
+    ) -> Result<wgpu::Texture, gpu::GpuError> {
         let texture =
             self.texture_pool
-                .acquire(context, width, height, "compositor-cleared-texture");
+                .acquire(context, width, height, "compositor-cleared-texture")?;
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -547,7 +547,7 @@ impl Compositor {
                 multiview_mask: None,
             });
         }
-        texture
+        Ok(texture)
     }
 
     fn copy_texture(
@@ -557,12 +557,12 @@ impl Compositor {
         source: &wgpu::Texture,
         width: u32,
         height: u32,
-    ) -> wgpu::Texture {
+    ) -> Result<wgpu::Texture, gpu::GpuError> {
         let texture = self
             .texture_pool
-            .acquire(context, width, height, "compositor-copy-texture");
+            .acquire(context, width, height, "compositor-copy-texture")?;
         self.blit_texture(context, encoder, source, &texture);
-        texture
+        Ok(texture)
     }
 
     fn render_source_to_texture(
@@ -655,10 +655,10 @@ impl Compositor {
         inverted: bool,
         width: u32,
         height: u32,
-    ) -> wgpu::Texture {
+    ) -> Result<wgpu::Texture, gpu::GpuError> {
         let target = self
             .texture_pool
-            .acquire(context, width, height, "compositor-masked-texture");
+            .acquire(context, width, height, "compositor-masked-texture")?;
         let layer_view = layer_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mask_view = mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -741,7 +741,7 @@ impl Compositor {
             render_pass.set_bind_group(2, &uniform_bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
-        target
+        Ok(target)
     }
 
     fn blend_texture(
@@ -756,7 +756,7 @@ impl Compositor {
     ) -> Result<wgpu::Texture, CompositorError> {
         let target =
             self.texture_pool
-                .acquire(context, width, height, "compositor-blended-texture");
+                .acquire(context, width, height, "compositor-blended-texture")?;
         let base_view = base.create_view(&wgpu::TextureViewDescriptor::default());
         let layer_view = layer.create_view(&wgpu::TextureViewDescriptor::default());
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());

@@ -7,6 +7,7 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+import { previewCanvasSize } from "@/canvas/sizes";
 import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
 import { RecoverableSurfaceError, rendererDevice } from "@/services/renderer/renderer-device";
 import { modelGraphics } from "@/model3d/render";
@@ -35,10 +36,7 @@ function usePreviewSize() {
 		(e) => e.project.getActive()?.settings.canvasSize,
 	);
 
-	return {
-		width: canvasSize?.width,
-		height: canvasSize?.height,
-	};
+	return previewCanvasSize(canvasSize);
 }
 
 function normalizeWheelDelta({

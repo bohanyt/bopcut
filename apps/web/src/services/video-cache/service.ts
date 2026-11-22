@@ -8,6 +8,7 @@ import {
 	type VideoSample,
 } from "mediabunny";
 import { getDecodableVideoTrack } from "@/media/video-probe";
+import { fitSurfaceSize } from "@/services/renderer/scale";
 
 type VideoSize = { width: number; height: number };
 type VideoFrame = {
@@ -103,15 +104,19 @@ class VideoCursor {
 		void this.next.catch(() => {});
 	}
 
-	rasterize(sample: VideoSample, track: InputVideoTrack, scale: number): VideoFrame {
+	rasterize(sample: VideoSample, track: InputVideoTrack, scale: number, maxTextureDimension: number): VideoFrame {
 		const sourceWidth = track.displayWidth;
 		const sourceHeight = track.displayHeight;
 		// Round up in half-octave steps so a zoom animation can reuse the same canvas allocation.
 		const budget = scale >= 1 || !Number.isFinite(scale)
 			? 1
 			: 2 ** (Math.ceil(Math.log2(Math.max(0, scale)) * 2) / 2);
-		const width = Math.max(1, Math.ceil(sourceWidth * budget));
-		const height = Math.max(1, Math.ceil(sourceHeight * budget));
+		const { width, height } = budget * Math.max(sourceWidth, sourceHeight) > maxTextureDimension
+			? fitSurfaceSize(sourceWidth, sourceHeight, maxTextureDimension)
+			: {
+				width: Math.max(1, Math.ceil(sourceWidth * budget)),
+				height: Math.max(1, Math.ceil(sourceHeight * budget)),
+			};
 		const key = `${width}x${height}`;
 		const cached = this.frames.get(key);
 		if (cached) return cached;
@@ -173,12 +178,14 @@ export class VideoCache {
 		file,
 		time,
 		getScale,
+		maxTextureDimension = Infinity,
 		throwOnSeekError = false,
 		signal,
 	}: {
 		file: File;
 		time: number;
 		getScale?: (source: VideoSize) => number;
+		maxTextureDimension?: number;
 		throwOnSeekError?: boolean;
 		signal?: AbortSignal;
 	}): Promise<VideoFrame | null> {
@@ -243,7 +250,7 @@ export class VideoCache {
 			}
 		}
 		const scale = getScale?.({ width: track.displayWidth, height: track.displayHeight }) ?? 1;
-		return request.cursor.rasterize(sample, track, scale);
+		return request.cursor.rasterize(sample, track, scale, maxTextureDimension);
 	}
 
 	private getSource(file: File): VideoSource {

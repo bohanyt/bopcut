@@ -8,7 +8,8 @@ mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initia
 const { EditorCore } = await import("@/core");
 const { pollFrames } = await import("./frames");
 const { snapshotHistory } = await import("./history");
-const { rendererDevice } = await import("@/services/renderer/renderer-device");
+const graphics = await import("@/services/renderer/renderer-device");
+const { rendererDevice } = graphics;
 
 const T = (seconds: number) => mediaTimeFromSeconds({ seconds });
 const date = new Date(0);
@@ -29,9 +30,10 @@ const settings: TProjectSettings = {
 	fps: { numerator: 30, denominator: 1 },
 };
 
-function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failCancellation = false, failResult }: {
+function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failCancellation = false, failResult, imageSize = settings.canvasSize }: {
 	compare?: { syncedAt: string }; times?: readonly number[]; pauseAt?: string; failCancellation?: boolean;
 	failResult?: "HTTP error" | "network error";
+	imageSize?: { width: number; height: number };
 } = {}) {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
@@ -51,6 +53,7 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 	const release = Promise.withResolvers<void>();
 	const results: unknown[] = [];
 	const uploads: FormData[] = [];
+	const drawImage = mock((_image: ImageBitmap, _x: number, _y: number, _width: number, _height: number) => {});
 	const stored = new Map<string, string>();
 	let paused = false;
 	let failed = false;
@@ -82,8 +85,8 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 			throw new Error(`Unexpected request: ${url}`);
 		},
 		localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) },
-		createImageBitmap: async () => ({ width: 1920, height: 1080, close() {} }),
-		document: { createElement: () => ({ getContext: () => ({ drawImage() {} }), toBlob: (done: (blob: Blob) => void) => done(new Blob(["jpeg"])) }) },
+		createImageBitmap: async () => ({ ...imageSize, close() {} }),
+		document: { createElement: () => ({ getContext: () => ({ drawImage }), toBlob: (done: (blob: Blob) => void) => done(new Blob(["jpeg"])) }) },
 	};
 	for (const [key, value] of Object.entries(globals)) {
 		const original = Object.getOwnPropertyDescriptor(globalThis, key);
@@ -91,7 +94,7 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 		cleanups.push(() => original ? Object.defineProperty(globalThis, key, original) : Reflect.deleteProperty(globalThis, key));
 	}
 	cleanups.push(() => render.mockRestore());
-	return { editor, scenes, open, render, uploads, results, entered: entered.promise, release: release.resolve };
+	return { editor, scenes, open, render, uploads, results, drawImage, entered: entered.promise, release: release.resolve };
 }
 
 const cleanups: (() => void)[] = [];
@@ -101,6 +104,16 @@ afterEach(() => {
 });
 
 const ready = () => ({ ready: true, missingMedia: [] });
+
+test("agent frame resizing caps the height of a narrow portrait canvas", async () => {
+	const { drawImage, results } = setup({ pauseAt: "", times: [0], imageSize: { width: 64, height: 4096 } });
+	const limits = spyOn(graphics, "getRendererLimits")
+		.mockReturnValue({ maxTextureDimension: 4096, maxSurfaceDimension: 4096 });
+	cleanups.push(() => limits.mockRestore());
+	await pollFrames(ready);
+	expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 64, 4096);
+	expect(results).toEqual([{ rev: "frame-test", projectId: "p", files: ["frame-1.jpg"] }]);
+});
 
 test("a frames request remains unanswered through graphics startup and recovery", async () => {
 	const { render, results, entered, release } = setup({ pauseAt: "/api/agent/frames-request", times: [0] });

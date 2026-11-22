@@ -14,7 +14,7 @@ import { isElementMuted } from "@/timeline/audio-state";
 import type { TCanvasSize } from "@/project/types";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
-import { rendererDevice } from "@/services/renderer/renderer-device";
+import { canvasSizeError, rendererDevice } from "@/services/renderer/renderer-device";
 import { verifyVideoFile } from "@/media/video-probe";
 
 type SnapshotResult =
@@ -123,24 +123,20 @@ export class RendererManager {
 				height: canvasSize.height,
 				fps,
 				exactFrames: true,
+				requireFullSize: true,
 			});
 
-			const tempCanvas = document.createElement("canvas");
-			tempCanvas.width = canvasSize.width;
-			tempCanvas.height = canvasSize.height;
-
 			try {
-				await renderer.renderToCanvas({
+				await renderer.render({
 					node: renderTree,
 					time: renderTime,
-					targetCanvas: tempCanvas,
 				});
 			} finally {
 				renderer.videoCache.clear();
 			}
 
 			const blob = await new Promise<Blob | null>((resolve) => {
-				tempCanvas.toBlob((result) => resolve(result), "image/png");
+				renderer.getOutputCanvas().toBlob((result) => resolve(result), "image/png");
 			});
 
 			if (!blob) {
@@ -193,6 +189,8 @@ export class RendererManager {
 		canvasSize: TCanvasSize;
 		duration?: number;
 	}): ExportResult | null {
+		const sizeError = canvasSizeError(canvasSize);
+		if (sizeError) return { success: false, error: sizeError };
 		if (format === "mp4" && (canvasSize.width % 2 !== 0 || canvasSize.height % 2 !== 0)) {
 			return {
 				success: false,

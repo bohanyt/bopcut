@@ -24,6 +24,10 @@ pub enum GpuError {
     SurfaceUnavailable,
     #[error("Graphics surface validation failed")]
     SurfaceValidation,
+    #[error("Graphics dimensions {width} × {height} are outside the supported range (1–{max} pixels per side)")]
+    InvalidDimensions { width: u32, height: u32, max: u32 },
+    #[error("Texture upload dimensions exceed the source canvas")]
+    CanvasUploadSize,
     #[error("WebGL2 operation failed: {0}")]
     WebGlOperation(String),
     #[error("Could not read the source canvas for texture upload")]

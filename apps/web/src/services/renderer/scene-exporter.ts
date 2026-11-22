@@ -68,6 +68,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			height,
 			fps,
 			exactFrames: true,
+			requireFullSize: true,
 			strictVideoDecoding: true,
 			onMediaFailure,
 		});

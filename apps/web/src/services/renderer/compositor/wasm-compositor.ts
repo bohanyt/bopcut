@@ -19,6 +19,7 @@ import type {
 	TextureUploadDescriptor,
 } from "./types";
 import { matteFromBlackAndWhite } from "./matte";
+import { fitSurfaceSize } from "../scale";
 
 /**
  * One slot in the derived-texture cache. The OffscreenCanvas is persistent —
@@ -79,7 +80,10 @@ class WasmCompositor {
 
 	syncTextures(
 		textures: TextureUploadDescriptor[],
-		{ releaseUnused = true }: { releaseUnused?: boolean } = {},
+		{ releaseUnused = true, maxTextureDimension = Infinity }: {
+			releaseUnused?: boolean;
+			maxTextureDimension?: number;
+		} = {},
 	) {
 		if (releaseUnused) {
 			const nextIds = new Set(textures.map((texture) => texture.id));
@@ -93,7 +97,10 @@ class WasmCompositor {
 
 		for (const texture of textures) {
 			if (texture.kind === "external") {
-				this.syncExternalTexture(texture);
+				const sized = Math.max(texture.width, texture.height) > maxTextureDimension
+					? { ...texture, ...fitSurfaceSize(texture.width, texture.height, maxTextureDimension) }
+					: texture;
+				this.syncExternalTexture(sized);
 			} else {
 				this.syncRenderedTexture(texture);
 			}
@@ -248,7 +255,7 @@ function ensureOffscreenCanvas({
 	height: number;
 	label: string;
 }): OffscreenCanvas {
-	if (source instanceof OffscreenCanvas) {
+	if (source instanceof OffscreenCanvas && source.width === width && source.height === height) {
 		return source;
 	}
 

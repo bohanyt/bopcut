@@ -44,6 +44,7 @@ import { renderModel3d } from "@/model3d/render";
 import { model3dParams } from "@/params/registry";
 import { resolveAnimationPathValueAtTime } from "@/animation";
 import { ImageNode, loadImageSource } from "./nodes/image-node";
+import { getRendererLimits } from "./renderer-device";
 import { StickerNode, loadStickerSource } from "./nodes/sticker-node";
 import { TextNode, type ResolvedTextNodeState } from "./nodes/text-node";
 import { VideoNode } from "./nodes/video-node";
@@ -362,6 +363,7 @@ function readVideoFrame(
 		file,
 		time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
 		getScale: context.renderer.exactFrames ? undefined : getScale,
+		maxTextureDimension: getRendererLimits().maxTextureDimension,
 		throwOnSeekError: context.renderer.strictVideoDecoding,
 		signal: context.signal,
 	}));
@@ -410,17 +412,21 @@ async function resolveImageNode({
 }: {
 	node: ImageNode;
 	context: ResolveContext;
-}): Promise<ResolvedVisualSourceNodeState | null> {
+}): Promise<ImageNode["resolved"]> {
 	const { mediaId, url, maxSourceSize, timeOffset, duration } = node.params;
 	if (context.time < timeOffset || context.time >= timeOffset + duration) return null;
 
-	const source = await readMediaSource(mediaId, context, () => loadImageSource({ url, maxSourceSize }));
+	const deviceLimit = getRendererLimits().maxTextureDimension;
+	const source = await readMediaSource(mediaId, context, () => loadImageSource({
+		url,
+		maxSourceSize: deviceLimit === undefined ? maxSourceSize : Math.min(maxSourceSize ?? Infinity, deviceLimit),
+	}));
 	if (!source) return null;
 	const visualState = resolveVisualState({
 		params: node.params,
 		context,
-		sourceWidth: source.width,
-		sourceHeight: source.height,
+		sourceWidth: source.naturalWidth,
+		sourceHeight: source.naturalHeight,
 	});
 	if (!visualState) {
 		return null;
@@ -429,8 +435,8 @@ async function resolveImageNode({
 	return {
 		...visualState,
 		source: source.source,
-		sourceWidth: source.width,
-		sourceHeight: source.height,
+		sourceWidth: source.naturalWidth,
+		sourceHeight: source.naturalHeight,
 	};
 }
 
@@ -635,12 +641,14 @@ async function resolveBackdropSource({
 	}
 
 	const { mediaId, url } = node.params;
-	const source = await readMediaSource(mediaId, context, () => loadImageSource({ url }));
+	const source = await readMediaSource(mediaId, context, () => loadImageSource({
+		url, maxSourceSize: getRendererLimits().maxTextureDimension,
+	}));
 	if (!source) return null;
 	return {
 		source: source.source,
-		width: source.width,
-		height: source.height,
+		width: source.naturalWidth,
+		height: source.naturalHeight,
 	};
 }
 

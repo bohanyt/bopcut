@@ -219,6 +219,24 @@ test("rotated portrait video preserves its layout and supplies enough pixels for
 		}
 	}, { width: 2160, height: 3840, rotation: 90 }));
 
+test("exact video rasterization fits the device while retaining the original display geometry", () =>
+	withVideo(constantRate(1), async ({ file, starts }) => {
+		const cache = new VideoCache();
+		try {
+			const limited = await cache.getFrameAt({ file, time: 0, maxTextureDimension: 4096 });
+			expect(limited).toMatchObject({
+				canvas: { width: 2304, height: 4096 },
+				sourceWidth: 4320,
+				sourceHeight: 7680,
+			});
+			const full = await cache.getFrameAt({ file, time: 0, maxTextureDimension: 8192 });
+			expect(full?.canvas).toMatchObject({ width: 4320, height: 7680 });
+			expect(starts).toEqual([0]);
+		} finally {
+			cache.clear();
+		}
+	}, { width: 4320, height: 7680, rotation: 90 }));
+
 test("interleaved preview and exact consumers keep their decode cursors and surfaces", () =>
 	withVideo(constantRate(32), async ({ file, starts }) => {
 		const preview = rendererAt();

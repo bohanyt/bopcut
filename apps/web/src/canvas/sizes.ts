@@ -8,3 +8,14 @@ export const DEFAULT_CANVAS_PRESETS: TCanvasSize[] = [
 ];
 
 export const DEFAULT_CANVAS_SIZE: TCanvasSize = { width: 1920, height: 1080 };
+
+// The minimum texture size guaranteed by WebGL2 also fits WebGPU.
+export const MIN_GPU_CANVAS_DIMENSION = 2048;
+
+export function isValidCanvasSize({ width, height }: TCanvasSize): boolean {
+	return Number.isSafeInteger(width) && Number.isSafeInteger(height) && width > 0 && height > 0;
+}
+
+export function previewCanvasSize(size: TCanvasSize): TCanvasSize {
+	return isValidCanvasSize(size) ? size : DEFAULT_CANVAS_SIZE;
+}
