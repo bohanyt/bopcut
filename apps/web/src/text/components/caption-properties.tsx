@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useEffect, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ export function CaptionProperties({
 	trackId: string;
 	presetsOnly?: boolean;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const [presets, setPresets] = useState<TextStylePreset[]>([]);
 	const [name, setName] = useState("");
@@ -88,26 +90,26 @@ export function CaptionProperties({
 	};
 	return (
 		<div className="space-y-3 border-b p-4">
-			<div className="text-sm font-medium">Text style presets</div>
+			<div className="text-sm font-medium">{t("text.presets")}</div>
 			<div className="flex gap-2">
 				<Input
-					aria-label="Preset name"
+					aria-label={t("text.presetName")}
 					value={name}
 					onChange={(event) => setName(event.target.value)}
-					placeholder="Preset name"
+					placeholder={t("text.presetName")}
 				/>
 				<Button size="sm" disabled={busy || !name.trim()} onClick={save}>
-					Save
+					{t("common.save")}
 				</Button>
 			</div>
 			<div className="flex gap-2">
 				<select
-					aria-label="Text style preset"
+					aria-label={t("text.preset")}
 					className="bg-background min-w-0 flex-1 rounded border px-2 text-sm"
 					value={chosen}
 					onChange={(event) => setChosen(event.target.value)}
 				>
-					<option value="">Choose a preset</option>
+					<option value="">{t("text.choosePreset")}</option>
 					{presets.map((preset) => (
 						<option key={preset.name} value={preset.name}>
 							{preset.name}
@@ -115,26 +117,25 @@ export function CaptionProperties({
 					))}
 				</select>
 				<Button size="sm" disabled={!chosen} onClick={apply}>
-					Apply to selected
+					{t("text.applySelected")}
 				</Button>
 			</div>
 			{!presetsOnly &&
 				(element.caption ? (
 					<>
 						<p className="text-muted-foreground text-xs">
-							{element.caption.approximate
-								? "Approximate word timings"
-								: "Timed words"}
-							. Edit the text below; matching words keep their timings.
+							{t("text.timingHint", { timings: element.caption.approximate
+								? t("text.approximateTimings")
+								: t("text.timedWords") })}
 						</p>
-						<div className="flex flex-wrap gap-1" aria-label="Emphasis words">
+						<div className="flex flex-wrap gap-1" aria-label={t("text.emphasisWords")}>
 							{element.caption.words.map((word, index) => (
 								<Button
 									key={index}
 									size="sm"
 									variant={word.highlight ? "secondary" : "ghost"}
 									aria-pressed={!!word.highlight}
-									title={`${word.start.toFixed(2)}–${word.end.toFixed(2)} s; toggle emphasis`}
+									title={t("text.toggleEmphasis", { start: word.start.toFixed(2), end: word.end.toFixed(2) })}
 									onClick={() =>
 										patch({
 											caption: {
@@ -155,7 +156,7 @@ export function CaptionProperties({
 					</>
 				) : (
 					<div className="flex items-center justify-between text-sm">
-						<span>Caption word timings</span>
+						<span>{t("text.captionTimings")}</span>
 						<Switch
 							checked={false}
 							onCheckedChange={() =>

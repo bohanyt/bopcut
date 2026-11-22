@@ -1,32 +1,34 @@
+import type { StaticMessageKey } from "@/i18n/translate";
+
 export const REGIONS = [
-	{ id: "Western Europe", aliases: ["west europe"] },
-	{ id: "Eastern Europe", aliases: ["east europe"] },
-	{ id: "Northern Europe", aliases: ["north europe"] },
-	{ id: "Southern Europe", aliases: ["south europe"] },
-	{ id: "South Asia", aliases: ["southern asia"] },
-	{ id: "Southeast Asia", aliases: ["south east asia"] },
-	{ id: "East Asia", aliases: ["eastern asia", "far east"] },
-	{ id: "Central Asia", aliases: [] },
-	{ id: "Middle East", aliases: ["west asia"] },
-	{ id: "North Africa", aliases: ["northern africa"] },
-	{ id: "Sub-Saharan Africa", aliases: ["subsaharan africa"] },
-	{ id: "North America", aliases: ["northern america"] },
-	{ id: "South America", aliases: ["southern america", "latin america"] },
-	{ id: "Central America", aliases: ["central am"] },
-	{ id: "Caribbean", aliases: ["caribbean islands"] },
-	{ id: "Oceania", aliases: ["pacific", "pacific islands"] },
-	{ id: "Antarctica", aliases: [] },
-	{ id: "Atlantic Ocean", aliases: ["atlantic"] },
-	{ id: "North Atlantic", aliases: [] },
+	{ id: "Western Europe", labelKey: "regions.westernEurope", aliases: ["west europe"] },
+	{ id: "Eastern Europe", labelKey: "regions.easternEurope", aliases: ["east europe"] },
+	{ id: "Northern Europe", labelKey: "regions.northernEurope", aliases: ["north europe"] },
+	{ id: "Southern Europe", labelKey: "regions.southernEurope", aliases: ["south europe"] },
+	{ id: "South Asia", labelKey: "regions.southAsia", aliases: ["southern asia"] },
+	{ id: "Southeast Asia", labelKey: "regions.southeastAsia", aliases: ["south east asia"] },
+	{ id: "East Asia", labelKey: "regions.eastAsia", aliases: ["eastern asia", "far east"] },
+	{ id: "Central Asia", labelKey: "regions.centralAsia", aliases: [] },
+	{ id: "Middle East", labelKey: "regions.middleEast", aliases: ["west asia"] },
+	{ id: "North Africa", labelKey: "regions.northAfrica", aliases: ["northern africa"] },
+	{ id: "Sub-Saharan Africa", labelKey: "regions.subSaharanAfrica", aliases: ["subsaharan africa"] },
+	{ id: "North America", labelKey: "regions.northAmerica", aliases: ["northern america"] },
+	{ id: "South America", labelKey: "regions.southAmerica", aliases: ["southern america", "latin america"] },
+	{ id: "Central America", labelKey: "regions.centralAmerica", aliases: ["central am"] },
+	{ id: "Caribbean", labelKey: "regions.caribbean", aliases: ["caribbean islands"] },
+	{ id: "Oceania", labelKey: "regions.oceania", aliases: ["pacific", "pacific islands"] },
+	{ id: "Antarctica", labelKey: "regions.antarctica", aliases: [] },
+	{ id: "Atlantic Ocean", labelKey: "regions.atlanticOcean", aliases: ["atlantic"] },
+	{ id: "North Atlantic", labelKey: "regions.northAtlantic", aliases: [] },
 ] as const;
 
 export type RegionId = (typeof REGIONS)[number]["id"];
 
-export const REGION_GROUPS: Partial<Record<string, RegionId[]>> = {
-	europe: ["Western Europe", "Eastern Europe", "Northern Europe", "Southern Europe"],
-	asia: ["South Asia", "Southeast Asia", "East Asia", "Central Asia"],
-	africa: ["Sub-Saharan Africa", "North Africa"],
-	america: ["North America", "South America", "Central America", "Caribbean"],
+export const REGION_GROUPS: Partial<Record<string, { regions: RegionId[]; labelKey: StaticMessageKey }>> = {
+	europe: { regions: ["Western Europe", "Eastern Europe", "Northern Europe", "Southern Europe"], labelKey: "regions.europe" },
+	asia: { regions: ["South Asia", "Southeast Asia", "East Asia", "Central Asia"], labelKey: "regions.asia" },
+	africa: { regions: ["Sub-Saharan Africa", "North Africa"], labelKey: "regions.africa" },
+	america: { regions: ["North America", "South America", "Central America", "Caribbean"], labelKey: "regions.america" },
 };
 
 export interface CountryRecord {

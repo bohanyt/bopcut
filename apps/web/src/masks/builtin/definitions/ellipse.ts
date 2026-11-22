@@ -11,6 +11,7 @@ import {
 export const ellipseMaskDefinition: MaskDefinition<"ellipse"> = {
 	type: "ellipse",
 	name: "Ellipse",
+	nameKey: "shapes.ellipse",
 	features: {
 		hasPosition: true,
 		hasRotation: true,

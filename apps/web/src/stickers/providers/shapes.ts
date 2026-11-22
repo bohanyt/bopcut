@@ -1,5 +1,6 @@
 import { buildGraphicPreviewUrl, buildDefaultGraphicInstance, graphicsRegistry, registerDefaultGraphics } from "@/graphics";
 import type { ParamValues } from "@/params";
+import type { StaticMessageKey } from "@/i18n/translate";
 import { buildStickerId, parseStickerId } from "../sticker-id";
 import type {
 	StickerBrowseResult,
@@ -13,32 +14,36 @@ const SHAPES_PROVIDER_ID = "shapes";
 type ShapeGraphicPreset = {
 	shapeKey: string;
 	name: string;
+	nameKey: StaticMessageKey;
 	definitionId: string;
 	params?: ParamValues;
 };
 
 const LEGACY_SHAPE_PRESETS: Record<string, ShapeGraphicPreset> = {
-	square: { shapeKey: "square", name: "Square", definitionId: "rectangle" },
-	circle: { shapeKey: "circle", name: "Circle", definitionId: "ellipse" },
+	square: { shapeKey: "square", name: "Square", nameKey: "params.square", definitionId: "rectangle" },
+	circle: { shapeKey: "circle", name: "Circle", nameKey: "shapes.circle", definitionId: "ellipse" },
 	triangle: {
 		shapeKey: "triangle",
 		name: "Triangle",
+		nameKey: "params.triangle",
 		definitionId: "polygon",
 		params: { sides: 3 },
 	},
 	hexagon: {
 		shapeKey: "hexagon",
 		name: "Hexagon",
+		nameKey: "shapes.hexagon",
 		definitionId: "polygon",
 		params: { sides: 6 },
 	},
 	diamond: {
 		shapeKey: "diamond",
 		name: "Diamond",
+		nameKey: "shapes.diamond",
 		definitionId: "polygon",
 		params: { sides: 4 },
 	},
-	star: { shapeKey: "star", name: "Star", definitionId: "star" },
+	star: { shapeKey: "star", name: "Star", nameKey: "shapes.star", definitionId: "star" },
 };
 
 function getShapePresets(): ShapeGraphicPreset[] {
@@ -46,6 +51,7 @@ function getShapePresets(): ShapeGraphicPreset[] {
 	return graphicsRegistry.getAll().filter((definition) => definition.id !== "icon").map((definition) => ({
 		shapeKey: definition.id,
 		name: definition.name,
+		nameKey: definition.nameKey,
 		definitionId: definition.id,
 	}));
 }

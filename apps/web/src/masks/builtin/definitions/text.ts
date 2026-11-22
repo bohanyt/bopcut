@@ -41,7 +41,7 @@ const TEXT_MASK_ALIGNMENT = "center";
 const TEXT_MASK_PARAMS: ParamDefinition<keyof TextMaskParams & string>[] = [
 	{
 		key: "centerX",
-		label: "X",
+		labelKey: "params.x",
 		type: "number",
 		default: 0,
 		min: -100,
@@ -50,7 +50,7 @@ const TEXT_MASK_PARAMS: ParamDefinition<keyof TextMaskParams & string>[] = [
 	},
 	{
 		key: "centerY",
-		label: "Y",
+		labelKey: "params.y",
 		type: "number",
 		default: 0,
 		min: -100,
@@ -59,7 +59,7 @@ const TEXT_MASK_PARAMS: ParamDefinition<keyof TextMaskParams & string>[] = [
 	},
 	{
 		key: "fontSize",
-		label: "Size",
+		labelKey: "common.size",
 		type: "number",
 		default: 15,
 		min: MIN_FONT_SIZE,
@@ -68,7 +68,7 @@ const TEXT_MASK_PARAMS: ParamDefinition<keyof TextMaskParams & string>[] = [
 	},
 	{
 		key: "rotation",
-		label: "Rotation",
+		labelKey: "params.rotation",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -77,7 +77,7 @@ const TEXT_MASK_PARAMS: ParamDefinition<keyof TextMaskParams & string>[] = [
 	},
 	{
 		key: "scale",
-		label: "Scale",
+		labelKey: "params.scale",
 		type: "number",
 		default: 1,
 		min: 1,
@@ -209,6 +209,7 @@ function computeTextMaskParamUpdate({
 export const textMaskDefinition: MaskDefinition<"text"> = {
 	type: "text",
 	name: "Text",
+	nameKey: "common.text",
 	features: {
 		hasPosition: true,
 		hasRotation: true,

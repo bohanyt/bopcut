@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useRef } from "react";
 import { useContainerSize } from "@/hooks/use-container-size";
 import {
@@ -42,6 +43,7 @@ export function TimelinePlayhead({
 	playheadRef: externalPlayheadRef,
 	isSnappingToPlayhead = false,
 }: TimelinePlayheadProps) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const duration = editor.timeline.getTotalDuration();
 	const internalPlayheadRef = useRef<HTMLDivElement>(null);
@@ -107,7 +109,7 @@ export function TimelinePlayhead({
 		<div
 			ref={playheadRef}
 			role="slider"
-			aria-label="Timeline playhead"
+			aria-label={t("timeline.playhead")}
 			aria-valuemin={0}
 			aria-valuemax={duration}
 			aria-valuenow={currentTime}
@@ -126,7 +128,7 @@ export function TimelinePlayhead({
 
 			<button
 				type="button"
-				aria-label="Drag playhead"
+				aria-label={t("timeline.dragPlayhead")}
 				className={`pointer-events-auto absolute top-1 left-1/2 size-3 -translate-x-1/2 transform cursor-col-resize rounded-full border-2 shadow-xs ${isSnappingToPlayhead ? "bg-primary border-primary" : "bg-primary border-primary/50"}`}
 				onMouseDown={handlePlayheadMouseDown}
 			/>

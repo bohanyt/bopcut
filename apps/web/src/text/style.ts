@@ -6,13 +6,13 @@ export const textStyleParams: ParamDefinition[] = [
 	...["inner", "outer"].flatMap((layer): ParamDefinition[] => [
 		{
 			key: `stroke.${layer}.color`,
-			label: `${layer === "inner" ? "Inner" : "Outer"} stroke color`,
+			labelKey: layer === "inner" ? "text.innerStrokeColor" : "text.outerStrokeColor",
 			type: "color",
 			default: "#000000",
 		},
 		{
 			key: `stroke.${layer}.width`,
-			label: `${layer === "inner" ? "Inner" : "Outer"} stroke (em)`,
+			labelKey: layer === "inner" ? "text.innerStrokeWidth" : "text.outerStrokeWidth",
 			type: "number",
 			default: 0,
 			min: 0,
@@ -21,7 +21,7 @@ export const textStyleParams: ParamDefinition[] = [
 		},
 		{
 			key: `stroke.${layer}.widthPx`,
-			label: `${layer === "inner" ? "Inner" : "Outer"} stroke (px; 0 uses em)`,
+			labelKey: layer === "inner" ? "text.innerStrokePixels" : "text.outerStrokePixels",
 			type: "number",
 			default: 0,
 			min: 0,
@@ -31,13 +31,13 @@ export const textStyleParams: ParamDefinition[] = [
 	]),
 	{
 		key: "shadow.color",
-		label: "Shadow color",
+		labelKey: "text.shadowColor",
 		type: "color",
 		default: "#000000",
 	},
 	{
 		key: "shadow.offsetX",
-		label: "Shadow X (px)",
+		labelKey: "text.shadowX",
 		type: "number",
 		default: 0,
 		min: -10000,
@@ -46,7 +46,7 @@ export const textStyleParams: ParamDefinition[] = [
 	},
 	{
 		key: "shadow.offsetY",
-		label: "Shadow Y (px)",
+		labelKey: "text.shadowY",
 		type: "number",
 		default: 0,
 		min: -10000,
@@ -55,7 +55,7 @@ export const textStyleParams: ParamDefinition[] = [
 	},
 	{
 		key: "shadow.blur",
-		label: "Shadow blur (px)",
+		labelKey: "text.shadowBlur",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -64,7 +64,7 @@ export const textStyleParams: ParamDefinition[] = [
 	},
 	{
 		key: "shadow.opacity",
-		label: "Shadow opacity",
+		labelKey: "text.shadowOpacity",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -73,7 +73,7 @@ export const textStyleParams: ParamDefinition[] = [
 	},
 	{
 		key: "caption.maxWidth",
-		label: "Maximum line width (px; 0 wraps off)",
+		labelKey: "text.lineWidth",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -82,14 +82,14 @@ export const textStyleParams: ParamDefinition[] = [
 	},
 	{
 		key: "caption.noOrphan",
-		label: "Avoid a last line of one word",
+		labelKey: "text.noOrphan",
 		type: "boolean",
 		default: true,
 		keyframable: false,
 	},
 	{
 		key: "caption.wordSpacing",
-		label: "Extra word spacing (em)",
+		labelKey: "text.wordSpacing",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -98,26 +98,26 @@ export const textStyleParams: ParamDefinition[] = [
 	},
 	{
 		key: "caption.highlightColor",
-		label: "Emphasis word color",
+		labelKey: "text.emphasisColor",
 		type: "color",
 		default: "#ffff00",
 	},
 	{
 		key: "caption.activeColor",
-		label: "Active word color",
+		labelKey: "text.activeColor",
 		type: "color",
 		default: "#ffff00",
 	},
 	{
 		key: "caption.activeEnabled",
-		label: "Highlight active word",
+		labelKey: "text.highlightActive",
 		type: "boolean",
 		default: false,
 		keyframable: false,
 	},
 	{
 		key: "caption.activeScale",
-		label: "Active word scale",
+		labelKey: "text.activeScale",
 		type: "number",
 		default: 1,
 		min: 1,
@@ -126,14 +126,14 @@ export const textStyleParams: ParamDefinition[] = [
 	},
 	{
 		key: "caption.reveal",
-		label: "Reveal words as they are spoken",
+		labelKey: "text.reveal",
 		type: "boolean",
 		default: false,
 		keyframable: false,
 	},
 	{
 		key: "caption.revealFade",
-		label: "Reveal fade (s)",
+		labelKey: "text.revealFade",
 		type: "number",
 		default: 0.12,
 		min: 0,
@@ -142,7 +142,7 @@ export const textStyleParams: ParamDefinition[] = [
 	},
 	{
 		key: "caption.revealPop",
-		label: "Reveal pop scale",
+		labelKey: "text.revealPop",
 		type: "number",
 		default: 1,
 		min: 0.2,

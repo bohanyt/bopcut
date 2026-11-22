@@ -17,6 +17,7 @@ const defaultVolume = 0;
 
 const defaultTextLetterSpacing = 0;
 const defaultTextLineHeight = 1.2;
+export const DEFAULT_TEXT_CONTENT = "Default text";
 
 const defaultTextBackground = {
 	enabled: false,
@@ -36,7 +37,7 @@ const defaultTextElement: Omit<TextElement, "id"> = {
 	trimStart: ZERO_MEDIA_TIME,
 	trimEnd: ZERO_MEDIA_TIME,
 	params: {
-		content: "Default text",
+		content: DEFAULT_TEXT_CONTENT,
 		fontSize: 15,
 		fontFamily: "Arial",
 		color: "#ffffff",

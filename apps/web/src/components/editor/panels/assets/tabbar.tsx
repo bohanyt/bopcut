@@ -55,7 +55,7 @@ export function TabBar() {
 			>
 				{TAB_KEYS.map((tabKey) => {
 					const tab = tabs[tabKey];
-					const label = tabKey === "settings" ? t("settings.tab") : tab.label;
+					const label = t(tab.labelKey);
 					return (
 						<Tooltip key={tabKey} delayDuration={10}>
 							<TooltipTrigger asChild>

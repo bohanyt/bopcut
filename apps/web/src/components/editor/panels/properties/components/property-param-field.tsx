@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import type {
 	ParamDefinition,
 	NumberParamDefinition,
@@ -43,15 +44,17 @@ export function PropertyParamField({
 		onToggle: () => void;
 	};
 }) {
+	const { locale, t } = useI18n();
+	const label = t(param.labelKey);
 	return (
 		<SectionField
-			label={param.label}
+			label={label}
 			beforeLabel={
 				keyframe && param.keyframable !== false ? (
 					<KeyframeToggle
 						isActive={keyframe.isActive}
 						isDisabled={keyframe.isDisabled}
-						title={`Toggle ${param.label.toLowerCase()} keyframe`}
+						title={t("properties.toggleKeyframe", { property: label.toLocaleLowerCase(locale) })}
 						onToggle={keyframe.onToggle}
 					/>
 				) : undefined
@@ -78,6 +81,7 @@ function ParamInput({
 	onPreview: (value: ParamValue) => void;
 	onCommit: () => void;
 }) {
+	const { t } = useI18n();
 	const { timeline } = useEditor();
 	if (param.type === "number") {
 		return (
@@ -117,7 +121,7 @@ function ParamInput({
 				<SelectContent>
 					{param.options.map((option) => (
 						<SelectItem key={option.value} value={option.value}>
-							{option.label}
+							{t(option.labelKey)}
 						</SelectItem>
 					))}
 				</SelectContent>

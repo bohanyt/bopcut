@@ -20,20 +20,20 @@ interface PolygonParams {
 const POLYGON_PARAMS: ParamDefinition<keyof PolygonParams & string>[] = [
 	{
 		key: "fill",
-		label: "Fill",
+		labelKey: "params.fill",
 		type: "color",
 		default: "#ffffff",
 	},
 	{
 		key: "stroke",
-		label: "Color",
+		labelKey: "common.color",
 		type: "color",
 		default: "#000000",
 		group: "stroke",
 	},
 	{
 		key: "strokeWidth",
-		label: "Width",
+		labelKey: "common.width",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -45,7 +45,7 @@ const POLYGON_PARAMS: ParamDefinition<keyof PolygonParams & string>[] = [
 	STROKE_ALIGN_PARAM,
 	{
 		key: "sides",
-		label: "Sides",
+		labelKey: "params.sides",
 		type: "number",
 		default: 5,
 		min: 3,
@@ -55,7 +55,7 @@ const POLYGON_PARAMS: ParamDefinition<keyof PolygonParams & string>[] = [
 	},
 	{
 		key: "cornerRadius",
-		label: "Corner radius",
+		labelKey: "params.cornerRadius",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -167,6 +167,7 @@ function traceRoundedPolygonPath({
 export const polygonGraphicDefinition: GraphicDefinition = {
 	id: "polygon",
 	name: "Polygon",
+	nameKey: "shapes.polygon",
 	keywords: ["polygon", "triangle", "pentagon", "hexagon", "diamond"],
 	params: POLYGON_PARAMS,
 	render({ ctx, params, width, height }) {

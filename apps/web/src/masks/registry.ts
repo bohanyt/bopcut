@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import { MAX_FEATHER } from "@/masks/feather";
 import type { ParamDefinition } from "@/params";
 import type {
@@ -32,7 +33,7 @@ export const BASE_MASK_PARAM_DEFINITIONS: ParamDefinition<
 >[] = [
 	{
 		key: "feather",
-		label: "Feather",
+		labelKey: "params.feather",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -42,7 +43,7 @@ export const BASE_MASK_PARAM_DEFINITIONS: ParamDefinition<
 	},
 	{
 		key: "strokeWidth",
-		label: "Stroke width",
+		labelKey: "params.strokeWidth",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -51,7 +52,7 @@ export const BASE_MASK_PARAM_DEFINITIONS: ParamDefinition<
 	},
 	{
 		key: "strokeColor",
-		label: "Stroke color",
+		labelKey: "params.strokeColor",
 		type: "color",
 		default: "#ffffff",
 	},
@@ -60,6 +61,7 @@ export const BASE_MASK_PARAM_DEFINITIONS: ParamDefinition<
 export interface RegisteredMaskDefinition {
 	type: MaskType;
 	name: string;
+	nameKey: StaticMessageKey;
 	features: MaskDefinition["features"];
 	params: ParamDefinition<string>[];
 	renderer: MaskRenderer<BaseMaskParams>;
@@ -90,6 +92,7 @@ export class MasksRegistry extends DefinitionRegistry<
 		const withBaseParams: RegisteredMaskDefinition = {
 			type: definition.type,
 			name: definition.name,
+			nameKey: definition.nameKey,
 			features: definition.features,
 			params: [...definition.params, ...BASE_MASK_PARAM_DEFINITIONS],
 			renderer: definition.renderer,

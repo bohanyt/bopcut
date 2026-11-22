@@ -2,6 +2,7 @@ import type { DiagnosticsManager } from "@/core/managers/diagnostics-manager";
 import { timelineHasAudio } from "@/media/audio";
 
 export const TRANSCRIPTION_DIAGNOSTICS_SCOPE = "transcription";
+export const TRANSCRIPTION_NO_AUDIO = "transcription.no_audio";
 
 export function registerTranscriptionDiagnostics({
 	diagnostics,
@@ -9,7 +10,7 @@ export function registerTranscriptionDiagnostics({
 	diagnostics: DiagnosticsManager;
 }): void {
 	diagnostics.register({
-		id: "transcription.no_audio",
+		id: TRANSCRIPTION_NO_AUDIO,
 		scope: TRANSCRIPTION_DIAGNOSTICS_SCOPE,
 		severity: "caution",
 		message: "No audio detected. Add a clip with audio to the timeline first.",

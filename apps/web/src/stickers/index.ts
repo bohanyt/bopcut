@@ -196,7 +196,7 @@ export async function searchAll({
 		const category = provider.id as StickerCategory;
 		sections.push({
 			id: category,
-			title: STICKER_CATEGORIES[category] ?? provider.id,
+			titleKey: STICKER_CATEGORIES[category],
 			items: result.items,
 			hasMore: result.hasMore,
 			layout: "grid",
@@ -243,7 +243,7 @@ export async function browseAll({
 	if (recentItems.length > 0) {
 		sections.push({
 			id: "recent",
-			title: "Recently used",
+			titleKey: "stickers.recent",
 			items: recentItems.slice(0, limit),
 			hasMore: recentItems.length > limit,
 			layout: "row",
@@ -265,7 +265,7 @@ export async function browseAll({
 		return {
 			...firstSection,
 			id: category,
-			title: STICKER_CATEGORIES[category] ?? firstSection.title,
+			titleKey: STICKER_CATEGORIES[category],
 			layout: "row" as const,
 			action: {
 				type: "see-all" as const,
@@ -305,7 +305,7 @@ export async function resolveStickerIntrinsicSize({
 }
 
 export { resolveStickerId };
-export { resolveQueryToRegions, getRegionLabel } from "./providers/flags";
+export { resolveQueryToRegions, getRegionLabelKey } from "./providers/flags";
 export type {
 	StickerBrowseResult,
 	StickerBrowseSection,

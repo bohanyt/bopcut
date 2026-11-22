@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useEffect, useState } from "react";
 import type { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
@@ -80,6 +81,7 @@ export function TimelineBookmarksRow({
 	handleRulerTrackingMouseDown,
 	handleRulerMouseDown,
 }: TimelineBookmarksRowProps) {
+	const { t } = useI18n();
 	const bookmarks = useEditor((e) => e.scenes.getActiveScene().bookmarks);
 
 	return (
@@ -93,7 +95,7 @@ export function TimelineBookmarksRow({
 					height: TIMELINE_BOOKMARK_ROW_HEIGHT_PX,
 					width: `${dynamicTimelineWidth}px`,
 				}}
-				aria-label="Timeline ruler"
+				aria-label={t("timeline.ruler")}
 				type="button"
 				onWheel={handleWheel}
 				onClick={(event) => {
@@ -134,6 +136,7 @@ function TimelineBookmark({
 		bookmark: Bookmark;
 	}) => void;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const duration = editor.timeline.getTotalDuration();
 	const [isPopoverOpen, setIsPopoverOpen] = useState(false);
@@ -190,7 +193,9 @@ function TimelineBookmark({
 						left: `${bookmarkLeft}px`,
 						width: `${bookmarkWidth}px`,
 					}}
-					aria-label={`${bookmark.author === "agent" ? "Agent note" : "Bookmark"} at ${formatNumberForDisplay({ value: mediaTimeToSeconds({ time }), fractionDigits: 1 })}s`}
+					aria-label={t(bookmark.author === "agent" ? "bookmark.agentNote" : "bookmark.bookmarkAt", {
+						time: formatNumberForDisplay({ value: mediaTimeToSeconds({ time }), fractionDigits: 1 }),
+					})}
 					type="button"
 					onMouseDown={handleMouseDown}
 					onClick={handleClick}
@@ -298,6 +303,7 @@ function BookmarkPopoverContent({
 	timelineDuration: MediaTime;
 	onPopoverClose: () => void;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const committedColor = (bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR)
 		.replace("#", "")
@@ -350,16 +356,16 @@ function BookmarkPopoverContent({
 	return (
 		<>
 			<div className="flex flex-col gap-2">
-				<Label className="text-xs">Note</Label>
+				<Label className="text-xs">{t("bookmark.note")}</Label>
 				<Input
-					placeholder="Add a note..."
+					placeholder={t("bookmark.addNote")}
 					value={bookmark.note ?? ""}
 					onChange={(event) => handleUpdate({ note: event.target.value })}
 					className="h-8 text-sm"
 				/>
 			</div>
 			<div className="flex flex-col gap-2">
-				<Label className="text-xs">Color</Label>
+				<Label className="text-xs">{t("common.color")}</Label>
 				<div className="relative">
 					<ColorPicker
 						beginDragGesture={editor.timeline.beginPreviewGesture}
@@ -381,7 +387,7 @@ function BookmarkPopoverContent({
 								type="button"
 								variant="text"
 								size="text"
-								aria-label="Reset to default color"
+								aria-label={t("bookmark.resetColor")}
 								className="absolute top-1/2 right-1 -translate-y-1/2 mr-1"
 								onClick={() =>
 									editor.scenes.updateBookmark({
@@ -399,7 +405,7 @@ function BookmarkPopoverContent({
 				</div>
 			</div>
 			<div className="flex flex-col gap-2">
-				<Label className="text-xs">Duration</Label>
+				<Label className="text-xs">{t("common.duration")}</Label>
 				<div className="flex items-center gap-1.5">
 					<Input
 						type="number"
@@ -424,9 +430,9 @@ function BookmarkPopoverContent({
 					/>
 				</div>
 			</div>
-			{bookmark.replies?.map((reply) => <div key={reply.id} className="text-xs"><strong>{reply.author === "agent" ? "Agent" : "User"}:</strong> {reply.text}</div>)}
-			{bookmark.note && <Button type="button" variant="outline" size="sm" onClick={() => editor.scenes.updateBookmark({ time, updates: { resolved: !bookmark.resolved } })}>{bookmark.resolved ? "Reopen" : "Resolve"}</Button>}
-			{bookmark.author === "agent" && <span className="text-xs">Agent</span>}
+			{bookmark.replies?.map((reply) => <div key={reply.id} className="text-xs"><strong>{t("bookmark.author", { author: t(reply.author === "agent" ? "bookmark.agent" : "bookmark.user") })}</strong> {reply.text}</div>)}
+			{bookmark.note && <Button type="button" variant="outline" size="sm" onClick={() => editor.scenes.updateBookmark({ time, updates: { resolved: !bookmark.resolved } })}>{bookmark.resolved ? t("bookmark.reopen") : t("bookmark.resolve")}</Button>}
+			{bookmark.author === "agent" && <span className="text-xs">{t("bookmark.agent")}</span>}
 			<Button
 				type="button"
 				variant="outline"
@@ -438,10 +444,10 @@ function BookmarkPopoverContent({
 						handleRemove();
 					}
 				}}
-				aria-label="delete bookmark"
+				aria-label={t("bookmark.delete")}
 			>
 				<HugeiconsIcon icon={Delete02Icon} className="!size-3.5" />
-				Delete
+				{t("common.delete")}
 			</Button>
 		</>
 	);

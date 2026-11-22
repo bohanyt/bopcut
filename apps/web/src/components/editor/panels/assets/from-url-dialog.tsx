@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import type { MediaImportSession } from "@/core/managers/media-manager";
@@ -33,6 +34,7 @@ export function FromUrlDialog({
 	onOpenChange: (open: boolean) => void;
 	onFiles: (files: File[], session: MediaImportSession) => Promise<void> | void;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const [url, setUrl] = useState("");
 	const [start, setStart] = useState("");
@@ -81,39 +83,39 @@ export function FromUrlDialog({
 		<Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
 			<DialogContent>
 				<DialogHeader>
-					<DialogTitle>Add from a link</DialogTitle>
+					<DialogTitle>{t("assets.addFromLink")}</DialogTitle>
 					<DialogDescription>
-						Only the part between start and end is downloaded. Times can be seconds, 1:02:03 or 1h2m3s; a link with t= sets the start.
+						{t("assets.sectionHint")}
 					</DialogDescription>
 				</DialogHeader>
 				<DialogBody className="flex flex-col gap-3">
 					<div className="flex flex-col gap-1.5">
-						<Label htmlFor="from-url-link">Link</Label>
+						<Label htmlFor="from-url-link">{t("assets.link")}</Label>
 						<Input id="from-url-link" placeholder="https://..." value={url} onChange={(e) => setUrl(e.target.value)} disabled={busy} />
 					</div>
 					<div className="flex gap-3">
 						<div className="flex flex-1 flex-col gap-1.5">
-							<Label htmlFor="from-url-start">Start</Label>
+							<Label htmlFor="from-url-start">{t("assets.start")}</Label>
 							<Input id="from-url-start" placeholder="1:02:03" value={start} onChange={(e) => setStart(e.target.value)} disabled={busy} />
 						</div>
 						<div className="flex flex-1 flex-col gap-1.5">
-							<Label htmlFor="from-url-end">End</Label>
+							<Label htmlFor="from-url-end">{t("assets.end")}</Label>
 							<Input id="from-url-end" placeholder="1:02:25" value={end} onChange={(e) => setEnd(e.target.value)} disabled={busy} />
 						</div>
 					</div>
 					<div className="flex items-center gap-2">
 						<Checkbox id="from-url-audio" checked={audioOnly} onCheckedChange={(v) => setAudioOnly(v === true)} disabled={busy} />
-						<Label htmlFor="from-url-audio">Sound only</Label>
+						<Label htmlFor="from-url-audio">{t("assets.soundOnly")}</Label>
 					</div>
 					{error && <p className="text-destructive text-sm">{error}</p>}
-					{busy && <p className="text-muted-foreground text-sm">Fetching the section… this takes about as long as the section itself.</p>}
+					{busy && <p className="text-muted-foreground text-sm">{t("assets.fetchingSection")}</p>}
 				</DialogBody>
 				<DialogFooter>
 					<Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-						Cancel
+						{t("common.cancel")}
 					</Button>
 					<Button onClick={submit} disabled={busy || !url.trim()}>
-						{busy ? "Fetching…" : "Add"}
+						{busy ? t("assets.fetching") : t("common.add")}
 					</Button>
 				</DialogFooter>
 			</DialogContent>

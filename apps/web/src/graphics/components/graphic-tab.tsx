@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useRef } from "react";
 import { useElementPlayhead } from "@/components/editor/panels/properties/hooks/use-element-playhead";
 import {
@@ -36,6 +37,7 @@ export function GraphicTab({
 	element: GraphicElement;
 	trackId: string;
 }) {
+	const { t } = useI18n();
 	const definition = graphicsRegistry.get(element.definitionId);
 	const { localTime, isPlayheadWithinElementRange } = useElementPlayhead({
 		startTime: element.startTime,
@@ -60,7 +62,7 @@ export function GraphicTab({
 		<div className="flex flex-col">
 			<Section collapsible sectionKey={`${element.id}:graphic`}>
 				<SectionHeader>
-					<SectionTitle>{definition.name}</SectionTitle>
+					<SectionTitle>{t(definition.nameKey)}</SectionTitle>
 				</SectionHeader>
 				<SectionContent>
 					<SectionFields>
@@ -90,6 +92,7 @@ function StrokeSection({
 	element: GraphicElement;
 	trackId: string;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const definition = graphicsRegistry.get(element.definitionId);
 	const { localTime, isPlayheadWithinElementRange } = useElementPlayhead({
@@ -166,7 +169,7 @@ function StrokeSection({
 					</Button>
 				}
 			>
-				<SectionTitle>Stroke</SectionTitle>
+				<SectionTitle>{t("properties.stroke")}</SectionTitle>
 			</SectionHeader>
 			<SectionContent
 				className={cn(!isStrokeEnabled && "pointer-events-none opacity-50")}

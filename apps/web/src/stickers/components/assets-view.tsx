@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import Image from "next/image";
 import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
@@ -16,7 +17,7 @@ import {
 	buildStickerElement,
 } from "@/timeline/element-utils";
 import { STICKER_CATEGORIES } from "@/stickers/categories";
-import { getRegionLabel, resolveQueryToRegions } from "@/stickers";
+import { getRegionLabelKey } from "@/stickers";
 import { loadIcon } from "@/stickers/providers/iconify";
 import { parseStickerId } from "@/stickers/sticker-id";
 import { parseShapeStickerId } from "@/stickers/providers/shapes";
@@ -34,6 +35,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 
 export function StickersView() {
+	const { t } = useI18n();
 	const {
 		browseContent,
 		browseStickers,
@@ -57,7 +59,7 @@ export function StickersView() {
 				<Input
 					size="sm"
 					variant="default"
-					placeholder="Search..."
+					placeholder={t("stickers.search")}
 					value={searchQuery}
 					onChange={(e) => {
 						setSearchQuery({ query: e.target.value });
@@ -81,10 +83,10 @@ export function StickersView() {
 				variant="underline"
 				className="mt-2 flex min-h-0 flex-1 flex-col"
 			>
-				<TabsList aria-label="Sticker categories">
+				<TabsList className="flex flex-wrap" aria-label={t("stickers.categories")}>
 					{Object.entries(STICKER_CATEGORIES).map(([key, label]) => (
 						<TabsTrigger key={key} value={key}>
-							{label}
+							{t(label)}
 						</TabsTrigger>
 					))}
 				</TabsList>
@@ -136,6 +138,7 @@ function StickerRow({ items }: { items: StickerData[] }) {
 }
 
 function EmptyView({ message }: { message: string }) {
+	const { t } = useI18n();
 	return (
 		<div className="bg-background flex h-full flex-col items-center justify-center gap-3 p-4">
 			<HugeiconsIcon
@@ -143,7 +146,7 @@ function EmptyView({ message }: { message: string }) {
 				className="text-muted-foreground size-10"
 			/>
 			<div className="flex flex-col gap-2 text-center">
-				<p className="text-lg font-medium">No stickers found</p>
+				<p className="text-lg font-medium">{t("stickers.empty")}</p>
 				<p className="text-muted-foreground text-sm text-balance">{message}</p>
 			</div>
 		</div>
@@ -174,6 +177,7 @@ function RegionBanner({ region }: { region: string }) {
 }
 
 function StickersContentView() {
+	const { t } = useI18n();
 	const {
 		browseContent,
 		clearRecentStickers,
@@ -197,17 +201,16 @@ function StickersContentView() {
 
 		if (searchResults?.items.length) {
 			const normalizedQuery = searchQuery.trim().toLowerCase();
-			const isRegionSearch =
-				selectedCategory === "flags" &&
-				resolveQueryToRegions({ query: normalizedQuery }) !== null;
-			const regionLabel = getRegionLabel({ query: normalizedQuery });
+			const regionLabelKey = selectedCategory === "flags"
+				? getRegionLabelKey({ query: normalizedQuery })
+				: undefined;
 
 			return (
 				<div className="flex flex-col gap-3 pb-4">
-					{isRegionSearch && <RegionBanner region={regionLabel} />}
+					{regionLabelKey && <RegionBanner region={t(regionLabelKey)} />}
 					<div className="flex items-center justify-between">
 						<span className="text-muted-foreground text-sm">
-							{searchResults.total} results
+							{t(searchResults.total === 1 ? "stickers.resultsOne" : "stickers.resultsMany", { count: searchResults.total })}
 						</span>
 					</div>
 					<StickerGrid items={searchResults.items} />
@@ -217,7 +220,7 @@ function StickersContentView() {
 
 		// "all" tab search — sections are in browseContent, fall through to section rendering below
 		if (selectedCategory !== "all" && searchQuery) {
-			return <EmptyView message={`No stickers found for "${searchQuery}"`} />;
+			return <EmptyView message={t("stickers.noResults", { query: searchQuery })} />;
 		}
 	}
 
@@ -230,15 +233,15 @@ function StickersContentView() {
 	}
 
 	if (!browseContent?.sections.length) {
-		const categoryLabel = STICKER_CATEGORIES[selectedCategory];
+		const categoryLabel = t(STICKER_CATEGORIES[selectedCategory]);
 		return (
 			<EmptyView
 				message={
 					viewMode === "search"
-						? `No stickers found for "${searchQuery}"`
+						? t("stickers.noResults", { query: searchQuery })
 						: selectedCategory === "all"
-							? "No stickers available yet."
-							: `No stickers available in ${categoryLabel.toLowerCase()} yet.`
+							? t("stickers.noStickers")
+							: t("stickers.emptyCategory", { category: categoryLabel })
 				}
 			/>
 		);
@@ -269,15 +272,17 @@ function StickerSection({
 	onClearRecent: () => void;
 	onSeeAll: (category: StickerCategory) => void;
 }) {
+	const { t } = useI18n();
+	const title = section.titleKey ? t(section.titleKey) : section.title;
 	const hasHeader =
-		Boolean(section.title) || section.id === "recent" || section.action;
+		Boolean(title) || section.id === "recent" || section.action;
 
 	return (
 		<div className="flex flex-col gap-2">
 			{hasHeader && (
 				<div className="flex items-center justify-between gap-2">
-					{section.title ? (
-						<p className="text-xs text-muted-foreground">{section.title}</p>
+					{title ? (
+						<p className="text-xs text-muted-foreground">{title}</p>
 					) : (
 						<div />
 					)}
@@ -290,7 +295,7 @@ function StickerSection({
 								size="sm"
 								className="h-auto gap-1 p-0 text-xs text-muted-foreground"
 							>
-								Clear
+								{t("stickers.clear")}
 							</Button>
 						)}
 
@@ -303,7 +308,7 @@ function StickerSection({
 									onSeeAll(section.action?.category as StickerCategory);
 								}}
 							>
-								See all
+								{t("stickers.seeAll")}
 							</Button>
 						)}
 					</div>
@@ -330,6 +335,7 @@ function StickerItem({
 	shouldCapSize = false,
 	containerClassName,
 }: StickerItemProps) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const { addToRecentStickers } = useStickersStore();
 	const [isAdding, setIsAdding] = useState(false);
@@ -343,9 +349,9 @@ function StickerItem({
 		setHasImageError(false);
 	}, [item.id]);
 
-	const displayName = item.name;
 	const shapePreset =
 		item.provider === "shapes" ? parseShapeStickerId({ stickerId: item.id }) : null;
+	const displayName = shapePreset ? t(shapePreset.nameKey) : item.name;
 
 	const handleAdd = async () => {
 		setIsAdding(true);
@@ -424,14 +430,14 @@ function StickerItem({
 		? {
 				id: item.id,
 				type: "graphic",
-				name: displayName,
+				name: item.name,
 				definitionId: shapePreset.definitionId,
 				params: shapePreset.params ?? {},
 			}
 		: {
 				id: item.id,
 				type: "sticker",
-				name: displayName,
+				name: item.name,
 				stickerId: item.id,
 			};
 

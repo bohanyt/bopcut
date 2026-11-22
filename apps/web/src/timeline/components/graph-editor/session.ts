@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import {
 	getCurveHandlesForNormalizedCubicBezier,
 	getEditableScalarChannels,
@@ -37,12 +38,12 @@ export type GraphEditorUnavailableReason =
 
 export interface GraphEditorComponentOption {
 	key: string;
-	label: string;
+	labelKey?: StaticMessageKey;
 }
 
 interface GraphEditorPropertyOption {
 	key: string;
-	label: string;
+	labelKey?: StaticMessageKey;
 	context: ScalarGraphKeyframeContext;
 	allContexts: ScalarGraphKeyframeContext[];
 }
@@ -59,13 +60,13 @@ export interface GraphEditorResolvedSegment {
 interface GraphEditorBaseSelectionState {
 	componentOptions: GraphEditorComponentOption[];
 	activeComponentKey: string | null;
-	message: string;
 }
 
 export interface GraphEditorUnavailableState
 	extends GraphEditorBaseSelectionState {
 	status: "unavailable";
 	reason: GraphEditorUnavailableReason;
+	messageKey: StaticMessageKey;
 }
 
 export interface GraphEditorReadyState extends GraphEditorBaseSelectionState {
@@ -88,19 +89,19 @@ export interface GraphEditorCurvePatch {
 
 function createUnavailableState({
 	reason,
-	message,
+	messageKey,
 	componentOptions = [],
 	activeComponentKey = null,
 }: {
 	reason: GraphEditorUnavailableReason;
-	message: string;
+	messageKey: StaticMessageKey;
 	componentOptions?: GraphEditorComponentOption[];
 	activeComponentKey?: string | null;
 }): GraphEditorUnavailableState {
 	return {
 		status: "unavailable",
 		reason,
-		message,
+		messageKey,
 		componentOptions,
 		activeComponentKey,
 	};
@@ -188,14 +189,6 @@ function groupSelectedKeyframesByProperty({
 	return [...groups.values()];
 }
 
-function getComponentLabel({ componentKey }: { componentKey: string }): string {
-	switch (componentKey) {
-		case "value":
-			return "Value";
-		default:
-			return componentKey.toUpperCase();
-	}
-}
 
 /**
  * Returns the absolute value span of the nearest non-flat adjacent segment,
@@ -247,19 +240,19 @@ function resolvePropertySelection({
 	| GraphEditorPropertySelection
 	| {
 			reason: GraphEditorUnavailableReason;
-			message: string;
+			messageKey: StaticMessageKey;
 	  } {
 	if (propertyKeyframes.keyframes.length > 2) {
 		return {
 			reason: "multiple-keyframes-selected",
-			message: "Select at most two adjacent keyframes per property.",
+			messageKey: "graph.selectTwo",
 		};
 	}
 
 	if (!element.animations) {
 		return {
 			reason: "selected-element-has-no-animations",
-			message: "The selected keyframe has no editable graph.",
+			messageKey: "graph.noGraph",
 		};
 	}
 
@@ -270,7 +263,7 @@ function resolvePropertySelection({
 	if (!scalarResult || scalarResult.channels.length === 0) {
 		return {
 			reason: "selected-keyframe-has-no-scalar-channel",
-			message: "The selected keyframe has no editable graph channel.",
+			messageKey: "graph.noChannel",
 		};
 	}
 
@@ -315,7 +308,7 @@ function resolvePropertySelection({
 				context,
 				option: {
 					key: channel.componentKey,
-					label: getComponentLabel({ componentKey: channel.componentKey }),
+					labelKey: channel.componentKey === "value" ? "graph.value" as const : undefined,
 				},
 			},
 		];
@@ -324,7 +317,7 @@ function resolvePropertySelection({
 	if (contexts.length === 0) {
 		return {
 			reason: "selected-keyframe-missing-on-channel",
-			message: "The selected keyframe is not editable as a graph segment.",
+			messageKey: "graph.notEditable",
 		};
 	}
 
@@ -336,14 +329,14 @@ function resolvePropertySelection({
 			? [
 					{
 						key: "value",
-						label: "Curve",
+						labelKey: "graph.curve" as const,
 						context: contexts[0].context,
 						allContexts: contexts.map(({ context }) => context),
 					},
 				]
 			: contexts.map(({ context, option }) => ({
 					key: option.key,
-					label: option.label,
+					labelKey: option.labelKey,
 					context,
 					allContexts: [context],
 				}));
@@ -381,7 +374,7 @@ function resolveSegmentForOption({
 	  }
 	| {
 			reason: GraphEditorUnavailableReason;
-			message: string;
+			messageKey: StaticMessageKey;
 	  } {
 	const option = propertySelection.options.find(
 		(propertyOption) => propertyOption.key === componentKey,
@@ -389,14 +382,14 @@ function resolveSegmentForOption({
 	if (!option) {
 		return {
 			reason: "selected-properties-have-no-shared-component",
-			message: "Selected properties do not share a graph-editable channel.",
+			messageKey: "graph.noSharedChannel",
 		};
 	}
 
 	if (!option.context.nextKey) {
 		return {
 			reason: "selected-keyframe-has-no-next-segment",
-			message: "Select a keyframe that has an outgoing segment.",
+			messageKey: "graph.noOutgoing",
 		};
 	}
 
@@ -406,14 +399,14 @@ function resolveSegmentForOption({
 	) {
 		return {
 			reason: "selected-keyframes-are-not-adjacent",
-			message: "Selected keyframes must be adjacent on each property.",
+			messageKey: "graph.notAdjacent",
 		};
 	}
 
 	if (option.context.keyframe.segmentToNext === "step") {
 		return {
 			reason: "selected-segment-is-hold",
-			message: "Hold segments have a fixed value - easing has no effect here.",
+			messageKey: "graph.holdSegment",
 		};
 	}
 
@@ -429,8 +422,7 @@ function resolveSegmentForOption({
 	if (!cubicBezier) {
 		return {
 			reason: "selected-segment-is-flat",
-			message:
-				"Cannot edit a segment where both keyframes are at the same time.",
+			messageKey: "graph.sameTime",
 		};
 	}
 
@@ -458,7 +450,7 @@ export function resolveGraphEditorSelectionState({
 	if (selectedKeyframes.length === 0) {
 		return createUnavailableState({
 			reason: "no-keyframe-selected",
-			message: "Select a keyframe to edit its curve.",
+			messageKey: "graph.selectKeyframe",
 		});
 	}
 
@@ -469,7 +461,7 @@ export function resolveGraphEditorSelectionState({
 	if (!primaryKeyframe) {
 		return createUnavailableState({
 			reason: "no-keyframe-selected",
-			message: "Select a keyframe to edit its curve.",
+			messageKey: "graph.selectKeyframe",
 		});
 	}
 
@@ -480,7 +472,7 @@ export function resolveGraphEditorSelectionState({
 	if (!selectedElement) {
 		return createUnavailableState({
 			reason: "selected-element-missing",
-			message: "The selected keyframe could not be resolved.",
+			messageKey: "graph.missingKeyframe",
 		});
 	}
 
@@ -492,7 +484,7 @@ export function resolveGraphEditorSelectionState({
 	if (spansMultipleElements) {
 		return createUnavailableState({
 			reason: "selected-keyframes-span-multiple-elements",
-			message: "Selected keyframes must be on the same element.",
+			messageKey: "graph.sameElement",
 		});
 	}
 
@@ -511,7 +503,7 @@ export function resolveGraphEditorSelectionState({
 	) {
 		return createUnavailableState({
 			reason: unavailablePropertySelection.reason,
-			message: unavailablePropertySelection.message,
+			messageKey: unavailablePropertySelection.messageKey,
 		});
 	}
 
@@ -527,14 +519,14 @@ export function resolveGraphEditorSelectionState({
 				),
 			),
 		) ?? [];
-	const componentOptions = sharedComponentOptions.map(({ key, label }) => ({
+	const componentOptions = sharedComponentOptions.map(({ key, labelKey }) => ({
 		key,
-		label,
+		labelKey,
 	}));
 	if (componentOptions.length === 0) {
 		return createUnavailableState({
 			reason: "selected-properties-have-no-shared-component",
-			message: "Selected properties do not share a graph-editable channel.",
+			messageKey: "graph.noSharedChannel",
 		});
 	}
 
@@ -574,7 +566,7 @@ export function resolveGraphEditorSelectionState({
 	if (unavailableSegment && !("segment" in unavailableSegment)) {
 		return createUnavailableState({
 			reason: unavailableSegment.reason,
-			message: unavailableSegment.message,
+			messageKey: unavailableSegment.messageKey,
 			componentOptions,
 			activeComponentKey,
 		});
@@ -587,7 +579,7 @@ export function resolveGraphEditorSelectionState({
 	if (!primarySegment) {
 		return createUnavailableState({
 			reason: "selected-keyframe-missing-on-channel",
-			message: "The selected keyframe is not editable as a graph segment.",
+			messageKey: "graph.notEditable",
 			componentOptions,
 			activeComponentKey,
 		});
@@ -595,10 +587,6 @@ export function resolveGraphEditorSelectionState({
 
 	return {
 		status: "ready",
-		message:
-			segments.length === 1
-				? "Edit graph"
-				: `Edit graph for ${segments.length} properties`,
 		componentOptions,
 		activeComponentKey,
 		trackId: selectedElement.trackId,

@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +21,7 @@ export function PropertiesPanel() {
 	const editor = useEditor();
 	useEditor((e) => e.scenes.getActiveSceneOrNull());
 	useEditor((e) => e.media.getAssets());
+	const { t } = useI18n();
 	const { selectedElements } = useElementSelection();
 	const { activeTabPerType, setActiveTab } = usePropertiesStore();
 
@@ -37,7 +39,7 @@ export function PropertiesPanel() {
 			<div className="panel bg-background flex h-full flex-col overflow-auto rounded-sm border">
 				{text?.element.type === "text" && <CaptionProperties element={text.element} trackId={text.track.id} presetsOnly />}
 				<p className="text-muted-foreground text-sm">
-					{selectedElements.length} elements selected.
+					{t("properties.selected", { count: selectedElements.length })}
 				</p>
 			</div>
 		);
@@ -80,7 +82,7 @@ export function PropertiesPanel() {
 											tabId: tab.id,
 										})
 									}
-									aria-label={tab.label}
+									aria-label={t(tab.labelKey)}
 									className={cn(
 										"shrink-0",
 										"h-8 w-8",
@@ -90,7 +92,7 @@ export function PropertiesPanel() {
 									{tab.icon}
 								</Button>
 							</TooltipTrigger>
-							<TooltipContent side="right">{tab.label}</TooltipContent>
+							<TooltipContent side="right">{t(tab.labelKey)}</TooltipContent>
 						</Tooltip>
 					))}
 				</div>

@@ -15,20 +15,20 @@ interface StarParams {
 const STAR_PARAMS: ParamDefinition<keyof StarParams & string>[] = [
 	{
 		key: "fill",
-		label: "Fill",
+		labelKey: "params.fill",
 		type: "color",
 		default: "#ffffff",
 	},
 	{
 		key: "stroke",
-		label: "Color",
+		labelKey: "common.color",
 		type: "color",
 		default: "#000000",
 		group: "stroke",
 	},
 	{
 		key: "strokeWidth",
-		label: "Width",
+		labelKey: "common.width",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -40,7 +40,7 @@ const STAR_PARAMS: ParamDefinition<keyof StarParams & string>[] = [
 	STROKE_ALIGN_PARAM,
 	{
 		key: "points",
-		label: "Points",
+		labelKey: "params.points",
 		type: "number",
 		default: 5,
 		min: 3,
@@ -50,7 +50,7 @@ const STAR_PARAMS: ParamDefinition<keyof StarParams & string>[] = [
 	},
 	{
 		key: "depth",
-		label: "Depth",
+		labelKey: "params.depth",
 		type: "number",
 		default: 45,
 		min: 1,
@@ -63,6 +63,7 @@ const STAR_PARAMS: ParamDefinition<keyof StarParams & string>[] = [
 export const starGraphicDefinition: GraphicDefinition = {
 	id: "star",
 	name: "Star",
+	nameKey: "shapes.star",
 	keywords: ["star", "sparkle", "burst"],
 	params: STAR_PARAMS,
 	render({ ctx, params, width, height }) {

@@ -74,6 +74,7 @@ function buildBandPath({
 export const cinematicBarsMaskDefinition: MaskDefinition<"cinematic-bars"> = {
 	type: "cinematic-bars",
 	name: "Cinematic Bars",
+	nameKey: "shapes.cinematicBars",
 	features: {
 		hasPosition: true,
 		hasRotation: true,

@@ -6,6 +6,7 @@ import type {
 	StickerSearchResult,
 } from "../types";
 import { REGIONS, REGION_GROUPS } from "./countries-data";
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { CountryRecord, RegionId } from "./countries-data";
 
 const FLAGS_PROVIDER_ID = "flags";
@@ -78,25 +79,21 @@ export function resolveQueryToRegions({
 }: {
 	query: string;
 }): Set<RegionId> | null {
-	const group = REGION_GROUPS[query];
+	const group = getRegionGroup(query);
 	if (group) {
-		return new Set(group);
+		return new Set(group.regions);
 	}
 
 	const matched = findMatchingRegions({ query });
 	return matched.length > 0 ? new Set(matched.map((r) => r.id)) : null;
 }
 
-export function getRegionLabel({ query }: { query: string }): string {
-	if (REGION_GROUPS[query]) {
-		return query
-			.split(" ")
-			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-			.join(" ");
-	}
+function getRegionGroup(query: string) {
+	return Object.hasOwn(REGION_GROUPS, query) ? REGION_GROUPS[query] : undefined;
+}
 
-	const matched = findMatchingRegions({ query });
-	return matched[0]?.id ?? query;
+export function getRegionLabelKey({ query }: { query: string }): StaticMessageKey | undefined {
+	return getRegionGroup(query)?.labelKey ?? findMatchingRegions({ query })[0]?.labelKey;
 }
 
 function filterCountriesByQuery({
