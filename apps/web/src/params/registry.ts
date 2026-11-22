@@ -10,7 +10,7 @@ import type {
 	ElementType,
 	TimelineElement,
 } from "@/timeline";
-import { DEFAULTS } from "@/timeline/defaults";
+import { DEFAULTS, DEFAULT_TEXT_CONTENT } from "@/timeline/defaults";
 import { textStyleParams } from "@/text/style";
 import { VOLUME_DB_MAX, VOLUME_DB_MIN } from "@/timeline/audio-constants";
 import {
@@ -252,7 +252,7 @@ const textElementParams: ElementParamDefinition[] = [
 		key: "content",
 		labelKey: "params.content",
 		type: "text",
-		default: "Default text",
+		default: DEFAULT_TEXT_CONTENT,
 		keyframable: false,
 	},
 	{

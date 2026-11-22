@@ -17,7 +17,7 @@ import {
 	buildStickerElement,
 } from "@/timeline/element-utils";
 import { STICKER_CATEGORIES } from "@/stickers/categories";
-import { getRegionLabel, resolveQueryToRegions } from "@/stickers";
+import { getRegionLabelKey } from "@/stickers";
 import { loadIcon } from "@/stickers/providers/iconify";
 import { parseStickerId } from "@/stickers/sticker-id";
 import { parseShapeStickerId } from "@/stickers/providers/shapes";
@@ -83,7 +83,7 @@ export function StickersView() {
 				variant="underline"
 				className="mt-2 flex min-h-0 flex-1 flex-col"
 			>
-				<TabsList aria-label={t("stickers.categories")}>
+				<TabsList className="flex flex-wrap" aria-label={t("stickers.categories")}>
 					{Object.entries(STICKER_CATEGORIES).map(([key, label]) => (
 						<TabsTrigger key={key} value={key}>
 							{t(label)}
@@ -201,14 +201,13 @@ function StickersContentView() {
 
 		if (searchResults?.items.length) {
 			const normalizedQuery = searchQuery.trim().toLowerCase();
-			const isRegionSearch =
-				selectedCategory === "flags" &&
-				resolveQueryToRegions({ query: normalizedQuery }) !== null;
-			const regionLabel = getRegionLabel({ query: normalizedQuery });
+			const regionLabelKey = selectedCategory === "flags"
+				? getRegionLabelKey({ query: normalizedQuery })
+				: undefined;
 
 			return (
 				<div className="flex flex-col gap-3 pb-4">
-					{isRegionSearch && <RegionBanner region={regionLabel} />}
+					{regionLabelKey && <RegionBanner region={t(regionLabelKey)} />}
 					<div className="flex items-center justify-between">
 						<span className="text-muted-foreground text-sm">
 							{t(searchResults.total === 1 ? "stickers.resultsOne" : "stickers.resultsMany", { count: searchResults.total })}
