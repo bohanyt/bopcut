@@ -14,6 +14,7 @@ import { useTimelineStore } from "@/timeline/timeline-store";
 import { useEditorActions } from "@/actions/use-editor-actions";
 import { loadFontAtlas } from "@/fonts/google-fonts";
 import { rendererDevice } from "@/services/renderer/renderer-device";
+import { connectEditor } from "@/agent/cli-browser";
 
 interface EditorProviderProps {
 	projectId: string;
@@ -36,10 +37,13 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 	useEffect(() => {
 		let cancelled = false;
 		const editor = EditorCore.getInstance();
+		const presence = connectEditor(projectId);
 
 		const loadProject = async () => {
 			try {
 				setIsLoading(true);
+				await presence.ready;
+				if (cancelled) return;
 				void rendererDevice.start();
 				await editor.project.loadProject({ id: projectId });
 
@@ -83,6 +87,15 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 		return () => {
 			cancelled = true;
+			// Keep the registration while a departing project still has a write in flight.
+			if (!editor.save.hasUnsavedChangesOf(projectId)) presence.close();
+			else {
+				const unsubscribe = editor.save.subscribe(() => {
+					if (editor.save.hasUnsavedChangesOf(projectId)) return;
+					unsubscribe();
+					presence.close();
+				});
+			}
 			if (editor.playback.getIsPlaying()) editor.playback.pause();
 		};
 	}, [projectId, router]);

@@ -9,6 +9,29 @@ cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
 ```
 No account or database is required. Projects and media are stored in `<repo>/workspace/projects/<projectId>/`: `project.json`, `media/<mediaId>.<ext>`, and media metadata. Git ignores `workspace/`. Old browser projects and their media are automatically copied the first time they are opened; the browser copies are not deleted. Deleting a disk project does not trigger another copy.
 
+## Agent CLI
+
+With the editor server running, use these commands from the repository root:
+
+```sh
+bun run agent status
+bun run agent selection
+bun run agent prefs
+bun run agent notes
+bun run agent draft edits.json
+bun run agent frames frames.json
+bun run agent changes --draft my-edit
+bun run agent export --name "Final cut"
+```
+
+A draft JSON file contains `ops`, for example `{"ops":[{"op":"set","match":{"agentId":"intro"},"start":0}]}`. A frame JSON file contains `times` in seconds and an optional `width`, for example `{"times":[0,1.5],"width":960}`. The CLI generates a request revision if the input omits it. Use `changes --since <syncedAt>` or `changes --draft <rev>` with the editor tab that holds that history. `status` includes the most recent snapshot and whether a visible tab is serving the project. `selection` reports the last selection from the visible editor.
+
+Use `--project-id ID` to select a project. The default is the project in the input or the last project synced by a visible editor. `--url` or `BOPENCUT_URL` changes the default server origin (`http://127.0.0.1:3000`). Progress goes to stderr and the result is JSON on stdout. Use `--timeout SECONDS` to override the defaults of 120 seconds for drafts and frames, 900 seconds for export, and 30 seconds for other commands.
+
+Drafts, frames and exports use the open editor if it is serving the project. Otherwise the CLI runs one job in an installed Chrome or Edge browser and closes it. Set `BOPENCUT_BROWSER` to an executable path to override detection. If the hidden browser cannot render or encode the video, open the project in the editor and retry. A hidden draft saves before a visible editor opening the same project starts loading it. Comparisons and `basedOn` tokens from an earlier tab require that tab's history.
+
+Export defaults to MP4 at high quality with audio. Options are `--format mp4|webm`, `--quality low|medium|high|very_high`, `--fps N`, `--no-audio` and `--allow-missing`. The result's `file` is relative to `AGENT_WORKSPACE`, as are frame paths.
+
 ## Agent workspace (`apps/web/.env.local`)
 ```
 BOPENCUT_DATA=/path/to/data-folder      # Default: <repo>/workspace

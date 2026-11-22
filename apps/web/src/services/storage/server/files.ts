@@ -99,7 +99,8 @@ export function revision(value: unknown): string {
 }
 
 // One queue per project keeps revision checks and renames ordered.
-const locks = new Map<string, Promise<void>>();
+const lockState = globalThis as typeof globalThis & { bopencutProjectLocks?: Map<string, Promise<void>> };
+const locks = lockState.bopencutProjectLocks ??= new Map();
 export async function withProjectLock<T>(
 	id: string,
 	action: () => Promise<T>,
@@ -124,6 +125,7 @@ export async function saveMedia(
 	mediaId: string,
 	metadata: any,
 	body: ReadableStream<Uint8Array>,
+	signal?: AbortSignal,
 ): Promise<void> {
 	const dir = path.join(projectDir(id), "media");
 	safeId(mediaId);
@@ -148,7 +150,9 @@ export async function saveMedia(
 				body as unknown as import("node:stream/web").ReadableStream,
 			),
 			createWriteStream(temp, { flags: "wx" }),
+			{ signal },
 		);
+		signal?.throwIfAborted();
 		await renameWithRetry(temp, file);
 		try {
 			await atomicWrite(

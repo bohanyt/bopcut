@@ -23,7 +23,7 @@ export function mediaIdsInScenes(scenes: readonly { tracks: { main: { elements: 
 
 /** Outcome of discarding staged imports: ids removed from storage, and those that could not be. */
 export type DiscardResult = { removed: string[]; failed: { id: string; error: string }[] };
-export type MediaImportSession = { projectId: string; signal: AbortSignal };
+export type MediaImportSession = { projectId: string; signal: AbortSignal; cancel?: AbortSignal };
 
 type MediaRetry = {
 	original: MediaAsset | undefined;
@@ -61,8 +61,8 @@ export class MediaManager {
 		return projectId && project.canImportMedia(projectId) ? { projectId, signal: project.getSessionSignal() } : null;
 	}
 
-	private isCurrentImport({ projectId, signal }: MediaImportSession): boolean {
-		return !signal.aborted && this.editor.project.getSessionSignal() === signal &&
+	private isCurrentImport({ projectId, signal, cancel }: MediaImportSession): boolean {
+		return !signal.aborted && !cancel?.aborted && this.editor.project.getSessionSignal() === signal &&
 			this.editor.project.canImportMedia(projectId);
 	}
 
@@ -100,7 +100,7 @@ export class MediaManager {
 	}): Promise<MediaAsset | null> {
 		if (!this.isCurrentImport(session)) return null;
 		const { projectId, signal } = session;
-		const processed = await processMediaFile({ file, signal });
+		const processed = await processMediaFile({ file, signal: session.cancel ? AbortSignal.any([signal, session.cancel]) : signal });
 		if (!processed) return null;
 		if (!this.isCurrentImport(session)) {
 			releaseMediaAssetUrls(processed);

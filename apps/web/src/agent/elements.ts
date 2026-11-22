@@ -154,8 +154,9 @@ export async function loadAgentAsset({ session, asset, stagedIds }: {
 	asset: AgentAsset;
 	stagedIds?: string[];
 }): Promise<LoadedMedia> {
-	session.signal.throwIfAborted();
-	const read = await readAgentAsset(asset, session.signal);
+	const signal = session.cancel ? AbortSignal.any([session.signal, session.cancel]) : session.signal;
+	signal.throwIfAborted();
+	const read = await readAgentAsset(asset, signal);
 	try {
 		// The project or bundle decides the frame rate for these imports.
 		const imported = await EditorCore.getInstance().media.importFile({
