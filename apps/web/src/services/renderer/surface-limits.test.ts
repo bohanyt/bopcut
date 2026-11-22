@@ -66,6 +66,14 @@ test("large saved canvases fit the preview but full-size capture reports the dev
 		expect(() => new CanvasRenderer({ ...dimensions, requireFullSize: true })).toThrow("4096 pixels per side");
 	}));
 
+test("an invalid saved canvas keeps preview available for repair", () =>
+	withSurfaces(async () => {
+		const dimensions = { width: 1e30, height: 1080, fps };
+		const renderer = new CanvasRenderer(dimensions);
+		expect({ width: renderer.outputWidth, height: renderer.outputHeight }).toEqual({ width: 1920, height: 1080 });
+		expect(() => new CanvasRenderer({ ...dimensions, requireFullSize: true })).toThrow("positive whole numbers");
+	}));
+
 test("large foreground and blurred backdrop images share safe pixels and keep their aspect ratio", () =>
 	withSurfaces(async ({ allocations }) => {
 		const renderer = new CanvasRenderer({ width: 1920, height: 1080, fps, exactFrames: true });
@@ -106,8 +114,21 @@ test("zoomed icons, masks and strokes fit their backing surfaces without shrinki
 			transform: { width: 17_280, height: 17_280, rotationDegrees: 45, flipX: true },
 		});
 		expect(allocations).toEqual([
-			{ width: 3840, height: 3840 },
+			{ width: 4096, height: 4096 },
 			{ width: 2160, height: 2160 },
 			{ width: 2160, height: 2160 },
 		]);
+	}));
+
+test("an enlarged icon keeps its full raster resolution when it fits the device", () =>
+	withSurfaces(async ({ allocations }) => {
+		const icon = new GraphicNode({
+			...visual, definitionId: "icon", params: {},
+			transform: { ...visual.transform, scaleX: 3, scaleY: 3 },
+		});
+		const renderer = new CanvasRenderer({ width: 1920, height: 1080, fps });
+		const node = new RootNode({ duration: 1 }).add(icon);
+		await resolveRenderTree({ node, renderer, time: 0 });
+		await buildFrameDescriptor({ node, renderer });
+		expect(allocations).toEqual([{ width: 3240, height: 3240 }]);
 	}));

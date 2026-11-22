@@ -9,7 +9,7 @@ import type {
 import { generateUUID } from "@/utils/id";
 import { requiresMediaId } from "@/timeline/element-utils";
 import type { MediaAsset } from "@/media/types";
-import type { TProjectSettings } from "@/project/types";
+import type { TCanvasSize, TProjectSettings } from "@/project/types";
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { DEFAULT_FPS } from "@/fps/defaults";
 import {
@@ -27,7 +27,8 @@ import {
 import { getTrackTypeForElement } from "@/timeline/placement/compatibility";
 import { roundMediaTime } from "@/wasm";
 import { toast } from "sonner";
-import { getRendererLimits } from "@/services/renderer/renderer-device";
+import { MIN_GPU_CANVAS_DIMENSION, isValidCanvasSize } from "@/canvas/sizes";
+import { getRendererLimits, rendererDevice } from "@/services/renderer/renderer-device";
 import { fitSurfaceSize } from "@/services/renderer/scale";
 
 type InsertElementPlacement =
@@ -45,6 +46,7 @@ export class InsertElementCommand extends Command {
 	private targetTrackId: string | null = null;
 	/** Project settings this insertion changed (first visual media sets canvas size and fps). */
 	private savedSettings: Partial<TProjectSettings> | null = null;
+	private cancelCanvasSizing?: () => void;
 
 	/** Id for a track this insertion creates, fixed so redo recreates the same track. */
 	private readonly newTrackId = generateUUID();
@@ -60,6 +62,7 @@ export class InsertElementCommand extends Command {
 	private placement: InsertElementPlacement;
 
 	execute(): CommandResult | undefined {
+		this.cancelCanvasSizing?.();
 		const editor = EditorCore.getInstance();
 		this.savedState = editor.scenes.getActiveScene().tracks;
 
@@ -96,37 +99,24 @@ export class InsertElementCommand extends Command {
 			newElement.type === "video" || newElement.type === "image";
 
 		this.savedSettings = null;
+		let deferredCanvasSize: TCanvasSize | undefined;
 		if (isFirstElement && isVisualMedia) {
 			const mediaAssets = editor.media.getAssets();
-			const activeProject = editor.project.getActive();
-			const { canvasSize, originalCanvasSize, fps } = activeProject.settings;
+			const { fps } = editor.project.getActive().settings;
 			const asset = mediaAssets.find(
 				(item: MediaAsset) => item.id === newElement.mediaId,
 			);
 
 			if (asset?.width && asset?.height) {
-				this.savedSettings = { canvasSize, originalCanvasSize };
+				const source = { width: asset.width, height: asset.height };
 				const { maxSurfaceDimension } = getRendererLimits();
-				const nextCanvasSize = fitSurfaceSize(asset.width, asset.height, maxSurfaceDimension ?? Infinity);
-				if (nextCanvasSize.width !== asset.width || nextCanvasSize.height !== asset.height) {
-					// Preserve MP4 compatibility when resizing an even-sized source.
-					if (asset.width % 2 === 0 && asset.height % 2 === 0) {
-						nextCanvasSize.width = Math.max(2, 2 * Math.floor(nextCanvasSize.width / 2));
-						nextCanvasSize.height = Math.max(2, 2 * Math.floor(nextCanvasSize.height / 2));
+				if (isValidCanvasSize(source)) {
+					if (maxSurfaceDimension === undefined && Math.max(source.width, source.height) > MIN_GPU_CANVAS_DIMENSION) {
+						deferredCanvasSize = source;
+					} else {
+						this.setCanvasSize(editor, source, maxSurfaceDimension ?? MIN_GPU_CANVAS_DIMENSION);
 					}
-					toast.info(`Canvas set to ${nextCanvasSize.width} × ${nextCanvasSize.height} to fit this graphics device.`);
 				}
-				const shouldSetOriginalCanvasSize =
-					!activeProject?.settings.originalCanvasSize;
-				editor.project.updateSettings({
-					settings: {
-						canvasSize: nextCanvasSize,
-						...(shouldSetOriginalCanvasSize
-							? { originalCanvasSize: nextCanvasSize }
-							: {}),
-					},
-					pushHistory: false,
-				});
 			}
 
 			const sourceFps = asset?.type === "video" && asset.fps !== undefined
@@ -135,7 +125,7 @@ export class InsertElementCommand extends Command {
 			if (sourceFps && shouldInitializeFps({
 				current: fps, source: sourceFps, mediaAssets, hasVariableGifDelay: asset?.hasVariableGifDelay,
 			})) {
-				this.savedSettings = { ...this.savedSettings, fps };
+				this.savedSettings = { ...(this.savedSettings ?? {}), fps };
 				editor.project.updateSettings({
 					settings: { fps: sourceFps },
 					pushHistory: false,
@@ -144,6 +134,7 @@ export class InsertElementCommand extends Command {
 		}
 
 		editor.timeline.updateTracks(updatedTracks);
+		if (deferredCanvasSize) this.deferCanvasSize(editor, deferredCanvasSize);
 
 		return {
 			selection: {
@@ -158,6 +149,7 @@ export class InsertElementCommand extends Command {
 	}
 
 	undo(): void {
+		this.cancelCanvasSizing?.();
 		if (this.savedState) {
 			const editor = EditorCore.getInstance();
 			editor.timeline.updateTracks(this.savedState);
@@ -168,6 +160,49 @@ export class InsertElementCommand extends Command {
 				});
 			}
 		}
+	}
+
+	private setCanvasSize(editor: EditorCore, source: TCanvasSize, max: number) {
+		const { canvasSize, originalCanvasSize } = editor.project.getActive().settings;
+		this.savedSettings = { ...this.savedSettings, canvasSize, originalCanvasSize };
+		const next = fitSurfaceSize(source.width, source.height, max);
+		if (next.width !== source.width || next.height !== source.height) {
+			// Preserve MP4 compatibility when resizing an even-sized source.
+			if (source.width % 2 === 0 && source.height % 2 === 0) {
+				next.width = Math.max(2, 2 * Math.floor(next.width / 2));
+				next.height = Math.max(2, 2 * Math.floor(next.height / 2));
+			}
+			toast.info(`Canvas set to ${next.width} × ${next.height} to fit this graphics device.`);
+		}
+		editor.project.updateSettings({
+			settings: { canvasSize: next, ...(!originalCanvasSize ? { originalCanvasSize: next } : {}) },
+			pushHistory: false,
+		});
+	}
+
+	private deferCanvasSize(editor: EditorCore, source: TCanvasSize) {
+		if (rendererDevice.status.state === "unavailable") return;
+		const signal = editor.project.getSessionSignal();
+		const settings = editor.project.getActive().settings;
+		const tracks = editor.scenes.getActiveScene().tracks;
+		const cancel = () => {
+			unsubscribe();
+			signal.removeEventListener("abort", cancel);
+			this.cancelCanvasSizing = undefined;
+		};
+		const unsubscribe = rendererDevice.subscribe(() => {
+			const { maxSurfaceDimension } = getRendererLimits();
+			if (maxSurfaceDimension === undefined && rendererDevice.status.state !== "unavailable") return;
+			cancel();
+			// Later edits carry their own undo snapshots. Never resize the canvas underneath them.
+			if (maxSurfaceDimension !== undefined && !signal.aborted && !editor.timeline.isPreviewActive() &&
+				editor.project.getActiveOrNull()?.settings === settings &&
+				editor.scenes.getActiveSceneOrNull()?.tracks === tracks) {
+				this.setCanvasSize(editor, source, maxSurfaceDimension);
+			}
+		});
+		this.cancelCanvasSizing = cancel;
+		signal.addEventListener("abort", cancel, { once: true });
 	}
 
 	getElementId(): string {

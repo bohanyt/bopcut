@@ -32,7 +32,8 @@ import { formatNumberForDisplay } from "@/utils/math";
 import { OcSquarePlusIcon } from "@/components/icons";
 import type { TCanvasSize } from "@/project/types";
 import { toast } from "sonner";
-import { canvasSizeError } from "@/services/renderer/renderer-device";
+import { canvasSizeError, getRendererLimits } from "@/services/renderer/renderer-device";
+import { MIN_GPU_CANVAS_DIMENSION } from "@/canvas/sizes";
 
 type SettingsView = "project-info" | "background";
 
@@ -70,6 +71,16 @@ function parseCanvasDimension({ input }: { input: string }): number | null {
 
 	const rounded = Math.round(parsed);
 	return rounded > 0 ? rounded : null;
+}
+
+function customCanvasSizeError(size: TCanvasSize, changedDimension?: keyof TCanvasSize) {
+	// Let users repair the two sides of an oversized saved canvas independently.
+	const changedSize = changedDimension ? { width: 1, height: 1, [changedDimension]: size[changedDimension] } : size;
+	const { maxSurfaceDimension } = getRendererLimits();
+	if (canvasSizeError(changedSize, maxSurfaceDimension)) return canvasSizeError(size, maxSurfaceDimension);
+	if (maxSurfaceDimension === undefined && Math.max(changedSize.width, changedSize.height) > MIN_GPU_CANVAS_DIMENSION) {
+		return `Wait for graphics to be ready before setting a canvas dimension above ${MIN_GPU_CANVAS_DIMENSION} pixels.`;
+	}
 }
 
 function useCanvasDimensionDraft({
@@ -192,7 +203,7 @@ export function SettingsView() {
 
 	const selectCustomCanvasSize = () => {
 		const canvasSize = lastCustomCanvasSize ?? currentCanvasSize;
-		const error = canvasSizeError(canvasSize);
+		const error = customCanvasSizeError(canvasSize);
 		if (error && !areCanvasSizesEqual({ left: canvasSize, right: currentCanvasSize })) {
 			toast.error(error);
 			return;
@@ -202,10 +213,9 @@ export function SettingsView() {
 
 	const commitDimension = (dimension: keyof TCanvasSize, value: number) => {
 		const canvasSize = { ...currentCanvasSize, [dimension]: value };
-		// A saved canvas may have two oversized sides. Let each be corrected separately.
-		const error = canvasSizeError({ width: 1, height: 1, [dimension]: value });
+		const error = customCanvasSizeError(canvasSize, dimension);
 		if (error) {
-			toast.error(canvasSizeError(canvasSize));
+			toast.error(error);
 			return;
 		}
 		updateCustomCanvasSize({ canvasSize });

@@ -6,6 +6,7 @@ import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
 import { waitWithAbort } from "@/utils/abort";
 import { VideoCache } from "@/services/video-cache/service";
+import { MIN_GPU_CANVAS_DIMENSION, previewCanvasSize } from "@/canvas/sizes";
 import { canvasSizeError, checkGraphicsContext, getRendererLimits, rendererDevice, rethrowGraphicsFailure } from "./renderer-device";
 import {
 	measureSpanAsync,
@@ -52,16 +53,16 @@ export class CanvasRenderer {
 		this.exactFrames = exactFrames;
 		this.strictVideoDecoding = strictVideoDecoding;
 		this.onMediaFailure = onMediaFailure;
-		this.width = width;
-		this.height = height;
+		const size = requireFullSize ? { width, height } : previewCanvasSize({ width, height });
+		this.width = size.width;
+		this.height = size.height;
 		this.fps = fps;
 		this.requestedScale = renderScale;
 		this.requireFullSize = requireFullSize;
 		const { maxSurfaceDimension } = getRendererLimits();
 		this.target = this.getRenderTarget(maxSurfaceDimension);
 		this.outputCanvas = document.createElement("canvas");
-		// A small target is safe even before the device starts (WebGL2 guarantees 2048).
-		if (maxSurfaceDimension !== undefined || Math.max(this.outputWidth, this.outputHeight) <= 2048) {
+		if (maxSurfaceDimension !== undefined || Math.max(this.outputWidth, this.outputHeight) <= MIN_GPU_CANVAS_DIMENSION) {
 			this.resizeOutputCanvas();
 		}
 	}
@@ -72,8 +73,10 @@ export class CanvasRenderer {
 
 	private getRenderTarget(max = Infinity) {
 		const { width, height } = this;
-		const error = canvasSizeError({ width, height }, this.requireFullSize ? max : Infinity);
-		if (error) throw new Error(error);
+		if (this.requireFullSize) {
+			const error = canvasSizeError({ width, height }, max);
+			if (error) throw new Error(error);
+		}
 		const scale = Math.min(this.requestedScale, max / Math.max(width, height));
 		return { ...renderTargetSize({ width, height, scale }), scale };
 	}

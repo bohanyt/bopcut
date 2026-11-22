@@ -2,7 +2,8 @@ import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
 import { lastFrameMediaTime, mediaTimeFromSeconds } from "@/wasm";
 import type { MediaLoadFailure } from "@/media/types";
-import { isGraphicsInitializing } from "@/services/renderer/renderer-device";
+import { getRendererLimits, isGraphicsInitializing } from "@/services/renderer/renderer-device";
+import { fitSurfaceSize } from "@/services/renderer/scale";
 import { getRootScene } from "./scene-graph";
 import { isForOtherProject, parseStateRef, resolveState, type TimelineState } from "./history";
 import { markAnswered, wasAnswered } from "./answered";
@@ -191,6 +192,7 @@ async function renderFrame({ request, time, state, variant, settings, signal, ch
 	const duration = calculateTotalDuration({ tracks: root.tracks });
 	if (duration === 0) throw new Error("The timeline of that state is empty");
 	if (ticks > lastFrameMediaTime({ duration, fps: settings.fps })) throw new Error(`Time outside timeline: ${time}`);
+	const { maxSurfaceDimension = 4096 } = getRendererLimits();
 	const snapshot = await editor.renderer.createSnapshot({ time: ticks, sceneId: root.id, scenes, settings });
 	signal.throwIfAborted();
 	const error = checkMedia();
@@ -199,8 +201,14 @@ async function renderFrame({ request, time, state, variant, settings, signal, ch
 	const image = await createImageBitmap(snapshot.blob);
 	const canvas = document.createElement("canvas");
 	try {
-		canvas.width = request.width ?? 960;
-		canvas.height = Math.max(1, Math.round(canvas.width * image.height / image.width));
+		const requestedWidth = request.width ?? 960;
+		const { width, height } = fitSurfaceSize(
+			requestedWidth,
+			(requestedWidth * image.height) / image.width,
+			maxSurfaceDimension,
+		);
+		canvas.width = width;
+		canvas.height = height;
 		const context = canvas.getContext("2d");
 		if (!context) throw new Error("Canvas unavailable");
 		context.drawImage(image, 0, 0, canvas.width, canvas.height);

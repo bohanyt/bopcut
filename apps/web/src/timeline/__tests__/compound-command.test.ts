@@ -424,4 +424,35 @@ describe("insertion and batch rollback", () => {
 			limits.mockRestore();
 		}
 	});
+
+	test.each([true, false])("first-media sizing waits for graphics and respects undo before recovery (%s)", (undoBeforeRecovery) => {
+		const listeners = new Set<() => void>();
+		const subscription = spyOn(graphics.rendererDevice, "subscribe").mockImplementation((listener) => {
+			listeners.add(listener);
+			return () => { listeners.delete(listener); };
+		});
+		const limits = spyOn(graphics, "getRendererLimits").mockReturnValue({});
+		try {
+			const editor = emptyProject({ width: 7680, height: 4320 });
+			const before = settingsOf(editor);
+			editor.command.execute({ command: firstVideo() });
+			expect(editor.scenes.getActiveScene().tracks.main.elements).toHaveLength(1);
+			expect(settingsOf(editor).canvasSize).toEqual(before.canvasSize);
+			if (undoBeforeRecovery) editor.command.undo();
+
+			limits.mockReturnValue({ maxTextureDimension: 4096, maxSurfaceDimension: 4096 });
+			for (const listener of listeners) listener();
+			expect(listeners.size).toBe(0);
+			if (undoBeforeRecovery) {
+				expect(settingsOf(editor)).toEqual(before);
+				editor.command.redo();
+			}
+			expect(settingsOf(editor).canvasSize).toEqual({ width: 4096, height: 2304 });
+			editor.command.undo();
+			expect(settingsOf(editor)).toEqual(before);
+		} finally {
+			limits.mockRestore();
+			subscription.mockRestore();
+		}
+	});
 });

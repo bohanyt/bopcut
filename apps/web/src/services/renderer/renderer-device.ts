@@ -1,6 +1,7 @@
 import { getGpuWebGlCanvas, getMaxTextureDimension2D, initializeGpu, resetGpu } from "opencut-wasm";
 import { DeviceLifecycle, GraphicsDeviceError } from "./device-lifecycle";
 import { wasmCompositor } from "./compositor/wasm-compositor";
+import { isValidCanvasSize } from "@/canvas/sizes";
 
 let gl: WebGL2RenderingContext | null = null;
 let detachContextListener: (() => void) | undefined;
@@ -60,7 +61,7 @@ export function getRendererLimits() {
 }
 
 export function canvasSizeError({ width, height }: { width: number; height: number }, max = getRendererLimits().maxSurfaceDimension): string | undefined {
-	if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
+	if (!isValidCanvasSize({ width, height })) {
 		return "Canvas width and height must be positive whole numbers.";
 	}
 	if (max !== undefined && Math.max(width, height) > max) {

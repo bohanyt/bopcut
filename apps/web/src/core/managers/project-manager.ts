@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import { generateUUID } from "@/utils/id";
 import { UpdateProjectSettingsCommand } from "@/commands/project";
 import { DEFAULT_BACKGROUND_COLOR } from "@/background/color";
-import { DEFAULT_CANVAS_SIZE } from "@/canvas/sizes";
+import { DEFAULT_CANVAS_SIZE, previewCanvasSize } from "@/canvas/sizes";
 import { DEFAULT_FPS } from "@/fps/defaults";
 import { buildDefaultScene, getProjectDurationFromScenes } from "@/timeline/scenes";
 import { buildScene } from "@/services/renderer/scene-builder";
@@ -925,7 +925,8 @@ export class ProjectManager {
 		const { tracks } = activeScene;
 		const mediaAssets = this.editor.media.getAssets();
 		const duration = this.editor.timeline.getTotalDuration();
-		const { canvasSize, background } = this.active.settings;
+		const { background } = this.active.settings;
+		const canvasSize = previewCanvasSize(this.active.settings.canvasSize);
 
 		const scene = buildScene({
 			tracks,

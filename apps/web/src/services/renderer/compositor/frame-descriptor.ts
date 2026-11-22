@@ -279,7 +279,7 @@ async function collectVisualSourceNode({
 		? fitSurfaceSize(
 			vectorIcon ? logicalWidth : Math.ceil(sourceWidth * renderer.renderScale),
 			vectorIcon ? logicalHeight : Math.ceil(sourceHeight * renderer.renderScale),
-			Math.min(maxTextureDimension ?? Infinity, Math.max(renderer.outputWidth, renderer.outputHeight)),
+			maxTextureDimension ?? Infinity,
 		)
 		: node instanceof VideoNode || node instanceof ImageNode
 			? { width: node.resolved.source.width, height: node.resolved.source.height }
