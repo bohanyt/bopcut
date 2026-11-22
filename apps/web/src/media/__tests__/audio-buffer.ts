@@ -9,7 +9,12 @@ export class TestAudioBuffer implements AudioBuffer {
 		this.numberOfChannels = numberOfChannels;
 		this.length = length;
 		this.sampleRate = sampleRate;
-		this.channels = Array.from({ length: numberOfChannels }, () => new Float32Array(length));
+		const channelBytes = length * Float32Array.BYTES_PER_ELEMENT;
+		const storage = new ArrayBuffer(numberOfChannels * channelBytes);
+		this.channels = [];
+		for (let channel = 0; channel < numberOfChannels; channel++) {
+			this.channels.push(new Float32Array(storage, channel * channelBytes, length));
+		}
 	}
 
 	get duration() { return this.length / this.sampleRate; }
