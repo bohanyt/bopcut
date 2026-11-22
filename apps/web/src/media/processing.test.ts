@@ -1,12 +1,13 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import {
 	AudioSample, AudioSampleSink, BlobSource, BufferTarget, EncodedAudioPacketSource, EncodedPacket, EncodedPacketSink, EncodedVideoPacketSource,
-	Input, InputAudioTrack, InputVideoTrack, MP4, Mp4OutputFormat, Output, VideoSample, VideoSampleSink,
+	Input, InputAudioTrack, InputVideoTrack, MP4, Mp4OutputFormat, Output, StreamSource, VideoSample, VideoSampleSink,
 } from "mediabunny";
 import { toast } from "sonner";
 import { storageService } from "@/services/storage/service";
 import { processMediaFile } from "./processing";
 import { releaseMediaAssetUrls } from "./url-release";
+import { withFirstVideoFrame } from "./video-probe";
 
 const allowStorage = () => spyOn(storageService, "canStoreFile")
 	.mockResolvedValue({ canStore: true, availableBytes: null, reason: "estimate-unavailable" });
@@ -93,14 +94,22 @@ test.each(["application/octet-stream", "video/mp4"])("corrupt video with type %s
 	}
 });
 
-async function videoFile(timestamps = [0, 1]) {
+async function videoFile(timestamps = [0, 1], padLastPacket = false) {
 	const output = new Output({ format: new Mp4OutputFormat({ fastStart: "in-memory" }), target: new BufferTarget() });
 	const track = new EncodedVideoPacketSource("avc");
 	output.addVideoTrack(track);
 	const data = Uint8Array.from(atob("AAAAAWdkAAqs2V7ARAAAAwAEAAADAMg8SJZYAAAAAWjr48siwAAAAWWIhAAr//72c3wKa22xgQ=="), (byte) => byte.charCodeAt(0));
 	await output.start();
 	for (const [index, timestamp] of timestamps.entries()) {
-		await track.add(new EncodedPacket(data, index === 0 ? "key" : "delta", timestamp, 1), {
+		let packet = data;
+		if (padLastPacket && index === timestamps.length - 1) {
+			// A filler NAL unit puts the final packet outside the demuxer's metadata reads.
+			packet = new Uint8Array(512 * 1024).fill(0xff);
+			packet.set(data);
+			packet.set([0, 0, 1, 0x0c], data.length);
+			packet[packet.length - 1] = 0x80;
+		}
+		await track.add(new EncodedPacket(packet, index === 0 ? "key" : "delta", timestamp, 1), {
 			decoderConfig: { codec: "avc1.64000a", codedWidth: 16, codedHeight: 16 },
 		});
 	}
@@ -227,5 +236,65 @@ test("cancelling the video probe disposes the input and closes a late frame", as
 		pending.resolve({ done: true, value: undefined });
 		await importing;
 		for (const stub of stubs) stub.mockRestore();
+	}
+});
+
+test("disposing a completed probe closes the decoder while its packet read is pending", async () => {
+	const bytes = new Uint8Array(await videoFile([0, 1], true));
+	const reading = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const closed = Promise.withResolvers<void>();
+	let prefetching = false;
+	const input = new Input({
+		source: new StreamSource({
+			getSize: () => bytes.length,
+			read: async (start, end) => {
+				if (prefetching) {
+					reading.resolve();
+					await release.promise;
+				}
+				return bytes.subarray(start, end);
+			},
+		}),
+		formats: [MP4],
+	});
+	const nextPacket = EncodedPacketSink.prototype.getNextPacket;
+	const prefetch = spyOn(EncodedPacketSink.prototype, "getNextPacket").mockImplementation(
+		function (this: EncodedPacketSink, packet, options) {
+			prefetching ||= !options?.metadataOnly;
+			return nextPacket.call(this, packet, options);
+		},
+	);
+	// Keep the real sink and packet reader. Replace only the browser's decoder for this test.
+	const sink = VideoSampleSink.prototype as VideoSampleSink & {
+		_createDecoder(emit: (sample: VideoSample) => void): Promise<{
+			decode(packet: EncodedPacket): void;
+			getDecodeQueueSize(): number;
+			flush(): Promise<void>;
+			close(): void;
+		}>;
+	};
+	const decoder = spyOn(sink, "_createDecoder").mockImplementation(async (emit) => ({
+		decode: (packet) => emit(new VideoSample(new Uint8Array(4), {
+			format: "RGBA", codedWidth: 1, codedHeight: 1, timestamp: packet.timestamp,
+		})),
+		getDecodeQueueSize: () => 0,
+		flush: async () => {},
+		close: () => closed.resolve(),
+	}));
+	try {
+		const track = await input.getPrimaryVideoTrack();
+		if (!track) throw new Error("Missing video test track");
+		const read = withFirstVideoFrame(track, undefined, ({ timestamp }) => timestamp);
+		await Promise.race([reading.promise, read.then(() => { throw new Error("Probe did not prefetch a packet"); })]);
+		expect(await read).toBe(0);
+		input.dispose();
+		const closure = await Promise.race([closed.promise.then(() => "closed"), Bun.sleep(0).then(() => "still open")]);
+		expect(closure).toBe("closed");
+	} finally {
+		input.dispose();
+		release.resolve();
+		decoder.mockRestore();
+		prefetch.mockRestore();
 	}
 });
