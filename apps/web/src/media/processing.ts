@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { getMediaTypeFromFile, hasGenericMediaMimeType, isModelFile } from "@/media/media-utils";
+import { GIF_SOURCE_FPS_HEADER, getMediaTypeFromFile, hasGenericMediaMimeType, isModelFile } from "@/media/media-utils";
 import { formatStorageBytes } from "@/services/storage/quota";
 import { storageService } from "@/services/storage/service";
 import type { MediaAsset } from "@/media/types";
@@ -90,6 +90,7 @@ export async function processMediaFile({
 	if (signal.aborted) return null;
 	// Convert GIF to video on the local server to preserve animation and transparency.
 	let file = original;
+	let gifSourceFps: number | undefined;
 	if (original.type === "image/gif" || (hasGenericMediaMimeType(original) && /\.gif$/i.test(original.name))) {
 		try {
 			const res = await fetch("/api/agent/gif", { method: "POST", body: original, signal });
@@ -99,6 +100,9 @@ export async function processMediaFile({
 			if (type !== "video/mp4" && type !== "video/webm") throw new Error("Unexpected GIF conversion format");
 			const extension = type === "video/webm" ? "webm" : "mp4";
 			file = new File([converted], original.name.replace(/\.gif$/i, "") + "." + extension, { type });
+			// Some FFmpeg versions duplicate frames to represent GIF holds. Keep the source cadence.
+			const sourceFps = Number(res.headers.get(GIF_SOURCE_FPS_HEADER));
+			if (Number.isFinite(sourceFps) && sourceFps > 0) gifSourceFps = sourceFps;
 		} catch (error) {
 			if (signal.aborted) return null;
 			toast.error(`GIF ${original.name} could not be converted to video; using a still image`);
@@ -153,7 +157,8 @@ export async function processMediaFile({
 				duration = videoData.duration;
 				width = videoData.width;
 				height = videoData.height;
-				fps = Number.isFinite(videoData.fps) && videoData.fps > 0 ? videoData.fps : undefined;
+				const sourceFps = gifSourceFps ?? videoData.fps;
+				fps = Number.isFinite(sourceFps) && sourceFps > 0 ? sourceFps : undefined;
 				hasAudio = videoData.hasAudio;
 				thumbnailUrl = videoData.thumbnailUrl ?? undefined;
 

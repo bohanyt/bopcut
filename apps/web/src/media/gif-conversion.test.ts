@@ -83,6 +83,7 @@ test.each([
 		expect(response.headers.get("Content-Type")).toBe(mime);
 		expect(await response.text()).toBe("converted");
 		expect(commands).toBe(3);
+		expect(response.headers.get("X-Bopencut-GIF-FPS")).toBe(version.startsWith("58.") ? "3.75" : null);
 	} finally {
 		runner.mockRestore();
 	}

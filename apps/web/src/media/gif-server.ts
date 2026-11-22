@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { defaultRunner, runTool, toolsFromEnv } from "@/retrieval/server";
+import { GIF_SOURCE_FPS_HEADER } from "@/media/media-utils";
 
 function gcd(left: number, right: number): number {
 	while (right) [left, right] = [right, left % right];
@@ -27,6 +28,7 @@ export async function handleGif(request: Request): Promise<Response> {
 		]);
 		const alpha = /^\d+,/m.test(probe);
 		const [, major, minor] = /^#software: Lavf(\d+)\.(\d+)/m.exec(probe) ?? [];
+		const headers = new Headers({ "Content-Type": alpha ? "video/webm" : "video/mp4" });
 		const filters = alpha ? [] : ["scale=trunc(iw/2)*2:trunc(ih/2)*2"];
 		let loopedInput = ["-stream_loop", "2", ...source];
 		let timing = ["-fps_mode", "passthrough", "-enc_time_base", "1:100"];
@@ -36,9 +38,11 @@ export async function handleGif(request: Request): Promise<Response> {
 			const packets = await run([...source, "-an", "-c:v", "copy", "-f", "framecrc", "pipe:1"]);
 			let duration = 0;
 			let cadence = 0;
+			let frameCount = 0;
 			for (const [, pts, delay] of packets.matchAll(/^0,\s*\d+,\s*(\d+),\s*(\d+),/gm)) {
 				duration = Number(pts) + Number(delay);
 				cadence = gcd(cadence, Number(delay));
+				frameCount++;
 			}
 			if (!duration || !cadence) throw new Error("GIF is missing frame timing");
 			const escapedPath = input.split(path.sep).join("/").replaceAll("'", "'\\''");
@@ -51,6 +55,7 @@ export async function handleGif(request: Request): Promise<Response> {
 				// that represents every GIF delay exactly.
 				filters.push(`fps=100/${cadence}`);
 				timing = [];
+				headers.set(GIF_SOURCE_FPS_HEADER, String(frameCount * 100 / duration));
 			}
 		}
 		const encoding = alpha
@@ -61,9 +66,7 @@ export async function handleGif(request: Request): Promise<Response> {
 			...loopedInput, "-an", ...encoding, ...(filters.length ? ["-vf", filters.join(",")] : []),
 			...timing, output,
 		]);
-		return new Response(new Uint8Array(await fs.readFile(output)), {
-			headers: { "Content-Type": alpha ? "video/webm" : "video/mp4" },
-		});
+		return new Response(new Uint8Array(await fs.readFile(output)), { headers });
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
