@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { ALL_FORMATS, AudioBufferSource, BufferSource, CanvasSource, EncodedPacket, EncodedPacketSink, EncodedVideoPacketSource, Input, Output } from "mediabunny";
 import type { CompoundElement, LibraryAudioElement, TScene, UploadAudioElement, VideoElement } from "@/timeline";
 import type { TProject } from "@/project/types";
@@ -7,6 +7,7 @@ import type { MediaAsset } from "@/media/types";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 import { waitWithAbort } from "@/utils/abort";
 import { TestAudioBuffer } from "@/media/__tests__/audio-buffer";
+import * as videoProbe from "@/media/video-probe";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
@@ -452,7 +453,16 @@ describe("one export at a time", () => {
 });
 
 describe("the export poller", () => {
-	afterEach(() => EditorCore.reset());
+	const verifyVideoFile = videoProbe.verifyVideoFile;
+	let restoreVideoProbe = () => {};
+	beforeEach(() => {
+		const probe = spyOn(videoProbe, "verifyVideoFile").mockResolvedValue(undefined);
+		restoreVideoProbe = () => probe.mockRestore();
+	});
+	afterEach(() => {
+		restoreVideoProbe();
+		EditorCore.reset();
+	});
 
 	const clip = (seconds: number): VideoElement => ({ id: "v", agentId: "v", type: "video", name: "Clip", mediaId: "m", startTime: T(0), duration: T(seconds), trimStart: T(0), trimEnd: T(0), params: {} });
 	const sceneWith = (id: string, element: VideoElement | CompoundElement): TScene => ({
@@ -797,10 +807,14 @@ describe("the export poller", () => {
 			};
 			scene.tracks.audio = [{ id: "audio", name: "Audio", type: "audio", muted: false, elements: [sound] }];
 			const pending = Promise.withResolvers<Response>();
-			const fetchSound = spyOn(globalThis, "fetch").mockReturnValue(pending.promise);
+			const fetching = Promise.withResolvers<void>();
+			const fetchSound = spyOn(globalThis, "fetch").mockImplementation(Object.assign(() => {
+				fetching.resolve();
+				return pending.promise;
+			}, { preconnect: fetch.preconnect }));
 			const exporting = editor.project.export({ options: { format: "mp4", quality: "high", includeAudio: true } });
 			try {
-				expect(fetchSound).toHaveBeenCalled();
+				await Promise.race([fetching.promise, exporting.then(() => { throw new Error("Export did not reach mixdown"); })]);
 				const signal = fetchSound.mock.calls[0]?.[1]?.signal;
 				signal?.addEventListener("abort", () => pending.reject(signal.reason), { once: true });
 				editor.project.cancelExport();
@@ -990,6 +1004,32 @@ describe("the export poller", () => {
 				expect(editor.renderer.isExportRunning()).toBe(false);
 				expect((await editor.project.export({ options: { ...options, allowMissing: true } })).success).toBe(true);
 				expect(decode).toHaveBeenCalledTimes(2);
+			} finally {
+				decode.mockRestore();
+			}
+		}));
+
+	test("preflight reports a corrupt nested video before mixdown or encoding and can omit it", () =>
+		withFrameResolution(async ({ cancel, finalize }) => {
+			const editor = open("p", 0.1, { nested: true });
+			editor.save.stop();
+			const probe = spyOn(videoProbe, "verifyVideoFile").mockImplementation(verifyVideoFile);
+			const decode = spyOn(VideoCache.prototype, "getFrameAt");
+			const progress = mock(() => {});
+			try {
+				const options = { format: "mp4", quality: "high", includeAudio: true } as const;
+				expect(await editor.renderer.exportProject({ options, onProgress: progress })).toMatchObject({
+					success: false,
+					missingMedia: [{ id: videoAsset.id, name: videoAsset.name, unreadable: true }],
+				});
+				expect(progress).not.toHaveBeenCalled();
+				expect(cancel).not.toHaveBeenCalled();
+				expect(finalize).not.toHaveBeenCalled();
+				expect(editor.renderer.isExportRunning()).toBe(false);
+				expect((await editor.renderer.exportProject({ options: { ...options, allowMissing: true } })).success).toBe(true);
+				expect(finalize).toHaveBeenCalledTimes(1);
+				expect(decode).not.toHaveBeenCalled();
+				expect(probe).toHaveBeenCalledTimes(2);
 			} finally {
 				decode.mockRestore();
 			}

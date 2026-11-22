@@ -1,8 +1,118 @@
 diff --git a/dist/bundles/mediabunny.cjs b/dist/bundles/mediabunny.cjs
-index fcd33bc13766e8c89877ebd1c1a5ad8d8f849a37..c6003b530e4b14a86b0b67d9f3e14ab9bdc11bb4 100644
+index fcd33bc13766e8c89877ebd1c1a5ad8d8f849a37..6f1ec3a3bfb6ff48faf68971628769eba850f5fd 100644
 --- a/dist/bundles/mediabunny.cjs
 +++ b/dist/bundles/mediabunny.cjs
-@@ -27002,6 +27002,7 @@ ${cue.notes ?? ""}`;
+@@ -6496,8 +6496,10 @@ var Mediabunny = (() => {
+       let ended = false;
+       let terminated = false;
+       let outOfBandError = null;
++      let decoder = null;
++      let packets = null;
+       (async () => {
+-        const decoder = await this._createDecoder((sample) => {
++        decoder = await this._createDecoder((sample) => {
+           onQueueDequeue();
+           if (sample.timestamp >= endTimestamp) {
+             ended = true;
+@@ -6533,7 +6535,7 @@ var Mediabunny = (() => {
+         const keyPacket = await packetSink.getKeyPacket(startTimestamp, { verifyKeyPackets: true }) ?? await packetSink.getFirstKeyPacket({ verifyKeyPackets: true });
+         let currentPacket = keyPacket;
+         const endPacket = void 0;
+-        const packets = packetSink.packets(keyPacket ?? void 0, endPacket);
++        packets = packetSink.packets(keyPacket ?? void 0, endPacket);
+         await packets.next();
+         while (currentPacket && !ended && !this._track.input._disposed) {
+           const maxQueueSize = computeMaxQueueSize(sampleQueue.length);
+@@ -6550,10 +6552,10 @@ var Mediabunny = (() => {
+           currentPacket = packetResult.value;
+         }
+         await packets.return();
++        packets = null;
+         if (!terminated && !this._track.input._disposed) {
+           await decoder.flush();
+         }
+-        decoder.close();
+         if (!firstSampleQueued && lastSample) {
+           sampleQueue.push(lastSample);
+         }
+@@ -6564,6 +6566,9 @@ var Mediabunny = (() => {
+           outOfBandError = error;
+           onQueueNotEmpty();
+         }
++      }).finally(() => {
++        void packets?.return();
++        decoder?.close();
+       });
+       const track = this._track;
+       const closeSamples = () => {
+@@ -7063,8 +7068,12 @@ var Mediabunny = (() => {
+         void this.customDecoderCallSerializer.call(() => this.customDecoder.close());
+       } else {
+         assert(this.decoder);
+-        this.decoder.close();
+-        this.alphaDecoder?.close();
++        if (this.decoder.state !== 'closed') {
++          this.decoder.close();
++        }
++        if (this.alphaDecoder && this.alphaDecoder.state !== 'closed') {
++          this.alphaDecoder.close();
++        }
+         this.colorQueue.forEach((x) => x.close());
+         this.colorQueue.length = 0;
+         this.alphaQueue.forEach((x) => x?.close());
+@@ -7497,7 +7506,9 @@ var Mediabunny = (() => {
+         void this.customDecoderCallSerializer.call(() => this.customDecoder.close());
+       } else {
+         assert(this.decoder);
+-        this.decoder.close();
++        if (this.decoder.state !== 'closed') {
++          this.decoder.close();
++        }
+       }
+     }
+   };
+@@ -18293,6 +18304,9 @@ var Mediabunny = (() => {
+       this.disposed = false;
+     }
+     read(innerStart, innerEnd) {
++      if (this.disposed) {
++        throw new InputDisposedError();
++      }
+       assert(this.fileSize !== null);
+       const prefetchRange = this.options.prefetchProfile(innerStart, innerEnd, this.workers);
+       const outerStart = Math.max(prefetchRange.start, 0);
+@@ -18375,7 +18389,7 @@ var Mediabunny = (() => {
+         }
+       }
+       for (const outerHole of outerHoles) {
+-        const pendingSlice = bytes2 && {
++        const pendingSlice = !result && bytes2 && {
+           start: innerStart,
+           bytes: bytes2,
+           holes: innerHoles,
+@@ -18460,6 +18474,7 @@ var Mediabunny = (() => {
+       worker.age = this.nextAge++;
+       void this.options.runWorker(worker).catch((error) => {
+         worker.running = false;
++        if (worker.aborted) return;
+         if (worker.pendingSlices.length > 0) {
+           worker.pendingSlices.forEach((x) => x.reject(error));
+           worker.pendingSlices.length = 0;
+@@ -18597,8 +18612,13 @@ var Mediabunny = (() => {
+       }
+     }
+     dispose() {
++      const error = new InputDisposedError();
+       for (const worker of this.workers) {
+         worker.aborted = true;
++        for (const slice of worker.pendingSlices) {
++          slice.reject(error);
++        }
++        worker.pendingSlices.length = 0;
+       }
+       this.workers.length = 0;
+       this.cache.length = 0;
+@@ -27002,6 +27022,7 @@ ${cue.notes ?? ""}`;
              );
            }
            const support = await VideoEncoder.isConfigSupported(encoderConfig);
@@ -10,7 +120,7 @@ index fcd33bc13766e8c89877ebd1c1a5ad8d8f849a37..c6003b530e4b14a86b0b67d9f3e14ab9
            if (!support.supported) {
              throw new Error(
                `This specific encoder configuration (${encoderConfig.codec}, ${encoderConfig.bitrate} bps, ${encoderConfig.width}x${encoderConfig.height}, hardware acceleration: ${encoderConfig.hardwareAcceleration ?? "no-preference"}) is not supported by this browser. Consider using another codec or changing your video parameters.`
-@@ -27906,6 +27907,7 @@ ${cue.notes ?? ""}`;
+@@ -27906,6 +27927,7 @@ ${cue.notes ?? ""}`;
              throw new Error("AudioEncoder is not supported by this browser.");
            }
            const support = await AudioEncoder.isConfigSupported(encoderConfig);
@@ -18,8 +128,82 @@ index fcd33bc13766e8c89877ebd1c1a5ad8d8f849a37..c6003b530e4b14a86b0b67d9f3e14ab9
            if (!support.supported) {
              throw new Error(
                `This specific encoder configuration (${encoderConfig.codec}, ${encoderConfig.bitrate} bps, ${encoderConfig.numberOfChannels} channels, ${encoderConfig.sampleRate} Hz) is not supported by this browser. Consider using another codec or changing your audio parameters.`
+diff --git a/dist/modules/src/media-sink.js b/dist/modules/src/media-sink.js
+index 02b0c82719bc786a81c07721e07996829a378af6..dc7446ad219cb225991d1e7689fe6128f9e1c3db 100644
+--- a/dist/modules/src/media-sink.js
++++ b/dist/modules/src/media-sink.js
+@@ -311,9 +311,11 @@ export class BaseMediaSampleSink {
+         // method but instead in a different context. This error should not go unnoticed and must be bubbled up to
+         // the consumer.
+         let outOfBandError = null;
++        let decoder = null;
++        let packets = null;
+         // The following is the "pump" process that keeps pumping packets into the decoder
+         (async () => {
+-            const decoder = await this._createDecoder((sample) => {
++            decoder = await this._createDecoder((sample) => {
+                 onQueueDequeue();
+                 if (sample.timestamp >= endTimestamp) {
+                     ended = true;
+@@ -361,7 +363,7 @@ export class BaseMediaSampleSink {
+             // decoder work at the end of the range, but the added correctness and reliability makes this tradeoff worth
+             // it.
+             const endPacket = undefined;
+-            const packets = packetSink.packets(keyPacket ?? undefined, endPacket);
++            packets = packetSink.packets(keyPacket ?? undefined, endPacket);
+             await packets.next(); // Skip the start packet as we already have it
+             while (currentPacket && !ended && !this._track.input._disposed) {
+                 const maxQueueSize = computeMaxQueueSize(sampleQueue.length);
+@@ -378,10 +380,10 @@ export class BaseMediaSampleSink {
+                 currentPacket = packetResult.value;
+             }
+             await packets.return();
++            packets = null;
+             if (!terminated && !this._track.input._disposed) {
+                 await decoder.flush();
+             }
+-            decoder.close();
+             if (!firstSampleQueued && lastSample) {
+                 sampleQueue.push(lastSample);
+             }
+@@ -392,6 +394,9 @@ export class BaseMediaSampleSink {
+                 outOfBandError = error;
+                 onQueueNotEmpty();
+             }
++        }).finally(() => {
++            void packets?.return();
++            decoder?.close();
+         });
+         const track = this._track;
+         const closeSamples = () => {
+@@ -966,8 +971,12 @@ class VideoDecoderWrapper extends DecoderWrapper {
+         }
+         else {
+             assert(this.decoder);
+-            this.decoder.close();
+-            this.alphaDecoder?.close();
++            if (this.decoder.state !== 'closed') {
++                this.decoder.close();
++            }
++            if (this.alphaDecoder && this.alphaDecoder.state !== 'closed') {
++                this.alphaDecoder.close();
++            }
+             this.colorQueue.forEach(x => x.close());
+             this.colorQueue.length = 0;
+             this.alphaQueue.forEach(x => x?.close());
+@@ -1427,7 +1436,9 @@ class AudioDecoderWrapper extends DecoderWrapper {
+         }
+         else {
+             assert(this.decoder);
+-            this.decoder.close();
++            if (this.decoder.state !== 'closed') {
++                this.decoder.close();
++            }
+         }
+     }
+ }
 diff --git a/dist/modules/src/media-source.js b/dist/modules/src/media-source.js
-index f120d2bb8262379e399c04f489d6215dd975191a..22e16e1aa76342b43535ce749e9ae230ffad2671 100644
+index f120d2bb8262379e399c04f489d6215dd975191a..878ef1682d362fb7e6c252834f39d92ff6cde5a7 100644
 --- a/dist/modules/src/media-source.js
 +++ b/dist/modules/src/media-source.js
 @@ -383,6 +383,7 @@ class VideoEncoderWrapper {
@@ -38,3 +222,48 @@ index f120d2bb8262379e399c04f489d6215dd975191a..22e16e1aa76342b43535ce749e9ae230
                  if (!support.supported) {
                      throw new Error(`This specific encoder configuration (${encoderConfig.codec}, ${encoderConfig.bitrate} bps,`
                          + ` ${encoderConfig.numberOfChannels} channels, ${encoderConfig.sampleRate} Hz) is not`
+diff --git a/dist/modules/src/source.js b/dist/modules/src/source.js
+index 65677102edd8ea920fd14d45ecae28f3c1a3b7b2..42588430f8d936f83b5b968e04655f4781fd2235 100644
+--- a/dist/modules/src/source.js
++++ b/dist/modules/src/source.js
+@@ -859,6 +859,9 @@ class ReadOrchestrator {
+         this.disposed = false;
+     }
+     read(innerStart, innerEnd) {
++        if (this.disposed) {
++            throw new InputDisposedError();
++        }
+         assert(this.fileSize !== null);
+         const prefetchRange = this.options.prefetchProfile(innerStart, innerEnd, this.workers);
+         const outerStart = Math.max(prefetchRange.start, 0);
+@@ -948,7 +951,7 @@ class ReadOrchestrator {
+         }
+         // Fire off workers to take care of patching the holes
+         for (const outerHole of outerHoles) {
+-            const pendingSlice = bytes && {
++            const pendingSlice = !result && bytes && {
+                 start: innerStart,
+                 bytes,
+                 holes: innerHoles,
+@@ -1038,6 +1041,7 @@ class ReadOrchestrator {
+         void this.options.runWorker(worker)
+             .catch((error) => {
+             worker.running = false;
++            if (worker.aborted) return;
+             if (worker.pendingSlices.length > 0) {
+                 worker.pendingSlices.forEach(x => x.reject(error)); // Make sure to propagate any errors
+                 worker.pendingSlices.length = 0;
+@@ -1183,8 +1187,13 @@ class ReadOrchestrator {
+         }
+     }
+     dispose() {
++        const error = new InputDisposedError();
+         for (const worker of this.workers) {
+             worker.aborted = true;
++            for (const slice of worker.pendingSlices) {
++                slice.reject(error);
++            }
++            worker.pendingSlices.length = 0;
+         }
+         this.workers.length = 0;
+         this.cache.length = 0;

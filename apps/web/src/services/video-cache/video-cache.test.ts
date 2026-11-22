@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { Input, InputVideoTrack, VideoSample, VideoSampleSink } from "mediabunny";
+import { EncodedPacket, EncodedPacketSink, Input, InputVideoTrack, VideoSample, VideoSampleSink } from "mediabunny";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { VideoCache } from "./service";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
@@ -89,9 +89,9 @@ async function withVideo(
 	}
 }
 
-function clip(file: File, trimStart = 0, zoom = 1) {
+function clip(file: File, trimStart = 0, zoom = 1, mediaId = "source") {
 	return new VideoNode({
-		mediaId: "source", file, url: "blob:source",
+		mediaId, file, url: "blob:source",
 		trimStart: ticks(trimStart), trimEnd: 0, timeOffset: 0, duration: ticks(40),
 		transform: { scaleX: zoom, scaleY: zoom, position: { x: 0, y: 0 }, rotate: 0 },
 		opacity: 1,
@@ -317,3 +317,54 @@ test.each([
 			cache.clear();
 		}
 	}, { seekError }));
+
+test("a full-resolution snapshot can omit a failed video seek", () =>
+	withVideo([], async ({ file }) => {
+		const snapshot = rendererAt(1, true);
+		try {
+			const root = new RootNode({ duration: ticks(1) }).add(clip(file));
+			const { textures } = await resolveFrame(snapshot, root, 0);
+			expect(textures).toEqual([]);
+		} finally {
+			snapshot.videoCache.clear();
+		}
+	}, { seekError: new Error("Invalid packet") }));
+
+test("preview keeps drawing other layers and only opens a broken video once", () =>
+	withVideo(constantRate(1), async ({ file }) => {
+		const renderer = rendererAt();
+		const broken = clip(new File(["broken"], "broken.mp4"), 0, 1, "broken");
+		const node = new RootNode({ duration: ticks(1) }).add(broken).add(clip(file));
+		const open = spyOn(Input.prototype, "getPrimaryVideoTrack").mockResolvedValueOnce(null);
+		const disposed = spyOn(Input.prototype, "dispose");
+		try {
+			for (const time of [0, 1 / 30]) {
+				const { frame } = await resolveFrame(renderer, node, time);
+				expect(frame.items).toHaveLength(1);
+				expect(broken.resolved).toBeNull();
+			}
+			expect(open).toHaveBeenCalledTimes(2);
+			expect(disposed).toHaveBeenCalledTimes(1);
+		} finally {
+			renderer.videoCache.clear();
+			disposed.mockRestore();
+		}
+	}));
+
+test.each([0, 2])("strict reads distinguish a held last frame from an early end (last packet at %d)", (lastPacketTime) =>
+	withVideo([{ timestamp: 0, duration: 1 }], async ({ file }) => {
+		const cache = new VideoCache();
+		const packet = spyOn(EncodedPacketSink.prototype, "getPacket")
+			.mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", lastPacketTime, 1));
+		try {
+			const read = (time: number) => cache.getFrameAt({ file, time, throwOnSeekError: true });
+			expect((await read(0))?.timestamp).toBe(0);
+			cache.finishFrame();
+			if (lastPacketTime === 0) expect((await read(1))?.timestamp).toBe(0);
+			else await expect(read(1)).rejects.toThrow("Video decoding ended before the last packet");
+			expect(packet).toHaveBeenCalledWith(Infinity, { metadataOnly: true });
+		} finally {
+			cache.clear();
+			packet.mockRestore();
+		}
+	}));
