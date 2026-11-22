@@ -1,3 +1,4 @@
+import { getServerI18n } from "@/i18n/server";
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
@@ -8,7 +9,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { LinkSquare02Icon } from "@hugeicons/core-free-icons";
 import { cn } from "@/utils/ui";
 
-export const metadata: Metadata = {
+const metadata: Metadata = {
 	title: "Sponsors - OpenCut",
 	description:
 		"Support OpenCut and help us build the future of free and open-source video editing.",
@@ -20,16 +21,25 @@ export const metadata: Metadata = {
 	},
 };
 
-export default function SponsorsPage() {
+export async function generateMetadata(): Promise<Metadata> {
+	const { t } = await getServerI18n();
+	return {
+		...metadata,
+		title: t("site.pageTitle", { title: t("header.sponsors") }),
+		description: t("sponsors.description"),
+	};
+}
+
+export default async function SponsorsPage() {
+	const { t } = await getServerI18n();
 	return (
 		<BasePage>
 			<div className="flex flex-col gap-8 text-center">
 				<h1 className="text-5xl font-bold tracking-tight md:text-6xl">
-					Sponsors
+					{t("header.sponsors")}
 				</h1>
 				<p className="text-muted-foreground mx-auto max-w-2xl text-xl leading-relaxed text-pretty">
-					Support OpenCut and help us build the future of privacy-first video
-					editing.
+					{t("sponsors.description")}
 				</p>
 			</div>
 			<SponsorsGrid />
@@ -47,7 +57,8 @@ function SponsorsGrid() {
 	);
 }
 
-function SponsorCard({ sponsor }: { sponsor: Sponsor }) {
+async function SponsorCard({ sponsor }: { sponsor: Sponsor }) {
+	const { t } = await getServerI18n();
 	return (
 		<Link
 			href={sponsor.url}
@@ -59,7 +70,7 @@ function SponsorCard({ sponsor }: { sponsor: Sponsor }) {
 				<CardContent className="flex h-full flex-col justify-center gap-8 p-8">
 					<Image
 						src={sponsor.logo}
-						alt={`${sponsor.name} logo`}
+						alt={t("sponsors.logo", { name: sponsor.name })}
 						width={50}
 						height={50}
 						className={cn(
@@ -77,7 +88,7 @@ function SponsorCard({ sponsor }: { sponsor: Sponsor }) {
 								className="text-muted-foreground size-4"
 							/>
 						</div>
-						<p className="text-muted-foreground">{sponsor.description}</p>
+						<p className="text-muted-foreground">{t(sponsor.description)}</p>
 					</div>
 				</CardContent>
 			</Card>

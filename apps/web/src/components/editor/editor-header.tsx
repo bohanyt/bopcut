@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import { LanguageSwitch } from "@/i18n/language-switch";
 import { Button } from "../ui/button";
@@ -111,7 +113,7 @@ function ProjectDropdown() {
 			} catch (error) {
 				toast.error(t("projects.renameFailed"), {
 					description:
-						error instanceof Error ? error.message : t("common.tryAgain"),
+						error instanceof Error ? localizeErrorDetail(error.message, t) : t("common.tryAgain"),
 				});
 			} finally {
 				setOpenDialog(null);
@@ -129,7 +131,7 @@ function ProjectDropdown() {
 			} catch (error) {
 				toast.error(t("projects.deleteFailed"), {
 					description:
-						error instanceof Error ? error.message : t("common.tryAgain"),
+						error instanceof Error ? localizeErrorDetail(error.message, t) : t("common.tryAgain"),
 				});
 			} finally {
 				setOpenDialog(null);
@@ -239,7 +241,7 @@ function EditableProjectName() {
 			} catch (error) {
 				toast.error(t("projects.renameFailed"), {
 					description:
-						error instanceof Error ? error.message : t("common.tryAgain"),
+						error instanceof Error ? localizeErrorDetail(error.message, t) : t("common.tryAgain"),
 				});
 			}
 		}

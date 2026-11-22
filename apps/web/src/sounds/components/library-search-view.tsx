@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import type { StaticMessageKey } from "@/i18n/translate";
 import { useEffect, useRef, useState } from "react";
@@ -108,7 +110,7 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 		player.addEventListener("ended", () => setPlaying(null));
 		player.play().catch(() => {
 			setPlaying(null);
-			toast.error(`Cannot play ${result.name}`);
+			toast.error(t("sounds.playFailed", { name: result.name }));
 		});
 		audio.current = player;
 		setPlaying(result.ref);
@@ -141,9 +143,9 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 			const insert = new InsertElementCommand({ element, placement: { mode: "auto", trackType: "audio" } });
 			const addMedia = new AddMediaAssetCommand({ projectId: session.projectId, assetId: asset.id });
 			editor.command.execute({ command: new BatchCommand([addMedia, insert]) });
-			toast(`Added ${saved.name}`);
+			toast(t("sounds.added", { name: saved.name }));
 		} catch (error) {
-			if (!session.signal.aborted) toast.error(error instanceof Error ? error.message : String(error));
+			if (!session.signal.aborted) toast.error(localizeErrorDetail(error instanceof Error ? error.message : String(error), t));
 		} finally {
 			setAdding((pending) => {
 				const remaining = new Set(pending);
@@ -179,7 +181,7 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 			</div>
 			{errors.map(({ source, error }) => (
 				<p key={source ?? error} className="text-destructive text-xs">
-					{source ? t("sounds.sourceError", { source: sourceLabel(source), message: error }) : error}
+					{source ? t("sounds.sourceError", { source: sourceLabel(source), message: localizeErrorDetail(error, t) }) : localizeErrorDetail(error, t)}
 				</p>
 			))}
 			<ScrollArea className="min-h-0 flex-1">

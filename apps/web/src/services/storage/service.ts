@@ -1,3 +1,4 @@
+import { getBrowserTranslator } from "@/i18n/browser";
 import type { TProject, TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import type { MediaAsset, MediaLoadFailure } from "@/media/types";
@@ -146,11 +147,11 @@ class StorageService {
 		} catch (error) {
 			soundsFailed = true;
 			console.error("Sound migration failed:", error);
-			toast.error("Failed to copy saved sounds; browser data remains. Reload to retry.");
+			toast.error(getBrowserTranslator()("storage.soundCopyFailed"));
 		}
 
-		if (copied) toast.success(`${copied} browser projects copied to storage.`);
-		if (failed) toast.error(`${failed} browser projects failed to copy; browser data remains. Reload to retry.`);
+		if (copied) toast.success(getBrowserTranslator()("storage.projectsCopied", { count: copied }));
+		if (failed) toast.error(getBrowserTranslator()("storage.projectsCopyFailed", { count: failed }));
 		if (!failed && !soundsFailed) {
 			try {
 				localStorage.setItem(browserMigrationKey, "1");

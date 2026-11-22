@@ -1,3 +1,4 @@
+import { getServerI18n } from "@/i18n/server";
 import type { Metadata } from "next";
 import Image from "next/image";
 import { notFound } from "next/navigation";
@@ -80,8 +81,9 @@ export default async function BlogPostPage({ params }: PageProps) {
 	);
 }
 
-function PostHeader({ post }: { post: Post }) {
-	const formattedDate = new Date(post.publishedAt).toLocaleDateString("en-US", {
+async function PostHeader({ post }: { post: Post }) {
+	const { locale } = await getServerI18n();
+	const formattedDate = new Date(post.publishedAt).toLocaleDateString(locale === "id" ? "id-ID" : "en-US", {
 		day: "numeric",
 		month: "long",
 		year: "numeric",

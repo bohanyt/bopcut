@@ -1,3 +1,4 @@
+import { getServerI18n } from "@/i18n/server";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { GitHubContributeSection } from "@/components/gitHub-contribute-section";
@@ -6,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { EXTERNAL_TOOLS } from "@/site/external-tools";
 import { BasePage } from "../base-page";
 
-export const metadata: Metadata = {
+const metadata: Metadata = {
 	title: "Contributors - OpenCut",
 	description:
 		"Meet the amazing people who contribute to OpenCut, the free and open-source video editor.",
@@ -58,7 +59,17 @@ async function getContributors(): Promise<Contributor[]> {
 	}
 }
 
+export async function generateMetadata(): Promise<Metadata> {
+	const { t } = await getServerI18n();
+	return {
+		...metadata,
+		title: t("site.pageTitle", { title: t("header.contributors") }),
+		description: t("contributors.description"),
+	};
+}
+
 export default async function ContributorsPage() {
+	const { t } = await getServerI18n();
 	const contributors = await getContributors();
 	const topContributors = contributors.slice(0, 2);
 	const otherContributors = contributors.slice(2);
@@ -69,12 +80,12 @@ export default async function ContributorsPage() {
 
 	return (
 		<BasePage
-			title="Contributors"
-			description="Meet the amazing people who contribute to OpenCut, the free and open-source video editor."
+			title={t("header.contributors")}
+			description={t("contributors.description")}
 		>
 			<div className="-mt-4 flex items-center justify-center gap-8 text-sm">
-				<StatItem value={contributors.length} label="contributors" />
-				<StatItem value={totalContributions} label="contributions" />
+				<StatItem value={contributors.length} label={t("contributors.people")} />
+				<StatItem value={totalContributions} label={t("contributors.contributions")} />
 			</div>
 
 			<div className="mx-auto flex max-w-6xl flex-col gap-20">
@@ -86,8 +97,8 @@ export default async function ContributorsPage() {
 				)}
 				<ExternalToolsSection />
 				<GitHubContributeSection
-					title="Join the community"
-					description="OpenCut is built by developers like you. Every contribution, no matter how small, helps make video editing more accessible for everyone."
+					title={t("contributors.join")}
+					description={t("contributors.joinDescription")}
 				/>
 			</div>
 		</BasePage>
@@ -104,17 +115,18 @@ function StatItem({ value, label }: { value: number; label: string }) {
 	);
 }
 
-function TopContributorsSection({
+async function TopContributorsSection({
 	contributors,
 }: {
 	contributors: Contributor[];
 }) {
+	const { t } = await getServerI18n();
 	return (
 		<div className="flex flex-col gap-10">
 			<div className="flex flex-col gap-2 text-center">
-				<h2 className="text-2xl font-semibold">Top contributors</h2>
+				<h2 className="text-2xl font-semibold">{t("contributors.top")}</h2>
 				<p className="text-muted-foreground">
-					Leading the way in contributions
+					{t("contributors.topDescription")}
 				</p>
 			</div>
 
@@ -127,7 +139,8 @@ function TopContributorsSection({
 	);
 }
 
-function TopContributorCard({ contributor }: { contributor: Contributor }) {
+async function TopContributorCard({ contributor }: { contributor: Contributor }) {
+	const { t } = await getServerI18n();
 	return (
 		<Link
 			href={contributor.html_url}
@@ -140,7 +153,7 @@ function TopContributorCard({ contributor }: { contributor: Contributor }) {
 					<Avatar className="mx-auto size-28">
 						<AvatarImage
 							src={contributor.avatar_url}
-							alt={`${contributor.login}'s avatar`}
+							alt={t("contributors.avatar", { name: contributor.login })}
 						/>
 						<AvatarFallback className="text-lg font-semibold">
 							{contributor.login.charAt(0).toUpperCase()}
@@ -150,7 +163,7 @@ function TopContributorCard({ contributor }: { contributor: Contributor }) {
 						<h3 className="text-xl font-semibold">{contributor.login}</h3>
 						<div className="flex items-center justify-center gap-2">
 							<span className="font-medium">{contributor.contributions}</span>
-							<span className="text-muted-foreground">contributions</span>
+							<span className="text-muted-foreground">{t("contributors.contributions")}</span>
 						</div>
 					</div>
 				</CardContent>
@@ -159,17 +172,18 @@ function TopContributorCard({ contributor }: { contributor: Contributor }) {
 	);
 }
 
-function AllContributorsSection({
+async function AllContributorsSection({
 	contributors,
 }: {
 	contributors: Contributor[];
 }) {
+	const { t } = await getServerI18n();
 	return (
 		<div className="flex flex-col gap-12">
 			<div className="flex flex-col gap-2 text-center">
-				<h2 className="text-2xl font-semibold">All contributors</h2>
+				<h2 className="text-2xl font-semibold">{t("contributors.all")}</h2>
 				<p className="text-muted-foreground">
-					Everyone who makes OpenCut better
+					{t("contributors.allDescription")}
 				</p>
 			</div>
 
@@ -186,7 +200,7 @@ function AllContributorsSection({
 							<Avatar className="size-16">
 								<AvatarImage
 									src={contributor.avatar_url}
-									alt={`${contributor.login}'s avatar`}
+									alt={t("contributors.avatar", { name: contributor.login })}
 								/>
 								<AvatarFallback>
 									{contributor.login.charAt(0).toUpperCase()}
@@ -206,12 +220,13 @@ function AllContributorsSection({
 	);
 }
 
-function ExternalToolsSection() {
+async function ExternalToolsSection() {
+	const { t } = await getServerI18n();
 	return (
 		<div className="flex flex-col gap-10">
 			<div className="flex flex-col gap-2 text-center">
-				<h2 className="text-2xl font-semibold">External tools</h2>
-				<p className="text-muted-foreground">Tools we use to build OpenCut</p>
+				<h2 className="text-2xl font-semibold">{t("contributors.tools")}</h2>
+				<p className="text-muted-foreground">{t("contributors.toolsDescription")}</p>
 			</div>
 
 			<div className="mx-auto grid max-w-4xl grid-cols-1 gap-6 sm:grid-cols-2">
@@ -229,7 +244,7 @@ function ExternalToolsSection() {
 								<div className="flex flex-1 flex-col gap-2">
 									<h3 className="text-lg font-semibold">{tool.name}</h3>
 									<p className="text-muted-foreground text-sm">
-										{tool.description}
+										{t(tool.description)}
 									</p>
 								</div>
 							</CardContent>

@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -410,7 +412,7 @@ function SavedSoundsView() {
 		return (
 			<div className="flex h-full items-center justify-center">
 				<div className="text-destructive text-sm">
-					{t("sounds.error", { message: savedSoundsError })}
+					{t("sounds.error", { message: localizeErrorDetail(savedSoundsError, t) })}
 				</div>
 			</div>
 		);

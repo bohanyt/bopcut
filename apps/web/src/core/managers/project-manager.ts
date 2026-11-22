@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import type { EditorCore } from "@/core";
 import type {
 	TProject,
@@ -134,7 +136,7 @@ export class ProjectManager {
 
 			return newProject.metadata.id;
 		} catch (error) {
-			toast.error("Failed to save new project");
+			toast.error(getBrowserTranslator()("projects.saveNewFailed"));
 			// Not on disk: the project counts as unsaved (not ready for the agent) and autosave retries.
 			saveSession.markDirty({ force: true });
 			throw error;
@@ -477,7 +479,7 @@ export class ProjectManager {
 			const failed = outcomes.filter((outcome) => outcome.error !== null);
 			if (failed.length > 0) {
 				console.error("Failed to delete projects:", failed);
-				toast.error(failed.length === 1 ? "Failed to delete project" : `Failed to delete ${failed.length} projects`, { description: failed[0].error ?? undefined });
+				toast.error(failed.length === 1 ? getBrowserTranslator()("projects.deleteFailed") : getBrowserTranslator()("projects.deleteManyFailed", { count: failed.length }), { description: failed[0].error ? localizeErrorDetail(failed[0].error, getBrowserTranslator()) : undefined });
 			}
 		} finally {
 			for (const id of uniqueIds) this.deleting.delete(id);
@@ -509,7 +511,7 @@ export class ProjectManager {
 			// The open project: renamed in the editor and saved by its session (its timeline is newer
 			// than the stored one).
 			if (this.renameActive({ id, name })) {
-				if (!(await this.editor.save.flush())) toast.error("Project renamed, but not saved yet", { description: this.editor.save.getLastError(id) ?? "Saving is retried" });
+				if (!(await this.editor.save.flush())) toast.error(getBrowserTranslator()("projects.renameUnsaved"), { description: localizeErrorDetail(this.editor.save.getLastError(id) ?? "", getBrowserTranslator()) || getBrowserTranslator()("projects.retrySave") });
 				return;
 			}
 			// Changes of a project closed a moment ago are written first: a retry of its last write after
@@ -524,8 +526,8 @@ export class ProjectManager {
 				if (this.renames.get(id) === renaming) this.renames.delete(id);
 			});
 			if (!metadata) {
-				toast.error("Project not found", {
-					description: "Please try again",
+				toast.error(getBrowserTranslator()("projects.notFound"), {
+					description: getBrowserTranslator()("common.tryAgain"),
 				});
 				return;
 			}
@@ -535,9 +537,9 @@ export class ProjectManager {
 			this.renameActive({ id, name });
 		} catch (error) {
 			console.error("Failed to rename project:", error);
-			toast.error("Failed to rename project", {
+			toast.error(getBrowserTranslator()("projects.renameFailed"), {
 				description:
-					error instanceof Error ? error.message : "Please try again",
+					error instanceof Error ? localizeErrorDetail(error.message, getBrowserTranslator()) : getBrowserTranslator()("common.tryAgain"),
 			});
 		}
 	}
@@ -568,13 +570,13 @@ export class ProjectManager {
 			if (missingProjectIds.length > 0) {
 				toast.error(
 					missingProjectIds.length === 1
-						? "Project not found"
-						: "Projects not found",
+						? getBrowserTranslator()("projects.notFound")
+						: getBrowserTranslator()("projects.notFoundMany"),
 					{
 						description:
 							missingProjectIds.length === 1
-								? "Please try again"
-								: "Some projects could not be found",
+								? getBrowserTranslator()("common.tryAgain")
+								: getBrowserTranslator()("projects.notFoundManyDescription"),
 					},
 				);
 				throw new Error(`Projects not found: ${missingProjectIds.join(", ")}`);
@@ -675,9 +677,9 @@ export class ProjectManager {
 			return duplicationPlans.map((plan) => plan.newProjectId);
 		} catch (error) {
 			console.error("Failed to duplicate projects:", error);
-			toast.error("Failed to duplicate projects", {
+			toast.error(getBrowserTranslator()("projects.duplicateFailed"), {
 				description:
-					error instanceof Error ? error.message : "Please try again",
+					error instanceof Error ? localizeErrorDetail(error.message, getBrowserTranslator()) : getBrowserTranslator()("common.tryAgain"),
 			});
 			throw error;
 		}
@@ -719,8 +721,8 @@ export class ProjectManager {
 		// Upstream behaviour (manual imports): the project follows the fastest footage. Say so,
 		// since frame-based timing changes with it.
 		const format = (fps: number) => Number(fps.toFixed(3)).toString();
-		toast.info(`Project frame rate raised to ${format(frameRateToFloat(nextFps))} fps`, {
-			description: `Imported media has a higher frame rate than the project (${format(previous)} fps). Change it in project settings if needed.`,
+		toast.info(getBrowserTranslator()("projects.raisedFps", { fps: format(frameRateToFloat(nextFps)) }), {
+			description: getBrowserTranslator()("projects.raisedFpsDetail", { fps: format(previous) }),
 		});
 		return nextFps;
 	}

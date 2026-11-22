@@ -1,5 +1,7 @@
 "use client";
 
+import { getBrowserTranslator } from "@/i18n/browser";
+
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
@@ -49,7 +51,7 @@ export function StorageProvider({ children }: StorageProviderProps) {
 
 				if (!hasSupport) {
 					toast.warning(
-						"Storage not fully supported. Some features may not work.",
+						getBrowserTranslator()("storage.unsupported"),
 					);
 				}
 

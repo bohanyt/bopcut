@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import Image from "next/image";
 import type { GuideDefinition } from "@/guides/types";
 import { TikTokLayout } from "./tiktok-layout";
@@ -28,16 +29,16 @@ function PlatformGuidePreview({ domain }: { domain: string }) {
 
 function platformGuide({
 	id,
-	label,
+	labelKey,
 	domain,
 }: {
 	id: string;
-	label: string;
+	labelKey: StaticMessageKey;
 	domain: string;
 }): GuideDefinition {
 	return {
 		id,
-		label,
+		labelKey,
 		renderPreview: () => <PlatformGuidePreview domain={domain} />,
 		renderTriggerIcon: () => <PlatformLogo domain={domain} />,
 		renderOverlay: () => null,
@@ -45,21 +46,21 @@ function platformGuide({
 }
 
 export const tiktokGuide: GuideDefinition = {
-	...platformGuide({ id: "tiktok", label: "TikTok", domain: "tiktok.com" }),
+	...platformGuide({ id: "tiktok", labelKey: "guides.tiktok", domain: "tiktok.com" }),
 	renderOverlay: () => <TikTokLayout />,
 };
 export const igReelsGuide = platformGuide({
 	id: "ig-reels",
-	label: "Reels",
+	labelKey: "guides.reels",
 	domain: "instagram.com",
 });
 export const ytShortsGuide = platformGuide({
 	id: "yt-shorts",
-	label: "Shorts",
+	labelKey: "guides.shorts",
 	domain: "youtube.com",
 });
 export const spotlightGuide = platformGuide({
 	id: "spotlight",
-	label: "Spotlight",
+	labelKey: "guides.spotlight",
 	domain: "snapchat.com",
 });

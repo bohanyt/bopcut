@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { ReactNode } from "react";
 
 export interface GridConfig {
@@ -12,7 +13,7 @@ export interface GuideRenderProps {
 
 export interface GuideDefinition {
 	id: string;
-	label: string;
+	labelKey: StaticMessageKey;
 	renderPreview: () => ReactNode;
 	renderTriggerIcon: () => ReactNode;
 	renderOverlay: (props: GuideRenderProps) => ReactNode;

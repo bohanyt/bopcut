@@ -1,3 +1,4 @@
+import { getServerI18n } from "@/i18n/server";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { cn } from "@/utils/ui";
@@ -99,14 +100,15 @@ export function ReleaseChanges({ release }: { release: Release }) {
 	);
 }
 
-function ReleaseChangeSection({
+async function ReleaseChangeSection({
 	type,
 	changes,
 }: {
 	type: string;
 	changes: Change[];
 }) {
-	const title = getSectionTitle({ type });
+	const { t } = await getServerI18n();
+	const title = getSectionTitle({ type, t });
 
 	if (isSectionCollapsible({ type })) {
 		return (

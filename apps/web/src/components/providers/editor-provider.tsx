@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
@@ -90,7 +92,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 			<div className="bg-background flex h-screen w-screen items-center justify-center">
 				<div className="flex flex-col items-center gap-4">
 					<p className="text-destructive text-sm">{t(error.key)}</p>
-					{error.detail && <p className="text-muted-foreground text-sm">{error.detail}</p>}
+					{error.detail && <p className="text-muted-foreground text-sm">{localizeErrorDetail(error.detail, t)}</p>}
 				</div>
 			</div>
 		);

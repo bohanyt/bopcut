@@ -1,3 +1,4 @@
+import { getBrowserTranslator } from "@/i18n/browser";
 import { toast } from "sonner";
 import type { SerializedProject, MediaAssetData, ProjectNavigation, ProjectSummary } from "./types";
 
@@ -133,7 +134,7 @@ export class DiskAdapter {
 		let response = await write(expected);
 		if (response.status === 409) {
 			toast.warning(
-				"The project was also changed in another browser; the latest save will overwrite those changes.",
+				getBrowserTranslator()("storage.conflict"),
 			);
 			for (let attempt = 0; attempt < 3 && response.status === 409; attempt++) {
 				// Deleted meanwhile: a write must not bring it back.

@@ -110,7 +110,7 @@ export function Header() {
 				</div>
 
 				<div className="relative z-10 flex items-center gap-2">
-					<LanguageSwitch />
+					<LanguageSwitch refreshOnChange />
 					<div className="flex items-center gap-3 md:hidden">
 						<Button
 							variant="text"

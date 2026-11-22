@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import { loadIcon } from "@/stickers/providers/iconify";
 import { toast } from "sonner";
 import { fetchWebMedia, hasWebMedia, mediaGroupsOf } from "@/media/web-drop";
@@ -277,7 +279,7 @@ export class DragDropController {
 						else lastError = error;
 					}
 					if (files.length < webGroups.length) {
-						toast.error(`Could not add ${webGroups.length - files.length === 1 && webGroups.length === 1 ? "the dropped media" : `${webGroups.length - files.length} of ${webGroups.length} dropped items`}${lastError ? `: ${lastError}` : ""}`);
+						toast.error(webGroups.length === 1 ? getBrowserTranslator()("media.dropFailed") : getBrowserTranslator()("media.dropManyFailed", { count: webGroups.length - files.length, total: webGroups.length }), { description: lastError ? localizeErrorDetail(lastError, getBrowserTranslator()) : undefined });
 					}
 					if (files.length) await this.executeFileDrop({ session, files, mouseX: coords.mouseX, mouseY: coords.mouseY });
 				})().catch((error) => console.error("Failed to process web drop:", error));

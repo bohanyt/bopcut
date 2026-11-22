@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { ReactNode } from "react";
 
 export type PreviewOverlayHudAnchor =
@@ -45,7 +46,7 @@ export interface PreviewOverlayInstance {
 
 export interface PreviewOverlayDefinition {
 	id: string;
-	label: string;
+	labelKey: StaticMessageKey;
 	defaultVisible?: boolean;
 }
 

@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import { toast } from "sonner";
 import { GIF_SOURCE_FPS_HEADER, GIF_VARIABLE_DELAY_HEADER, getMediaTypeFromFile, hasGenericMediaMimeType, isModelFile } from "@/media/media-utils";
 import { formatStorageBytes } from "@/services/storage/quota";
@@ -19,12 +21,13 @@ const getStorageLimitDescription = ({
 	const fileSizeLabel = formatStorageBytes({ bytes: fileSize });
 
 	if (availableBytes === null) {
-		return `File size is ${fileSizeLabel}.`;
+		return getBrowserTranslator()("media.fileSize", { size: fileSizeLabel });
 	}
 
-	return `File size is ${fileSizeLabel}, but only ${formatStorageBytes({
-		bytes: availableBytes,
-	})} is safely available in browser storage.`;
+	return getBrowserTranslator()("media.storageAvailable", {
+		size: fileSizeLabel,
+		available: formatStorageBytes({ bytes: availableBytes }),
+	});
 };
 
 async function generateImageThumbnail({
@@ -107,14 +110,14 @@ export async function processMediaFile({
 			hasVariableGifDelay = res.headers.get(GIF_VARIABLE_DELAY_HEADER) === "1";
 		} catch (error) {
 			if (signal.aborted) return null;
-			toast.error(`GIF ${original.name} could not be converted to video; using a still image`);
+			toast.error(getBrowserTranslator()("media.gifFallback", { name: original.name }));
 		}
 	}
 	const fileType = getMediaTypeFromFile({ file });
 	const inferredType = hasGenericMediaMimeType(original);
 
 	if (!fileType) {
-		toast.error(`Unsupported file type: ${file.name}`);
+		toast.error(getBrowserTranslator()("media.unsupportedType", { name: file.name }));
 		return null;
 	}
 
@@ -124,7 +127,7 @@ export async function processMediaFile({
 	if (signal.aborted) return null;
 
 	if (!storageCheck.canStore) {
-		toast.error(`Not enough browser storage for ${file.name}`, {
+		toast.error(getBrowserTranslator()("media.fileStorageFull", { name: file.name }), {
 			description: getStorageLimitDescription({
 				fileSize: file.size,
 				availableBytes: storageCheck.availableBytes,
@@ -165,17 +168,17 @@ export async function processMediaFile({
 				thumbnailUrl = videoData.thumbnailUrl ?? undefined;
 
 				if (videoData.audioUnavailable) {
-					toast.warning(`Audio unavailable in ${file.name}`, {
-						description: "The video can be used without its soundtrack. Convert the audio to AAC if you need it.",
+					toast.warning(getBrowserTranslator()("media.audioUnavailable", { name: file.name }), {
+						description: getBrowserTranslator()("media.audioUnavailableDetail"),
 					});
 				}
 			} catch (error) {
 				const message =
 					error instanceof Error
 						? error.message
-						: "Could not process video";
+						: getBrowserTranslator()("media.videoProcessFailed");
 
-				if (!signal.aborted) toast.error(`Couldn't process ${file.name}`, { description: message });
+				if (!signal.aborted) toast.error(getBrowserTranslator()("media.processFileFailed", { name: file.name }), { description: localizeErrorDetail(message, getBrowserTranslator()) });
 				return null;
 			}
 		} else if (fileType === "audio") {
@@ -199,7 +202,7 @@ export async function processMediaFile({
 		releaseMediaAssetUrls({ url, thumbnailUrl });
 		if (!signal.aborted) {
 			console.error("Error processing file:", file.name, error);
-			toast.error(`Failed to process ${file.name}`);
+			toast.error(getBrowserTranslator()("media.processFailed", { name: file.name }));
 		}
 		return null;
 	}

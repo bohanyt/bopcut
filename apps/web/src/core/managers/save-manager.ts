@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import type { EditorCore } from "@/core";
 import type { TProject } from "@/project/types";
 import { toast } from "sonner";
@@ -286,12 +288,16 @@ export class SaveSession {
 				retryIn = this.host.retryDelaysMs()[this.failures] ?? null;
 				this.failures++;
 				for (const fail of [...this.failureWaiters]) fail();
-				const what = this.closed ? `Failed to save “${this.name}”` : "Failed to save project";
+				const t = getBrowserTranslator();
+				const what = this.closed ? t("storage.saveNamedFailed", { name: this.name }) : t("storage.saveFailed");
+				const detail = localizeErrorDetail(error, t);
 				toast.error(what, {
 					id: errorToastId(this.projectId),
-					description: retryIn === null ? `${error} · changes are not on disk` : `${error} · retrying in ${Math.round(retryIn / 1000)} s`,
+					description: retryIn === null
+						? t("storage.notOnDisk", { error: detail })
+						: t("storage.retryIn", { error: detail, seconds: Math.round(retryIn / 1000) }),
 					duration: retryIn === null ? Number.POSITIVE_INFINITY : retryIn + 1000,
-					...(retryIn === null ? { action: { label: "Retry", onClick: () => this.retry() } } : {}),
+					...(retryIn === null ? { action: { label: t("common.retry"), onClick: () => this.retry() } } : {}),
 				});
 			}
 			if (this.closed && !this.isDirty()) {

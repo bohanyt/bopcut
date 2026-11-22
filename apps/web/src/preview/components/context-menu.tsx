@@ -1,5 +1,9 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
+import { useI18n } from "@/i18n/provider";
+
 import {
 	ContextMenuCheckboxItem,
 	ContextMenuContent,
@@ -27,6 +31,7 @@ export function PreviewContextMenu({
 		isVisible: boolean;
 	}) => void;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const viewport = usePreviewViewport();
 	useEffect(() => {
@@ -54,8 +59,8 @@ export function PreviewContextMenu({
 		const result = await editor.renderer.copySnapshot();
 
 		if (!result.success) {
-			toast.error("Failed to copy snapshot", {
-				description: result.error ?? "Please try again",
+			toast.error(t("preview.copySnapshotFailed"), {
+				description: result.error ? localizeErrorDetail(result.error, t) : t("common.tryAgain"),
 			});
 			return;
 		}
@@ -65,34 +70,34 @@ export function PreviewContextMenu({
 		const result = await editor.renderer.saveSnapshot();
 
 		if (!result.success) {
-			toast.error("Failed to save snapshot", {
-				description: result.error ?? "Please try again",
+			toast.error(t("preview.saveSnapshotFailed"), {
+				description: result.error ? localizeErrorDetail(result.error, t) : t("common.tryAgain"),
 			});
 			return;
 		}
 	};
 
 	return (
-		<ContextMenuContent className="w-56" container={container}>
+		<ContextMenuContent className="min-w-56" container={container}>
 			<ContextMenuItem onClick={() => changeGroup(editor, false)} inset>
-				Group (Ctrl+G)
+				{t("preview.groupShortcut")}
 			</ContextMenuItem>
 			<ContextMenuItem onClick={() => changeGroup(editor, true)} inset>
-				Ungroup (Ctrl+Shift+G)
+				{t("preview.ungroupShortcut")}
 			</ContextMenuItem>
 			<ContextMenuSeparator />
 			<ContextMenuItem onClick={viewport.fitToScreen} inset>
-				Fit to screen
+				{t("preview.fitToScreen")}
 			</ContextMenuItem>
 			<ContextMenuSeparator />
 			<ContextMenuItem onClick={onToggleFullscreen} inset>
-				Full screen
+				{t("preview.fullScreenMenu")}
 			</ContextMenuItem>
 			<ContextMenuItem onClick={handleSaveSnapshot} inset>
-				Save snapshot
+				{t("preview.saveSnapshot")}
 			</ContextMenuItem>
 			<ContextMenuItem onClick={handleCopySnapshot} inset>
-				Copy snapshot
+				{t("preview.copySnapshot")}
 			</ContextMenuItem>
 			{overlayControls.length > 0 ? <ContextMenuSeparator /> : null}
 			{overlayControls.map((overlayControl) => (
@@ -106,7 +111,7 @@ export function PreviewContextMenu({
 						})
 					}
 				>
-					{overlayControl.label}
+					{t(overlayControl.labelKey)}
 				</ContextMenuCheckboxItem>
 			))}
 		</ContextMenuContent>

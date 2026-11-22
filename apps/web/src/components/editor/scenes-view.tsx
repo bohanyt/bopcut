@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import {
 	Sheet,
@@ -76,7 +78,7 @@ export function ScenesView({ children }: { children: React.ReactNode }) {
 
 			const { canDelete, reason } = canDeleteScene({ scene, scenes: allScenes });
 			if (!canDelete) {
-				toast.error(reason || "Failed to delete scene");
+				toast.error(reason ? localizeErrorDetail(reason, t) : t("timeline.sceneDeleteFailed"));
 				continue;
 			}
 

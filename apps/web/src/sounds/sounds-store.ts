@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import { create } from "zustand";
 import type { SoundEffect, SavedSound } from "@/sounds/types";
 import { storageService } from "@/services/storage/service";
@@ -155,7 +157,7 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 			const errorMessage =
 				error instanceof Error ? error.message : "Failed to save sound";
 			set({ savedSoundsError: errorMessage });
-			toast.error("Failed to save sound");
+			toast.error(getBrowserTranslator()("sounds.saveFailed"));
 			console.error("Failed to save sound:", error);
 		}
 	},
@@ -171,7 +173,7 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 			const errorMessage =
 				error instanceof Error ? error.message : "Failed to remove sound";
 			set({ savedSoundsError: errorMessage });
-			toast.error("Failed to remove sound");
+			toast.error(getBrowserTranslator()("sounds.removeFailed"));
 			console.error("Failed to remove sound:", error);
 		}
 	},
@@ -202,7 +204,7 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 			const errorMessage =
 				error instanceof Error ? error.message : "Failed to clear saved sounds";
 			set({ savedSoundsError: errorMessage });
-			toast.error("Failed to clear saved sounds");
+			toast.error(getBrowserTranslator()("sounds.clearFailed"));
 			console.error("Failed to clear saved sounds:", error);
 		}
 	},
@@ -210,7 +212,7 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 	addSoundToTimeline: async ({ sound }) => {
 		const audioUrl = sound.previewUrl;
 		if (!audioUrl) {
-			toast.error("Sound file not available");
+			toast.error(getBrowserTranslator()("sounds.fileUnavailable"));
 			return false;
 		}
 
@@ -242,8 +244,8 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 			console.error("Failed to add sound to timeline:", error);
 			toast.error(
 				error instanceof Error
-					? error.message
-					: "Failed to add sound to timeline",
+					? localizeErrorDetail(error.message, getBrowserTranslator())
+					: getBrowserTranslator()("sounds.addFailed"),
 				{ id: `sound-${sound.id}` },
 			);
 			return false;

@@ -1,3 +1,4 @@
+import { getServerI18n } from "@/i18n/server";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BasePage } from "@/app/base-page";
@@ -5,7 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { getPosts } from "@/blog/query";
 import type { Post } from "@/blog/types";
 
-export const metadata: Metadata = {
+const metadata: Metadata = {
 	title: "Blog - OpenCut",
 	description:
 		"Read the latest news and updates about OpenCut, the free and open-source video editor.",
@@ -17,22 +18,31 @@ export const metadata: Metadata = {
 	},
 };
 
+export async function generateMetadata(): Promise<Metadata> {
+	const { t } = await getServerI18n();
+	return {
+		...metadata,
+		title: t("site.pageTitle", { title: t("header.blog") }),
+		description: t("blog.description"),
+	};
+}
+
 export default async function BlogPage() {
+	const { t } = await getServerI18n();
 	const data = await getPosts().catch(() => null);
-	if (!data || !data.posts) return <div>No posts yet</div>;
 
 	return (
 		<BasePage
-			title="Blog"
-			description="Read the latest news and updates about OpenCut, the free and open-source video editor."
+			title={t("header.blog")}
+			description={t("blog.description")}
 		>
 			<div className="flex flex-col">
-				{data.posts.map((post) => (
+				{data?.posts?.length ? data.posts.map((post) => (
 					<div key={post.id} className="flex flex-col">
 						<BlogPostItem post={post} />
 						<Separator />
 					</div>
-				))}
+				)) : <p>{t("blog.empty")}</p>}
 			</div>
 		</BasePage>
 	);

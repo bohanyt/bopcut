@@ -1,3 +1,4 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
 // In and out animation presets for a clip: drawn on top of the clip's own animation, so its keyframes
 // stay as they are, and trims, speed changes and copies keep them.
 import { useI18n } from "@/i18n/provider";
@@ -255,7 +256,7 @@ export function AnimationTab({
 		try {
 			next = applyAnimationPresets(element, request);
 		} catch (error) {
-			toast.error("Animation not applied", { description: error instanceof Error ? error.message : String(error) });
+			toast.error(t("animation.applyFailed"), { description: localizeErrorDetail(error instanceof Error ? error.message : String(error), t) });
 			return;
 		}
 		// One edit, so one undo.

@@ -1,7 +1,6 @@
 import { ThemeProvider } from "next-themes";
-import { cookies, headers } from "next/headers";
+import { getServerI18n } from "@/i18n/server";
 import { LocaleProvider } from "@/i18n/provider";
-import { LOCALE_COOKIE, resolveLocale } from "@/i18n/locale";
 import "./globals.css";
 import { Toaster } from "../components/ui/sonner";
 import { TooltipProvider } from "../components/ui/tooltip";
@@ -25,8 +24,7 @@ export default async function RootLayout({
 }: Readonly<{
 	children: React.ReactNode;
 }>) {
-	const [cookieStore, requestHeaders] = await Promise.all([cookies(), headers()]);
-	const locale = resolveLocale(cookieStore.get(LOCALE_COOKIE)?.value, requestHeaders.get("accept-language"));
+	const { locale } = await getServerI18n();
 
 	return (
 		<html lang={locale} suppressHydrationWarning>

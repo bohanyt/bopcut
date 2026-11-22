@@ -1,3 +1,4 @@
+import { getBrowserTranslator } from "@/i18n/browser";
 import { toast } from "sonner";
 import type { EditorCore } from "@/core";
 import { clampRetimeRate, shouldMaintainPitch } from "@/retime/rate";
@@ -253,7 +254,7 @@ export class AudioManager {
 			void task.catch((error) => {
 				if (signal.aborted) return;
 				console.warn("Failed to play clip audio:", error);
-				toast.warning(`Could not play audio for "${clip.timelineElement.name}"`, {
+				toast.warning(getBrowserTranslator()("media.playAudioFailed", { name: clip.timelineElement.name }), {
 					id: `preview-audio:${clip.sourceKey}`,
 				});
 			});

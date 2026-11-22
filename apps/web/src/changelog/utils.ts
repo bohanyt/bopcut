@@ -1,21 +1,22 @@
+import { createTranslator, type StaticMessageKey } from "@/i18n/translate";
 import { allChangelogs } from "content-collections";
 
 export type Change = { type: string; text: string };
 export type Release = (typeof allChangelogs)[number];
 
 type ChangeSectionConfig = {
-	title: string;
+	titleKey?: StaticMessageKey;
 	order: number;
 	collapsible?: boolean;
 };
 
 const knownSectionConfigs: Record<string, ChangeSectionConfig> = {
-	new: { title: "Features", order: 0 },
-	improved: { title: "Improvements", order: 1 },
-	fixed: { title: "Fixes", order: 2 },
-	breaking: { title: "Breaking Changes", order: 3 },
+	new: { titleKey: "changelog.features", order: 0 },
+	improved: { titleKey: "changelog.improvements", order: 1 },
+	fixed: { titleKey: "changelog.fixes", order: 2 },
+	breaking: { titleKey: "changelog.breaking", order: 3 },
 	technical: {
-		title: "Technical details",
+		titleKey: "changelog.technical",
 		order: 4,
 		collapsible: true,
 	},
@@ -24,14 +25,14 @@ const knownSectionConfigs: Record<string, ChangeSectionConfig> = {
 function getSectionConfig({ type }: { type: string }): ChangeSectionConfig {
 	return (
 		knownSectionConfigs[type] ?? {
-			title: type.charAt(0).toUpperCase() + type.slice(1),
 			order: Number.MAX_SAFE_INTEGER,
 		}
 	);
 }
 
-export function getSectionTitle({ type }: { type: string }): string {
-	return getSectionConfig({ type }).title;
+export function getSectionTitle({ type, t = createTranslator("en") }: { type: string; t?: ReturnType<typeof createTranslator> }): string {
+	const { titleKey } = getSectionConfig({ type });
+	return titleKey ? t(titleKey) : type.charAt(0).toUpperCase() + type.slice(1);
 }
 
 export function isSectionCollapsible({ type }: { type: string }): boolean {

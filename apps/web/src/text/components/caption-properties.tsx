@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import { useEffect, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
@@ -34,7 +36,7 @@ export function CaptionProperties({
 	const [chosen, setChosen] = useState("");
 	const [busy, setBusy] = useState(false);
 	const report = (error: unknown) =>
-		toast.error(error instanceof Error ? error.message : String(error));
+		toast.error(localizeErrorDetail(error instanceof Error ? error.message : String(error), t));
 	useEffect(() => {
 		loadTextPresets().then(setPresets).catch(report);
 	}, []);
@@ -59,7 +61,7 @@ export function CaptionProperties({
 			await saveTextPreset(preset);
 			setPresets(await loadTextPresets());
 			setChosen(preset.name);
-			toast.success("Text style saved to workspace presets");
+			toast.success(t("text.styleSaved"));
 		} catch (error) {
 			report(error);
 		} finally {
@@ -86,7 +88,7 @@ export function CaptionProperties({
 				: [];
 		});
 		editor.timeline.updateElements({ updates });
-		toast.success(`Style applied to ${updates.length} text elements`);
+		toast.success(t("text.styleApplied", { count: updates.length }));
 	};
 	return (
 		<div className="space-y-3 border-b p-4">

@@ -1,3 +1,4 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
 import { useI18n } from "@/i18n/provider";
 import type { StaticMessageKey } from "@/i18n/translate";
 import { Button } from "@/components/ui/button";
@@ -245,7 +246,7 @@ export function Captions() {
 
 	const error = processing.status === "idle" ? processing.error : null;
 	const warnings = processing.status === "idle" ? processing.warnings : [];
-	const localizeMessage = (message: PanelMessage) => typeof message === "string" ? message : message(t);
+	const localizeMessage = (message: PanelMessage) => typeof message === "string" ? localizeErrorDetail(message, t) : message(t);
 
 	return (
 		<PanelView

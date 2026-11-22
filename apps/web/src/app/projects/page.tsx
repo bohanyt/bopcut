@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import { LanguageSwitch } from "@/i18n/language-switch";
 import type { MessageKey } from "@/i18n/translate";
@@ -968,7 +970,7 @@ function EmptyState() {
 		} catch (error) {
 			toast.error(t("projects.createFailed"), {
 				description:
-					error instanceof Error ? error.message : t("common.tryAgain"),
+					error instanceof Error ? localizeErrorDetail(error.message, t) : t("common.tryAgain"),
 			});
 		}
 	};

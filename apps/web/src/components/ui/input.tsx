@@ -127,7 +127,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
 							"text-muted-foreground hover:text-foreground absolute top-0 h-full px-3",
 							showClear ? "right-10" : "right-0",
 						)}
-						aria-label={showPassword ? "Hide password" : "Show password"}
+						aria-label={showPassword ? t("common.hidePassword") : t("common.showPassword")}
 					>
 						{showPassword ? (
 							<Eye className="size-4" />
