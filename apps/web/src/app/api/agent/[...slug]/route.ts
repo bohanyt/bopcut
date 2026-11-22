@@ -5,8 +5,8 @@
 // AGENT_FILES_ROOT  bundle asset root (default = AGENT_WORKSPACE). Files outside this root are not served.
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import os from "node:os";
-import { defaultRunner, handleRetrieve, runTool, toolsFromEnv } from "@/retrieval/server";
+import { handleRetrieve } from "@/retrieval/server";
+import { handleGif } from "@/media/gif-server";
 import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
 import { MUSIC_LIBRARY, handleMusic } from "@/sounds/music-server";
 import { handleDuck } from "@/sounds/duck-server";
@@ -155,37 +155,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		const result = await handleRetrieve(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
 		return Response.json(result.body, { status: result.status });
 	}
-	if (slug[0] === "gif") {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "oc-gif-"));
-		try {
-			const input = path.join(dir, "in.gif");
-			await fs.writeFile(input, Buffer.from(await req.arrayBuffer()));
-			const { ffmpeg } = toolsFromEnv();
-			const common = ["-hide_banner", "-loglevel", "error", "-nostdin"];
-			// Inspect the composited frames. GIF delta frames can declare a transparent
-			// palette index even when the visible canvas stays fully opaque.
-			const probe = await runTool(defaultRunner, ffmpeg, [
-				...common, "-f", "gif", "-i", input, "-an",
-				"-vf", "alphaextract,negate,bbox=min_val=1,metadata=mode=select:key=lavfi.bbox.w",
-				"-frames:v", "1", "-c:v", "rawvideo", "-f", "framecrc", "pipe:1",
-			], "ffmpeg");
-			const alpha = /^\d+,/m.test(probe);
-			const output = path.join(dir, alpha ? "out.webm" : "out.mp4");
-			const encoding = alpha
-				? ["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "18", "-deadline", "good", "-cpu-used", "4"]
-				: ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-					"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-movflags", "+faststart"];
-			// Repeat three times and keep GIF's centisecond timestamps.
-			await runTool(defaultRunner, ffmpeg, [
-				...common, "-stream_loop", "2", "-f", "gif", "-i", input, "-an", ...encoding,
-				"-fps_mode", "passthrough", "-enc_time_base", "1:100", output,
-			], "ffmpeg");
-			return new Response(new Uint8Array(await fs.readFile(output)), {
-				headers: { "Content-Type": alpha ? "video/webm" : "video/mp4" },
-			});
-		} finally {
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	}
+	if (slug[0] === "gif") return handleGif(req);
 	return Response.json({ error: "Not found" }, { status: 404 });
 }
