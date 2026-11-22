@@ -205,7 +205,12 @@ function fakeAudio({ withVisibility = false, sampleRate = 8_000 } = {}) {
 			if (deadline <= time) source.dispatchEvent(new Event("ended"));
 		}
 	};
-	return { audio, starts, buffers, gains, frame, stops, disconnect, setInterval, wakes, setHidden, advanceAudio };
+	const waitForStarts = async (count = 1) => {
+		// Decoding and pitch processing can yield to another task before a source starts.
+		for (let tick = 0; tick < 64 && starts.length < count; tick++) await flush();
+		expect(starts.length).toBeGreaterThanOrEqual(count);
+	};
+	return { audio, starts, buffers, gains, frame, stops, disconnect, setInterval, wakes, setHidden, advanceAudio, waitForStarts };
 }
 
 function stubFetch(...responses: Promise<Response>[]) {
@@ -241,7 +246,7 @@ test("a library clip is collected in seconds, including both trims", async () =>
 
 test("a pending start cannot replace a later seek or queue work after pause", async () => {
 	const { editor } = setup();
-	const { starts, setInterval } = fakeAudio();
+	const { starts, setInterval, waitForStarts } = fakeAudio();
 	const original = deferred<Response>();
 	const seek = deferred<Response>();
 	const stopped = deferred<Response>();
@@ -254,7 +259,7 @@ test("a pending start cannot replace a later seek or queue work after pause", as
 	await flush();
 	expect(fetch).toHaveBeenCalledTimes(2);
 	seek.resolve(new Response("new"));
-	await flush();
+	await waitForStarts();
 	expect(decode.mock.calls[0][0]).toBeCloseTo(3);
 	expect(starts).toHaveLength(1);
 
@@ -274,7 +279,7 @@ test("a pending start cannot replace a later seek or queue work after pause", as
 
 test("startup catches up to the unrounded playhead and subsequent frames follow the audio clock", async () => {
 	const { editor } = setup(libraryClip({ duration: t(120) }));
-	const { audio, starts, frame } = fakeAudio();
+	const { audio, starts, frame, waitForStarts } = fakeAudio();
 	const resumed = deferred<void>();
 	audio.resume.mockImplementation(async () => {
 		await resumed.promise;
@@ -290,7 +295,7 @@ test("startup catches up to the unrounded playhead and subsequent frames follow 
 	await flush();
 	frame(115);
 	library.resolve(new Response("audio"));
-	await flush();
+	await waitForStarts();
 	expect(decode.mock.calls[0][0]).toBeCloseTo(0.515, 6);
 	expect(starts[0].offset).toBeCloseTo(0.015, 6);
 	expect(starts[0].when).toBe(10);
@@ -307,14 +312,14 @@ test("streaming clips cut spanning packets at both ends and place fade corners o
 		trimStart: t(1),
 		params: { volume: 0, fadeIn: 0.04, fadeOut: 0.09 },
 	}));
-	const { starts, gains } = fakeAudio();
+	const { starts, gains, waitForStarts } = fakeAudio();
 	const { decode } = stubDecoder(async function* () {
 		yield packet(0.9, 0.2);
 		yield packet(1.3, 0.2);
 	});
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts(2);
 
 	expect(decode.mock.calls[0]).toEqual([1, 1.4]);
 	expect(starts).toHaveLength(2);
@@ -333,7 +338,7 @@ test("streaming clips cut spanning packets at both ends and place fade corners o
 
 test("late retimed packets skip elapsed source seconds and discard expired packets", async () => {
 	const { editor } = setup(uploadedClip({ retime: { rate: 2, maintainPitch: false } }));
-	const { audio, starts } = fakeAudio();
+	const { audio, starts, waitForStarts } = fakeAudio();
 	stubDecoder(async function* () {
 		audio.currentTime = 10.15;
 		yield packet(0, 0.2);
@@ -341,7 +346,7 @@ test("late retimed packets skip elapsed source seconds and discard expired packe
 	});
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts();
 
 	expect(starts).toHaveLength(1);
 	expect(starts[0].rate).toBe(2);
@@ -354,14 +359,14 @@ test("pitch-preserved preview prepares short windows at a late trim and parks ah
 	const { editor } = setup(uploadedClip({
 		duration: t(20), trimStart: t(7200), retime: { rate: 2, maintainPitch: true },
 	}));
-	const { starts } = fakeAudio();
+	const { starts, waitForStarts } = fakeAudio();
 	const { decode, track } = stubDecoder(async function* (start) {
 		yield packet(Math.floor(start), 2);
 	});
 	Object.defineProperty(track, "sampleRate", { value: 8000 });
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts(2);
 
 	expect(starts.map(({ when, rate }) => [when, rate])).toEqual([[10, 1], [11, 1]]);
 	expect(decode.mock.calls[0][0]).toBeCloseTo(7200, 2);
@@ -382,7 +387,7 @@ test("pitch-preserved preview seeks keep in-trim taps before the cursor", async 
 	const { editor } = setup(uploadedClip({
 		duration: t(1), trimStart: t(trim), retime: { rate, maintainPitch: true },
 	}));
-	const { buffers } = fakeAudio({ sampleRate });
+	const { buffers, waitForStarts } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: 2 * nativeRate, sampleRate: nativeRate });
 	// Only the last native sample before the cursor carries this signal.
 	const cursor = (trim + seek * rate) * nativeRate;
@@ -391,7 +396,7 @@ test("pitch-preserved preview seeks keep in-trim taps before the cursor", async 
 
 	editor.playback.seek({ time: t(seek) });
 	editor.playback.play();
-	await flush();
+	await waitForStarts();
 
 	expect(buffers).toHaveLength(1);
 	expect(buffers[0].length).toBe(sampleRate / 2);
@@ -428,13 +433,13 @@ test.each(roundedCutCases)(
 	}
 	const { duration } = element;
 	const { editor, tracks } = setup({ ...element, startTime: t(0) });
-	const { buffers } = fakeAudio({ sampleRate });
+	const { buffers, waitForStarts } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
 	buffer.getChannelData(0)[Math.ceil(nativeRate * end)] = 1;
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts();
 	editor.playback.pause();
 
 	expect(buffers).toHaveLength(1);
@@ -469,13 +474,13 @@ test("a legacy retimed clip with stale trim metadata keeps its visible source wi
 	const { editor } = setup(uploadedClip({
 		duration: t(0.25), trimStart: t(0.25), sourceDuration: t(1), retime: { rate: 2, maintainPitch: true },
 	}));
-	const { buffers } = fakeAudio({ sampleRate });
+	const { buffers, waitForStarts } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
 	buffer.getChannelData(0).fill(0.5, nativeRate * 0.75);
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts();
 
 	expect(buffers).toHaveLength(1);
 	expect(buffers[0].getChannelData(0).every((value) => value === 0)).toBe(true);
@@ -492,13 +497,13 @@ test.each([0, 0.05])("a legacy duration-only edit retains its playable source at
 		element = parts.right;
 	}
 	const { editor } = setup({ ...element, startTime: t(0) });
-	const { buffers } = fakeAudio({ sampleRate });
+	const { buffers, waitForStarts } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: sampleRate, sampleRate });
 	buffer.getChannelData(0).fill(0.5, sampleRate * 0.3, sampleRate * 0.5);
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts();
 
 	expect(buffers).toHaveLength(1);
 	expect(buffers[0].getChannelData(0).some((value) => value > 0.1)).toBe(true);
@@ -517,13 +522,13 @@ test("a right extension of a legacy 2x clip keeps its audible tail", async () =>
 	const duration = t(0.35);
 	expect(patch.duration).toBe(duration);
 	const { editor, tracks } = setup({ ...element, ...patch });
-	const { buffers } = fakeAudio({ sampleRate });
+	const { buffers, waitForStarts } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: nativeRate, sampleRate: nativeRate });
 	buffer.getChannelData(0).fill(0.5, nativeRate * 0.48, nativeRate * 0.65);
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts();
 	editor.playback.pause();
 	expect(buffers).toHaveLength(1);
 	expect(buffers[0].getChannelData(0).some((value) => value > 0.4)).toBe(true);
@@ -546,7 +551,7 @@ test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $chan
 	const { editor, tracks } = setup(uploadedClip({
 		duration: t(duration), trimStart: t(0.25001), retime: { rate, maintainPitch: true },
 	}));
-	const { buffers, starts } = fakeAudio({ sampleRate });
+	const { buffers, starts, waitForStarts } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: 3 * nativeRate, sampleRate: nativeRate, numberOfChannels: channels });
 	for (let channel = 0; channel < channels; channel++) {
 		const samples = buffer.getChannelData(channel);
@@ -557,7 +562,7 @@ test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $chan
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts(2);
 	expect(buffers.map((block) => block.length)).toEqual([sampleRate, sampleRate / 5]);
 	expect(starts[0]).toMatchObject({ offset: 0, duration: 1, rate: 1 });
 	expect(starts[1]).toMatchObject({ offset: 0, rate: 1 });
@@ -585,10 +590,10 @@ test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $chan
 
 test("rounding the preview frame to the end does not stop the last audio samples early", async () => {
 	const { editor } = setup(uploadedClip({ duration: t(1) }));
-	const { audio, frame, stops } = fakeAudio();
+	const { audio, frame, stops, waitForStarts } = fakeAudio();
 	stubDecoder(async function* () { yield packet(0, 1); });
 	editor.playback.play();
-	await flush();
+	await waitForStarts();
 
 	audio.currentTime = 10.99;
 	frame(990);
@@ -601,7 +606,7 @@ test("rounding the preview frame to the end does not stop the last audio samples
 });
 
 test("background audio starts future clips, feeds parked decoders and stops at timeline end without frames", async () => {
-	const { starts, audio, wakes, setHidden, advanceAudio } = fakeAudio({ withVisibility: true });
+	const { starts, audio, wakes, setHidden, advanceAudio, waitForStarts } = fakeAudio({ withVisibility: true });
 	const { editor } = setup(uploadedClip({ startTime: t(4), duration: t(5) }));
 	const { decode } = stubDecoder(async function* () {
 		yield packet(0, 0.1);
@@ -620,11 +625,11 @@ test("background audio starts future clips, feeds parked decoders and stops at t
 	expect(starts).toHaveLength(0);
 
 	advanceAudio(13);
-	await flush();
+	await waitForStarts();
 	expect(starts.map((start) => start.when)).toEqual([14]);
 
 	advanceAudio(16);
-	await flush();
+	await waitForStarts(2);
 	expect(starts.map((start) => start.when)).toEqual([14, 17]);
 
 	advanceAudio(19);
@@ -658,7 +663,7 @@ test("background wake is cancelled when the tab returns or playback stops", asyn
 
 test("pausing releases queued audio and a parked decoder, and project close suspends playback again", async () => {
 	const { editor } = setup();
-	const { audio, starts, stops, disconnect } = fakeAudio();
+	const { audio, starts, stops, disconnect, waitForStarts } = fakeAudio();
 	const finished = mock(() => {});
 	stubFetch();
 	stubDecoder(async function* () {
@@ -671,7 +676,7 @@ test("pausing releases queued audio and a parked decoder, and project close susp
 	});
 
 	editor.playback.play();
-	await flush();
+	await waitForStarts();
 	expect(starts).toHaveLength(1);
 	expect(audio.state).toBe("running");
 	editor.playback.pause();
