@@ -1,13 +1,17 @@
 import { expect, spyOn, test } from "bun:test";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { renderPresence, renderRequest, renderWorker, startRender } from "./render-server";
 import { profileDirectory, recordOutput, recoverRenderJobs } from "./render-output";
 
 const url = "http://127.0.0.1/api/agent/cli/render";
 const tokenHeader = "x-bopencut-render-token";
+const runInAnotherProcess = (code: string, ...args: string[]) =>
+	promisify(execFile)(process.execPath, ["-e", code, ...args], { cwd: path.join(import.meta.dir, "../.."), timeout: 5000 });
 const begin = (signal?: AbortSignal) => new Request(url, {
 	signal, method: "POST", body: JSON.stringify({ command: "export", request: {}, timeoutMs: 10000 }),
 });
@@ -210,6 +214,40 @@ test("a failed result publication removes the promoted export", async () => {
 	}
 });
 
+test("a second server's recovery preserves an active render and its promoted output", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-shared-"));
+	const renameFile = fs.rename;
+	const duringPublish = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+		if (typeof to === "string" && to.endsWith("export-result.json")) {
+			await runInAnotherProcess(
+				'import { recoverRenderJobs } from "./src/agent/render-output"; await recoverRenderJobs(process.argv[1]);',
+				workspace,
+			);
+		}
+		await renameFile(from, to);
+	});
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+	try {
+		const response = await startRender(begin(), workspace, async () => "project", { profileRoot: workspace });
+		expect(response.ok).toBe(true);
+		reader = response.body!.getReader();
+		const claim = await renderRequest(visible(), "export", workspace);
+		const { rev } = await claim.json();
+		const query = new URLSearchParams({ action: "export-file", rev, projectId: "project", name: "Active", format: "mp4" });
+		const uploaded = await renderWorker(new Request(`${url}?${query}`, {
+			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! }, body: "video",
+		}), workspace);
+		expect(await uploaded.json()).toEqual({ file: "exports/Active.mp4", bytes: 5 });
+		expect(await readFile(path.join(workspace, "exports", "Active.mp4"), "utf8")).toBe("video");
+		while (!(await reader.read()).done) { /* Wait for server cleanup. */ }
+		expect(await readdir(path.join(workspace, ".render-jobs"))).toEqual([]);
+	} finally {
+		duringPublish.mockRestore();
+		await reader?.cancel();
+		await rm(workspace, { recursive: true, force: true, maxRetries: 3 });
+	}
+}, 10000);
+
 test.each(["retry", "cancel"] as const)("a promoted frame survives failed result publication until %s", async (outcome) => {
 	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-frame-retry-"));
 	const controller = new AbortController();
@@ -311,9 +349,15 @@ test("recovery rolls back a promoted file only when it is owned and uncommitted"
 		await recoverRenderJobs(workspace); // An earlier job already completed its startup scan.
 		const output = path.join(workspace, "exports");
 		await mkdir(output);
+		const revs = ["abandoned", "completed", "existing"].map((_, index) => `cli-01234567-0000-0000-0000-01234567890${index}`);
+		const { stdout } = await runInAnotherProcess(
+			'import { renderJobDir } from "./src/agent/render-output"; console.log(JSON.stringify(process.argv.slice(2).map(rev => renderJobDir(process.argv[1], rev))));',
+			workspace, ...revs,
+		);
+		const jobDirs: string[] = JSON.parse(stdout);
 		for (const [index, name] of ["abandoned", "completed", "existing"].entries()) {
-			const rev = `cli-01234567-0000-0000-0000-01234567890${index}`;
-			const scratch = path.join(workspace, ".render-jobs", rev);
+			const rev = revs[index];
+			const scratch = jobDirs[index];
 			await mkdir(scratch, { recursive: true });
 			const source = path.join(scratch, "render.part");
 			await writeFile(source, "render");

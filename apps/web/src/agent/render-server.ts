@@ -6,7 +6,7 @@ import { CLAIM_MS, handleExportFile } from "./export-server";
 import { parseExportRequest } from "./export";
 import { parseFrameInput } from "./render-input";
 import { isForeignOrigin } from "./origin";
-import { profileDirectory, recordOutput, recoverRenderJobs, renderJobsDir, rollbackOutput } from "./render-output";
+import { profileDirectory, recordOutput, recoverRenderJobs, removeRenderJob, renderJobDir, rollbackOutput } from "./render-output";
 
 type Kind = "export" | "frames";
 const json = Response.json;
@@ -78,8 +78,13 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		if (options.state !== undefined || options.compare !== undefined) throw new Error("For historical or comparison frames, open the editor.");
 		const request = { ...parsed, rev, projectId };
 		await recoverRenderJobs(workspace);
-		const scratch = path.join(renderJobsDir(workspace), rev);
-		await atomicWrite(path.join(scratch, `${kind}-request.json`), JSON.stringify(request));
+		const scratch = renderJobDir(workspace, rev);
+		try {
+			await atomicWrite(path.join(scratch, `${kind}-request.json`), JSON.stringify(request));
+		} catch (error) {
+			await removeRenderJob(workspace, scratch).catch(console.error);
+			throw error;
+		}
 		const controller = new AbortController();
 		const writes = new Set<Promise<Response>>();
 		let closed = false;
@@ -98,10 +103,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			clearTimeout(registration);
 			clearTimeout(deadline);
 			req.signal.removeEventListener("abort", close);
-			cleanup = Promise.allSettled(writes).then(async () => {
-				await rollbackOutput(workspace, scratch);
-				await fs.rm(scratch, { recursive: true, force: true, maxRetries: 3 });
-			}).catch(console.error).finally(() => {
+			cleanup = Promise.allSettled(writes).then(() => removeRenderJob(workspace, scratch)).catch(console.error).finally(() => {
 				active = undefined;
 				reserved = false;
 				try { stream.close(); } catch { /* Client disconnected. */ }
