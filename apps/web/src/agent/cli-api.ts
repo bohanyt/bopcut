@@ -38,10 +38,10 @@ export async function handleCli(req: Request, action: string, workspace: string)
 		if (action === "status" || action === "notes") {
 			// A plain request answers from the last synced snapshot. A chosen project reads its own snapshot
 			// first and falls back to the last synced one when that is the same project.
-			const latest: Snapshot | null = requested ? null : await readInside(workspace, "project.json");
+			const latest: Snapshot | null = requested ? null : await readSnapshot(workspace, "project.json");
 			const projectId = requested ?? latest?.projectId;
 			if (!projectId || !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) {
-				return json({ error: "No project has synced yet. Open a project in the editor or pass --project-id." }, 404);
+				return json({ error: "No project has synced yet. Open a project in the editor, or pass --project-id, and retry." }, 404);
 			}
 			try { await fs.access(path.join(projectDir(projectId), "project.json")); }
 			catch (error) {

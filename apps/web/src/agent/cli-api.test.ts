@@ -125,6 +125,14 @@ test("a half-written project snapshot falls back to the last synced snapshot of 
 		await fs.writeFile(path.join(workspace, "project.json"), JSON.stringify(snapshot));
 		expect(await (await call("?projectId=demo")).json()).toEqual({ projectId: "demo", snapshot });
 		expect(await (await call()).json()).toEqual({ projectId: "demo", snapshot });
+		const notes = await handleCli(new Request("http://127.0.0.1:3100/api/agent/cli/notes?projectId=demo"), "notes", workspace);
+		expect(await notes.json()).toEqual({ projectId: "demo", notes: [], syncedAt: "last" });
+		await fs.writeFile(path.join(workspace, "project.json"), "{ not json");
+		for (const command of ["status", "notes"]) {
+			const plain = await handleCli(new Request(`http://127.0.0.1:3100/api/agent/cli/${command}`), command, workspace);
+			expect(plain.status).toBe(404);
+			expect((await plain.json()).error).toContain("Open a project in the editor");
+		}
 	} finally {
 		if (data === undefined) delete process.env.BOPENCUT_DATA;
 		else process.env.BOPENCUT_DATA = data;
