@@ -16,12 +16,11 @@ import { Onboarding } from "@/components/editor/onboarding";
 import { MigrationDialog } from "@/project/components/migration-dialog";
 import { usePanelStore } from "@/editor/panel-store";
 import { usePasteMedia } from "@/media/use-paste-media";
-import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { installAgentBridge } from "@/agent/bridge";
 import { useEditor } from "@/editor/use-editor";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
+import { rendererDevice } from "@/services/renderer/renderer-device";
 import { ChangelogNotification } from "@/changelog/components/changelog-notification";
 import {
 	createPreviewOverlayControl,
@@ -43,7 +42,7 @@ export default function Editor() {
 	return (
 			<EditorProvider projectId={projectId}>
 				<div className="bg-background flex h-screen w-screen flex-col overflow-hidden">
-					<DegradedRendererBanner />
+					<GraphicsStatusBanner />
 					<EditorHeader />
 					<div className="min-h-0 min-w-0 flex-1">
 						<EditorLayout />
@@ -56,23 +55,22 @@ export default function Editor() {
 	);
 }
 
-function DegradedRendererBanner() {
-	const isDegraded = useEditor((e) => e.renderer.isDegraded);
-	const [dismissed, setDismissed] = useState(false);
-	if (!isDegraded || dismissed) return null;
+function GraphicsStatusBanner() {
+	const status = useSyncExternalStore(rendererDevice.subscribe, rendererDevice.getSnapshot, rendererDevice.getSnapshot);
+	if (status.state === "ready") return null;
 
 	return (
-		<div className="bg-accent border-b h-9 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-			<span>For the best experience, open OpenCut in Chrome.</span>
-			<Button
-				variant="text"
-				size="icon"
-				className="p-0 w-auto [&_svg]:size-3.5"
-				onClick={() => setDismissed(true)}
-				aria-label="Dismiss"
-			>
-				<HugeiconsIcon icon={Cancel01Icon} />
-			</Button>
+		<div role="status" className="bg-accent border-b flex flex-wrap items-center justify-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+			{status.state === "unavailable" ? (
+				<>
+					<span title={status.detail}>Graphics could not start. Preview and export are unavailable.</span>
+					<Button variant="outline" size="sm" onClick={() => void rendererDevice.retry()}>
+						Retry graphics
+					</Button>
+				</>
+			) : (
+				<span>{status.state === "recovering" ? "Recovering graphics…" : "Starting graphics…"}</span>
+			)}
 		</div>
 	);
 }

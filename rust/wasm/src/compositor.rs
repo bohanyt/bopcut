@@ -2,13 +2,13 @@
 
 use std::cell::RefCell;
 
-use compositor::{Compositor, FrameDescriptor, RenderFrameOptions};
+use compositor::{Compositor, CompositorError, FrameDescriptor, RenderFrameOptions};
 use gpu::wgpu;
 use js_sys::Object;
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 
 use crate::gpu::{
-    import_canvas_texture, read_offscreen_canvas_property, read_serde_property, read_u32_property,
+    gpu_error_to_js, import_canvas_texture, read_offscreen_canvas_property, read_serde_property, read_u32_property,
     with_gpu_runtime,
 };
 use crate::perf;
@@ -16,7 +16,7 @@ use crate::perf;
 struct CompositorRuntime {
     canvas: web_sys::HtmlCanvasElement,
     compositor: Compositor,
-    surface: wgpu::Surface<'static>,
+    surface: Option<wgpu::Surface<'static>>,
     surface_size: (u32, u32),
 }
 
@@ -24,13 +24,14 @@ thread_local! {
     static COMPOSITOR_RUNTIME: RefCell<Option<CompositorRuntime>> = const { RefCell::new(None) };
 }
 
+pub(crate) fn reset_compositor() {
+    COMPOSITOR_RUNTIME.with(|runtime| runtime.replace(None));
+}
+
 #[wasm_bindgen(js_name = initCompositor)]
 pub fn init_compositor(width: u32, height: u32) -> Result<(), JsValue> {
     with_gpu_runtime(|gpu_runtime| {
-        // On WebGL, wgpu is bound to a specific canvas; reuse it so the UI
-        // can mount the output directly instead of copying pixels through
-        // an intermediate 2D canvas every frame. On WebGPU, surface rendering
-        // works against any canvas so we create a fresh one.
+        // The GL context owns its surface. Only WebGPU needs a separate one.
         let canvas = if let Some(gl_canvas) = gpu_runtime.context.gl_canvas() {
             gl_canvas.clone()
         } else {
@@ -42,19 +43,20 @@ pub fn init_compositor(width: u32, height: u32) -> Result<(), JsValue> {
                 .dyn_into::<web_sys::HtmlCanvasElement>()
                 .map_err(|_| JsValue::from_str("Failed to create compositor canvas"))?
         };
-        canvas.set_width(width);
-        canvas.set_height(height);
-
         let compositor = Compositor::new(&gpu_runtime.context);
-        let surface = gpu_runtime
-            .context
-            .instance()
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
-            .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        gpu_runtime
-            .context
-            .configure_surface(&surface, width, height)
-            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        let surface = if gpu_runtime.context.gl_canvas().is_none() {
+            canvas.set_width(width);
+            canvas.set_height(height);
+            let surface = gpu_runtime
+                .context
+                .instance()
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            gpu_runtime.context.configure_surface(&surface, width, height).map_err(gpu_error_to_js)?;
+            Some(surface)
+        } else {
+            None
+        };
 
         COMPOSITOR_RUNTIME.with(|runtime| {
             runtime.replace(Some(CompositorRuntime {
@@ -79,18 +81,26 @@ pub fn resize_compositor(width: u32, height: u32) -> Result<(), JsValue> {
                     "Compositor is not initialized. Call initCompositor() first.",
                 ));
             };
-            runtime.canvas.set_width(width);
-            runtime.canvas.set_height(height);
-            if runtime.surface_size != (width, height) {
-                gpu_runtime
-                    .context
-                    .configure_surface(&runtime.surface, width, height)
-                    .map_err(|error| JsValue::from_str(&error.to_string()))?;
-                runtime.surface_size = (width, height);
-            }
-            Ok(())
+            configure_surface(gpu_runtime, runtime, width, height)
         })
     })
+}
+
+fn configure_surface(
+    gpu_runtime: &crate::gpu::GpuRuntime,
+    runtime: &mut CompositorRuntime,
+    width: u32,
+    height: u32,
+) -> Result<(), JsValue> {
+    if let Some(surface) = &runtime.surface
+        && runtime.surface_size != (width, height)
+    {
+        runtime.canvas.set_width(width);
+        runtime.canvas.set_height(height);
+        gpu_runtime.context.configure_surface(surface, width, height).map_err(gpu_error_to_js)?;
+        runtime.surface_size = (width, height);
+    }
+    Ok(())
 }
 
 #[wasm_bindgen(js_name = getCompositorCanvas)]
@@ -169,19 +179,15 @@ pub fn render_frame(options: JsValue) -> Result<(), JsValue> {
                 ));
             };
 
-            if runtime.surface_size != (frame.width, frame.height) {
-                runtime.canvas.set_width(frame.width);
-                runtime.canvas.set_height(frame.height);
-                let t_surface = perf::now_ms();
-                gpu_runtime
-                    .context
-                    .configure_surface(&runtime.surface, frame.width, frame.height)
-                    .map_err(|error| JsValue::from_str(&error.to_string()))?;
-                perf::record("wasm.surfaceConfigure", perf::now_ms() - t_surface);
-                runtime.surface_size = (frame.width, frame.height);
-            }
-
-            if gpu_runtime.context.supports_surface_rendering() {
+            if let Some(surface) = &runtime.surface {
+                if runtime.surface_size != (frame.width, frame.height) {
+                    let t_surface = perf::now_ms();
+                    runtime.canvas.set_width(frame.width);
+                    runtime.canvas.set_height(frame.height);
+                    gpu_runtime.context.configure_surface(surface, frame.width, frame.height).map_err(gpu_error_to_js)?;
+                    perf::record("wasm.surfaceConfigure", perf::now_ms() - t_surface);
+                    runtime.surface_size = (frame.width, frame.height);
+                }
                 let t_render = perf::now_ms();
                 let result = runtime
                     .compositor
@@ -189,15 +195,17 @@ pub fn render_frame(options: JsValue) -> Result<(), JsValue> {
                         &gpu_runtime.context,
                         RenderFrameOptions {
                             frame: &frame,
-                            surface: &runtime.surface,
+                            surface,
                         },
                     )
-                    .map_err(|error| JsValue::from_str(&error.to_string()));
+                    .map_err(|error| match error {
+                        CompositorError::Gpu(error) => gpu_error_to_js(error),
+                        _ => JsValue::from_str(&error.to_string()),
+                    });
                 perf::record("wasm.renderFrameToSurface", perf::now_ms() - t_render);
                 result
             } else {
-                // WebGL still needs a separate composition pass, but the output
-                // surface is now persistent just like the WebGPU path.
+                // WebGL shares one staging surface with effect and mask rendering.
                 let t_composite = perf::now_ms();
                 let texture = runtime
                     .compositor
@@ -208,8 +216,8 @@ pub fn render_frame(options: JsValue) -> Result<(), JsValue> {
                 let t_present = perf::now_ms();
                 gpu_runtime
                     .context
-                    .present_texture_to_surface(&texture, &runtime.surface)
-                    .map_err(|error| JsValue::from_str(&error.to_string()))?;
+                    .render_texture_to_gl_canvas_surface(&texture, frame.width, frame.height)
+                    .map_err(gpu_error_to_js)?;
                 perf::record("wasm.presentToSurface", perf::now_ms() - t_present);
 
                 Ok(())

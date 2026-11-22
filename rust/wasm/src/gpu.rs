@@ -1,10 +1,11 @@
 #![cfg(target_arch = "wasm32")]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
 use effects::EffectPipeline;
-use gpu::{GpuContext, wgpu};
-use js_sys::{Object, Reflect};
+use gpu::{GpuContext, GpuError, wgpu};
+use js_sys::{Function, Object, Reflect};
 use masks::MaskFeatherPipeline;
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
@@ -17,6 +18,8 @@ pub(crate) struct GpuRuntime {
 
 thread_local! {
     static GPU_RUNTIME: RefCell<Option<GpuRuntime>> = const { RefCell::new(None) };
+    static DEVICE_ID: Cell<u32> = const { Cell::new(0) };
+    static ON_DEVICE_LOST: RefCell<Option<Function>> = const { RefCell::new(None) };
 }
 
 fn set_panic_hook() {
@@ -38,7 +41,7 @@ fn set_panic_hook() {
 }
 
 #[wasm_bindgen(js_name = initializeGpu)]
-pub async fn initialize_gpu() -> Result<(), JsValue> {
+pub async fn initialize_gpu(on_device_lost: Option<Function>) -> Result<(), JsValue> {
     set_panic_hook();
 
     if GPU_RUNTIME.with(|runtime| runtime.borrow().is_some()) {
@@ -48,6 +51,21 @@ pub async fn initialize_gpu() -> Result<(), JsValue> {
     let context = GpuContext::new()
         .await
         .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let device_id = DEVICE_ID.with(Cell::get);
+    ON_DEVICE_LOST.with(|callback| callback.replace(on_device_lost));
+    if context.gl_canvas().is_none() {
+        context.device().set_device_lost_callback(move |_, _| {
+            if DEVICE_ID.with(Cell::get) == device_id {
+                let callback = ON_DEVICE_LOST.with(|callback| callback.borrow().clone());
+                if let Some(callback) = callback {
+                    let _ = callback.call0(&JsValue::UNDEFINED);
+                }
+            }
+        });
+    }
+    context.device().on_uncaptured_error(Arc::new(|error| {
+        web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
+    }));
     let effects = EffectPipeline::new(&context);
     let masks = MaskFeatherPipeline::new(&context);
 
@@ -60,6 +78,31 @@ pub async fn initialize_gpu() -> Result<(), JsValue> {
     });
 
     Ok(())
+}
+
+#[wasm_bindgen(js_name = resetGpu)]
+pub fn reset_gpu() {
+    DEVICE_ID.with(|id| id.set(id.get().wrapping_add(1)));
+    ON_DEVICE_LOST.with(|callback| callback.replace(None));
+    crate::compositor::reset_compositor();
+    if let Some(runtime) = GPU_RUNTIME.with(|runtime| runtime.replace(None))
+        && runtime.context.gl_canvas().is_none()
+    {
+        runtime.context.device().destroy();
+    }
+}
+
+#[wasm_bindgen(js_name = getGpuWebGlCanvas)]
+pub fn get_gpu_web_gl_canvas() -> Option<web_sys::HtmlCanvasElement> {
+    GPU_RUNTIME.with(|runtime| runtime.borrow().as_ref()?.context.gl_canvas().cloned())
+}
+
+pub(crate) fn gpu_error_to_js(error: GpuError) -> JsValue {
+    match error {
+        GpuError::SurfaceLost => JsValue::from_str("GPU_SURFACE_LOST"),
+        GpuError::SurfaceUnavailable => JsValue::from_str("GPU_SURFACE_UNAVAILABLE"),
+        _ => js_sys::Error::new(&error.to_string()).into(),
+    }
 }
 
 pub(crate) fn with_gpu_runtime<T>(
@@ -95,7 +138,7 @@ pub(crate) fn render_texture_to_canvas(
     let canvas = wgpu::web_sys::OffscreenCanvas::new(width, height)?;
     context
         .render_texture_to_offscreen_canvas(texture, &canvas, width, height)
-        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        .map_err(gpu_error_to_js)?;
     Ok(canvas)
 }
 

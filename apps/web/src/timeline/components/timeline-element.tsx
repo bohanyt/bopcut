@@ -30,6 +30,7 @@ import {
 	TIMELINE_TRACK_THEME,
 } from "./theme";
 import { isCompoundElement } from "@/timeline/compound";
+import { rendererDevice } from "@/services/renderer/renderer-device";
 import {
 	COMPOUND_THUMBNAIL_COUNT,
 	getCompoundThumbnailCache,
@@ -1363,14 +1364,15 @@ function CompoundThumbnailStrip({ element }: { element: CompoundElement }) {
 		() => cache.get(key),
 		() => undefined,
 	);
+	const graphics = useSyncExternalStore(rendererDevice.subscribe, rendererDevice.getSnapshot, rendererDevice.getSnapshot);
 
 	useEffect(() => {
-		if (cache.get(key)) return;
+		if (graphics.state !== "ready" || cache.get(key)) return;
 		cache.request(key, ({ shouldStop }) =>
 			renderCompoundThumbnails({ editor, element, shouldStop }),
 		);
 		return () => cache.cancel(key);
-	}, [cache, key, editor, element]);
+	}, [cache, key, editor, element, graphics.state]);
 
 	const slots = Array.from({ length: COMPOUND_THUMBNAIL_COUNT }, (_, slot) => ({
 		slot,

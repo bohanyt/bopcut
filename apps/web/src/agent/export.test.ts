@@ -21,6 +21,7 @@ const { RootNode } = await import("@/services/renderer/nodes/root-node");
 const { SceneExporter } = await import("@/services/renderer/scene-exporter");
 const { resolveRenderTree } = await import("@/services/renderer/resolve");
 const { VideoCache } = await import("@/services/video-cache/service");
+const { rendererDevice } = await import("@/services/renderer/renderer-device");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
 
@@ -968,6 +969,37 @@ describe("the export poller", () => {
 				expect((await editor.project.export({ options: { ...options, allowMissing: true } })).success).toBe(true);
 				expect(decode).toHaveBeenCalledTimes(2);
 			} finally {
+				decode.mockRestore();
+			}
+		}));
+
+	test("graphics loss during encoding fails the export and releases its slot", () =>
+		withFrameResolution(async ({ cancel, finalize }) => {
+			const editor = open("p", 0.1);
+			editor.save.stop();
+			const generation = new AbortController();
+			const decode = spyOn(VideoCache.prototype, "getFrameAt").mockResolvedValue(null);
+			const entered = Promise.withResolvers<void>();
+			const encoder = Promise.withResolvers<void>();
+			const add = spyOn(CanvasSource.prototype, "add").mockImplementation(() => {
+				entered.resolve();
+				return encoder.promise;
+			});
+			Object.defineProperty(rendererDevice, "signal", { configurable: true, value: generation.signal });
+			const options = { format: "mp4", quality: "high", includeAudio: false } as const;
+			const exporting = editor.renderer.exportProject({ options });
+			try {
+				await Promise.race([entered.promise, exporting.then(() => { throw new Error("Export did not reach encoding"); })]);
+				generation.abort(new Error("Graphics device was lost"));
+				expect(await exporting).toEqual({ success: false, error: "Graphics device was lost" });
+				expect(cancel).toHaveBeenCalledTimes(1);
+				expect(finalize).not.toHaveBeenCalled();
+				expect(editor.renderer.isExportRunning()).toBe(false);
+			} finally {
+				encoder.resolve();
+				await exporting;
+				Reflect.deleteProperty(rendererDevice, "signal");
+				add.mockRestore();
 				decode.mockRestore();
 			}
 		}));
