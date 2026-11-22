@@ -540,9 +540,13 @@ describe("the export poller", () => {
 				}
 				return new Response("{}");
 			}) as typeof fetch;
+			Object.defineProperty(rendererDevice, "status", { configurable: true, value: { state: "ready" } });
+			const graphics = spyOn(rendererDevice, "requireReady").mockReturnValue(rendererDevice.signal);
 			try {
 				await run(log);
 			} finally {
+				graphics.mockRestore();
+				Reflect.deleteProperty(rendererDevice, "status");
 				globalThis.fetch = realFetch;
 				(globalThis as any).localStorage = previousStorage;
 			}
@@ -1212,6 +1216,9 @@ describe("the export poller", () => {
 			try {
 				await pollExport();
 				expect(log.gets).toBe(0);
+				state = "unavailable";
+				await pollExport();
+				expect(log.gets).toBe(0);
 				state = "ready";
 				await pollExport();
 				expect(log.posts).toEqual([]);
@@ -1235,9 +1242,9 @@ describe("the export poller", () => {
 			expect(await log.result()).toMatchObject({ status: "done", duration: 7 });
 		}));
 
-	test("releases a claim if graphics recovery starts before the export", () => {
+	test.each(["recovering", "unavailable"])("releases a claim when graphics becomes %s before the export", (next) => {
 		let state = "ready";
-		return withServer({ request: { rev: "release-on-recovery" }, onClaim: () => { state = "recovering"; } }, async (log) => {
+		return withServer({ request: { rev: "release-on-recovery" }, onClaim: () => { state = next; } }, async (log) => {
 			Object.defineProperty(rendererDevice, "status", { configurable: true, get: () => ({ state }) });
 			try {
 				await pollExport();
