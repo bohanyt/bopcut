@@ -386,7 +386,10 @@ export class PreviewInteractionController {
 		});
 		const selectedElements = this.deps.selection.getSelected();
 
-		const releasePointer = this.deps.viewport.pointerCapture.tryCapture({ currentTarget, pointerId });
+		const releasePointer = this.deps.viewport.pointerCapture.tryCapture(
+			{ currentTarget, pointerId },
+			() => this.cancel(),
+		);
 		if (!releasePointer) return;
 		this.startGesture();
 		this.gesture = {

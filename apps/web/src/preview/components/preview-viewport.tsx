@@ -388,17 +388,23 @@ export function usePreviewViewportState({
 
 	const handlePanPointerDown = useCallback(
 		({ event }: { event: React.PointerEvent }) => {
-			if (event.button !== MIDDLE_MOUSE_BUTTON || zoom <= 1) {
+			const target = viewportRef.current;
+			if (!target || event.button !== MIDDLE_MOUSE_BUTTON || zoom <= 1) {
 				return false;
 			}
 
 			event.preventDefault();
 			event.stopPropagation();
 
-			if (pan.start(event, centerRef.current)) setIsPanning(true);
+			const { pointerId, clientX, clientY } = event;
+			if (pan.start(
+				{ currentTarget: target, pointerId, clientX, clientY },
+				centerRef.current,
+				() => setIsPanning(false),
+			)) setIsPanning(true);
 			return true;
 		},
-		[centerRef, pan, zoom],
+		[centerRef, pan, viewportRef, zoom],
 	);
 
 	const handlePanPointerMove = useCallback(

@@ -317,7 +317,7 @@ export function useMaskHandles({
 	}, []);
 
 	const capturePointer = useCallback((event: React.PointerEvent) => {
-		const release = pointerCapture.tryCapture(event);
+		const release = pointerCapture.tryCapture(event, () => gestureOwner.current?.cancel());
 		if (!release) return false;
 		gestureOwner.current = editor.timeline.beginPreviewGesture(() => {
 			gestureOwner.current = null;

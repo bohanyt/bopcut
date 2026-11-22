@@ -77,8 +77,9 @@ function fixture() {
 		},
 	};
 	const captured = new Set<number>();
+	const ownerDocument = Object.assign(new EventTarget(), { activeElement: null });
 	const target = {
-		ownerDocument: { activeElement: null },
+		ownerDocument,
 		setPointerCapture: (pointerId: number) => { captured.add(pointerId); },
 		hasPointerCapture: (pointerId: number) => captured.has(pointerId),
 		releasePointerCapture: (pointerId: number) => { captured.delete(pointerId); },
@@ -100,6 +101,10 @@ function fixture() {
 		selection,
 		event,
 		captured,
+		loseCapture(pointerId: number) {
+			captured.delete(pointerId);
+			ownerDocument.dispatchEvent(Object.assign(new Event("lostpointercapture"), { pointerId }));
+		},
 		updates: () => updates,
 		commits: () => commits,
 	};
@@ -131,20 +136,60 @@ function createTransformController(f: ReturnType<typeof fixture>) {
 }
 
 describe("preview canvas pointer ownership", () => {
+	test("document-level loss cancels the transform after its captured handle disappears", () => {
+		const f = fixture();
+		const canvas = createCanvasController(f);
+		const handle = createTransformController(f);
+		f.selection.setSelected([{ trackId: "t", elementId: "a" }]);
+		try {
+			handle.onCornerPointerDown({ event: f.event(450, 550, 2), corner: "bottom-right" });
+			expect(handle.activeHandle).toBe("bottom-right");
+			f.loseCapture(3);
+			expect(handle.activeHandle).toBe("bottom-right");
+			f.loseCapture(2);
+			expect(handle.activeHandle).toBeNull();
+			expect(f.commits()).toBe(0);
+			canvas.onPointerDown(f.event(400, 500));
+			expect(f.captured).toEqual(new Set([1]));
+		} finally {
+			canvas.destroy();
+			handle.destroy();
+		}
+	});
+
+	test("document-level loss ends a pan if the viewport is removed", () => {
+		const f = fixture();
+		const pan = new PreviewPan(f.viewport.pointerCapture);
+		const canvas = createCanvasController(f);
+		try {
+			let ended = false;
+			expect(pan.start(f.event(530, 500, 2), { x: 500, y: 500 }, () => { ended = true; })).toBe(true);
+			f.loseCapture(2);
+			expect(ended).toBe(true);
+			expect(pan.move(f.event(550, 510, 2), 1)).toBeNull();
+			canvas.onPointerDown(f.event(400, 500));
+			expect(f.captured).toEqual(new Set([1]));
+		} finally {
+			pan.finish();
+			canvas.destroy();
+		}
+	});
+
 	test("pan cannot start during a clip drag or consume events from another pointer", () => {
 		const f = fixture();
 		const canvas = createCanvasController(f);
 		const pan = new PreviewPan(f.viewport.pointerCapture);
 		const center = { x: 500, y: 500 };
+		const onLostCapture = () => {};
 		try {
 			canvas.onPointerDown(f.event(400, 500));
 			canvas.onPointerMove(f.event(430, 520));
-			expect(pan.start(f.event(530, 500, 2), center)).toBe(false);
+			expect(pan.start(f.event(530, 500, 2), center, onLostCapture)).toBe(false);
 			canvas.onPointerUp(f.event(430, 520));
 			expect(f.commits()).toBe(1);
 
-			expect(pan.start(f.event(530, 500, 2), center)).toBe(true);
-			expect(pan.start(f.event(540, 500, 3), center)).toBe(false);
+			expect(pan.start(f.event(530, 500, 2), center, onLostCapture)).toBe(true);
+			expect(pan.start(f.event(540, 500, 3), center, onLostCapture)).toBe(false);
 			expect(pan.move(f.event(450, 520), 1)).toBeNull();
 			expect(pan.finish(f.event(450, 520))).toBe(false);
 			canvas.onPointerDown(f.event(400, 500));

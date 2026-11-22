@@ -339,7 +339,7 @@ describe("preview gesture history boundaries", () => {
 			});
 			let captured = false;
 			const currentTarget = {
-				ownerDocument: { activeElement: null },
+				ownerDocument: Object.assign(new EventTarget(), { activeElement: null }),
 				setPointerCapture: () => { captured = true; },
 				hasPointerCapture: () => captured,
 				releasePointerCapture: () => { captured = false; },

@@ -380,7 +380,10 @@ export class TransformHandleController {
 	}
 
 	private beginGesture(event: ReactPointerEvent): (() => void) | null {
-		const releasePointer = this.deps.viewport.pointerCapture.tryCapture(event);
+		const releasePointer = this.deps.viewport.pointerCapture.tryCapture(
+			event,
+			() => this.gestureOwner?.cancel(),
+		);
 		if (!releasePointer) return null;
 		this.gestureOwner = this.deps.timeline.beginPreviewGesture(() => {
 			this.gestureOwner = null;

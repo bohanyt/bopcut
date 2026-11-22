@@ -50,22 +50,6 @@ export function PreviewInteractionOverlay() {
 		onPointerDown(event);
 	};
 
-	const handlePointerMove = (event: React.PointerEvent) => {
-		if (viewport.handlePanPointerMove({ event })) {
-			return;
-		}
-
-		onPointerMove(event);
-	};
-
-	const handlePointerUp = (event: React.PointerEvent) => {
-		if (viewport.handlePanPointerUp({ event })) {
-			return;
-		}
-
-		onPointerUp(event);
-	};
-
 	return (
 		<div className="absolute inset-0">
 			<div
@@ -80,10 +64,10 @@ export function PreviewInteractionOverlay() {
 							: undefined,
 				}}
 				onPointerDown={handlePointerDown}
-				onPointerMove={handlePointerMove}
-				onPointerUp={handlePointerUp}
-				onPointerCancel={handlePointerUp}
-				onLostPointerCapture={handlePointerUp}
+				onPointerMove={onPointerMove}
+				onPointerUp={onPointerUp}
+				onPointerCancel={onPointerUp}
+				onLostPointerCapture={onPointerUp}
 				onDoubleClick={onDoubleClick}
 				onDragStart={(e) => e.preventDefault()}
 			/>
