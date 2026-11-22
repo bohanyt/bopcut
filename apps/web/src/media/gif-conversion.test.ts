@@ -18,6 +18,9 @@ test.each([
 		directory = dirname(input);
 		expect(readFileSync(input, "utf8")).toBe("GIF bytes");
 		if (args.includes("framecrc")) {
+			if (args.includes("copy")) {
+				return { stdout: "0, 0, 0, 6, 42, 0x00000000\n0, 6, 6, 6, 42, 0x00000000\n", stderr: "" };
+			}
 			expect(args[args.indexOf("-vf") + 1]).toContain("lavfi.signalstats.YMIN:value=128:function=less");
 			return { stdout: probe, stderr: "" };
 		}
@@ -36,7 +39,8 @@ test.each([
 		});
 		expect(response.headers.get("Content-Type")).toBe(mime);
 		expect(await response.text()).toBe("converted");
-		expect(runner).toHaveBeenCalledTimes(2);
+		expect(response.headers.get("X-Bopencut-GIF-Variable-Delay")).toBeNull();
+		expect(runner).toHaveBeenCalledTimes(3);
 		expect(directory).toBeDefined();
 		expect(existsSync(directory!)).toBe(false);
 	} finally {
@@ -50,6 +54,7 @@ test.each([
 	["58.29.100", true, "video/webm"],
 	["58.29.100", false, "video/mp4"],
 	["60.16.100", true, "video/webm"],
+	["61.7.100", true, "video/webm"],
 ] as const)("FFmpeg Lavf%s preserves three GIF loops (alpha: %p)", async (version, alpha, mime) => {
 	let commands = 0;
 	const runner = spyOn(retrieval, "defaultRunner").mockImplementation(async (_command, args) => {
@@ -59,16 +64,20 @@ test.each([
 		}
 		if (args.includes("framecrc")) {
 			expect(args).toContain("copy");
-			return { stdout: "#tb 0: 1/100\n0, 0, 0, 8, 42, 0x00000000\n0, 8, 8, 24, 42, 0x00000000\n0, 32, 32, 48, 42, 0x00000000\n", stderr: "" };
+			return { stdout: "#tb 0: 1/100\n0, 0, 0, 6, 42, 0x00000000\n0, 6, 6, 4, 42, 0x00000000\n0, 10, 10, 5, 42, 0x00000000\n", stderr: "" };
 		}
-		expect(args).not.toContain("-stream_loop");
-		const input = args[args.indexOf("-i") + 1];
-		const concat = Buffer.from(input.split(",")[1], "base64").toString("utf8");
-		expect(concat.match(/duration 0\.8/g)).toHaveLength(3);
-		expect(concat.match(/in\.gif/g)).toHaveLength(3);
+		if (version.startsWith("61.")) {
+			expect(args[args.indexOf("-stream_loop") + 1]).toBe("2");
+		} else {
+			expect(args).not.toContain("-stream_loop");
+			const input = args[args.indexOf("-i") + 1];
+			const concat = Buffer.from(input.split(",")[1], "base64").toString("utf8");
+			expect(concat.match(/duration 0\.15/g)).toHaveLength(3);
+			expect(concat.match(/in\.gif/g)).toHaveLength(3);
+		}
 		if (version.startsWith("58.")) {
 			expect(args).not.toContain("-fps_mode");
-			expect(args[args.indexOf("-vf") + 1]).toContain("fps=100/8");
+			expect(args[args.indexOf("-vf") + 1]).toContain("fps=100/1");
 		} else {
 			expect(args).toContain("-fps_mode");
 		}
@@ -83,7 +92,8 @@ test.each([
 		expect(response.headers.get("Content-Type")).toBe(mime);
 		expect(await response.text()).toBe("converted");
 		expect(commands).toBe(3);
-		expect(response.headers.get("X-Bopencut-GIF-FPS")).toBe(version.startsWith("58.") ? "3.75" : null);
+		expect(response.headers.get("X-Bopencut-GIF-FPS")).toBe(version.startsWith("58.") ? "20" : null);
+		expect(response.headers.get("X-Bopencut-GIF-Variable-Delay")).toBe("1");
 	} finally {
 		runner.mockRestore();
 	}

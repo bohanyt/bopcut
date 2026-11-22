@@ -2,6 +2,7 @@ import type { MediaAsset, MediaType } from "@/media/types";
 
 export const SUPPORTS_AUDIO: readonly MediaType[] = ["audio", "video"];
 export const GIF_SOURCE_FPS_HEADER = "X-Bopencut-GIF-FPS";
+export const GIF_VARIABLE_DELAY_HEADER = "X-Bopencut-GIF-Variable-Delay";
 
 export function mediaSupportsAudio({
 	media,

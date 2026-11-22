@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { GIF_SOURCE_FPS_HEADER, getMediaTypeFromFile, hasGenericMediaMimeType, isModelFile } from "@/media/media-utils";
+import { GIF_SOURCE_FPS_HEADER, GIF_VARIABLE_DELAY_HEADER, getMediaTypeFromFile, hasGenericMediaMimeType, isModelFile } from "@/media/media-utils";
 import { formatStorageBytes } from "@/services/storage/quota";
 import { storageService } from "@/services/storage/service";
 import type { MediaAsset } from "@/media/types";
@@ -91,6 +91,7 @@ export async function processMediaFile({
 	// Convert GIF to video on the local server to preserve animation and transparency.
 	let file = original;
 	let gifSourceFps: number | undefined;
+	let hasVariableGifDelay = false;
 	if (original.type === "image/gif" || (hasGenericMediaMimeType(original) && /\.gif$/i.test(original.name))) {
 		try {
 			const res = await fetch("/api/agent/gif", { method: "POST", body: original, signal });
@@ -103,6 +104,7 @@ export async function processMediaFile({
 			// Some FFmpeg versions duplicate frames to represent GIF holds. Keep the source cadence.
 			const sourceFps = Number(res.headers.get(GIF_SOURCE_FPS_HEADER));
 			if (Number.isFinite(sourceFps) && sourceFps > 0) gifSourceFps = sourceFps;
+			hasVariableGifDelay = res.headers.get(GIF_VARIABLE_DELAY_HEADER) === "1";
 		} catch (error) {
 			if (signal.aborted) return null;
 			toast.error(`GIF ${original.name} could not be converted to video; using a still image`);
@@ -189,7 +191,10 @@ export async function processMediaFile({
 			return null;
 		}
 		url ??= URL.createObjectURL(file);
-		return { name: file.name, type: fileType, file, url, thumbnailUrl, duration, width, height, fps, hasAudio };
+		return {
+			name: file.name, type: fileType, file, url, thumbnailUrl, duration, width, height, fps, hasAudio,
+			...(hasVariableGifDelay && { hasVariableGifDelay }),
+		};
 	} catch (error) {
 		releaseMediaAssetUrls({ url, thumbnailUrl });
 		if (!signal.aborted) {

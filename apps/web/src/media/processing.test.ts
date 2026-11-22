@@ -14,10 +14,10 @@ const allowStorage = () => spyOn(storageService, "canStoreFile")
 	.mockResolvedValue({ canStore: true, availableBytes: null, reason: "estimate-unavailable" });
 
 test.each([
-	["video/webm", undefined, "webm", "application/octet-stream"],
-	["video/mp4", undefined, "mp4", "image/gif"],
-	["video/mp4", "17.647058823529413", "mp4", "image/gif"],
-] as const)("imports GIF conversion as %s with source cadence %p", async (mime, cadence, extension, originalMime) => {
+	["video/webm", undefined, "webm", "application/octet-stream", true],
+	["video/mp4", undefined, "mp4", "image/gif", false],
+	["video/mp4", "20", "mp4", "image/gif", true],
+] as const)("imports GIF conversion as %s with source cadence %p", async (mime, cadence, extension, originalMime, variableDelay) => {
 	const file = new File(["GIF"], "overlay.GIF", { type: originalMime });
 	const track: InputVideoTrack = Object.create(InputVideoTrack.prototype, {
 		displayWidth: { value: 16 },
@@ -29,6 +29,7 @@ test.each([
 	});
 	const headers = new Headers({ "Content-Type": mime });
 	if (cadence) headers.set("X-Bopencut-GIF-FPS", cadence);
+	if (variableDelay) headers.set("X-Bopencut-GIF-Variable-Delay", "1");
 	const stubs = [
 		allowStorage(),
 		spyOn(globalThis, "fetch").mockResolvedValue(new Response("converted", { headers })),
@@ -45,6 +46,7 @@ test.each([
 		try {
 			expect(imported).toMatchObject({ name: `overlay.${extension}`, type: "video", duration: 1, hasAudio: false, fps: cadence ? Number(cadence) : 12 });
 			expect(imported?.file.type).toBe(mime);
+			expect(imported?.hasVariableGifDelay).toBe(variableDelay ? true : undefined);
 			expect(await imported?.file.text()).toBe("converted");
 			if (imported) {
 				expect(getRaisedProjectFpsForImportedMedia({
