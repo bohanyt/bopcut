@@ -22,6 +22,7 @@ import type { FrameRate } from "opencut-wasm";
 import { computeDropTarget } from "@/timeline/components/drop-target";
 import { getMouseTimeFromClientX } from "@/timeline/drag-utils";
 import { generateUUID } from "@/utils/id";
+import { finishFocusedField } from "@/utils/browser";
 import { beginTimelineGesture } from "@/timeline/gesture-state";
 import type { SnapPoint } from "@/timeline/snapping";
 import type {
@@ -365,6 +366,10 @@ export class ElementInteractionController {
 		}
 
 		event.stopPropagation();
+		finishFocusedField(event.currentTarget);
+		const currentTrack = orderedTracks(this.deps.scene.getTracks()).find((item) => item.id === track.id);
+		const currentElement = currentTrack?.elements.find((item) => item.id === element.id);
+		if (!currentElement) return;
 		this.gestureOwner = this.deps.timeline.beginPreviewGesture(() => {
 			this.lastGestureWasDrag = true;
 			this.finishSession();
@@ -387,7 +392,7 @@ export class ElementInteractionController {
 				origin: { x: event.clientX, y: event.clientY },
 				elementId: element.id,
 				trackId: track.id,
-				startElementTime: element.startTime,
+				startElementTime: currentElement.startTime,
 				clickOffsetTime: pixelToClickOffsetTime({
 					clientX: event.clientX,
 					elementRect: event.currentTarget.getBoundingClientRect(),

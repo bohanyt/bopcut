@@ -19,6 +19,7 @@ import {
 	snapToStep,
 } from "@/utils/math";
 import { cn } from "@/utils/ui";
+import { finishFocusedField } from "@/utils/browser";
 
 const HIT_AREA_HEIGHT_PX = 14;
 const TOOLTIP_OFFSET_PX = 10;
@@ -152,6 +153,7 @@ export function AudioVolumeLine({
 
 			event.preventDefault();
 			event.stopPropagation();
+			finishFocusedField(event.currentTarget);
 			editor.selection.setSelectedElements({
 				elements: [{ trackId, elementId: element.id }],
 			});

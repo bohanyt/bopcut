@@ -78,6 +78,7 @@ function ParamInput({
 	onPreview: (value: ParamValue) => void;
 	onCommit: () => void;
 }) {
+	const { timeline } = useEditor();
 	if (param.type === "number") {
 		return (
 			<NumberParamField
@@ -127,6 +128,7 @@ function ParamInput({
 	if (param.type === "color") {
 		return (
 			<ColorPicker
+				beginDragGesture={timeline.beginPreviewGesture}
 				value={String(value).replace(/^#/, "").toUpperCase()}
 				onChange={(color) => onPreview(`#${color}`)}
 				onChangeEnd={(color) => {

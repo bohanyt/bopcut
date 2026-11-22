@@ -3,6 +3,7 @@ import type {
 	PointerEvent as ReactPointerEvent,
 } from "react";
 import type { MediaAsset } from "@/media/types";
+import { finishFocusedField } from "@/utils/browser";
 import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import {
 	getVisibleElementsWithBounds,
@@ -364,6 +365,7 @@ export class PreviewInteractionController {
 		if (this.deps.preview.isMaskMode()) return;
 		if (button !== PRIMARY_POINTER_BUTTON) return;
 
+		finishFocusedField(currentTarget);
 		const startPos = this.deps.viewport.screenToCanvas({
 			clientX,
 			clientY,

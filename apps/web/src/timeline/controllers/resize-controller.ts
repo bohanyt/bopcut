@@ -1,4 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
+import { finishFocusedField } from "@/utils/browser";
 import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import { BASE_TIMELINE_PIXELS_PER_SECOND } from "@/timeline/scale";
 import {
@@ -211,6 +212,7 @@ export class ResizeController {
 	}): void {
 		event.stopPropagation();
 		event.preventDefault();
+		finishFocusedField(event.currentTarget);
 
 		// UI should prevent this, but be explicit: a new resize start
 		// means the previous one is abandoned, not silently replaced.

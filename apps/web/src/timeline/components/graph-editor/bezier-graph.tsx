@@ -7,6 +7,7 @@ import type { PreviewGesture } from "@/core/managers/timeline-manager";
 import { getBezierPoint } from "@/animation/bezier";
 import type { NormalizedCubicBezier } from "@/animation/types";
 import { cn } from "@/utils/ui";
+import { finishFocusedField } from "@/utils/browser";
 
 const GRAPH_WIDTH = 140;
 const GRAPH_HEIGHT = 94;
@@ -119,6 +120,7 @@ export function BezierGraph({
 			if (event.button !== 0 || drag.current) return;
 			event.preventDefault();
 			event.stopPropagation();
+			finishFocusedField(event.currentTarget);
 			const { currentTarget: target, pointerId } = event;
 			const owner = timeline.beginPreviewGesture(() => {
 				drag.current = null;

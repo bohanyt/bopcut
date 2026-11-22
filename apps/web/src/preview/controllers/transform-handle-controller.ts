@@ -1,4 +1,5 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { finishFocusedField } from "@/utils/browser";
 import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import type { MediaAsset } from "@/media/types";
 import {
@@ -401,6 +402,7 @@ export class TransformHandleController {
 		corner: Corner;
 	}): void {
 		if (this.session.kind !== "idle" || event.button !== 0) return;
+		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, corner)) return;
 		const context = this.getSelectedVisualContext();
 		if (!context) return;
@@ -442,6 +444,7 @@ export class TransformHandleController {
 
 	onRotationPointerDown({ event }: { event: ReactPointerEvent }): void {
 		if (this.session.kind !== "idle" || event.button !== 0) return;
+		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, "rotation")) return;
 		const context = this.getSelectedVisualContext();
 		if (!context) return;
@@ -486,6 +489,7 @@ export class TransformHandleController {
 		edge: Edge;
 	}): void {
 		if (this.session.kind !== "idle" || event.button !== 0) return;
+		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, edge)) return;
 		const context = this.getSelectedVisualContext();
 		if (!context) return;

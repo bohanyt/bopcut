@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PreviewGesture } from "@/core/managers/timeline-manager";
+import { finishFocusedField } from "@/utils/browser";
 import { usePreviewViewport } from "@/preview/components/preview-viewport";
 import { useEditor } from "@/editor/use-editor";
 import { useShiftKey } from "@/hooks/use-shift-key";
@@ -345,6 +346,7 @@ export function useMaskHandles({
 			if (!selectedWithMask) return;
 			if (event.button !== 0 || gestureOwner.current) return;
 			event.stopPropagation();
+			finishFocusedField(event.currentTarget);
 			const anchorHandle =
 				selectedWithMask.mask.type === "freeform" && handleId.kind === "anchor"
 					? handleId

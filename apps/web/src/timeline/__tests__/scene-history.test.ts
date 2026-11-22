@@ -7,7 +7,9 @@ import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
 import { cancelInteraction } from "@/editor/cancel-interaction";
 import { PreviewInteractionController } from "@/preview/controllers/preview-interaction-controller";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import { ElementInteractionController } from "@/timeline/controllers/element-interaction-controller";
+import { startColorDrag } from "@/components/ui/color-drag";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { allElements, allTracks, fixture, getHost, refs, t, video } from "./compound-fixtures";
 
 // Another test file replaces opencut-wasm with a partial mock and Bun keeps that module shape,
@@ -332,6 +334,7 @@ describe("preview gesture history boundaries", () => {
 			});
 			let captured = false;
 			const currentTarget = {
+				ownerDocument: { activeElement: null },
 				setPointerCapture: () => { captured = true; },
 				hasPointerCapture: () => captured,
 				releasePointerCapture: () => { captured = false; },
@@ -405,6 +408,131 @@ describe("preview gesture history boundaries", () => {
 		editor.command.undo();
 		expect(main()[0].duration).toBe(t(2));
 		expect(editor.command.canUndo()).toBe(false);
+	});
+
+	for (const source of ["canvas text", "properties field"] as const) {
+		test(`clicking another clip saves the focused ${source} and still selects the clip`, () => {
+			const { editor, first, second, main, tracks } = setupSplitHistory();
+			const textOwner = source === "canvas text"
+				? editor.timeline.beginPreviewGesture(() => {})
+				: null;
+			editor.timeline.previewElements({ updates: [{ ...first, updates: { name: "Pending title" } }] });
+
+			const doc = Object.assign(new EventTarget(), {
+				activeElement: {
+					tagName: source === "canvas text" ? "DIV" : "TEXTAREA",
+					isContentEditable: source === "canvas text",
+					blur() {
+						textOwner?.finish();
+						editor.timeline.commitPreview();
+					},
+				},
+			});
+			const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+			Object.defineProperty(globalThis, "document", { configurable: true, value: doc });
+			const controller = new ElementInteractionController({
+				depsRef: {
+					current: {
+						input: { isShiftHeld: () => false },
+						scene: { getTracks: tracks, getActiveFps: () => null },
+						selection: {
+							getSelected: () => editor.selection.getSelectedElements(),
+							isSelected: () => false,
+							select: (ref) => editor.selection.setSelectedElements({ elements: [ref] }),
+							handleClick: () => {},
+							clearKeyframeSelection: () => editor.selection.clearKeyframeSelection(),
+						},
+						viewport: {
+							getZoomLevel: () => 1,
+							getTracksScrollEl: () => null,
+							getTracksContainerEl: () => null,
+							getHeaderEl: () => null,
+						},
+						timeline: {
+							beginPreviewGesture: editor.timeline.beginPreviewGesture,
+							moveElements: (args) => editor.timeline.moveElements(args),
+						},
+						playback: { getCurrentTime: editor.playback.getCurrentTime.bind(editor.playback) },
+						snap: { isEnabled: () => false },
+					},
+				},
+			});
+			const event = {
+				button: 0,
+				clientX: 5,
+				clientY: 5,
+				stopPropagation: () => {},
+				currentTarget: {
+					ownerDocument: doc,
+					getBoundingClientRect: () => ({ left: 0 }),
+				},
+			} as unknown as ReactMouseEvent;
+			try {
+				const clip = { event, element: main()[1], track: tracks().main };
+				controller.onElementMouseDown(clip);
+				// Native blur runs after mousedown if it was not already handled.
+				if (editor.timeline.isPreviewActive()) doc.activeElement.blur();
+				doc.dispatchEvent(new Event("mouseup"));
+				controller.onElementClick(clip);
+				expect(main()[0].name).toBe("Pending title");
+				expect(editor.selection.getSelectedElements()).toEqual([second]);
+				editor.command.undo();
+				expect(main()[0].name).toBe("a");
+			} finally {
+				controller.destroy();
+				if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+				else Reflect.deleteProperty(globalThis, "document");
+			}
+		});
+	}
+
+	test("Undo releases a held color control without committing its cached color", () => {
+		const { editor, first, main } = setupSplitHistory();
+		editor.timeline.updateElements({ updates: [{ ...first, patch: { name: "First edit" } }] });
+		let captured = false;
+		let commits = 0;
+		const target = Object.assign(new EventTarget(), {
+			ownerDocument: { defaultView: new EventTarget() },
+			setPointerCapture: () => { captured = true; },
+			hasPointerCapture: () => captured,
+			releasePointerCapture: () => { captured = false; },
+		});
+		const start = () => startColorDrag({
+			target: target as unknown as HTMLButtonElement,
+			startEvent: { pointerId: 1, clientX: 0, clientY: 0 },
+			getColor: ({ clientX }) => clientX ? "00ff00" : "ff0000",
+			onPreview: (color) => editor.timeline.previewElements({
+				updates: [{ ...first, updates: { params: { color } } }],
+			}),
+			onCommit: (color) => {
+				commits++;
+				editor.timeline.updateElements({ updates: [{ ...first, patch: { params: { color } } }] });
+			},
+			onEnd: () => {},
+			beginGesture: editor.timeline.beginPreviewGesture,
+		});
+		const pointer = (type: string, clientX: number) => {
+			target.dispatchEvent(Object.assign(new Event(type), { pointerId: 1, clientX }));
+		};
+
+		start();
+		expect(editor.timeline.isPreviewActive()).toBe(true);
+		editor.command.undo();
+		expect(captured).toBe(false);
+		pointer("pointermove", 1);
+		pointer("pointerup", 1);
+		expect(commits).toBe(0);
+		expect(editor.timeline.isPreviewActive()).toBe(false);
+		expect(editor.command.canRedo()).toBe(true);
+		editor.command.redo();
+		expect(main()[0].name).toBe("First edit");
+
+		start();
+		pointer("pointermove", 1);
+		pointer("pointerup", 1);
+		expect(captured).toBe(false);
+		expect(commits).toBe(1);
+		expect(main()[0].params.color).toBe("00ff00");
 	});
 });
 

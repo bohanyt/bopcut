@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import { startPointerScrub } from "./pointer-scrub";
+import { finishFocusedField } from "@/utils/browser";
 
 const SUFFIX_GAP_PX = 6;
 
@@ -179,7 +180,7 @@ function NumberField({
 		cancelScrub.current?.();
 		const parsed = parseFloat(String(value ?? "0"));
 		const startValue = Number.isNaN(parsed) ? 0 : parsed;
-		inputRef.current?.blur();
+		finishFocusedField(event.currentTarget);
 		let pixelDelta = 0;
 
 		cancelScrub.current = startPointerScrub({

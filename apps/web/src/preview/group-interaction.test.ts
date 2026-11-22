@@ -63,6 +63,7 @@ function fixture() {
 		},
 	};
 	const target = {
+		ownerDocument: { activeElement: null },
 		setPointerCapture() {},
 		hasPointerCapture: () => true,
 		releasePointerCapture() {},

@@ -20,6 +20,7 @@ import { BatchCommand } from "@/commands";
 import type { SelectedKeyframeRef } from "@/animation/types";
 import type { TimelineElement } from "@/timeline";
 import type { Command } from "@/commands/base-command";
+import { finishFocusedField } from "@/utils/browser";
 
 // --- Session ---
 
@@ -136,6 +137,7 @@ export class KeyframeDragController {
 		event.preventDefault();
 		event.stopPropagation();
 
+		finishFocusedField(event.currentTarget);
 		this.gestureOwner = this.config.beginPreviewGesture(() => {
 			this.canceledMouseDown = true;
 			this.finishSession();

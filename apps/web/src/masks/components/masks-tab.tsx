@@ -400,6 +400,7 @@ function MaskParamsFields({
 	previewParam: PreviewParamHandler;
 	onCommit: () => void;
 }) {
+	const { timeline } = useEditor();
 	const featherParam = getNumberParamDefinition({
 		definition,
 		key: "feather",
@@ -607,6 +608,7 @@ function MaskParamsFields({
 							onCommit={onCommit}
 						/>
 						<ColorPicker
+							beginDragGesture={timeline.beginPreviewGesture}
 							className=""
 							value={mask.params.strokeColor.replace(/^#/, "").toUpperCase()}
 							onChange={(color) => previewStrokeColor(`#${color}`)}

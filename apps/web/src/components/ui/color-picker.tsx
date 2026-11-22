@@ -1,4 +1,15 @@
-import { type ComponentProps, forwardRef, useEffect, useRef, useState } from "react";
+import {
+	type ComponentProps,
+	forwardRef,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
+import type { TimelineManager } from "@/core/managers/timeline-manager";
+import { finishFocusedField } from "@/utils/browser";
+import { startColorDrag } from "./color-drag";
 import { cn } from "@/utils/ui";
 import { Input } from "./input";
 import {
@@ -40,10 +51,14 @@ const CHECKERBOARD_STYLE = {
 	backgroundColor: "#fff",
 } as const;
 
+type ColorDragControl = "saturation" | "hue" | "opacity";
+
 interface ColorPickerContentProps {
 	value?: string;
 	onChange?: (value: string) => void;
 	onChangeEnd?: (value: string) => void;
+	beginDragGesture?: TimelineManager["beginPreviewGesture"];
+	onDragCancel?: () => void;
 	side?: ComponentProps<typeof PopoverContent>["side"];
 	align?: ComponentProps<typeof PopoverContent>["align"];
 }
@@ -52,20 +67,25 @@ function ColorPickerContent({
 	value = "FFFFFF",
 	onChange,
 	onChangeEnd,
+	beginDragGesture,
+	onDragCancel,
 	side = "left",
 	align = "center",
 }: ColorPickerContentProps) {
-	const [isDragging, setIsDragging] = useState<
-		"saturation" | "hue" | "opacity" | null
-	>(null);
+	const drag = useRef<{ target: HTMLButtonElement; cancel: () => void } | null>(null);
 	const [internalHue, setInternalHue] = useState(0);
 	const [inputValue, setInputValue] = useState(value);
 	const [colorFormat, setColorFormat] = useState<ColorFormat>("hex");
 
-	const saturationRef = useRef<HTMLButtonElement>(null);
-	const hueRef = useRef<HTMLButtonElement>(null);
-	const opacityRef = useRef<HTMLButtonElement>(null);
-	const latestDragColorRef = useRef<string | null>(null);
+	// The popover can unmount its buttons while this component stays mounted.
+	const trackDragButton = useCallback((target: HTMLButtonElement | null) => {
+		if (!target) return;
+		return () => {
+			if (drag.current?.target === target) drag.current.cancel();
+		};
+	}, []);
+
+	useLayoutEffect(() => () => drag.current?.cancel(), [beginDragGesture]);
 
 	const isEyeDropperSupported =
 		typeof window !== "undefined" && "EyeDropper" in window;
@@ -81,76 +101,6 @@ function ColorPickerContent({
 		setInputValue(formatColorValue({ hex: value, format: colorFormat }));
 	}, [value, colorFormat]);
 
-	useEffect(() => {
-		const handleMouseMove = (event: MouseEvent) => {
-			if (!isDragging) return;
-
-			if (isDragging === "saturation" && saturationRef.current) {
-				const rect = saturationRef.current.getBoundingClientRect();
-				const x = Math.max(
-					0,
-					Math.min(1, (event.clientX - rect.left) / rect.width),
-				);
-				const y = Math.max(
-					0,
-					Math.min(1, (event.clientY - rect.top) / rect.height),
-				);
-				const newHex = appendAlpha({
-					rgbHex: hsvToHex({ h: displayHue, s: x, v: 1 - y }),
-					alpha,
-				});
-				latestDragColorRef.current = newHex;
-				onChange?.(newHex);
-			}
-
-			if (isDragging === "hue" && hueRef.current) {
-				const rect = hueRef.current.getBoundingClientRect();
-				const x = Math.max(
-					0,
-					Math.min(1, (event.clientX - rect.left) / rect.width),
-				);
-				const newH = x * 360;
-				setInternalHue(newH);
-				if (s > 0) {
-					const newHex = appendAlpha({
-						rgbHex: hsvToHex({ h: newH, s, v }),
-						alpha,
-					});
-					latestDragColorRef.current = newHex;
-					onChange?.(newHex);
-				}
-			}
-
-			if (isDragging === "opacity" && opacityRef.current) {
-				const rect = opacityRef.current.getBoundingClientRect();
-				const x = Math.max(
-					0,
-					Math.min(1, (event.clientX - rect.left) / rect.width),
-				);
-				const newHex = appendAlpha({ rgbHex: rgbValue, alpha: x });
-				latestDragColorRef.current = newHex;
-				onChange?.(newHex);
-			}
-		};
-
-		const handleMouseUp = () => {
-			if (latestDragColorRef.current !== null && onChangeEnd) {
-				onChangeEnd(latestDragColorRef.current);
-				latestDragColorRef.current = null;
-			}
-			setIsDragging(null);
-		};
-
-		if (isDragging) {
-			document.addEventListener("mousemove", handleMouseMove);
-			document.addEventListener("mouseup", handleMouseUp);
-			return () => {
-				document.removeEventListener("mousemove", handleMouseMove);
-				document.removeEventListener("mouseup", handleMouseUp);
-			};
-		}
-	}, [isDragging, displayHue, s, v, alpha, rgbValue, onChange, onChangeEnd]);
-
 	const handleEyeDropper = async () => {
 		if (!isEyeDropperSupported || !EyeDropper) return;
 		try {
@@ -165,51 +115,45 @@ function ColorPickerContent({
 		}
 	};
 
-	const handleSaturationMouseDown = (event: React.MouseEvent) => {
+	const handlePointerDown = (control: ColorDragControl) => (
+		event: React.PointerEvent<HTMLButtonElement>,
+	) => {
+		if (event.button !== 0 || !event.isPrimary || drag.current) return;
 		event.preventDefault();
-		const saturationElement = saturationRef.current;
-		if (!saturationElement) return;
-		setIsDragging("saturation");
-		const rect = saturationElement.getBoundingClientRect();
-		const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-		const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-		const newHex = appendAlpha({
-			rgbHex: hsvToHex({ h: displayHue, s: x, v: 1 - y }),
-			alpha,
+		const target = event.currentTarget;
+		finishFocusedField(target);
+
+		const cancel = startColorDrag({
+			target,
+			startEvent: event,
+			beginGesture: beginDragGesture,
+			getColor: ({ clientX, clientY }) => {
+				const rect = target.getBoundingClientRect();
+				const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+				switch (control) {
+					case "saturation": {
+						const y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+						return appendAlpha({ rgbHex: hsvToHex({ h: displayHue, s: x, v: 1 - y }), alpha });
+					}
+					case "hue": {
+						const hue = x * 360;
+						setInternalHue(hue);
+						return s > 0 ? appendAlpha({ rgbHex: hsvToHex({ h: hue, s, v }), alpha }) : null;
+					}
+					case "opacity":
+						return appendAlpha({ rgbHex: rgbValue, alpha: x });
+				}
+			},
+			onPreview: onChange,
+			onCommit: onChangeEnd,
+			onEnd: (canceled, previewed) => {
+				drag.current = null;
+				if (!canceled) return;
+				if (control === "hue") setInternalHue(internalHue);
+				if (previewed) onDragCancel?.();
+			},
 		});
-		latestDragColorRef.current = newHex;
-		onChange?.(newHex);
-	};
-
-	const handleHueMouseDown = (event: React.MouseEvent) => {
-		event.preventDefault();
-		const hueElement = hueRef.current;
-		if (!hueElement) return;
-		setIsDragging("hue");
-		const rect = hueElement.getBoundingClientRect();
-		const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-		const newH = x * 360;
-		setInternalHue(newH);
-		if (s > 0) {
-			const newHex = appendAlpha({
-				rgbHex: hsvToHex({ h: newH, s, v }),
-				alpha,
-			});
-			latestDragColorRef.current = newHex;
-			onChange?.(newHex);
-		}
-	};
-
-	const handleOpacityMouseDown = (event: React.MouseEvent) => {
-		event.preventDefault();
-		const opacityElement = opacityRef.current;
-		if (!opacityElement) return;
-		setIsDragging("opacity");
-		const rect = opacityElement.getBoundingClientRect();
-		const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-		const newHex = appendAlpha({ rgbHex: rgbValue, alpha: x });
-		latestDragColorRef.current = newHex;
-		onChange?.(newHex);
+		drag.current = { target, cancel };
 	};
 
 	const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -285,7 +229,7 @@ function ColorPickerContent({
 				event.preventDefault();
 			}}
 			onInteractOutside={(event) => {
-				if (isDragging) event.preventDefault();
+				if (drag.current) event.preventDefault();
 			}}
 		>
 			<header className="border-b flex justify-between items-center pb-2 px-2">
@@ -318,11 +262,11 @@ function ColorPickerContent({
 			</header>
 			<div className="px-2 flex flex-col gap-3">
 				<button
-					ref={saturationRef}
-					className="relative h-44 aspect-square w-full appearance-none border-0 bg-transparent p-0"
+					ref={trackDragButton}
+					className="relative touch-none h-44 aspect-square w-full appearance-none border-0 bg-transparent p-0"
 					style={saturationStyle}
 					type="button"
-					onMouseDown={handleSaturationMouseDown}
+					onPointerDown={handlePointerDown("saturation")}
 				>
 					<ColorCircle
 						size="sm"
@@ -332,11 +276,11 @@ function ColorPickerContent({
 				</button>
 
 				<button
-					ref={hueRef}
-					className="relative h-4 w-full rounded-lg appearance-none border-0 bg-transparent p-0"
+					ref={trackDragButton}
+					className="relative touch-none h-4 w-full rounded-lg appearance-none border-0 bg-transparent p-0"
 					style={hueStyle}
 					type="button"
-					onMouseDown={handleHueMouseDown}
+					onPointerDown={handlePointerDown("hue")}
 				>
 					<ColorCircle
 						size="md"
@@ -348,10 +292,10 @@ function ColorPickerContent({
 				</button>
 
 				<button
-					ref={opacityRef}
-					className="relative h-4 w-full overflow-hidden rounded-lg appearance-none border-0 p-0"
+					ref={trackDragButton}
+					className="relative touch-none h-4 w-full overflow-hidden rounded-lg appearance-none border-0 p-0"
 					type="button"
-					onMouseDown={handleOpacityMouseDown}
+					onPointerDown={handlePointerDown("opacity")}
 				>
 					<div className="absolute inset-0 dark:invert" style={CHECKERBOARD_STYLE} />
 					<div
@@ -409,6 +353,8 @@ interface ColorPickerProps {
 	value?: string;
 	onChange?: (value: string) => void;
 	onChangeEnd?: (value: string) => void;
+	beginDragGesture?: TimelineManager["beginPreviewGesture"];
+	onDragCancel?: () => void;
 	className?: string;
 	contentSide?: ComponentProps<typeof PopoverContent>["side"];
 	contentAlign?: ComponentProps<typeof PopoverContent>["align"];
@@ -421,6 +367,8 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 			value = "FFFFFF",
 			onChange,
 			onChangeEnd,
+			beginDragGesture,
+			onDragCancel,
 			contentSide,
 			contentAlign,
 			...props
@@ -525,6 +473,8 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 					value={value}
 					onChange={onChange}
 					onChangeEnd={onChangeEnd}
+					beginDragGesture={beginDragGesture}
+					onDragCancel={onDragCancel}
 					side={contentSide}
 					align={contentAlign}
 				/>

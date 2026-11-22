@@ -143,12 +143,15 @@ function CustomColorPreview({
 	isSelected,
 	onPreview,
 	onCommit,
+	onCancel,
 }: {
 	currentBackgroundColor: string;
 	isSelected: boolean;
 	onPreview: (color: string) => void;
 	onCommit: (color: string) => void;
+	onCancel: () => void;
 }) {
+	const { timeline } = useEditor();
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
@@ -171,6 +174,8 @@ function CustomColorPreview({
 				</button>
 			</PopoverTrigger>
 			<ColorPickerContent
+				beginDragGesture={timeline.beginPreviewGesture}
+				onDragCancel={onCancel}
 				value={currentBackgroundColor.replace(/^#/, "").toUpperCase()}
 				onChange={(color) => onPreview(`#${color}`)}
 				onChangeEnd={(color) => onCommit(`#${color}`)}
@@ -287,6 +292,13 @@ export function BackgroundContent() {
 									isSelected={isColorBackground && !hasPresetColorMatch}
 									onPreview={previewBackgroundColor}
 									onCommit={commitBackgroundColor}
+									onCancel={() => {
+										if (editor.project.getActive()?.metadata.id !== activeProject.metadata.id) return;
+										void editor.project.updateSettings({
+											settings: { background: activeProject.settings.background },
+											pushHistory: false,
+										});
+									}}
 								/>
 							) : null}
 							<BackgroundPreviews
