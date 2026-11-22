@@ -332,7 +332,7 @@ export class ProjectManager {
 		restoreMissingMedia?: boolean;
 	}): Promise<ExportResult> {
 		if (this.exportController) {
-			return { success: false, error: "Another export is running; try again when it finishes" };
+			return { success: false, error: "Another export is running; try again when it finishes", issue: { kind: "alreadyRunning" } };
 		}
 		const session = this.session;
 		const isCurrentRetry = () => this.exportState.result === retryResult && this.exportTarget?.session === session;

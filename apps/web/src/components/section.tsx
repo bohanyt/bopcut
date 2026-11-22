@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/provider";
 import { createContext, useContext, useEffect, useState } from "react";
 import { cn } from "@/utils/ui";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -97,6 +98,7 @@ export function SectionHeader({
 	onClick,
 	className,
 }: SectionHeaderProps) {
+	const { t } = useI18n();
 	const ctx = useSectionContext();
 	const isCollapsible = ctx?.collapsible ?? false;
 	const isOpen = ctx?.isOpen ?? true;
@@ -123,7 +125,7 @@ export function SectionHeader({
 					<Button
 						variant="ghost"
 						size="icon"
-						aria-label={isOpen ? "Collapse section" : "Expand section"}
+						aria-label={t(isOpen ? "common.collapseSection" : "common.expandSection")}
 						onClick={handleClick}
 					>
 						{chevronIcon}

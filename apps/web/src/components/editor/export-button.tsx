@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+import { getExportErrorMessage } from "@/i18n/export-messages";
 import { useState } from "react";
 import { TransitionTopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -45,6 +47,7 @@ function isExportQuality(value: string): value is ExportQuality {
 }
 
 export function ExportButton() {
+	const { t } = useI18n();
 	const [isExportPopoverOpen, setIsExportPopoverOpen] = useState(false);
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActiveOrNull());
@@ -81,7 +84,7 @@ export function ExportButton() {
 				>
 					<div className="relative flex items-center gap-1.5 rounded-[0.6rem] bg-linear-270 from-[#2567EC] to-[#37B6F7] px-4 py-1 shadow-[0_1px_3px_0px_rgba(0,0,0,0.65)]">
 						<HugeiconsIcon icon={TransitionTopIcon} className="z-50 size-3.5" />
-						<span className="z-50 text-[0.875rem]">Export</span>
+						<span className="z-50 text-[0.875rem]">{t("export.action")}</span>
 						<div className="absolute top-0 left-0 z-10 flex size-full items-center justify-center rounded-[0.6rem] bg-linear-to-t from-white/0 to-white/50">
 							<div className="absolute top-[0.08rem] z-50 h-[calc(100%-2px)] w-[calc(100%-2px)] rounded-[0.6rem] bg-linear-270 from-[#2567EC] to-[#37B6F7]"></div>
 						</div>
@@ -98,6 +101,7 @@ function ExportPopover({
 }: {
 	onOpenChange: (open: boolean) => void;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
 	const exportState = useEditor((e) => e.project.getExportState());
@@ -172,7 +176,7 @@ function ExportPopover({
 	};
 
 	return (
-		<PopoverContent className="bg-background mr-4 flex w-80 flex-col p-0">
+		<PopoverContent className="bg-background flex w-80 max-w-[calc(100vw-1rem)] flex-col p-0">
 			{exportResult && !exportResult.success ? (
 				<ExportError
 					result={exportResult}
@@ -185,7 +189,7 @@ function ExportPopover({
 				<>
 					<div className="flex items-center justify-between p-3 border-b">
 						<h3 className="font-medium text-sm">
-							{isExporting ? "Exporting project" : "Export project"}
+							{t(isExporting ? "export.exporting" : "export.project")}
 						</h3>
 					</div>
 
@@ -199,7 +203,7 @@ function ExportPopover({
 										showTopBorder={false}
 									>
 										<SectionHeader>
-											<SectionTitle>Format</SectionTitle>
+											<SectionTitle>{t("export.format")}</SectionTitle>
 										</SectionHeader>
 										<SectionContent>
 											<RadioGroup
@@ -213,13 +217,13 @@ function ExportPopover({
 												<div className="flex items-center space-x-2">
 													<RadioGroupItem value="mp4" id="mp4" />
 													<Label htmlFor="mp4">
-														MP4 (H.264) - Better compatibility
+														{t("export.mp4")}
 													</Label>
 												</div>
 												<div className="flex items-center space-x-2">
 													<RadioGroupItem value="webm" id="webm" />
 													<Label htmlFor="webm">
-														WebM (VP9) - Smaller file size
+														{t("export.webm")}
 													</Label>
 												</div>
 											</RadioGroup>
@@ -228,7 +232,7 @@ function ExportPopover({
 
 									<Section collapsible defaultOpen={false}>
 										<SectionHeader>
-											<SectionTitle>Quality</SectionTitle>
+											<SectionTitle>{t("export.quality")}</SectionTitle>
 										</SectionHeader>
 										<SectionContent>
 											<RadioGroup
@@ -241,20 +245,20 @@ function ExportPopover({
 											>
 												<div className="flex items-center space-x-2">
 													<RadioGroupItem value="low" id="low" />
-													<Label htmlFor="low">Low - Smallest file size</Label>
+													<Label htmlFor="low">{t("export.low")}</Label>
 												</div>
 												<div className="flex items-center space-x-2">
 													<RadioGroupItem value="medium" id="medium" />
-													<Label htmlFor="medium">Medium - Balanced</Label>
+													<Label htmlFor="medium">{t("export.medium")}</Label>
 												</div>
 												<div className="flex items-center space-x-2">
 													<RadioGroupItem value="high" id="high" />
-													<Label htmlFor="high">High - Recommended</Label>
+													<Label htmlFor="high">{t("export.high")}</Label>
 												</div>
 												<div className="flex items-center space-x-2">
 													<RadioGroupItem value="very_high" id="very_high" />
 													<Label htmlFor="very_high">
-														Very high - Largest file size
+														{t("export.veryHigh")}
 													</Label>
 												</div>
 											</RadioGroup>
@@ -263,7 +267,7 @@ function ExportPopover({
 
 									<Section collapsible defaultOpen={false}>
 										<SectionHeader>
-											<SectionTitle>Audio</SectionTitle>
+											<SectionTitle>{t("export.audio")}</SectionTitle>
 										</SectionHeader>
 										<SectionContent>
 											<div className="flex items-center space-x-2">
@@ -275,7 +279,7 @@ function ExportPopover({
 													}
 												/>
 												<Label htmlFor="include-audio">
-													Include audio in export
+													{t("export.includeAudio")}
 												</Label>
 											</div>
 										</SectionContent>
@@ -285,7 +289,7 @@ function ExportPopover({
 								<div className="flex flex-col gap-2 p-3 pt-0">
 									{otherExportRunning && (
 										<p className="text-muted-foreground text-xs">
-											A video for the agent is exporting. Export again when it is done.
+											{t("export.otherRunning")}
 										</p>
 									)}
 									<Button
@@ -294,7 +298,7 @@ function ExportPopover({
 										disabled={otherExportRunning}
 									>
 										<Download className="size-4" />
-										Export
+										{t("export.action")}
 									</Button>
 								</div>
 							</>
@@ -317,7 +321,7 @@ function ExportPopover({
 									className="w-full rounded-md"
 									onClick={handleCancel}
 								>
-									Cancel
+									{t("common.cancel")}
 								</Button>
 							</div>
 						)}
@@ -341,8 +345,9 @@ function ExportError({
 	onBack: () => void;
 	onAllowMissing: () => void;
 }) {
+	const { t } = useI18n();
 	const [copied, setCopied] = useState(false);
-	const error = result.error || "Unknown error occurred";
+	const error = result.error || t("export.unknownError");
 	const missingMedia = result.missingMedia ?? [];
 
 	const handleCopy = async () => {
@@ -354,8 +359,8 @@ function ExportError({
 	return (
 		<div className="space-y-4 p-3">
 			<div className="flex flex-col gap-1.5">
-				<p className="text-destructive text-sm font-medium">Export failed</p>
-				<p className="text-muted-foreground text-xs">{error}</p>
+				<p className="text-destructive text-sm font-medium">{t("export.failed")}</p>
+				<p className="text-muted-foreground break-words text-xs">{getExportErrorMessage(result, t)}</p>
 				{missingMedia.length > 0 && (
 					<ul className="text-muted-foreground max-h-24 list-disc space-y-1 overflow-y-auto pl-4 text-xs">
 						{missingMedia.map(({ id, name }) => <li key={id}>{name}</li>)}
@@ -371,7 +376,7 @@ function ExportError({
 					onClick={handleCopy}
 				>
 					{copied ? <Check className="text-constructive" /> : <Copy />}
-					Copy
+					{t("export.copy")}
 				</Button>
 				<Button
 					variant="outline"
@@ -381,15 +386,15 @@ function ExportError({
 					disabled={isRetrying}
 				>
 					<RotateCcw />
-					{isRetrying ? "Retrying…" : "Retry"}
+					{t(isRetrying ? "export.retrying" : "export.retry")}
 				</Button>
 			</div>
 			<Button variant="outline" size="sm" className="w-full text-xs" onClick={onBack}>
-				Change export settings
+				{t("export.changeSettings")}
 			</Button>
 			{missingMedia.length > 0 && (
-				<Button variant="outline" size="sm" className="w-full text-xs" onClick={onAllowMissing} disabled={isRetrying}>
-					Export without missing media
+				<Button variant="outline" size="sm" className="h-auto min-h-9 w-full whitespace-normal text-xs" onClick={onAllowMissing} disabled={isRetrying}>
+					{t("export.allowMissing")}
 				</Button>
 			)}
 		</div>

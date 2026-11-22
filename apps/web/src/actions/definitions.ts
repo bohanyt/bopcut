@@ -1,3 +1,4 @@
+import { en } from "@/i18n/en";
 import type { ShortcutKey } from "@/actions/keybinding";
 import type { TActionWithOptionalArgs } from "./types";
 
@@ -23,140 +24,140 @@ export interface TActionDefinition extends TActionBaseDefinition {
 
 export const ACTIONS = {
 	"toggle-play": {
-		description: "Play/Pause",
+		description: en["shortcuts.action.toggle-play"],
 		category: "playback",
 	},
 	"stop-playback": {
-		description: "Stop playback",
+		description: en["shortcuts.action.stop-playback"],
 		category: "playback",
 	},
 	"seek-forward": {
-		description: "Seek forward 1 second",
+		description: en["shortcuts.action.seek-forward"],
 		category: "playback",
 		args: { seconds: "number" },
 	},
 	"seek-backward": {
-		description: "Seek backward 1 second",
+		description: en["shortcuts.action.seek-backward"],
 		category: "playback",
 		args: { seconds: "number" },
 	},
 	"frame-step-forward": {
-		description: "Frame step forward",
+		description: en["shortcuts.action.frame-step-forward"],
 		category: "navigation",
 	},
 	"frame-step-backward": {
-		description: "Frame step backward",
+		description: en["shortcuts.action.frame-step-backward"],
 		category: "navigation",
 	},
 	"jump-forward": {
-		description: "Jump forward 5 seconds",
+		description: en["shortcuts.action.jump-forward"],
 		category: "navigation",
 		args: { seconds: "number" },
 	},
 	"jump-backward": {
-		description: "Jump backward 5 seconds",
+		description: en["shortcuts.action.jump-backward"],
 		category: "navigation",
 		args: { seconds: "number" },
 	},
 	"goto-start": {
-		description: "Go to timeline start",
+		description: en["shortcuts.action.goto-start"],
 		category: "navigation",
 	},
 	"goto-end": {
-		description: "Go to timeline end",
+		description: en["shortcuts.action.goto-end"],
 		category: "navigation",
 	},
 	split: {
-		description: "Split elements at playhead",
+		description: en["shortcuts.action.split"],
 		category: "editing",
 	},
 	"split-left": {
-		description: "Split and remove left",
+		description: en["shortcuts.action.split-left"],
 		category: "editing",
 	},
 	"split-right": {
-		description: "Split and remove right",
+		description: en["shortcuts.action.split-right"],
 		category: "editing",
 	},
 	"delete-selected": {
-		description: "Delete current selection",
+		description: en["shortcuts.action.delete-selected"],
 		category: "editing",
 	},
 	"copy-selected": {
-		description: "Copy selected elements",
+		description: en["shortcuts.action.copy-selected"],
 		category: "editing",
 	},
 	"paste-copied": {
-		description: "Paste elements at playhead",
+		description: en["shortcuts.action.paste-copied"],
 		category: "editing",
 	},
 	"toggle-snapping": {
-		description: "Toggle snapping",
+		description: en["shortcuts.action.toggle-snapping"],
 		category: "editing",
 	},
 	"toggle-ripple-editing": {
-		description: "Toggle ripple editing",
+		description: en["shortcuts.action.toggle-ripple-editing"],
 		category: "editing",
 	},
 	"toggle-source-audio": {
-		description: "Extract or recover source audio",
+		description: en["shortcuts.action.toggle-source-audio"],
 		category: "editing",
 	},
 	"select-all": {
-		description: "Select all elements",
+		description: en["shortcuts.action.select-all"],
 		category: "selection",
 	},
 	"cancel-interaction": {
-		description: "Cancel current interaction",
+		description: en["shortcuts.action.cancel-interaction"],
 		category: "controls",
 	},
 	"deselect-all": {
-		description: "Deselect all elements",
+		description: en["shortcuts.action.deselect-all"],
 		category: "selection",
 	},
 	"duplicate-selected": {
-		description: "Duplicate selected element",
+		description: en["shortcuts.action.duplicate-selected"],
 		category: "selection",
 	},
 	"toggle-elements-muted-selected": {
-		description: "Mute/unmute selected elements",
+		description: en["shortcuts.action.toggle-elements-muted-selected"],
 		category: "selection",
 	},
 	"toggle-elements-visibility-selected": {
-		description: "Show/hide selected elements",
+		description: en["shortcuts.action.toggle-elements-visibility-selected"],
 		category: "selection",
 	},
 	"create-compound": {
-		description: "Create compound clip from selection",
+		description: en["shortcuts.action.create-compound"],
 		category: "editing",
 	},
 	"break-apart-compound": {
-		description: "Break apart compound clip",
+		description: en["shortcuts.action.break-apart-compound"],
 		category: "editing",
 	},
 	"exit-compound": {
-		description: "Leave compound clip (back to parent)",
+		description: en["shortcuts.action.exit-compound"],
 		category: "navigation",
 	},
 	"toggle-bookmark": {
-		description: "Toggle bookmark at playhead",
+		description: en["shortcuts.action.toggle-bookmark"],
 		category: "timeline",
 	},
 	undo: {
-		description: "Undo",
+		description: en["shortcuts.action.undo"],
 		category: "history",
 	},
 	redo: {
-		description: "Redo",
+		description: en["shortcuts.action.redo"],
 		category: "history",
 	},
 	"remove-media-asset": {
-		description: "Remove media asset",
+		description: en["shortcuts.action.remove-media-asset"],
 		category: "assets",
 		args: { projectId: "string", assetId: "string" },
 	},
 	"remove-media-assets": {
-		description: "Remove media assets",
+		description: en["shortcuts.action.remove-media-assets"],
 		category: "assets",
 		args: { projectId: "string", assetIds: "string[]" },
 	},

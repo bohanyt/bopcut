@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/provider";
 import {
 	type ComponentProps,
 	forwardRef,
@@ -78,6 +79,7 @@ function ColorPickerContent({
 	side = "left",
 	align = "center",
 }: ColorPickerContentProps) {
+	const { t } = useI18n();
 	const drag = useRef<{ target: HTMLButtonElement; cancel: () => void } | null>(null);
 	const [internalHue, setInternalHue] = useState(0);
 	const [inputValue, setInputValue] = useState(value);
@@ -242,11 +244,11 @@ function ColorPickerContent({
 			<header className="border-b flex justify-between items-center pb-2 px-2">
 				<Select defaultValue="custom">
 					<SelectTrigger variant="outline">
-						<SelectValue placeholder="Select a mode" />
+						<SelectValue placeholder={t("settings.colorMode")} />
 					</SelectTrigger>
 					<SelectContent position="popper">
-						<SelectItem value="custom">Custom</SelectItem>
-						<SelectItem value="saved">Saved</SelectItem>
+						<SelectItem value="custom">{t("common.custom")}</SelectItem>
+						<SelectItem value="saved">{t("settings.savedColors")}</SelectItem>
 					</SelectContent>
 				</Select>
 				<div>

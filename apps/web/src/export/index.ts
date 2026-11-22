@@ -1,4 +1,5 @@
 import type { FrameRate } from "opencut-wasm";
+import type { CanvasSizeIssue } from "@/services/renderer/renderer-device";
 import type { MediaLoadFailure } from "@/media/types";
 import { EXPORT_MIME_TYPES } from "./mime-types";
 
@@ -25,10 +26,16 @@ export interface ExportOptions {
 	sceneId?: string;
 }
 
+export type ExportIssue =
+	| CanvasSizeIssue
+	| { kind: "evenDimensions"; width: number; height: number }
+	| { kind: "alreadyRunning" | "empty" | "sceneNotFound" | "noProject" | "noBuffer" };
+
 export interface ExportResult {
 	success: boolean;
 	buffer?: ArrayBuffer;
 	error?: string;
+	issue?: ExportIssue;
 	missingMedia?: MediaLoadFailure[];
 	cancelled?: boolean;
 }

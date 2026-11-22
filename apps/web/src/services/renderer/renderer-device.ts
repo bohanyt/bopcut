@@ -2,6 +2,7 @@ import { getGpuWebGlCanvas, getMaxTextureDimension2D, initializeGpu, resetGpu } 
 import { DeviceLifecycle, GraphicsDeviceError } from "./device-lifecycle";
 import { wasmCompositor } from "./compositor/wasm-compositor";
 import { isValidCanvasSize } from "@/canvas/sizes";
+import type { TCanvasSize } from "@/project/types";
 
 let gl: WebGL2RenderingContext | null = null;
 let detachContextListener: (() => void) | undefined;
@@ -60,13 +61,28 @@ export function getRendererLimits() {
 	return rendererDevice.status.state === "ready" ? limits : noLimits;
 }
 
-export function canvasSizeError({ width, height }: { width: number; height: number }, max = getRendererLimits().maxSurfaceDimension): string | undefined {
-	if (!isValidCanvasSize({ width, height })) {
+export type CanvasSizeIssue =
+	| { kind: "canvasInvalid" }
+	| { kind: "canvasOverLimit"; width: number; height: number; max: number };
+
+export function getCanvasSizeIssue({ width, height }: TCanvasSize, max = getRendererLimits().maxSurfaceDimension): CanvasSizeIssue | undefined {
+	if (!isValidCanvasSize({ width, height })) return { kind: "canvasInvalid" };
+	if (max !== undefined && Math.max(width, height) > max) {
+		return { kind: "canvasOverLimit", width, height, max };
+	}
+}
+
+export function canvasSizeError(size: TCanvasSize, max?: number): string | undefined {
+	const issue = getCanvasSizeIssue(size, max);
+	return issue && describeCanvasSizeIssue(issue);
+}
+
+export function describeCanvasSizeIssue(issue: CanvasSizeIssue): string {
+	if (issue.kind === "canvasInvalid") {
 		return "Canvas width and height must be positive whole numbers.";
 	}
-	if (max !== undefined && Math.max(width, height) > max) {
-		return `The ${width} × ${height} canvas exceeds this graphics device’s limit of ${max} pixels per side. Reduce the canvas size in Project Settings.`;
-	}
+	const { width, height, max } = issue;
+	return `The ${width} × ${height} canvas exceeds this graphics device’s limit of ${max} pixels per side. Reduce the canvas size in Project Settings.`;
 }
 
 export function isGraphicsInitializing(): boolean {

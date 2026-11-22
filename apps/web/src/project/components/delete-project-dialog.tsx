@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/provider";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -22,6 +23,7 @@ export function DeleteProjectDialog({
 	onConfirm: () => void;
 	projectNames: string[];
 }) {
+	const { t } = useI18n();
 	const count = projectNames.length;
 	const isSingle = count === 1;
 	const singleName = isSingle ? projectNames[0] : null;
@@ -35,32 +37,24 @@ export function DeleteProjectDialog({
 				}}
 			>
 				<DialogHeader>
-					<DialogTitle>
-						{singleName ? (
-							<>
-								{"Delete '"}
-								<span className="inline-block max-w-[300px] truncate align-bottom">
-									{singleName}
-								</span>
-								{"'?"}
-							</>
-						) : (
-							`Delete ${count} projects?`
-						)}
+					<DialogTitle className="min-w-0 break-words pr-6">
+						{singleName
+							? t("projects.deleteNamed", { name: singleName })
+							: t("projects.deleteMultiple", { count })}
 					</DialogTitle>
 				</DialogHeader>
 				<DialogBody>
 					<Alert variant="destructive">
-						<AlertTitle>Warning</AlertTitle>
-						<AlertDescription>
-							This will permanently delete{" "}
-							{singleName ? `"${singleName}"` : `${count} projects`} and all
-							associated files.
+						<AlertTitle>{t("projects.warning")}</AlertTitle>
+						<AlertDescription className="break-words">
+							{singleName
+								? t("projects.deleteNamedWarning", { name: singleName })
+								: t("projects.deleteMultipleWarning", { count })}
 						</AlertDescription>
 					</Alert>
 					<div className="flex flex-col gap-3">
 						<Label className="text-xs font-semibold text-slate-500">
-							Type "DELETE" to confirm
+							{t("projects.confirmDelete", { keyword: "DELETE" })}
 						</Label>
 						<Input
 							type="text"
@@ -72,10 +66,10 @@ export function DeleteProjectDialog({
 				</DialogBody>
 				<DialogFooter>
 					<Button variant="outline" onClick={() => onOpenChange(false)}>
-						Cancel
+						{t("common.cancel")}
 					</Button>
 					<Button variant="destructive" onClick={onConfirm}>
-						Delete project
+						{t("projects.deleteProject")}
 					</Button>
 				</DialogFooter>
 			</DialogContent>
