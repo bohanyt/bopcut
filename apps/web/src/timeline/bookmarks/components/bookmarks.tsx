@@ -363,7 +363,7 @@ function BookmarkPopoverContent({
 				<div className="relative">
 					<ColorPicker
 						beginDragGesture={editor.timeline.beginPreviewGesture}
-						onDragCancel={() => setDraftColorHex(committedColor)}
+						onDragCancel={(color) => setDraftColorHex(uppercase({ string: color }))}
 						value={uppercase({ string: draftColorHex })}
 						onChange={(color) => setDraftColorHex(uppercase({ string: color }))}
 						onChangeEnd={(color) =>

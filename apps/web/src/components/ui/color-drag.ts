@@ -1,28 +1,39 @@
 import type { TimelineManager } from "@/core/managers/timeline-manager";
+import { finishFocusedField } from "@/utils/browser";
+
+export interface ColorDragBaseline {
+	color: string;
+	restore?: () => void;
+}
+
+type ColorDragPoint = Pick<PointerEvent, "clientX" | "clientY">;
 
 export function startColorDrag({
 	target,
 	startEvent,
-	getColor,
+	readBaseline,
+	createColorReader,
 	onPreview,
 	onCommit,
 	onEnd,
 	beginGesture,
 }: {
 	target: HTMLButtonElement;
-	startEvent: Pick<PointerEvent, "pointerId" | "clientX" | "clientY">;
-	getColor: (point: Pick<PointerEvent, "clientX" | "clientY">) => string | null;
+	startEvent: ColorDragPoint & Pick<PointerEvent, "pointerId">;
+	readBaseline: () => ColorDragBaseline;
+	createColorReader: (color: string) => (point: ColorDragPoint) => string | null;
 	onPreview?: (color: string) => void;
 	onCommit?: (color: string) => void;
-	onEnd: (canceled: boolean, previewed: boolean) => void;
+	onEnd: (canceled: boolean) => void;
 	beginGesture?: TimelineManager["beginPreviewGesture"];
 }): () => void {
+	finishFocusedField(target);
 	const { pointerId } = startEvent;
 	const view = target.ownerDocument.defaultView;
 	let active = true;
 	let latestColor: string | null = null;
 
-	function move(point: Pick<PointerEvent, "clientX" | "clientY">) {
+	function move(point: ColorDragPoint) {
 		const color = getColor(point);
 		if (color === null) return;
 		latestColor = color;
@@ -41,8 +52,10 @@ export function startColorDrag({
 		const color = latestColor;
 		latestColor = null;
 		if (!canceled) owner?.finish();
-		onEnd(canceled, color !== null);
-		if (!canceled && color !== null) onCommit?.(color);
+		onEnd(canceled);
+		if (color === null) return;
+		if (canceled) restore?.();
+		else onCommit?.(color);
 	}
 
 	function cancel() {
@@ -63,6 +76,8 @@ export function startColorDrag({
 	}
 
 	const owner = beginGesture?.(() => finish(true));
+	const { color: baseline, restore } = readBaseline();
+	const getColor = createColorReader(baseline);
 	target.addEventListener("pointermove", handleMove);
 	target.addEventListener("pointerup", handleUp);
 	target.addEventListener("pointercancel", handleCancel);

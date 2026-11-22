@@ -9,6 +9,7 @@ import { cancelInteraction } from "@/editor/cancel-interaction";
 import { PreviewInteractionController } from "@/preview/controllers/preview-interaction-controller";
 import { ElementInteractionController } from "@/timeline/controllers/element-interaction-controller";
 import { startColorDrag } from "@/components/ui/color-drag";
+import { appendAlpha, parseHexAlpha } from "@/utils/color";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { allElements, allTracks, fixture, getHost, refs, t, video } from "./compound-fixtures";
 
@@ -500,7 +501,8 @@ describe("preview gesture history boundaries", () => {
 		const start = () => startColorDrag({
 			target: target as unknown as HTMLButtonElement,
 			startEvent: { pointerId: 1, clientX: 0, clientY: 0 },
-			getColor: ({ clientX }) => clientX ? "00ff00" : "ff0000",
+			readBaseline: () => ({ color: "ff0000" }),
+			createColorReader: (color) => ({ clientX }) => clientX ? "00ff00" : color,
 			onPreview: (color) => editor.timeline.previewElements({
 				updates: [{ ...first, updates: { params: { color } } }],
 			}),
@@ -533,6 +535,62 @@ describe("preview gesture history boundaries", () => {
 		expect(captured).toBe(false);
 		expect(commits).toBe(1);
 		expect(main()[0].params.color).toBe("00ff00");
+	});
+
+	test("opacity drag previews and restores the background committed on blur", async () => {
+		const { editor } = setupSplitHistory();
+		const original = { type: "color", color: "#112233" } as const;
+		const typed = { type: "color", color: "#2266aa" } as const;
+		await editor.project.updateSettings({ settings: { background: original }, pushHistory: false });
+		const doc = {
+			defaultView: new EventTarget(),
+			activeElement: {
+				tagName: "INPUT",
+				blur() {
+					void editor.project.updateSettings({ settings: { background: typed } });
+				},
+			},
+		};
+		const target = Object.assign(new EventTarget(), {
+			ownerDocument: doc,
+			setPointerCapture: () => {},
+			hasPointerCapture: () => false,
+		});
+		let commits = 0;
+		startColorDrag({
+			target: target as unknown as HTMLButtonElement,
+			startEvent: { pointerId: 1, clientX: 0, clientY: 0 },
+			readBaseline: () => {
+				const { background } = editor.project.getActive().settings;
+				if (background.type !== "color") throw new Error("Expected a color background");
+				return {
+					color: background.color.slice(1),
+					restore: () => {
+						void editor.project.updateSettings({ settings: { background }, pushHistory: false });
+					},
+				};
+			},
+			createColorReader: (color) => {
+				const { rgb } = parseHexAlpha({ hex: color });
+				return () => appendAlpha({ rgbHex: rgb, alpha: 0.5 });
+			},
+			onPreview: (color) => {
+				void editor.project.updateSettings({
+					settings: { background: { type: "color", color: `#${color}` } },
+					pushHistory: false,
+				});
+			},
+			onCommit: () => { commits++; },
+			onEnd: () => {},
+			beginGesture: editor.timeline.beginPreviewGesture,
+		});
+		expect(editor.project.getActive().settings.background).toEqual({ type: "color", color: "#2266aa80" });
+		expect(cancelInteraction()).toBe(true);
+		target.dispatchEvent(Object.assign(new Event("pointerup"), { pointerId: 1 }));
+		expect(editor.project.getActive().settings.background).toEqual(typed);
+		expect(commits).toBe(0);
+		editor.command.undo();
+		expect(editor.project.getActive().settings.background).toEqual(original);
 	});
 });
 

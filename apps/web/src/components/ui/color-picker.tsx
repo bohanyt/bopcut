@@ -8,8 +8,8 @@ import {
 	useState,
 } from "react";
 import type { TimelineManager } from "@/core/managers/timeline-manager";
-import { finishFocusedField } from "@/utils/browser";
-import { startColorDrag } from "./color-drag";
+import { useCommittedRef } from "@/hooks/use-committed-ref";
+import { startColorDrag, type ColorDragBaseline } from "./color-drag";
 import { cn } from "@/utils/ui";
 import { Input } from "./input";
 import {
@@ -53,12 +53,18 @@ const CHECKERBOARD_STYLE = {
 
 type ColorDragControl = "saturation" | "hue" | "opacity";
 
+function getDisplayHue(hue: number, saturation: number, internalHue: number): number {
+	const hueDiff = Math.abs(hue - internalHue);
+	const isSameHueWrapped = hueDiff < 1 || Math.abs(hueDiff - 360) < 1;
+	return saturation === 0 || isSameHueWrapped ? internalHue : hue;
+}
+
 interface ColorPickerContentProps {
 	value?: string;
 	onChange?: (value: string) => void;
 	onChangeEnd?: (value: string) => void;
 	beginDragGesture?: TimelineManager["beginPreviewGesture"];
-	onDragCancel?: () => void;
+	readDragBaseline: () => ColorDragBaseline;
 	side?: ComponentProps<typeof PopoverContent>["side"];
 	align?: ComponentProps<typeof PopoverContent>["align"];
 }
@@ -68,7 +74,7 @@ function ColorPickerContent({
 	onChange,
 	onChangeEnd,
 	beginDragGesture,
-	onDragCancel,
+	readDragBaseline,
 	side = "left",
 	align = "center",
 }: ColorPickerContentProps) {
@@ -93,9 +99,7 @@ function ColorPickerContent({
 	const { rgb: rgbValue, alpha } = parseHexAlpha({ hex: value });
 	const [h, s, v] = hexToHsv({ hex: rgbValue });
 
-	const hueDiff = Math.abs(h - internalHue);
-	const isSameHueWrapped = hueDiff < 1 || Math.abs(hueDiff - 360) < 1;
-	const displayHue = s === 0 || isSameHueWrapped ? internalHue : h;
+	const displayHue = getDisplayHue(h, s, internalHue);
 
 	useEffect(() => {
 		setInputValue(formatColorValue({ hex: value, format: colorFormat }));
@@ -121,36 +125,39 @@ function ColorPickerContent({
 		if (event.button !== 0 || !event.isPrimary || drag.current) return;
 		event.preventDefault();
 		const target = event.currentTarget;
-		finishFocusedField(target);
 
 		const cancel = startColorDrag({
 			target,
 			startEvent: event,
 			beginGesture: beginDragGesture,
-			getColor: ({ clientX, clientY }) => {
-				const rect = target.getBoundingClientRect();
-				const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-				switch (control) {
-					case "saturation": {
-						const y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
-						return appendAlpha({ rgbHex: hsvToHex({ h: displayHue, s: x, v: 1 - y }), alpha });
+			readBaseline: readDragBaseline,
+			createColorReader: (baseColor) => {
+				const { rgb, alpha } = parseHexAlpha({ hex: baseColor });
+				const [h, s, v] = hexToHsv({ hex: rgb });
+				const baselineHue = getDisplayHue(h, s, internalHue);
+				return ({ clientX, clientY }) => {
+					const rect = target.getBoundingClientRect();
+					const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+					switch (control) {
+						case "saturation": {
+							const y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+							return appendAlpha({ rgbHex: hsvToHex({ h: baselineHue, s: x, v: 1 - y }), alpha });
+						}
+						case "hue": {
+							const hue = x * 360;
+							setInternalHue(hue);
+							return s > 0 ? appendAlpha({ rgbHex: hsvToHex({ h: hue, s, v }), alpha }) : null;
+						}
+						case "opacity":
+							return appendAlpha({ rgbHex: rgb, alpha: x });
 					}
-					case "hue": {
-						const hue = x * 360;
-						setInternalHue(hue);
-						return s > 0 ? appendAlpha({ rgbHex: hsvToHex({ h: hue, s, v }), alpha }) : null;
-					}
-					case "opacity":
-						return appendAlpha({ rgbHex: rgbValue, alpha: x });
-				}
+				};
 			},
 			onPreview: onChange,
 			onCommit: onChangeEnd,
-			onEnd: (canceled, previewed) => {
+			onEnd: (canceled) => {
 				drag.current = null;
-				if (!canceled) return;
-				if (control === "hue") setInternalHue(internalHue);
-				if (previewed) onDragCancel?.();
+				if (canceled && control === "hue") setInternalHue(internalHue);
 			},
 		});
 		drag.current = { target, cancel };
@@ -354,7 +361,7 @@ interface ColorPickerProps {
 	onChange?: (value: string) => void;
 	onChangeEnd?: (value: string) => void;
 	beginDragGesture?: TimelineManager["beginPreviewGesture"];
-	onDragCancel?: () => void;
+	onDragCancel?: (baselineColor: string) => void;
 	className?: string;
 	contentSide?: ComponentProps<typeof PopoverContent>["side"];
 	contentAlign?: ComponentProps<typeof PopoverContent>["align"];
@@ -378,6 +385,11 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 		const { alpha } = parseHexAlpha({ hex: value });
 
 		const [inputValue, setInputValue] = useState(value);
+		const committedColor = useCommittedRef(value);
+		const commitColor = (hex: string) => {
+			committedColor.current = hex;
+			onChangeEnd?.(hex);
+		};
 
 		useEffect(() => {
 			setInputValue(value);
@@ -389,7 +401,7 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 			if (parsed) {
 				const nextHex = appendAlpha({ rgbHex: parsed, alpha });
 				onChange?.(nextHex);
-				onChangeEnd?.(nextHex);
+				commitColor(nextHex);
 				return;
 			}
 			const extracted = extractColorFromText({ text: input });
@@ -399,7 +411,7 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 					? extracted
 					: appendAlpha({ rgbHex: extracted, alpha });
 				onChange?.(finalHex);
-				onChangeEnd?.(finalHex);
+				commitColor(finalHex);
 			}
 		};
 
@@ -428,7 +440,7 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 				? extractedHex
 				: appendAlpha({ rgbHex: extractedHex, alpha });
 			onChange?.(finalHex);
-			onChangeEnd?.(finalHex);
+			commitColor(finalHex);
 		};
 
 		return (
@@ -472,9 +484,12 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 				<ColorPickerContent
 					value={value}
 					onChange={onChange}
-					onChangeEnd={onChangeEnd}
+					onChangeEnd={commitColor}
 					beginDragGesture={beginDragGesture}
-					onDragCancel={onDragCancel}
+					readDragBaseline={() => {
+						const color = committedColor.current;
+						return { color, restore: () => onDragCancel?.(color) };
+					}}
 					side={contentSide}
 					align={contentAlign}
 				/>

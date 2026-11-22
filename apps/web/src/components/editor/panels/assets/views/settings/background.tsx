@@ -143,15 +143,30 @@ function CustomColorPreview({
 	isSelected,
 	onPreview,
 	onCommit,
-	onCancel,
 }: {
 	currentBackgroundColor: string;
 	isSelected: boolean;
 	onPreview: (color: string) => void;
 	onCommit: (color: string) => void;
-	onCancel: () => void;
 }) {
-	const { timeline } = useEditor();
+	const editor = useEditor();
+	const readDragBaseline = () => {
+		// The picker blurs its text input first, which can commit a different background.
+		const project = editor.project.getActive();
+		if (!project) return { color: currentBackgroundColor.replace(/^#/, "") };
+		const { background } = project.settings;
+		const color = background.type === "color" ? background.color : DEFAULT_BACKGROUND_COLOR;
+		return {
+			color: color.replace(/^#/, ""),
+			restore: () => {
+				if (editor.project.getActive()?.metadata.id !== project.metadata.id) return;
+				void editor.project.updateSettings({
+					settings: { background },
+					pushHistory: false,
+				});
+			},
+		};
+	};
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
@@ -174,8 +189,8 @@ function CustomColorPreview({
 				</button>
 			</PopoverTrigger>
 			<ColorPickerContent
-				beginDragGesture={timeline.beginPreviewGesture}
-				onDragCancel={onCancel}
+				beginDragGesture={editor.timeline.beginPreviewGesture}
+				readDragBaseline={readDragBaseline}
 				value={currentBackgroundColor.replace(/^#/, "").toUpperCase()}
 				onChange={(color) => onPreview(`#${color}`)}
 				onChangeEnd={(color) => onCommit(`#${color}`)}
@@ -292,13 +307,6 @@ export function BackgroundContent() {
 									isSelected={isColorBackground && !hasPresetColorMatch}
 									onPreview={previewBackgroundColor}
 									onCommit={commitBackgroundColor}
-									onCancel={() => {
-										if (editor.project.getActive()?.metadata.id !== activeProject.metadata.id) return;
-										void editor.project.updateSettings({
-											settings: { background: activeProject.settings.background },
-											pushHistory: false,
-										});
-									}}
 								/>
 							) : null}
 							<BackgroundPreviews
