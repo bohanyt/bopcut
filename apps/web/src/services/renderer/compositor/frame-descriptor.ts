@@ -4,7 +4,7 @@ import { incrementCounter } from "@/diagnostics/render-perf";
 import type { AnyBaseNode } from "../nodes/base-node";
 import type { CanvasRenderer } from "../canvas-renderer";
 import { createCanvasSurface } from "../canvas-utils";
-import { scaleQuad } from "../scale";
+import { fitSurfaceSize, scaleQuad } from "../scale";
 import { BlurBackgroundNode } from "../nodes/blur-background-node";
 import { ColorNode } from "../nodes/color-node";
 import { EffectLayerNode } from "../nodes/effect-layer-node";
@@ -33,7 +33,7 @@ import type {
 	TextureUploadDescriptor,
 } from "./types";
 import { DEFAULT_GRAPHIC_SOURCE_SIZE } from "@/graphics";
-import { checkGraphicsContext } from "../renderer-device";
+import { checkGraphicsContext, getRendererLimits } from "../renderer-device";
 
 export async function buildFrameDescriptor({
 	node,
@@ -272,30 +272,26 @@ async function collectVisualSourceNode({
 	// Rasterize vector graphics at the actual output size, rather than enlarging a fixed texture.
 	const graphic = node instanceof GraphicNode;
 	const vectorIcon = graphic && node.params.definitionId === "icon";
-	const width = graphic
-		? Math.max(
-				1,
-				Math.ceil(
-					vectorIcon ? transform.width : sourceWidth * renderer.renderScale,
-				),
-			)
-		: node instanceof VideoNode ? node.resolved.source.width : sourceWidth;
-	const height = graphic
-		? Math.max(
-				1,
-				Math.ceil(
-					vectorIcon ? transform.height : sourceHeight * renderer.renderScale,
-				),
-			)
-		: node instanceof VideoNode ? node.resolved.source.height : sourceHeight;
+	const logicalWidth = vectorIcon ? Math.max(1, Math.ceil(transform.width)) : sourceWidth;
+	const logicalHeight = vectorIcon ? Math.max(1, Math.ceil(transform.height)) : sourceHeight;
+	const { maxTextureDimension } = getRendererLimits();
+	const { width, height } = graphic
+		? fitSurfaceSize(
+			vectorIcon ? logicalWidth : Math.ceil(sourceWidth * renderer.renderScale),
+			vectorIcon ? logicalHeight : Math.ceil(sourceHeight * renderer.renderScale),
+			Math.min(maxTextureDimension ?? Infinity, Math.max(renderer.outputWidth, renderer.outputHeight)),
+		)
+		: node instanceof VideoNode || node instanceof ImageNode
+			? { width: node.resolved.source.width, height: node.resolved.source.height }
+			: { width: sourceWidth, height: sourceHeight };
 	const source =
 		node instanceof GraphicNode
 			? node.getSource({
 					resolvedParams: node.resolved.resolvedParams,
 					width,
 					height,
-					logicalWidth: vectorIcon ? width : sourceWidth,
-					logicalHeight: vectorIcon ? height : sourceHeight,
+					logicalWidth,
+					logicalHeight,
 				})
 			: node.resolved.source;
 	if (!source) return;
@@ -375,7 +371,10 @@ async function collectCompoundNode({
 	const { outputWidth: width, outputHeight: height } = renderer;
 	if (signal) checkGraphicsContext();
 	wasmCompositor.ensureInitialized({ width, height });
-	wasmCompositor.syncTextures(nestedTextures, { releaseUnused: false });
+	wasmCompositor.syncTextures(nestedTextures, {
+		releaseUnused: false,
+		maxTextureDimension: getRendererLimits().maxTextureDimension,
+	});
 	const source = wasmCompositor.renderToTransparentCanvas(frame);
 
 	const textureId = `${contentPath}:source`;
@@ -550,15 +549,20 @@ function buildMaskArtifacts({
 	const maskScale = renderer.renderScale;
 	const logicalWidth = transform.width / maskScale;
 	const logicalHeight = transform.height / maskScale;
+	const elementSize = fitSurfaceSize(
+		Math.round(transform.width),
+		Math.round(transform.height),
+		canvasWidth,
+		canvasHeight,
+	);
+	const elementScaleX = logicalWidth > 0 ? elementSize.width / logicalWidth : maskScale;
+	const elementScaleY = logicalHeight > 0 ? elementSize.height / logicalHeight : maskScale;
 	const maskContentHash = `mask:${mask.type}:${JSON.stringify(mask.params)}:${transformHash(transform)}:${canvasWidth}x${canvasHeight}:body=${body.kind}:fastPath=${usesOpaqueFastPath}`;
 	const drawMask: TextureCanvasDrawFn = (ctx) => {
 		const { canvas: elementMaskCanvas, context: elementMaskCtx } =
-			createCanvasSurface({
-				width: Math.max(1, Math.round(transform.width)),
-				height: Math.max(1, Math.round(transform.height)),
-			});
+			createCanvasSurface(elementSize);
 
-		elementMaskCtx.scale(maskScale, maskScale);
+		elementMaskCtx.scale(elementScaleX, elementScaleY);
 		switch (body.kind) {
 			case "fillPath": {
 				const path2d = body.buildPath({
@@ -617,12 +621,9 @@ function buildMaskArtifacts({
 		const strokeTextureId = `${path}:mask-stroke`;
 		const strokeContentHash = `stroke:${mask.type}:${JSON.stringify(mask.params)}:${transformHash(transform)}:${canvasWidth}x${canvasHeight}:stroke=${stroke.kind}`;
 		const drawStroke: TextureCanvasDrawFn = (ctx) => {
-			const { canvas: strokeCanvas, context: strokeCtx } = createCanvasSurface({
-				width: Math.max(1, Math.round(transform.width)),
-				height: Math.max(1, Math.round(transform.height)),
-			});
+			const { canvas: strokeCanvas, context: strokeCtx } = createCanvasSurface(elementSize);
 
-			strokeCtx.scale(maskScale, maskScale);
+			strokeCtx.scale(elementScaleX, elementScaleY);
 			switch (stroke.kind) {
 				case "renderStroke":
 					stroke.renderStroke({

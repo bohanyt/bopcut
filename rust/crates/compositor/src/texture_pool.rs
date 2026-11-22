@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use gpu::{GpuContext, wgpu};
+use gpu::{GpuContext, GpuError, wgpu};
 
 type TextureKey = (u32, u32);
 
@@ -23,14 +23,13 @@ impl TexturePool {
         width: u32,
         height: u32,
         label: &'static str,
-    ) -> wgpu::Texture {
+    ) -> Result<wgpu::Texture, GpuError> {
         let key = (width, height);
-        let texture = self
-            .available
-            .get_mut(&key)
-            .and_then(Vec::pop)
-            .unwrap_or_else(|| context.create_render_texture(width, height, label));
+        let texture = match self.available.get_mut(&key).and_then(Vec::pop) {
+            Some(texture) => texture,
+            None => context.create_render_texture(width, height, label)?,
+        };
         self.in_use.push((key, texture.clone()));
-        texture
+        Ok(texture)
     }
 }

@@ -15,6 +15,16 @@ export function renderTargetSize({
 	};
 }
 
+export function fitSurfaceSize(
+	width: number,
+	height: number,
+	maxWidth: number,
+	maxHeight = maxWidth,
+) {
+	const scale = Math.min(1, maxWidth / width, maxHeight / height);
+	return renderTargetSize({ width, height, scale });
+}
+
 export function scaleQuad({
 	transform,
 	width,

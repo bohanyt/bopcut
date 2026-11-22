@@ -26,6 +26,9 @@ import {
 } from "@/timeline/placement";
 import { getTrackTypeForElement } from "@/timeline/placement/compatibility";
 import { roundMediaTime } from "@/wasm";
+import { toast } from "sonner";
+import { getRendererLimits } from "@/services/renderer/renderer-device";
+import { fitSurfaceSize } from "@/services/renderer/scale";
 
 type InsertElementPlacement =
 	| { mode: "explicit"; trackId: string }
@@ -103,7 +106,16 @@ export class InsertElementCommand extends Command {
 
 			if (asset?.width && asset?.height) {
 				this.savedSettings = { canvasSize, originalCanvasSize };
-				const nextCanvasSize = { width: asset.width, height: asset.height };
+				const { maxSurfaceDimension } = getRendererLimits();
+				const nextCanvasSize = fitSurfaceSize(asset.width, asset.height, maxSurfaceDimension ?? Infinity);
+				if (nextCanvasSize.width !== asset.width || nextCanvasSize.height !== asset.height) {
+					// Preserve MP4 compatibility when resizing an even-sized source.
+					if (asset.width % 2 === 0 && asset.height % 2 === 0) {
+						nextCanvasSize.width = Math.max(2, 2 * Math.floor(nextCanvasSize.width / 2));
+						nextCanvasSize.height = Math.max(2, 2 * Math.floor(nextCanvasSize.height / 2));
+					}
+					toast.info(`Canvas set to ${nextCanvasSize.width} × ${nextCanvasSize.height} to fit this graphics device.`);
+				}
 				const shouldSetOriginalCanvasSize =
 					!activeProject?.settings.originalCanvasSize;
 				editor.project.updateSettings({

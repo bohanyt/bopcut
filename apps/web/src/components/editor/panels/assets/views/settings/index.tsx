@@ -31,6 +31,8 @@ import { dimensionToAspectRatio } from "@/utils/geometry";
 import { formatNumberForDisplay } from "@/utils/math";
 import { OcSquarePlusIcon } from "@/components/icons";
 import type { TCanvasSize } from "@/project/types";
+import { toast } from "sonner";
+import { canvasSizeError } from "@/services/renderer/renderer-device";
 
 type SettingsView = "project-info" | "background";
 
@@ -189,25 +191,34 @@ export function SettingsView() {
 	};
 
 	const selectCustomCanvasSize = () => {
-		updateCustomCanvasSize({
-			canvasSize: lastCustomCanvasSize ?? currentCanvasSize,
-		});
+		const canvasSize = lastCustomCanvasSize ?? currentCanvasSize;
+		const error = canvasSizeError(canvasSize);
+		if (error && !areCanvasSizesEqual({ left: canvasSize, right: currentCanvasSize })) {
+			toast.error(error);
+			return;
+		}
+		updateCustomCanvasSize({ canvasSize });
+	};
+
+	const commitDimension = (dimension: keyof TCanvasSize, value: number) => {
+		const canvasSize = { ...currentCanvasSize, [dimension]: value };
+		// A saved canvas may have two oversized sides. Let each be corrected separately.
+		const error = canvasSizeError({ width: 1, height: 1, [dimension]: value });
+		if (error) {
+			toast.error(canvasSizeError(canvasSize));
+			return;
+		}
+		updateCustomCanvasSize({ canvasSize });
 	};
 
 	const widthDraft = useCanvasDimensionDraft({
 		value: currentCanvasSize.width,
-		onCommit: (width) =>
-			updateCustomCanvasSize({
-				canvasSize: { width, height: currentCanvasSize.height },
-			}),
+		onCommit: (width) => commitDimension("width", width),
 	});
 
 	const heightDraft = useCanvasDimensionDraft({
 		value: currentCanvasSize.height,
-		onCommit: (height) =>
-			updateCustomCanvasSize({
-				canvasSize: { width: currentCanvasSize.width, height },
-			}),
+		onCommit: (height) => commitDimension("height", height),
 	});
 
 	const isCustomSelected = canvasSizeMode === "custom";

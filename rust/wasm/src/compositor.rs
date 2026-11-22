@@ -31,6 +31,7 @@ pub(crate) fn reset_compositor() {
 #[wasm_bindgen(js_name = initCompositor)]
 pub fn init_compositor(width: u32, height: u32) -> Result<(), JsValue> {
     with_gpu_runtime(|gpu_runtime| {
+        gpu_runtime.context.validate_dimensions(width, height).map_err(gpu_error_to_js)?;
         // The GL context owns its surface. Only WebGPU needs a separate one.
         let canvas = if let Some(gl_canvas) = gpu_runtime.context.gl_canvas() {
             gl_canvas.clone()
@@ -93,6 +94,7 @@ fn configure_surface(
     width: u32,
     height: u32,
 ) -> Result<(), JsValue> {
+    gpu_runtime.context.validate_dimensions(width, height).map_err(gpu_error_to_js)?;
     if let Some(surface) = &runtime.surface
         && runtime.surface_size != (width, height)
     {
@@ -172,6 +174,7 @@ pub fn render_frame(options: JsValue) -> Result<(), JsValue> {
     perf::record("wasm.deserialize", perf::now_ms() - t_deserialize);
 
     with_gpu_runtime(|gpu_runtime| {
+        gpu_runtime.context.validate_dimensions(frame.width, frame.height).map_err(gpu_error_to_js)?;
         COMPOSITOR_RUNTIME.with(|runtime| {
             let mut borrow = runtime.borrow_mut();
             let Some(runtime) = borrow.as_mut() else {

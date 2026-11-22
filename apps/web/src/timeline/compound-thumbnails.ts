@@ -209,13 +209,10 @@ const loadCanvasThumbnailRenderer: LoadThumbnailRenderer = async ({
 		renderScale: Math.min(1, THUMBNAIL_HEIGHT_PX / canvasSize.height),
 		exactFrames: true,
 	});
-	const canvas = document.createElement("canvas");
-	canvas.width = renderer.outputWidth;
-	canvas.height = renderer.outputHeight;
 	return {
 		async renderAt(time) {
-			await renderer.renderToCanvas({ node: tree, time, targetCanvas: canvas });
-			return canvas.toDataURL("image/jpeg", 0.7);
+			await renderer.render({ node: tree, time });
+			return renderer.getOutputCanvas().toDataURL("image/jpeg", 0.7);
 		},
 		dispose: () => renderer.videoCache.clear(),
 	};

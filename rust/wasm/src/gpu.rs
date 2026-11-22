@@ -98,6 +98,11 @@ pub fn get_gpu_web_gl_canvas() -> Option<web_sys::HtmlCanvasElement> {
     GPU_RUNTIME.with(|runtime| runtime.borrow().as_ref()?.context.gl_canvas().cloned())
 }
 
+#[wasm_bindgen(js_name = getMaxTextureDimension2D)]
+pub fn get_max_texture_dimension_2d() -> Option<u32> {
+    GPU_RUNTIME.with(|runtime| Some(runtime.borrow().as_ref()?.context.max_texture_dimension_2d()))
+}
+
 pub(crate) fn gpu_error_to_js(error: GpuError) -> JsValue {
     match error {
         GpuError::SurfaceLost => JsValue::from_str("GPU_SURFACE_LOST"),
@@ -146,6 +151,7 @@ pub(crate) fn render_texture_to_canvas(
     width: u32,
     height: u32,
 ) -> Result<wgpu::web_sys::OffscreenCanvas, JsValue> {
+    context.validate_dimensions(width, height).map_err(gpu_error_to_js)?;
     context.check_render_result("effect rendering").map_err(gpu_error_to_js)?;
     let canvas = wgpu::web_sys::OffscreenCanvas::new(width, height)?;
     context

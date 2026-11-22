@@ -24,6 +24,8 @@ pub struct EffectPipeline {
 
 #[derive(Debug, Error)]
 pub enum EffectsError {
+    #[error(transparent)]
+    Gpu(#[from] gpu::GpuError),
     #[error("At least one effect pass is required")]
     MissingEffectPasses,
     #[error("Unknown effect shader '{shader}'")]
@@ -186,7 +188,7 @@ impl EffectPipeline {
         for pass in passes {
             let input_texture = current_texture.as_ref().unwrap_or(source);
             let output_texture =
-                context.create_render_texture(width, height, "effects-pass-output");
+                context.create_render_texture(width, height, "effects-pass-output")?;
             let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
             let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
             let texture_bind_group =

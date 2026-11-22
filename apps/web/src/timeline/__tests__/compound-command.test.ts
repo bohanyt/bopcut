@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { CompoundElement, CreateCompoundElement, TScene } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
@@ -28,6 +28,7 @@ const { InsertElementCommand, MoveElementCommand, UpdateElementsCommand } = awai
 	"@/commands/timeline"
 );
 const { CompoundCycleError, expandCompoundAudioTracks } = await import("@/timeline/compound");
+const graphics = await import("@/services/renderer/renderer-device");
 
 function setup(scenes: TScene[] = fixture()) {
 	EditorCore.reset();
@@ -332,7 +333,7 @@ describe("compound clip commands", () => {
 });
 
 describe("insertion and batch rollback", () => {
-	function emptyProject() {
+	function emptyProject({ width = 1080, height = 1920 } = {}) {
 		const scenes = fixture();
 		const host = getHost(scenes);
 		host.tracks = {
@@ -348,8 +349,8 @@ describe("insertion and batch rollback", () => {
 				type: "video",
 				file: new File([], "clip.mp4"),
 				url: "blob:clip",
-				width: 1080,
-				height: 1920,
+				width,
+				height,
 				fps: 25,
 			} as MediaAsset,
 		];
@@ -402,5 +403,25 @@ describe("insertion and batch rollback", () => {
 		expect(settingsOf(editor)).toEqual(before);
 		editor.command.redo();
 		expect(settingsOf(editor)).toEqual(after);
+	});
+
+	test("first-media auto sizing fits the device and preserves even dimensions for MP4", () => {
+		const limits = spyOn(graphics, "getRendererLimits").mockReturnValue({
+			maxTextureDimension: 8192, maxSurfaceDimension: 4096,
+		});
+		try {
+			const editor = emptyProject({ width: 9000, height: 6000 });
+			const before = settingsOf(editor);
+			editor.command.execute({ command: firstVideo() });
+			const after = settingsOf(editor);
+			expect(after.canvasSize).toEqual({ width: 4096, height: 2730 });
+			expect(after.originalCanvasSize).toEqual(after.canvasSize);
+			editor.command.undo();
+			expect(settingsOf(editor)).toEqual(before);
+			editor.command.redo();
+			expect(settingsOf(editor)).toEqual(after);
+		} finally {
+			limits.mockRestore();
+		}
 	});
 });

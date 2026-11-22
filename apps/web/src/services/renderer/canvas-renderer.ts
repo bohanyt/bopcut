@@ -6,7 +6,7 @@ import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
 import { waitWithAbort } from "@/utils/abort";
 import { VideoCache } from "@/services/video-cache/service";
-import { checkGraphicsContext, rendererDevice, rethrowGraphicsFailure } from "./renderer-device";
+import { canvasSizeError, checkGraphicsContext, getRendererLimits, rendererDevice, rethrowGraphicsFailure } from "./renderer-device";
 import {
 	measureSpanAsync,
 	measureSpanSync,
@@ -20,9 +20,11 @@ export type CanvasRendererParams = {
 	/** Preview target scale; project coordinates remain unchanged. */
 	renderScale?: number;
 	/**
-	 * Keep video textures at source resolution for exports, snapshots, and thumbnails.
+	 * Keep video textures at source resolution up to the device limit.
 	 */
 	exactFrames?: boolean;
+	/** Exports and snapshots must match the requested size. */
+	requireFullSize?: boolean;
 	strictVideoDecoding?: boolean;
 	/** Export reports source decode failures in its missing-media result. */
 	onMediaFailure?: (mediaId: string, error: unknown) => void;
@@ -35,10 +37,10 @@ export class CanvasRenderer {
 	width: number;
 	height: number;
 	fps: FrameRate;
-	renderScale: number;
-	outputWidth: number;
-	outputHeight: number;
+	private requestedScale: number;
+	private target: { width: number; height: number; scale: number };
 	private outputCanvas: HTMLCanvasElement;
+	private requireFullSize: boolean;
 
 	readonly exactFrames: boolean;
 	readonly strictVideoDecoding: boolean;
@@ -46,20 +48,39 @@ export class CanvasRenderer {
 	readonly failedMediaIds = new Set<string>();
 	readonly videoCache = new VideoCache();
 
-	constructor({ width, height, fps, renderScale = 1, exactFrames = false, strictVideoDecoding = false, onMediaFailure }: CanvasRendererParams) {
+	constructor({ width, height, fps, renderScale = 1, exactFrames = false, requireFullSize = false, strictVideoDecoding = false, onMediaFailure }: CanvasRendererParams) {
 		this.exactFrames = exactFrames;
 		this.strictVideoDecoding = strictVideoDecoding;
 		this.onMediaFailure = onMediaFailure;
 		this.width = width;
 		this.height = height;
 		this.fps = fps;
-		this.renderScale = renderScale;
-		const target = renderTargetSize({ width, height, scale: renderScale });
-		this.outputWidth = target.width;
-		this.outputHeight = target.height;
+		this.requestedScale = renderScale;
+		this.requireFullSize = requireFullSize;
+		const { maxSurfaceDimension } = getRendererLimits();
+		this.target = this.getRenderTarget(maxSurfaceDimension);
 		this.outputCanvas = document.createElement("canvas");
-		this.outputCanvas.width = this.outputWidth;
-		this.outputCanvas.height = this.outputHeight;
+		// A small target is safe even before the device starts (WebGL2 guarantees 2048).
+		if (maxSurfaceDimension !== undefined || Math.max(this.outputWidth, this.outputHeight) <= 2048) {
+			this.resizeOutputCanvas();
+		}
+	}
+
+	get renderScale() { return this.target.scale; }
+	get outputWidth() { return this.target.width; }
+	get outputHeight() { return this.target.height; }
+
+	private getRenderTarget(max = Infinity) {
+		const { width, height } = this;
+		const error = canvasSizeError({ width, height }, this.requireFullSize ? max : Infinity);
+		if (error) throw new Error(error);
+		const scale = Math.min(this.requestedScale, max / Math.max(width, height));
+		return { ...renderTargetSize({ width, height, scale }), scale };
+	}
+
+	private resizeOutputCanvas() {
+		if (this.outputCanvas.width !== this.outputWidth) this.outputCanvas.width = this.outputWidth;
+		if (this.outputCanvas.height !== this.outputHeight) this.outputCanvas.height = this.outputHeight;
 	}
 
 	getOutputCanvas(): HTMLCanvasElement {
@@ -81,6 +102,12 @@ export class CanvasRenderer {
 		signal: AbortSignal;
 		targetCanvas: HTMLCanvasElement;
 	}) {
+		const { maxSurfaceDimension, maxTextureDimension } = getRendererLimits();
+		this.target = this.getRenderTarget(maxSurfaceDimension);
+		if (targetCanvas !== this.outputCanvas) {
+			const error = canvasSizeError(targetCanvas, maxSurfaceDimension);
+			if (error) throw new Error(error);
+		}
 		await measureSpanAsync({
 			name: "resolve",
 			fn: () => resolveRenderTree({ node, renderer: this, time, signal }),
@@ -99,7 +126,7 @@ export class CanvasRenderer {
 		});
 		measureSpanSync({
 			name: "syncTextures",
-			fn: () => wasmCompositor.syncTextures(textures),
+			fn: () => wasmCompositor.syncTextures(textures, { maxTextureDimension }),
 		});
 		measureSpanSync({
 			name: "renderFrame",
@@ -108,6 +135,7 @@ export class CanvasRenderer {
 
 		// WebGL effects share the staging surface. Present and copy without yielding.
 		checkGraphicsContext();
+		if (targetCanvas === this.outputCanvas) this.resizeOutputCanvas();
 		const ctx = targetCanvas.getContext("2d");
 		if (!ctx) throw new Error("Failed to get target canvas context");
 		measureSpanSync({
