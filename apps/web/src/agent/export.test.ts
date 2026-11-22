@@ -640,6 +640,27 @@ describe("the export poller", () => {
 		});
 	});
 
+	test("a CLI export error is retried while its lease is alive", async () => {
+		await withServer({ request: null }, async () => {
+			const fetchLegacy = globalThis.fetch;
+			let attempts = 0;
+			const fetchCli = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+				const url = String(input);
+				if (url.includes("action=watch")) return new Promise<Response>(() => {});
+				if (url.includes("action=export-result")) return Promise.resolve(new Response(null, { status: ++attempts === 1 ? 500 : 200 }));
+				return fetchLegacy(input, init);
+			};
+			const report = spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetchCli, { preconnect: fetchLegacy.preconnect }));
+			try {
+				await pollExport(Response.json({ rev: "cli-transient", format: "bad" }, { headers: { "x-bopencut-render-token": "live" } }));
+				await pollExport();
+				expect(attempts).toBe(2);
+			} finally {
+				report.mockRestore();
+			}
+		});
+	});
+
 	test("browser export uses the parent in the breadcrumb for nested compound clips", async () => {
 		const editor = open("p", 2, { nested: true });
 		editor.save.stop();

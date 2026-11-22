@@ -27,6 +27,8 @@ type Job = {
 
 let active: Job | undefined;
 let reserved = false;
+const requestBody = (req: Request, signal: AbortSignal) =>
+	new Response(req.body?.pipeThrough(new TransformStream(), { signal }), { headers: req.headers });
 
 export function renderPresence(req: Request) {
 	const job = active;
@@ -62,7 +64,8 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 	reserved = true;
 	let running = false;
 	try {
-		const { command: kind, request: options, timeoutMs } = await req.json();
+		const handshake = AbortSignal.any([req.signal, AbortSignal.timeout(10_000)]);
+		const { command: kind, request: options, timeoutMs } = await requestBody(req, handshake).json();
 		if ((kind !== "export" && kind !== "frames") || !options || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) {
 			throw new Error("Invalid render request.");
 		}
@@ -72,7 +75,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		if (!parsed || typeof parsed === "string") throw new Error(parsed ?? "Invalid export.");
 		if (options.state !== undefined || options.compare !== undefined) throw new Error("For historical or comparison frames, open the editor.");
 		const request = { ...parsed, rev, projectId };
-		await recoverRenderJobs(workspace);
+		await recoverRenderJobs(workspace, true);
 		const scratch = path.join(renderJobsDir(workspace), rev);
 		await atomicWrite(path.join(scratch, `${kind}-request.json`), JSON.stringify(request));
 		const controller = new AbortController();
@@ -204,30 +207,31 @@ export async function renderWorker(req: Request, workspace: string) {
 
 async function publish(job: Job, req: Request, url: URL, workspace: string, signal: AbortSignal) {
 	const action = url.searchParams.get("action");
+	const body = () => requestBody(req, signal);
 	try {
 		if (action === "failure" && job.owner === "hidden") {
-			const { error } = await req.json();
+			const { error } = await body().json();
 			await finish({ rev: job.rev, projectId: job.projectId, error, ...(job.kind === "frames" ? { files: [] } : {
 				status: "error", tab: job.owner, updatedAt: new Date().toISOString(),
 			}) });
 			return json({ ok: true });
 		}
 		if (action === "stage" && job.owner === "hidden") {
-			const { stage } = await req.json();
+			const { stage } = await body().json();
 			if (stage === "loading media" || stage === "waiting for graphics") job.send({ stage });
 			return json({ ok: true });
 		}
 		if (job.kind === "export" && action === "export-result") {
-			const body = await req.json();
+			const result = await body().json();
 			signal.throwIfAborted();
-			if (body.rev !== job.rev || body.projectId !== job.projectId) return json(null, { status: 409 });
-			if (body.status === "exporting") {
+			if (result.rev !== job.rev || result.projectId !== job.projectId) return json(null, { status: 409 });
+			if (result.status === "exporting") {
 				if (job.owner !== "hidden") job.heartbeat();
-				job.send({ stage: `encoding ${Math.round(Number(body.progress) * 100)}%` });
-			} else if (body.status === "release" && job.owner !== "hidden") {
+				job.send({ stage: `encoding ${Math.round(Number(result.progress) * 100)}%` });
+			} else if (result.status === "release" && job.owner !== "hidden") {
 				job.abandon(job.token);
-			} else if (body.status === "error") {
-				await finish({ ...body, updatedAt: new Date().toISOString() });
+			} else if (result.status === "error") {
+				await finish({ ...result, updatedAt: new Date().toISOString() });
 			}
 			return json({ ok: true });
 		}
@@ -250,7 +254,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 			}
 		}
 		if (job.kind === "frames" && action === "frame") {
-			const form = await req.formData();
+			const form = await body().formData();
 			const time = form.get("time"), image = form.get("image");
 			if (form.get("rev") !== job.rev || typeof time !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(time) ||
 				!(image instanceof File) || image.type !== "image/jpeg" || form.has("variant")) return json({ error: "Invalid frame" }, { status: 400 });
@@ -261,9 +265,9 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 			return json({ file: `frames/${job.rev}/${time}.jpg` });
 		}
 		if (job.kind === "frames" && action === "frames-result") {
-			const body = await req.json();
-			if (body.rev !== job.rev || body.projectId !== job.projectId) return json(null, { status: 409 });
-			if (body.files?.length) {
+			const result = await body().json();
+			if (result.rev !== job.rev || result.projectId !== job.projectId) return json(null, { status: 409 });
+			if (result.files?.length) {
 				signal.throwIfAborted();
 				const frames = path.join(workspace, "frames");
 				await fs.mkdir(frames, { recursive: true });
@@ -274,7 +278,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 				signal.throwIfAborted();
 				await fs.rename(source, target);
 			}
-			try { await finish(body); }
+			try { await finish(result); }
 			catch (error) {
 				await rollbackOutput(workspace, job.scratch);
 				throw error;

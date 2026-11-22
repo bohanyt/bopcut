@@ -89,13 +89,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		return Response.json({ file });
 	}
 	if (slug[0] === "frames-result") {
-		await recoverRenderJobs(WORKSPACE);
+		await recoverRenderJobs(WORKSPACE).catch(console.error);
 		await writeAtomic(path.join(WORKSPACE, "frames-result.json"), JSON.stringify(await req.json(), null, 1));
 		return Response.json({ ok: true });
 	}
 	// Agent exports (see AGENT.md): progress and errors, and the video with its final answer.
 	if (slug[0] === "export-result" || slug[0] === "export-file") {
-		await recoverRenderJobs(WORKSPACE);
+		await recoverRenderJobs(WORKSPACE).catch(console.error);
 		return slug[0] === "export-result" ? handleExportResult(req, WORKSPACE) : handleExportFile(req, WORKSPACE);
 	}
 	if (slug[0] === "changes-result") {

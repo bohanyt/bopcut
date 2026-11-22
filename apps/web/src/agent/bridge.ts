@@ -277,15 +277,19 @@ const EXPORT_TAB = typeof crypto !== "undefined" && "randomUUID" in crypto ? cry
 /** How long a small request to the editor's server may take (it is local; a stalled one is given up). */
 const REQUEST_WAIT_MS = 10_000;
 /** An error answer not posted yet (the server did not answer): posted again on the next poll. */
-let unposted: { key: string; rev: string; body: Record<string, unknown>; send: RenderFetch; signal?: AbortSignal } | null = null;
+let unposted: {
+	key: string; rev: string; body: Record<string, unknown>; send: RenderFetch;
+	signal?: AbortSignal; release?: () => void; attempts: number;
+} | null = null;
 
 /** Posts progress or an error; says whether it was written, or the request was answered or taken by another tab. */
-async function sendExportResult(body: Record<string, unknown>, send: RenderFetch): Promise<"ok" | "answered" | "claimed" | "failed"> {
+async function sendExportResult(body: Record<string, unknown>, send: RenderFetch, scoped = false): Promise<"ok" | "answered" | "claimed" | "failed"> {
 	try {
 		const response = await send("/api/agent/export-result", {
 			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, tab: EXPORT_TAB }), signal: AbortSignal.timeout(REQUEST_WAIT_MS),
 		});
 		if (response.ok) return "ok";
+		if (scoped && response.status === 404) return "claimed";
 		if (response.status !== 409) return "failed";
 		const reply = (await response.json().catch(() => ({}))) as { answered?: boolean };
 		return reply.answered ? "answered" : "claimed";
@@ -301,10 +305,12 @@ async function postUnposted() {
 		unposted = null;
 		return;
 	}
-	const sent = await sendExportResult(answer.body, answer.send);
-	if (sent === "failed" && !answer.signal) return;
-	// "claimed": another tab took the request meanwhile; it answers.
-	if (sent !== "claimed" && !EditorCore.getInstance().renderOnly) markAnswered(answer.key, answer.rev);
+	const sent = await sendExportResult(answer.body, answer.send, !!answer.signal);
+	if (sent === "failed") {
+		if (!answer.signal || ++answer.attempts < 3) return;
+		answer.release?.();
+	}
+	if ((sent === "ok" || sent === "answered") && !EditorCore.getInstance().renderOnly) markAnswered(answer.key, answer.rev);
 	if (unposted === answer) unposted = null;
 }
 
@@ -338,14 +344,14 @@ async function answerExport(source?: Response) {
 	const key = `agent-export-${projectId}`;
 	const remember = () => { if (!editor.renderOnly) markAnswered(key, rev); };
 	if (!editor.renderOnly && wasAnswered(key, rev)) return;
-	const { request: send, signal: jobSignal } = renderTransport(response);
+	const { request: send, signal: jobSignal, release } = renderTransport(response);
 	const before = exportable();
 	if (!before || before.project.metadata.id !== projectId) {
 		if (jobSignal) await sendExportResult({ rev, projectId, status: "release" }, send);
 		return;
 	}
 	const answer = async (body: Record<string, unknown>) => {
-		unposted = { key, rev, body: { rev, projectId, ...body }, send, signal: jobSignal };
+		unposted = { key, rev, body: { rev, projectId, ...body }, send, signal: jobSignal, release, attempts: 0 };
 		await postUnposted();
 	};
 	const request = parseExportRequest(raw);

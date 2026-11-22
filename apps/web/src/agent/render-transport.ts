@@ -6,9 +6,10 @@ export const renderTabHeaders = (projectId: string) => ({ "x-bopencut-render-tab
 
 export function renderTransport(response: Response) {
 	const token = response.headers.get(tokenHeader);
-	if (!token) return { request: fetch, signal: undefined };
+	if (!token) return { request: fetch, signal: undefined, release: undefined };
 	const controller = new AbortController();
-	void fetch(`${endpoint}?action=watch`, { headers: { [tokenHeader]: token } })
+	const release = () => controller.abort();
+	void fetch(`${endpoint}?action=watch`, { headers: { [tokenHeader]: token }, signal: controller.signal })
 		.then(() => controller.abort(), () => controller.abort());
 	const request: RenderFetch = (input, init) => {
 		const [route, query] = String(input).split("?");
@@ -18,7 +19,7 @@ export function renderTransport(response: Response) {
 		headers.set(tokenHeader, token);
 		return fetch(`${endpoint}?${params}`, { ...init, headers });
 	};
-	return { request, signal: controller.signal };
+	return { request, signal: controller.signal, release };
 }
 
 export async function readRenderRequest(kind: "export" | "frames", projectId: string, ready: boolean, signal?: AbortSignal) {

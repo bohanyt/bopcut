@@ -1,4 +1,5 @@
-import { constants, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { atomicWrite, dataRoot, readJson } from "@/services/storage/server/files";
 
@@ -16,7 +17,9 @@ export async function profileDirectory(workspace: string, data = dataRoot()) {
 		const profile = path.join(root, ".render-browser");
 		try {
 			await fs.mkdir(profile, { recursive: true });
-			await fs.access(profile, constants.W_OK);
+			const probe = path.join(profile, `.probe-${randomUUID()}`);
+			await fs.writeFile(probe, "", { flag: "wx" });
+			await fs.rm(probe);
 			return profile;
 		} catch (error) {
 			if (root === workspace) throw error;
@@ -38,12 +41,11 @@ export async function commitOutput(workspace: string, scratch: string, kind: "ex
 	const name = `${kind}-result.json`;
 	const text = JSON.stringify(result, null, 1);
 	// Preserve the request and answer of a direct-file client.
-	const resultDir = await exists(path.join(workspace, `${kind}-request.json`)) ? scratch : workspace;
-	await atomicWrite(path.join(resultDir, name), text, signal);
-	if (resultDir !== scratch) {
-		// Keep the commit record until cleanup even if a legacy client writes a newer result.
-		await atomicWrite(path.join(scratch, name), text).catch(console.error);
-	}
+	await atomicWrite(path.join(scratch, name), text, signal);
+	await atomicWrite(path.join(workspace, name), text, signal, {
+		stagingDir: scratch,
+		shouldPublish: async () => !(await exists(path.join(workspace, `${kind}-request.json`))),
+	}).catch((error) => { if (!signal.aborted) console.error(error); });
 }
 
 export async function rollbackOutput(workspace: string, scratch: string) {
@@ -57,17 +59,21 @@ export async function rollbackOutput(workspace: string, scratch: string) {
 	const file = path.join(workspace, output.file);
 	const published = committed?.rev === rev && (kind === "export" ? committed.file === output.file :
 		Array.isArray(committed.files) && committed.files.some((frame: unknown) => typeof frame === "string" && frame.startsWith(`${output.file}/`)));
-	if (!published && await identity(file).catch(() => null) === output.identity) {
+	const actual = published ? null : await identity(file).catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT") return null;
+		throw error;
+	});
+	if (actual === output.identity) {
 		await fs.rm(file, { recursive: kind === "frames", force: true });
 	}
 	await fs.rm(path.join(scratch, "output.json"), { force: true });
 }
 
 const recovered = new Map<string, Promise<void>>();
-export function recoverRenderJobs(workspace: string) {
+export function recoverRenderJobs(workspace: string, refresh = false) {
 	let recovery = recovered.get(workspace);
-	if (recovery) return recovery;
-	recovery = (async () => {
+	if (recovery && !refresh) return recovery;
+	const scan = async () => {
 		const dir = renderJobsDir(workspace);
 		if (!(await exists(dir))) return;
 		if (!(await fs.lstat(dir)).isDirectory()) throw new Error("The render jobs folder must be a directory.");
@@ -77,7 +83,11 @@ export function recoverRenderJobs(workspace: string) {
 			await rollbackOutput(workspace, scratch);
 			await fs.rm(scratch, { recursive: true, force: true });
 		}
-	})().catch((error) => { recovered.delete(workspace); throw error; });
+	};
+	recovery = (recovery ? recovery.then(scan, scan) : scan()).catch((error) => {
+		recovered.delete(workspace);
+		throw error;
+	});
 	recovered.set(workspace, recovery);
 	return recovery;
 }

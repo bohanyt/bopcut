@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { promises as fs } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { renderPresence, renderRequest, renderWorker, startRender } from "./render-server";
-import { profileDirectory, recordOutput, recoverRenderJobs } from "./render-output";
+import { commitOutput, profileDirectory, recordOutput, recoverRenderJobs } from "./render-output";
 
 const url = "http://127.0.0.1/api/agent/cli/render";
 const tokenHeader = "x-bopencut-render-token";
@@ -171,7 +172,7 @@ test("a failed result publication removes the promoted export", async () => {
 		const response = await startRender(begin(controller.signal), workspace, async () => "project");
 		const claim = await renderRequest(visible(), "export", workspace);
 		const { rev } = await claim.json();
-		await mkdir(path.join(workspace, "export-result.json"));
+		await mkdir(path.join(workspace, ".render-jobs", rev, "export-result.json"));
 		const query = new URLSearchParams({ action: "export-file", rev, projectId: "project", name: "Uncommitted", format: "mp4" });
 		const uploaded = await renderWorker(new Request(`${url}?${query}`, {
 			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! }, body: "video",
@@ -188,6 +189,7 @@ test("a failed result publication removes the promoted export", async () => {
 test("recovery rolls back a promoted file only when it is owned and uncommitted", async () => {
 	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-recovery-"));
 	try {
+		await recoverRenderJobs(workspace); // An earlier job already completed its startup scan.
 		const output = path.join(workspace, "exports");
 		await mkdir(output);
 		for (const [index, name] of ["abandoned", "completed", "existing"].entries()) {
@@ -202,7 +204,7 @@ test("recovery rolls back a promoted file only when it is owned and uncommitted"
 			else await rename(source, target);
 			if (name === "completed") await writeFile(path.join(workspace, "export-result.json"), JSON.stringify({ rev, status: "done", file: `exports/${name}.mp4` }));
 		}
-		await recoverRenderJobs(workspace);
+		await recoverRenderJobs(workspace, true);
 		expect((await readdir(output)).sort()).toEqual(["completed.mp4", "existing.mp4"]);
 		expect(await readdir(path.join(workspace, ".render-jobs"))).toEqual([]);
 	} finally {
@@ -212,11 +214,64 @@ test("recovery rolls back a promoted file only when it is owned and uncommitted"
 
 test("the profile falls back to the writable workspace when its usual path is inaccessible", async () => {
 	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-profile-"));
+	const data = path.join(workspace, "data");
+	await mkdir(path.join(data, ".render-browser"), { recursive: true });
+	const write = fs.writeFile;
+	const deny = spyOn(fs, "writeFile").mockImplementation(async (file, ...args) => {
+		if (typeof file === "string" && file.startsWith(data)) throw new Error("File creation denied");
+		await write(file, ...args);
+	});
 	try {
-		const data = path.join(workspace, "data");
-		await writeFile(data, "");
 		expect(await profileDirectory(workspace, data)).toBe(path.join(workspace, ".render-browser"));
 	} finally {
+		deny.mockRestore();
 		await rm(workspace, { recursive: true, force: true });
 	}
 });
+
+test("a late direct-file request keeps the workspace result while the CLI commits its own answer", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-mirror-"));
+	const scratch = path.join(workspace, ".render-jobs", "cli-01234567-0000-0000-0000-012345678901");
+	const resultFile = path.join(workspace, "export-result.json");
+	const requestFile = path.join(workspace, "export-request.json");
+	await writeFile(resultFile, '{"rev":"legacy"}');
+	const write = fs.writeFile;
+	let wroteCanonical = false;
+	const lateRequest = spyOn(fs, "writeFile").mockImplementation(async (file, ...args) => {
+		if (typeof file === "string" && file.startsWith(path.join(scratch, "export-result.json."))) {
+			if (wroteCanonical) await write(requestFile, '{"rev":"late"}');
+			wroteCanonical = true;
+		}
+		await write(file, ...args);
+	});
+	try {
+		await commitOutput(workspace, scratch, "export", { rev: "cli" }, new AbortController().signal);
+		expect(JSON.parse(await readFile(resultFile, "utf8"))).toEqual({ rev: "legacy" });
+		expect(JSON.parse(await readFile(path.join(scratch, "export-result.json"), "utf8"))).toEqual({ rev: "cli" });
+		expect(await readdir(scratch)).toEqual(["export-result.json"]);
+	} finally {
+		lateRequest.mockRestore();
+		await rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test("cancelling a job also cancels a stalled result body", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-stalled-"));
+	const controller = new AbortController();
+	try {
+		const response = await startRender(begin(controller.signal), workspace, async () => "project");
+		const claim = await renderRequest(visible(), "export", workspace);
+		let cancelled = false;
+		const posting = renderWorker(new Request(`${url}?action=export-result`, {
+			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! },
+			body: new ReadableStream({ cancel() { cancelled = true; } }),
+		}), workspace);
+		controller.abort();
+		expect((await posting).ok).toBe(false);
+		await response.text();
+		expect(cancelled).toBe(true);
+	} finally {
+		controller.abort();
+		await rm(workspace, { recursive: true, force: true });
+	}
+}, 1500);
