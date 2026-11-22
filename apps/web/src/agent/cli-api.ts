@@ -12,6 +12,15 @@ const readInside = async (root: string, ...parts: string[]) => {
 	return file ? readJson(file) : null;
 };
 
+/** A snapshot that is not valid JSON counts as missing here, so the other snapshot can answer. Links still fail. */
+async function readSnapshot(workspace: string, ...parts: string[]): Promise<Snapshot | null> {
+	try { return await readInside(workspace, ...parts); }
+	catch (error) {
+		if (error instanceof SyntaxError) return null;
+		throw error;
+	}
+}
+
 export async function handleCli(req: Request, action: string, workspace: string): Promise<Response> {
 	const url = new URL(req.url);
 	if (!["localhost", "127.0.0.1"].includes(url.hostname) || isForeignOrigin(req) || req.headers.get("sec-fetch-site") === "cross-site") {
@@ -27,8 +36,9 @@ export async function handleCli(req: Request, action: string, workspace: string)
 			return json({ selection: !requested || requested === selected?.projectId ? selected : null });
 		}
 		if (action === "status" || action === "notes") {
-			// A chosen project reads its own snapshot first; the last synced snapshot is only a fallback.
-			let latest: Snapshot | null | undefined = requested ? undefined : await readInside(workspace, "project.json");
+			// A plain request answers from the last synced snapshot. A chosen project reads its own snapshot
+			// first and falls back to the last synced one when that is the same project.
+			const latest: Snapshot | null = requested ? null : await readInside(workspace, "project.json");
 			const projectId = requested ?? latest?.projectId;
 			if (!projectId || !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) {
 				return json({ error: "No project has synced yet. Open a project in the editor or pass --project-id." }, 404);
@@ -38,10 +48,12 @@ export async function handleCli(req: Request, action: string, workspace: string)
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 				return json({ error: "Project was not found on disk. Open it in the editor or pass a valid --project-id." }, 404);
 			}
-			const key = projectId.replaceAll("_", "");
-			const byProject: Snapshot | null = await readInside(workspace, "sync", key + ".json");
-			if (byProject?.projectId !== projectId && latest === undefined) latest = await readInside(workspace, "project.json");
-			const snapshot = byProject?.projectId === projectId ? byProject : latest?.projectId === projectId ? latest : null;
+			let snapshot = latest;
+			if (requested) {
+				const own = await readSnapshot(workspace, "sync", projectId.replaceAll("_", "") + ".json");
+				const found = own?.projectId === projectId ? own : await readSnapshot(workspace, "project.json");
+				snapshot = found?.projectId === projectId ? found : null;
+			}
 			return json(action === "status"
 				? { projectId, snapshot }
 				: { projectId, notes: snapshot?.notes ?? [], syncedAt: snapshot?.syncedAt ?? null });

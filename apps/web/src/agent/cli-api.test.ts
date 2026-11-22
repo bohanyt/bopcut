@@ -110,3 +110,24 @@ test("reads refuse links that lead out of the workspace", async () => {
 		await fs.rm(root, { recursive: true, force: true });
 	}
 });
+
+test("a half-written project snapshot falls back to the last synced snapshot of the same project", async () => {
+	const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "agent-cli-half-"));
+	const data = process.env.BOPENCUT_DATA;
+	process.env.BOPENCUT_DATA = workspace;
+	const call = (query = "") => handleCli(new Request(`http://127.0.0.1:3100/api/agent/cli/status${query}`), "status", workspace);
+	try {
+		await fs.mkdir(path.join(workspace, "projects", "demo"), { recursive: true });
+		await fs.writeFile(path.join(workspace, "projects", "demo", "project.json"), "{}");
+		await fs.mkdir(path.join(workspace, "sync"));
+		await fs.writeFile(path.join(workspace, "sync", "demo.json"), "{ not json");
+		const snapshot = { projectId: "demo", syncedAt: "last", notes: [] };
+		await fs.writeFile(path.join(workspace, "project.json"), JSON.stringify(snapshot));
+		expect(await (await call("?projectId=demo")).json()).toEqual({ projectId: "demo", snapshot });
+		expect(await (await call()).json()).toEqual({ projectId: "demo", snapshot });
+	} finally {
+		if (data === undefined) delete process.env.BOPENCUT_DATA;
+		else process.env.BOPENCUT_DATA = data;
+		await fs.rm(workspace, { recursive: true, force: true });
+	}
+});
