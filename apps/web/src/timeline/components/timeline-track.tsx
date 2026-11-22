@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useElementSelection } from "@/timeline/hooks/element/use-element-selection";
 import { TimelineElement } from "./timeline-element";
 import type { TimelineTrack } from "@/timeline";
@@ -45,6 +46,7 @@ export function TimelineTrackContent({
 	shouldIgnoreClick,
 	targetElementId = null,
 }: TimelineTrackContentProps) {
+	const { t } = useI18n();
 	const { isElementSelected } = useElementSelection();
 
 	return (
@@ -52,7 +54,7 @@ export function TimelineTrackContent({
 			<button
 				type="button"
 				className="absolute inset-0 m-0 size-full appearance-none border-0 bg-transparent p-0"
-				aria-label={`Select ${track.name} track`}
+				aria-label={t("timeline.selectTrack", { name: track.name })}
 				onMouseUp={(event) => {
 					if (shouldIgnoreClick?.()) return;
 					onTrackMouseUp?.(event);

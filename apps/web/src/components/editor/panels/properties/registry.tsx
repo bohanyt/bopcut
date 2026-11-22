@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { ReactNode } from "react";
 import type {
 	EffectElement,
@@ -78,7 +79,7 @@ export type TabContentProps = {
 
 export type PropertiesTabDef = {
 	id: string;
-	label: string;
+	labelKey: StaticMessageKey;
 	icon: ReactNode;
 	content: (props: TabContentProps) => ReactNode;
 };
@@ -95,7 +96,7 @@ function buildTransformTab({
 }): PropertiesTabDef {
 	return {
 		id: "transform",
-		label: "Transform",
+		labelKey: "properties.transform",
 		icon: <HugeiconsIcon icon={ArrowExpandIcon} size={16} />,
 		content: ({ trackId }) => (
 			<ElementParamsTab
@@ -115,7 +116,7 @@ function buildAnimationTab({
 }): PropertiesTabDef {
 	return {
 		id: "animation",
-		label: "Animation",
+		labelKey: "properties.animation",
 		icon: <HugeiconsIcon icon={KeyframeAddIcon} size={16} />,
 		content: ({ trackId }) => <AnimationTab key={element.id} element={element} trackId={trackId} />,
 	};
@@ -128,7 +129,7 @@ function buildBlendingTab({
 }): PropertiesTabDef {
 	return {
 		id: "blending",
-		label: "Blending",
+		labelKey: "properties.blending",
 		icon: <HugeiconsIcon icon={RainDropIcon} size={16} />,
 		content: ({ trackId }) => (
 			<ElementParamsTab
@@ -148,7 +149,7 @@ function buildAudioTab({
 }): PropertiesTabDef {
 	return {
 		id: "audio",
-		label: "Audio",
+		labelKey: "common.audio",
 		icon: <HugeiconsIcon icon={MusicNote03Icon} size={16} />,
 		content: ({ trackId }) => (
 			<ElementParamsTab
@@ -168,7 +169,7 @@ function buildSpeedTab({
 }): PropertiesTabDef {
 	return {
 		id: "speed",
-		label: "Speed",
+		labelKey: "properties.speed",
 		icon: <HugeiconsIcon icon={DashboardSpeed02Icon} size={16} />,
 		content: ({ trackId }) => <SpeedTab element={element} trackId={trackId} />,
 	};
@@ -181,7 +182,7 @@ function buildMasksTab({
 }): PropertiesTabDef {
 	return {
 		id: "masks",
-		label: "Masks",
+		labelKey: "properties.masks",
 		icon: <OcShapesIcon size={16} />,
 		content: ({ trackId }) => <MasksTab element={element} trackId={trackId} />,
 	};
@@ -194,7 +195,7 @@ function buildClipEffectsTab({
 }): PropertiesTabDef {
 	return {
 		id: "effects",
-		label: "Effects",
+		labelKey: "properties.effects",
 		icon: <HugeiconsIcon icon={MagicWand05Icon} size={16} />,
 		content: ({ trackId }) => (
 			<ClipEffectsTab element={element} trackId={trackId} />
@@ -205,7 +206,7 @@ function buildClipEffectsTab({
 function buildTextTab({ element }: { element: TextElement }): PropertiesTabDef {
 	return {
 		id: "text",
-		label: "Text",
+		labelKey: "common.text",
 		icon: <HugeiconsIcon icon={TextFontIcon} size={16} />,
 		content: ({ trackId }) => (
 			<>
@@ -228,7 +229,7 @@ function buildGraphicTab({
 }): PropertiesTabDef {
 	return {
 		id: "graphic",
-		label: "Graphic",
+		labelKey: "properties.graphic",
 		icon: <OcShapesIcon size={16} />,
 		content: ({ trackId }) => <GraphicTab element={element} trackId={trackId} />,
 	};
@@ -241,7 +242,7 @@ function buildStandaloneEffectTab({
 }): PropertiesTabDef {
 	return {
 		id: "effects",
-		label: "Effects",
+		labelKey: "properties.effects",
 		icon: <HugeiconsIcon icon={MagicWand05Icon} size={16} />,
 		content: ({ trackId }) => (
 			<StandaloneEffectTab element={element} trackId={trackId} />
@@ -296,7 +297,7 @@ function getImageConfig({
 		defaultTab: "transform",
 		tabs: [
 			...(mediaAsset && isModelFile(mediaAsset.file) ? [{
-				id: "model3d", label: "3D", icon: <OcShapesIcon size={16} />,
+				id: "model3d", labelKey: "properties.model" as const, icon: <OcShapesIcon size={16} />,
 				content: ({ trackId }: TabContentProps) => <ElementParamsTab element={element} trackId={trackId} paramKeys={model3dParams.map((p) => p.key)} sectionKey="model3d" />,
 			}] : []),
 			buildTransformTab({ element }),
@@ -375,7 +376,7 @@ function getCompoundConfig({
 		tabs: [
 			{
 				id: "compound",
-				label: "Compound clip",
+				labelKey: "properties.compound",
 				icon: <HugeiconsIcon icon={Layers01Icon} size={16} />,
 				content: ({ trackId }) => <CompoundTab element={element} trackId={trackId} />,
 			},

@@ -43,7 +43,7 @@ const PERCENTAGE_DISPLAY = {
 const FREEFORM_PATH_MASK_PARAMS: ParamDefinition<keyof FreeformPathMaskParams & string>[] = [
 	{
 		key: "centerX",
-		label: "X",
+		labelKey: "params.x",
 		type: "number",
 		default: 0,
 		min: -100,
@@ -52,7 +52,7 @@ const FREEFORM_PATH_MASK_PARAMS: ParamDefinition<keyof FreeformPathMaskParams & 
 	},
 	{
 		key: "centerY",
-		label: "Y",
+		labelKey: "params.y",
 		type: "number",
 		default: 0,
 		min: -100,
@@ -61,7 +61,7 @@ const FREEFORM_PATH_MASK_PARAMS: ParamDefinition<keyof FreeformPathMaskParams & 
 	},
 	{
 		key: "rotation",
-		label: "Rotation",
+		labelKey: "params.rotation",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -70,7 +70,7 @@ const FREEFORM_PATH_MASK_PARAMS: ParamDefinition<keyof FreeformPathMaskParams & 
 	},
 	{
 		key: "scale",
-		label: "Scale",
+		labelKey: "params.scale",
 		type: "number",
 		default: 1,
 		min: 1,
@@ -291,6 +291,7 @@ function computeFreeformParamUpdate({
 export const freeformMaskDefinition: MaskDefinition<"freeform"> = {
 	type: "freeform",
 	name: "Pen tool",
+	nameKey: "shapes.penTool",
 	features: {
 		hasPosition: true,
 		hasRotation: true,

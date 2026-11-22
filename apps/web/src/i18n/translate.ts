@@ -9,6 +9,10 @@ export type MessageKey = keyof typeof en;
 type Placeholder<Text extends string> =
 	Text extends `${string}{${infer Name}}${infer Rest}` ? Name | Placeholder<Rest> : never;
 
+export type StaticMessageKey = {
+	[Key in MessageKey]: Placeholder<(typeof en)[Key]> extends never ? Key : never;
+}[MessageKey];
+
 export const placeholderPattern = /\{([^{}]+)\}/g;
 
 export function createTranslator(locale: Locale) {

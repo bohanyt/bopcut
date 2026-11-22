@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { STICKER_CATEGORIES } from "@/stickers/categories";
 
 export type StickerCategory = keyof typeof STICKER_CATEGORIES;
@@ -19,6 +20,7 @@ export interface StickerSearchResult {
 export interface StickerBrowseSection {
 	id: string;
 	title?: string;
+	titleKey?: StaticMessageKey;
 	items: StickerItem[];
 	hasMore?: boolean;
 	layout?: "grid" | "row";

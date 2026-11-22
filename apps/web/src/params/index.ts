@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import { converter, formatHex, formatHex8, parse } from "culori";
 import { clamp, snapToStep } from "@/utils/math";
 
@@ -174,7 +175,7 @@ export const COLOR_CHANNEL_LAYOUT: CompositeChannelLayout<string, LinearRgba> = 
 
 interface BaseParamDefinition<TKey extends string = string> {
 	key: TKey;
-	label: string;
+	labelKey: StaticMessageKey;
 	group?: ParamGroup;
 	keyframable?: boolean;
 	dependencies?: Array<{ param: string; equals: ParamValue }>;
@@ -215,7 +216,7 @@ export interface SelectParamDefinition<TKey extends string = string>
 	type: "select";
 	default: string;
 	channels?: LeafChannelLayout<string>;
-	options: Array<{ value: string; label: string }>;
+	options: Array<{ value: string; labelKey: StaticMessageKey }>;
 }
 
 export interface TextParamDefinition<TKey extends string = string>

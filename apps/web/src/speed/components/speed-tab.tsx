@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/provider";
 import { useRef } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { NumberField } from "@/components/ui/number-field";
@@ -64,6 +65,7 @@ export function SpeedTab({
 	element: AudioElement | VideoElement;
 	trackId: string;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const rate = clampRetimeRate({
 		rate: element.retime?.rate ?? DEFAULT_RETIME_RATE,
@@ -115,11 +117,11 @@ export function SpeedTab({
 	return (
 		<Section collapsible sectionKey={`${element.id}:speed`}>
 			<SectionHeader>
-				<SectionTitle>Speed</SectionTitle>
+				<SectionTitle>{t("properties.speed")}</SectionTitle>
 			</SectionHeader>
 			<SectionContent>
 				<SectionFields>
-					<SectionField label="Speed">
+					<SectionField label={t("properties.speed")}>
 						<NumberField
 							icon={<HugeiconsIcon icon={DashboardSpeed02Icon} />}
 							value={speedDraft.displayValue}
@@ -148,7 +150,7 @@ export function SpeedTab({
 						/>
 					</SectionField>
 					<div className="flex items-center justify-between">
-						<span className="text-sm">Change pitch</span>
+						<span className="text-sm">{t("properties.changePitch")}</span>
 						<Switch
 							checked={!maintainPitch}
 							disabled={!isPitchPreserveAvailable}

@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { Plus } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -46,6 +47,7 @@ export function DraggableItem({
 	variant = "card",
 	isDraggable = true,
 }: DraggableItemProps) {
+	const { t } = useI18n();
 	const [isDragging, setIsDragging] = useState(false);
 	const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
 	const dragRef = useRef<HTMLDivElement>(null);
@@ -187,7 +189,7 @@ export function DraggableItem({
 								{shouldShowPlusOnDrag && (
 									<PlusButton
 										onClick={handleAddToTimeline}
-										tooltipText="Add to timeline or drag to position"
+										tooltipText={t("assets.addByDrag")}
 									/>
 								)}
 							</AspectRatio>
@@ -208,6 +210,7 @@ function PlusButton({
 	onClick?: () => void;
 	tooltipText?: string;
 }) {
+	const { t } = useI18n();
 	const button = (
 		<Button
 			size="icon"
@@ -220,6 +223,7 @@ function PlusButton({
 				e.stopPropagation();
 				onClick?.();
 			}}
+			aria-label={t("sounds.addToTimeline")}
 			title={tooltipText}
 		>
 			<Plus />

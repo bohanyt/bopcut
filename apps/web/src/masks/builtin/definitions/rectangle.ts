@@ -48,6 +48,7 @@ function buildRectanglePath({
 export const rectangleMaskDefinition: MaskDefinition<"rectangle"> = {
 	type: "rectangle",
 	name: "Rectangle",
+	nameKey: "shapes.rectangle",
 	features: {
 		hasPosition: true,
 		hasRotation: true,

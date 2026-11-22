@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useCallback, useEffect, useRef } from "react";
 import { usePreviewViewport } from "@/preview/components/preview-viewport";
 import { useEditor } from "@/editor/use-editor";
@@ -25,6 +26,7 @@ export function TextEditOverlay({
 	onPreview: (text: string) => void;
 	onCommit: () => void;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const viewport = usePreviewViewport();
 	const divRef = useRef<HTMLDivElement>(null);
@@ -117,7 +119,7 @@ export function TextEditOverlay({
 				suppressContentEditableWarning
 				tabIndex={0}
 				role="textbox"
-				aria-label="Edit text"
+				aria-label={t("text.edit")}
 				className="cursor-text select-text outline-none whitespace-pre"
 				style={{
 					fontSize: resolvedTextLayout.scaledFontSize,

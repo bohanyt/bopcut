@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useState } from "react";
 import { Popover, PopoverContent } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -17,7 +18,6 @@ import type { GraphEditorComponentOption } from "./session";
 import {
 	BUILTIN_PRESETS,
 	PRESET_MATCH_TOLERANCE,
-	type EasingPreset,
 } from "./easing-presets";
 import { removePreset, savePreset, useCustomPresets } from "./custom-presets-store";
 import { BezierGraph, BEZIER_GRAPH_MIN_HEIGHT } from "./bezier-graph";
@@ -58,6 +58,7 @@ export function GraphEditorPopover({
 	onCommitValue?: (value: NormalizedCubicBezier) => void;
 	onCancelPreview?: () => void;
 }) {
+	const { t } = useI18n();
 	const [isExpanded, setIsExpanded] = useState(false);
 	const custom = useCustomPresets();
 	const allPresets = [...BUILTIN_PRESETS, ...custom];
@@ -103,7 +104,7 @@ export function GraphEditorPopover({
 											: "text-muted-foreground hover:text-foreground",
 									)}
 								>
-									{component.label}
+									{component.labelKey ? t(component.labelKey) : component.key.toUpperCase()}
 								</button>
 							))}
 						</div>
@@ -126,10 +127,10 @@ export function GraphEditorPopover({
 				<Tabs variant="underline" defaultValue="presets" className="flex flex-col gap-2">
 					<TabsList className="px-3">
 						<TabsTrigger value="presets" className="text-xs">
-							Presets
+							{t("graph.presets")}
 						</TabsTrigger>
 						<TabsTrigger value="saved" className="text-xs">
-							Saved
+							{t("common.saved")}
 						</TabsTrigger>
 					</TabsList>
 					<TabsContent value="presets" className="px-3 pb-0">
@@ -141,7 +142,8 @@ export function GraphEditorPopover({
 							{BUILTIN_PRESETS.map((preset) => (
 								<PresetItem
 									key={preset.id}
-									preset={preset}
+									value={preset.value}
+									label={t(preset.labelKey)}
 									isActive={activePresetId === preset.id}
 									disabled={!canEdit}
 									onSelect={() => onCommitValue?.(preset.value)}
@@ -154,7 +156,8 @@ export function GraphEditorPopover({
 							{custom.map((preset) => (
 								<PresetItem
 									key={preset.id}
-									preset={preset}
+									value={preset.value}
+									label={preset.label}
 									isActive={activePresetId === preset.id}
 									disabled={!canEdit}
 									onSelect={() => onCommitValue?.(preset.value)}
@@ -178,7 +181,7 @@ export function GraphEditorPopover({
 										className="size-3.5 opacity-40"
 									/>
 								</div>
-								<span className="text-[10px] leading-tight">Save</span>
+								<span className="text-[10px] leading-tight">{t("common.save")}</span>
 							</button>
 						</div>
 					</TabsContent>
@@ -241,13 +244,15 @@ function ExpandableGrid({
 }
 
 function PresetItem({
-	preset,
+	value,
+	label,
 	isActive,
 	onSelect,
 	onDelete,
 	disabled,
 }: {
-	preset: EasingPreset;
+	value: NormalizedCubicBezier;
+	label: string;
 	isActive: boolean;
 	onSelect: () => void;
 	onDelete?: () => void;
@@ -272,7 +277,7 @@ function PresetItem({
 					isActive && "bg-primary/5!",
 				)}
 			>
-				<CurveThumb value={preset.value} />
+				<CurveThumb value={value} />
 			</div>
 			<span
 				className={cn(
@@ -280,7 +285,7 @@ function PresetItem({
 					isActive ? "text-primary" : "text-muted-foreground",
 				)}
 			>
-				{preset.label}
+				{label}
 			</span>
 			{onDelete && (
 				<Button
@@ -308,6 +313,7 @@ function toThumbY({ value }: { value: number }) {
 }
 
 function CurveThumb({ value }: { value: NormalizedCubicBezier }) {
+	const { t } = useI18n();
 	const points: string[] = [];
 	for (let i = 0; i <= THUMB_SEGMENTS; i++) {
 		const progress = i / THUMB_SEGMENTS;
@@ -321,7 +327,7 @@ function CurveThumb({ value }: { value: NormalizedCubicBezier }) {
 			height={THUMB_HEIGHT}
 			viewBox={`0 0 ${THUMB_WIDTH} ${THUMB_HEIGHT}`}
 		>
-			<title>Curve preset preview</title>
+			<title>{t("graph.curvePreview")}</title>
 			<path
 				d={`M${points.join("L")}`}
 				fill="none"

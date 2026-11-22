@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+import type { StaticMessageKey } from "@/i18n/translate";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -24,25 +26,25 @@ type LibraryConfig = {
 	/** POST endpoint with `search` and `get` kinds. */
 	endpoint: string;
 	sources: readonly string[];
-	labels: Record<string, string>;
-	placeholder: string;
-	empty: string;
+	labels: Partial<Record<string, StaticMessageKey>>;
+	placeholder: StaticMessageKey;
+	empty: StaticMessageKey;
 };
 
 const SFX: LibraryConfig = {
 	endpoint: "/api/agent/sfx",
 	sources: SFX_SOURCES,
-	labels: { library: "My folders", myinstants: "Myinstants" },
-	placeholder: "Search sounds, e.g. vine boom",
-	empty: "Search your own sound folders and Myinstants. Added sounds are kept, so they show up under My folders next time.",
+	labels: { library: "sounds.myFolders", myinstants: "sounds.myinstants" },
+	placeholder: "sounds.searchSuggestions",
+	empty: "sounds.libraryHint",
 };
 
 const MUSIC: LibraryConfig = {
 	endpoint: "/api/agent/music",
 	sources: MUSIC_SOURCES,
-	labels: { library: "My folders", online: "Online" },
-	placeholder: "Search songs, e.g. nocturne op 9",
-	empty: "Search your own music folders, or online (sound only, fetched with yt-dlp). Fetched songs are loudness-normalized and kept under My folders.",
+	labels: { library: "sounds.myFolders", online: "sounds.online" },
+	placeholder: "sounds.musicSuggestions",
+	empty: "sounds.musicHint",
 };
 
 const formatDuration = (s?: number) => (s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : "");
@@ -53,15 +55,20 @@ const resultKey = ({ source, ref }: Result) => `${source}:${ref}`;
  * the server saves it under the agent files root, then it is imported into the project.
  */
 function LibrarySearchView({ config }: { config: LibraryConfig }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const [query, setQuery] = useState("");
 	const [sources, setSources] = useState<string[]>([...config.sources]);
 	const [results, setResults] = useState<Result[]>([]);
-	const [errors, setErrors] = useState<string[]>([]);
+	const [errors, setErrors] = useState<{ source?: string; error: string }[]>([]);
 	const [searching, setSearching] = useState(false);
 	const [adding, setAdding] = useState<ReadonlySet<string>>(() => new Set());
 	const [playing, setPlaying] = useState<string | null>(null);
 	const audio = useRef<HTMLAudioElement | null>(null);
+	const sourceLabel = (source: string) => {
+		const labelKey = config.labels[source];
+		return labelKey ? t(labelKey) : source;
+	};
 
 	useEffect(() => () => audio.current?.pause(), []);
 
@@ -78,10 +85,10 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 		try {
 			const body = await post({ kind: "search", query: query.trim(), sources });
 			setResults(body.results ?? []);
-			setErrors((body.errors ?? []).map((e: { source: string; error: string }) => `${config.labels[e.source] ?? e.source}: ${e.error}`));
+			setErrors(body.errors ?? []);
 		} catch (error) {
 			setResults([]);
-			setErrors([error instanceof Error ? error.message : String(error)]);
+			setErrors([{ error: error instanceof Error ? error.message : String(error) }]);
 		} finally {
 			setSearching(false);
 		}
@@ -155,9 +162,9 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 					search();
 				}}
 			>
-				<Input placeholder={config.placeholder} value={query} onChange={(e) => setQuery(e.target.value)} />
+				<Input className="min-w-0" placeholder={t(config.placeholder)} value={query} onChange={(e) => setQuery(e.target.value)} />
 				<Button type="submit" variant="outline" disabled={searching || !query.trim() || !sources.length}>
-					{searching ? "…" : "Search"}
+					{searching ? "…" : t("common.search")}
 				</Button>
 			</form>
 			<div className="flex gap-1.5">
@@ -165,28 +172,28 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 					const on = sources.includes(source);
 					return (
 						<Button key={source} size="sm" variant={on ? "secondary" : "ghost"} aria-pressed={on} onClick={() => setSources(on ? sources.filter((s) => s !== source) : [...sources, source])}>
-							{config.labels[source] ?? source}
+							{sourceLabel(source)}
 						</Button>
 					);
 				})}
 			</div>
-			{errors.map((error) => (
-				<p key={error} className="text-destructive text-xs">
-					{error}
+			{errors.map(({ source, error }) => (
+				<p key={source ?? error} className="text-destructive text-xs">
+					{source ? t("sounds.sourceError", { source: sourceLabel(source), message: error }) : error}
 				</p>
 			))}
 			<ScrollArea className="min-h-0 flex-1">
 				<div className="flex flex-col gap-3">
 					{results.map((result) => (
 						<div key={resultKey(result)} className="group flex items-center gap-3">
-							<button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => togglePlay(result)} title={result.previewUrl ? "Listen" : "Open its page"}>
+							<button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => togglePlay(result)} title={result.previewUrl ? t("sounds.listen") : t("sounds.openPage")}>
 								<div className="bg-accent flex size-10 shrink-0 items-center justify-center rounded-md">
 									<HugeiconsIcon icon={!result.previewUrl ? Link01Icon : playing === result.ref ? PauseIcon : PlayIcon} className="size-4" />
 								</div>
 								<div className="min-w-0 flex-1">
 									<p className="truncate text-sm font-medium">{result.name}</p>
 									<span className="text-muted-foreground block truncate text-xs">
-										{[config.labels[result.source] ?? result.source, formatDuration(result.duration), result.tags.join(" / ")].filter(Boolean).join(" · ")}
+										{[sourceLabel(result.source), formatDuration(result.duration), result.tags.join(" / ")].filter(Boolean).join(" · ")}
 									</span>
 								</div>
 							</button>
@@ -196,14 +203,14 @@ function LibrarySearchView({ config }: { config: LibraryConfig }) {
 								className={cn("text-muted-foreground hover:text-foreground w-auto", adding.has(resultKey(result)) && "animate-pulse")}
 								onClick={() => add(result)}
 								disabled={adding.has(resultKey(result))}
-								title="Add at the playhead"
-								aria-label={`Add ${result.name} at the playhead`}
+								title={t("sounds.addAtPlayhead")}
+								aria-label={t("sounds.addNamedAtPlayhead", { name: result.name })}
 							>
 								<HugeiconsIcon icon={PlusSignIcon} />
 							</Button>
 						</div>
 					))}
-					{!searching && !results.length && !errors.length && <p className="text-muted-foreground text-sm">{config.empty}</p>}
+					{!searching && !results.length && !errors.length && <p className="text-muted-foreground text-sm">{t(config.empty)}</p>}
 				</div>
 			</ScrollArea>
 		</div>

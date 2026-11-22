@@ -1,11 +1,11 @@
 ﻿import type { GraphicDefinition } from "../types";
 
 export const iconGraphicDefinition: GraphicDefinition = {
-	id: "icon", name: "Icon", keywords: ["icon"],
+	id: "icon", name: "Icon", nameKey: "params.icon", keywords: ["icon"],
 	params: [
-		{ key: "color", label: "Color", type: "color", default: "#ffffff", keyframable: true },
-		{ key: "iconName", label: "Icon", type: "text", default: "" },
-		{ key: "svg", label: "SVG", type: "text", default: "" },
+		{ key: "color", labelKey: "common.color", type: "color", default: "#ffffff", keyframable: true },
+		{ key: "iconName", labelKey: "params.icon", type: "text", default: "" },
+		{ key: "svg", labelKey: "params.svg", type: "text", default: "" },
 	],
 	render({ ctx, params, width, height }) {
 		if (typeof DOMParser === "undefined") return;

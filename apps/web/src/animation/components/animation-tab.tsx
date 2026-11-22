@@ -1,5 +1,7 @@
 // In and out animation presets for a clip: drawn on top of the clip's own animation, so its keyframes
 // stay as they are, and trims, speed changes and copies keep them.
+import { useI18n } from "@/i18n/provider";
+import type { StaticMessageKey } from "@/i18n/translate";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { PreviewGesture } from "@/core/managers/timeline-manager";
 import { toast } from "sonner";
@@ -35,15 +37,15 @@ import { getPresetDurationRange } from "@/animation/duration-control";
 import type { TimelineElement } from "@/timeline";
 import { useElementPreview } from "@/timeline/hooks/use-element-preview";
 
-const LABELS: Record<string, string> = {
-	none: "None",
-	fade: "Fade",
-	pop: "Pop",
-	impact: "Impact",
-	blur: "Blur",
-	typewriter: "Typewriter",
-	fall: "Fall",
-	dissolve: "Dissolve",
+const PRESET_LABELS: Partial<Record<string, StaticMessageKey>> = {
+	none: "params.none",
+	fade: "properties.fade",
+	pop: "graph.pop",
+	impact: "properties.impact",
+	blur: "settings.blur",
+	typewriter: "properties.typewriter",
+	fall: "properties.fall",
+	dissolve: "properties.dissolve",
 };
 
 const RANGE_KEYS = [
@@ -63,6 +65,7 @@ function PresetSide({
 	current: { type: string; duration: number } | null;
 	onApply: (request: AnimationPresetRequest) => void;
 }) {
+	const { t } = useI18n();
 	const types = (side === "in" ? ANIMATION_IN_TYPES : ANIMATION_OUT_TYPES).filter(
 		(type) => type !== "typewriter" || element.type === "text",
 	);
@@ -71,7 +74,7 @@ function PresetSide({
 		onApply({ [side]: { type: nextType, ...(seconds ? { duration: seconds } : {}) } } as AnimationPresetRequest);
 	return (
 		<>
-			<SectionField label={side === "in" ? "In" : "Out"}>
+			<SectionField label={side === "in" ? t("properties.animationIn") : t("properties.animationOut")}>
 				<Select value={type} onValueChange={(next) => apply(next)}>
 					<SelectTrigger className="w-full">
 						<SelectValue />
@@ -79,7 +82,7 @@ function PresetSide({
 					<SelectContent>
 						{["none", ...types].map((option) => (
 							<SelectItem key={option} value={option}>
-								{LABELS[option] ?? option}
+								{t(PRESET_LABELS[option] ?? "params.none")}
 							</SelectItem>
 						))}
 					</SelectContent>
@@ -117,6 +120,7 @@ function PresetDuration({
 	defaultDuration: number;
 	onApply: (seconds: number) => void;
 }) {
+	const { t } = useI18n();
 	const { timeline } = useEditor();
 	const { min, max } = getPresetDurationRange(element.duration);
 	const clampDuration = (seconds: number) => Math.min(max, Math.max(min, seconds));
@@ -129,7 +133,7 @@ function PresetDuration({
 		owner: PreviewGesture;
 	} | null>(null);
 	const ignoreRangeChanges = useRef(false);
-	const label = side === "in" ? "In length" : "Out length";
+	const label = side === "in" ? t("properties.animationInLength") : t("properties.animationOutLength");
 	const durationKey = side === "in" ? PRESET_PARAM.inDuration : PRESET_PARAM.outDuration;
 
 	useLayoutEffect(() => () => drag.current?.owner.cancel(), [
@@ -139,7 +143,7 @@ function PresetDuration({
 	]);
 
 	return (
-		<SectionField label="Length">
+		<SectionField label={t("properties.animationLength")}>
 			<div className="flex items-center gap-3">
 				<input
 					type="range"
@@ -212,7 +216,7 @@ function PresetDuration({
 					}}
 				/>
 				<NumberField
-					aria-label={`${label} in seconds`}
+					aria-label={t("properties.animationSeconds", { label })}
 					className="w-24 shrink-0 [&_input]:pr-4"
 					value={draft ?? String(Number(value.toFixed(3)))}
 					suffix="s"
@@ -242,6 +246,7 @@ export function AnimationTab({
 	element: TimelineElement;
 	trackId: string;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const { renderElement } = useElementPreview({ trackId, elementId: element.id, fallback: element });
 	const presets = readAnimationPresets(renderElement);
@@ -261,14 +266,14 @@ export function AnimationTab({
 	return (
 		<Section collapsible sectionKey={`${element.id}:animation`}>
 			<SectionHeader>
-				<SectionTitle>Animation</SectionTitle>
+				<SectionTitle>{t("properties.animation")}</SectionTitle>
 			</SectionHeader>
 			<SectionContent>
 				<SectionFields>
 					<PresetSide side="in" element={renderElement} trackId={trackId} current={presets.in} onApply={onApply} />
 					<PresetSide side="out" element={renderElement} trackId={trackId} current={presets.out} onApply={onApply} />
 					<p className="text-muted-foreground text-xs">
-						Drawn on top of the clip's own keyframes; on a short clip both are shortened to fit.
+						{t("properties.animationHint")}
 					</p>
 				</SectionFields>
 			</SectionContent>

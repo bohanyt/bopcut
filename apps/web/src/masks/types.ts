@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { ElementBounds } from "@/preview/element-bounds";
 import type { SnapLine } from "@/preview/preview-snap";
 import type { ParamDefinition } from "@/params";
@@ -336,6 +337,7 @@ export interface MaskInteractionDefinition<
 export interface MaskDefinition<TType extends MaskType = MaskType> {
 	type: TType;
 	name: string;
+	nameKey: StaticMessageKey;
 	features: MaskFeatures;
 	params: ParamDefinition<keyof MaskParamsByType<TType> & string>[];
 	renderer: MaskRenderer<MaskParamsByType<TType>>;

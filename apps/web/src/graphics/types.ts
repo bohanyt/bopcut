@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { ParamDefinition, ParamValues } from "@/params";
 
 export const DEFAULT_GRAPHIC_SOURCE_SIZE = 512;
@@ -12,6 +13,7 @@ export interface GraphicRenderContext {
 export interface GraphicDefinition {
 	id: string;
 	name: string;
+	nameKey: StaticMessageKey;
 	keywords: string[];
 	params: ParamDefinition[];
 	render(context: GraphicRenderContext): void;

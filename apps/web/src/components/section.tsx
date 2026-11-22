@@ -220,7 +220,7 @@ export function SectionField({
 }) {
 	return (
 		<div className={cn("flex flex-col gap-2", className)}>
-			<div className="flex h-4 items-center gap-1.5">
+			<div className="flex min-h-4 items-center gap-1.5">
 				{beforeLabel}
 				<Label>{label}</Label>
 			</div>

@@ -1,14 +1,20 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type {
 	AnimationPath,
 	ElementAnimations,
 } from "@/animation/types";
-import type { TimelineTrack } from "@/timeline";
+import type { TimelineElement, TimelineTrack } from "@/timeline";
+import { parseEffectParamPath } from "@/animation";
+import { effectsRegistry } from "@/effects";
+import { graphicsRegistry } from "@/graphics";
+import { getElementParams } from "@/params/registry";
 import { getElementKeyframes } from "@/animation";
 import { KEYFRAME_LANE_HEIGHT_PX } from "./layout";
 
 export interface ExpandedRow {
 	propertyPath: AnimationPath;
-	label: string;
+	labelKey?: StaticMessageKey;
+	fallbackLabel?: string;
 }
 
 interface PropertyGroupDefinition {
@@ -23,33 +29,41 @@ const PROPERTY_GROUPS: PropertyGroupDefinition[] = [
 	{ matchesPath: (path) => path.startsWith("effects.") },
 ];
 
-const PROPERTY_LABELS: Partial<Record<string, string>> = {
-	"transform.positionX": "Position X",
-	"transform.positionY": "Position Y",
-	"transform.scaleX": "Scale X",
-	"transform.scaleY": "Scale Y",
-	"transform.rotate": "Rotation",
-	opacity: "Opacity",
-	volume: "Volume",
-	color: "Color",
-	"background.color": "BG Color",
-	"background.paddingX": "BG Pad X",
-	"background.paddingY": "BG Pad Y",
-	"background.offsetX": "BG Offset X",
-	"background.offsetY": "BG Offset Y",
-	"background.cornerRadius": "Corner Radius",
-	"shake.intensity": "Shake",
-	typewriter: "Typed",
+const PROPERTY_LABELS: Partial<Record<string, StaticMessageKey>> = {
+	"transform.positionX": "params.positionX",
+	"transform.positionY": "params.positionY",
+	"transform.scaleX": "params.scaleX",
+	"transform.scaleY": "params.scaleY",
+	"transform.rotate": "params.rotation",
+	opacity: "params.opacity",
+	volume: "params.volume",
+	color: "common.color",
+	"background.color": "timeline.bgColor",
+	"background.paddingX": "timeline.bgPadX",
+	"background.paddingY": "timeline.bgPadY",
+	"background.offsetX": "timeline.bgOffsetX",
+	"background.offsetY": "timeline.bgOffsetY",
+	"background.cornerRadius": "params.cornerRadius",
+	"shake.intensity": "timeline.shake",
+	typewriter: "params.typed",
 };
 
-export function getPropertyLabel(path: AnimationPath): string {
-	if (PROPERTY_LABELS[path]) return PROPERTY_LABELS[path];
-	if (path.startsWith("params.")) return path.slice("params.".length);
-	if (path.startsWith("effects.")) {
-		const parts = path.split(".");
-		return parts[parts.length - 1];
+function getExpandedRow(element: TimelineElement, path: AnimationPath): ExpandedRow {
+	const effectPath = parseEffectParamPath({ propertyPath: path });
+	if (effectPath) {
+		const effect = "effects" in element && element.effects?.find(({ id }) => id === effectPath.effectId);
+		const definition = effect && effectsRegistry.has(effect.type) ? effectsRegistry.get(effect.type) : undefined;
+		const param = definition?.params.find(({ key }) => key === effectPath.paramKey);
+		return { propertyPath: path, labelKey: param?.labelKey, fallbackLabel: effectPath.paramKey };
 	}
-	return path;
+	if (element.type === "graphic" && path.startsWith("params.")) {
+		const paramKey = path.slice("params.".length);
+		const definition = graphicsRegistry.has(element.definitionId) ? graphicsRegistry.get(element.definitionId) : undefined;
+		const param = definition?.params.find(({ key }) => key === paramKey);
+		return { propertyPath: path, labelKey: param?.labelKey, fallbackLabel: paramKey };
+	}
+	const labelKey = PROPERTY_LABELS[path] ?? getElementParams({ element }).find(({ key }) => key === path)?.labelKey;
+	return { propertyPath: path, labelKey };
 }
 
 export function getExpandedRows({
@@ -68,7 +82,7 @@ export function getExpandedRows({
 			group.matchesPath(path),
 		);
 		for (const path of groupPaths) {
-			rows.push({ propertyPath: path, label: getPropertyLabel(path) });
+			rows.push({ propertyPath: path });
 		}
 	}
 
@@ -104,6 +118,7 @@ export function getTrackExpandedRows({
 }): ExpandedRow[] {
 	let maxHeight = 0;
 	let maxRows: ExpandedRow[] = [];
+	let expandedElement: TimelineElement | undefined;
 
 	for (const element of track.elements) {
 		if (!expandedElementIds.has(element.id)) continue;
@@ -112,8 +127,11 @@ export function getTrackExpandedRows({
 		if (height > maxHeight) {
 			maxHeight = height;
 			maxRows = rows;
+			expandedElement = element;
 		}
 	}
 
-	return maxRows;
+	return expandedElement
+		? maxRows.map(({ propertyPath }) => getExpandedRow(expandedElement, propertyPath))
+		: maxRows;
 }

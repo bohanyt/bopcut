@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useState } from "react";
 import type { ParamValues } from "@/params";
 import type { Effect } from "@/effects/types";
@@ -34,6 +35,7 @@ export function StandaloneEffectTab({
 	element: EffectElement;
 	trackId: string;
 }) {
+	const { t } = useI18n();
 	const { renderElement, previewUpdates, commit } = useElementPreview({
 		trackId,
 		elementId: element.id,
@@ -56,7 +58,7 @@ export function StandaloneEffectTab({
 	return (
 		<div className="flex flex-col h-full">
 			<div className="border-b px-3.5 h-11 shrink-0 flex items-center">
-				<SectionTitle>Effect</SectionTitle>
+				<SectionTitle>{t("properties.effect")}</SectionTitle>
 			</div>
 			<EffectSection
 				effect={effect}
@@ -75,6 +77,7 @@ export function ClipEffectsTab({
 	element: VisualElement;
 	trackId: string;
 }) {
+	const { t } = useI18n();
 	const [dragIndex, setDragIndex] = useState<number | null>(null);
 	const [dropIndex, setDropIndex] = useState<number | null>(null);
 	const editor = useEditor();
@@ -143,7 +146,7 @@ export function ClipEffectsTab({
 	return (
 		<div className="flex flex-col h-full">
 			<div className="border-b px-3.5 h-11 shrink-0 flex items-center">
-				<SectionTitle>Effects</SectionTitle>
+				<SectionTitle>{t("properties.effects")}</SectionTitle>
 			</div>
 			{effects.length === 0 ? (
 				<EmptyView />
@@ -204,6 +207,7 @@ export function ClipEffectsTab({
 }
 
 function EmptyView() {
+	const { t } = useI18n();
 	const setActiveTab = useAssetsPanelStore((s) => s.setActiveTab);
 
 	return (
@@ -214,9 +218,9 @@ function EmptyView() {
 				strokeWidth={1}
 			/>
 			<div className="flex flex-col gap-2">
-				<h3 className="font-medium text-foreground">No effects</h3>
+				<h3 className="font-medium text-foreground">{t("properties.noEffects")}</h3>
 				<p className="text-muted-foreground text-sm text-balance max-w-44">
-					Add effects to this layer from the Assets panel.
+					{t("properties.addEffectsHint")}
 				</p>
 			</div>
 			<Button
@@ -224,7 +228,7 @@ function EmptyView() {
 				size="sm"
 				onClick={() => setActiveTab("effects")}
 			>
-				Open effects
+				{t("properties.openEffects")}
 			</Button>
 		</div>
 	);
@@ -245,6 +249,7 @@ function EffectSection({
 	onToggle?: () => void;
 	onRemove?: () => void;
 }) {
+	const { t } = useI18n();
 	const definition = effectsRegistry.get(effect.type);
 
 	return (
@@ -260,7 +265,7 @@ function EffectSection({
 							<Button
 								variant={effect.enabled ? "secondary" : "ghost"}
 								size="icon"
-								aria-label={`Toggle ${definition.name}`}
+								aria-label={t("properties.toggleEffect", { name: t(definition.nameKey) })}
 								onClick={onToggle}
 							>
 								<HugeiconsIcon
@@ -270,7 +275,7 @@ function EffectSection({
 							<Button
 								variant="ghost"
 								size="icon"
-								aria-label={`Remove ${definition.name}`}
+								aria-label={t("properties.removeEffect", { name: t(definition.nameKey) })}
 								onClick={onRemove}
 							>
 								<HugeiconsIcon icon={Delete02Icon} />
@@ -282,7 +287,7 @@ function EffectSection({
 				<SectionTitle
 					className={cn(onToggle && !effect.enabled && "text-muted-foreground")}
 				>
-					{definition.name}
+					{t(definition.nameKey)}
 				</SectionTitle>
 			</SectionHeader>
 			<SectionContent

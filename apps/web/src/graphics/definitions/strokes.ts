@@ -4,14 +4,14 @@ import type { GraphicDefinition, GraphicRenderContext } from "../types";
 const common: ParamDefinition[] = [
 	{
 		key: "stroke",
-		label: "Color",
+		labelKey: "common.color",
 		type: "color",
 		default: "#ffffff",
 		group: "stroke",
 	},
 	{
 		key: "strokeWidth",
-		label: "Width",
+		labelKey: "common.width",
 		type: "number",
 		default: 4,
 		min: 0,
@@ -21,18 +21,18 @@ const common: ParamDefinition[] = [
 	},
 	{
 		key: "lineCap",
-		label: "Cap",
+		labelKey: "params.cap",
 		type: "select",
 		default: "round",
 		options: [
-			{ value: "butt", label: "Butt" },
-			{ value: "round", label: "Round" },
-			{ value: "square", label: "Square" },
+			{ value: "butt", labelKey: "params.butt" },
+			{ value: "round", labelKey: "params.round" },
+			{ value: "square", labelKey: "params.square" },
 		],
 	},
 	{
 		key: "dash",
-		label: "Dash length",
+		labelKey: "params.dashLength",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -41,7 +41,7 @@ const common: ParamDefinition[] = [
 	},
 	{
 		key: "drawProgress",
-		label: "Draw progress",
+		labelKey: "params.drawProgress",
 		type: "number",
 		default: 1,
 		min: 0,
@@ -168,6 +168,7 @@ function measurePath(d: string) {
 export const lineGraphicDefinition: GraphicDefinition = {
 	id: "line",
 	name: "Line",
+	nameKey: "shapes.line",
 	keywords: ["line", "stroke"],
 	params: common,
 	render(context) {
@@ -178,12 +179,13 @@ export const lineGraphicDefinition: GraphicDefinition = {
 export const arrowGraphicDefinition: GraphicDefinition = {
 	id: "arrow",
 	name: "Arrow",
+	nameKey: "shapes.arrow",
 	keywords: ["arrow", "connector"],
 	params: [
 		...common,
 		{
 			key: "headSize",
-			label: "Head size",
+			labelKey: "params.headSize",
 			type: "number",
 			default: 16,
 			min: 1,
@@ -192,12 +194,12 @@ export const arrowGraphicDefinition: GraphicDefinition = {
 		},
 		{
 			key: "headStyle",
-			label: "Head style",
+			labelKey: "params.headStyle",
 			type: "select",
 			default: "open",
 			options: [
-				{ value: "open", label: "Open" },
-				{ value: "triangle", label: "Triangle" },
+				{ value: "open", labelKey: "common.open" },
+				{ value: "triangle", labelKey: "params.triangle" },
 			],
 		},
 	],
@@ -221,11 +223,12 @@ export const arrowGraphicDefinition: GraphicDefinition = {
 export const pathGraphicDefinition: GraphicDefinition = {
 	id: "path",
 	name: "Path",
+	nameKey: "shapes.path",
 	keywords: ["path", "svg", "curve"],
 	params: [
 		...common,
-		{ key: "d", label: "SVG path", type: "text", default: "M 2 50 L 98 50" },
-		{ key: "viewBox", label: "View box", type: "text", default: "" },
+		{ key: "d", labelKey: "params.svgPath", type: "text", default: "M 2 50 L 98 50" },
+		{ key: "viewBox", labelKey: "params.viewBox", type: "text", default: "" },
 	],
 	render({ ctx, params, width, height }) {
 		if (typeof document === "undefined") return;

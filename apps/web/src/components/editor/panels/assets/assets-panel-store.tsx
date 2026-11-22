@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { ElementType } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -38,43 +39,43 @@ const createHugeiconsIcon =
 export const tabs = {
 	media: {
 		icon: createHugeiconsIcon({ icon: Folder03Icon }),
-		label: "Media",
+		labelKey: "assets.media",
 	},
 	sounds: {
 		icon: createHugeiconsIcon({ icon: HeadphonesIcon }),
-		label: "Sounds",
+		labelKey: "assets.sounds",
 	},
 	text: {
 		icon: createHugeiconsIcon({ icon: TextIcon }),
-		label: "Text",
+		labelKey: "common.text",
 	},
 	stickers: {
 		icon: createHugeiconsIcon({ icon: Happy01Icon }),
-		label: "Stickers",
+		labelKey: "assets.stickers",
 	},
 	effects: {
 		icon: createHugeiconsIcon({ icon: MagicWand05Icon }),
-		label: "Effects",
+		labelKey: "properties.effects",
 	},
 	transitions: {
 		icon: createHugeiconsIcon({ icon: ArrowRightDoubleIcon }),
-		label: "Transitions",
+		labelKey: "assets.transitions",
 	},
 	captions: {
 		icon: createHugeiconsIcon({ icon: ClosedCaptionIcon }),
-		label: "Captions",
+		labelKey: "assets.captions",
 	},
 	adjustment: {
 		icon: createHugeiconsIcon({ icon: SlidersHorizontalIcon }),
-		label: "Adjustment",
+		labelKey: "assets.adjustment",
 	},
 	settings: {
 		icon: createHugeiconsIcon({ icon: Settings01Icon }),
-		label: "Settings",
+		labelKey: "settings.tab",
 	},
 } satisfies Record<
 	Tab,
-	{ icon: ElementType<{ className?: string }>; label: string }
+	{ icon: ElementType<{ className?: string }>; labelKey: StaticMessageKey }
 >;
 
 export type MediaViewMode = "grid" | "list";

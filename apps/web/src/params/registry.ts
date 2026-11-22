@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type {
 	ParamDefinition,
 	ParamValue,
@@ -74,30 +75,30 @@ export class DefinitionRegistry<TKey extends string, TDefinition> {
 	}
 }
 
-const BLEND_MODE_OPTIONS: Array<{ value: BlendMode; label: string }> = [
-	{ value: "normal", label: "Normal" },
-	{ value: "darken", label: "Darken" },
-	{ value: "multiply", label: "Multiply" },
-	{ value: "color-burn", label: "Color Burn" },
-	{ value: "lighten", label: "Lighten" },
-	{ value: "screen", label: "Screen" },
-	{ value: "plus-lighter", label: "Plus Lighter" },
-	{ value: "color-dodge", label: "Color Dodge" },
-	{ value: "overlay", label: "Overlay" },
-	{ value: "soft-light", label: "Soft Light" },
-	{ value: "hard-light", label: "Hard Light" },
-	{ value: "difference", label: "Difference" },
-	{ value: "exclusion", label: "Exclusion" },
-	{ value: "hue", label: "Hue" },
-	{ value: "saturation", label: "Saturation" },
-	{ value: "color", label: "Color" },
-	{ value: "luminosity", label: "Luminosity" },
+const BLEND_MODE_OPTIONS: Array<{ value: BlendMode; labelKey: StaticMessageKey }> = [
+	{ value: "normal", labelKey: "params.normal" },
+	{ value: "darken", labelKey: "params.darken" },
+	{ value: "multiply", labelKey: "params.multiply" },
+	{ value: "color-burn", labelKey: "params.colorBurn" },
+	{ value: "lighten", labelKey: "params.lighten" },
+	{ value: "screen", labelKey: "params.screen" },
+	{ value: "plus-lighter", labelKey: "params.plusLighter" },
+	{ value: "color-dodge", labelKey: "params.colorDodge" },
+	{ value: "overlay", labelKey: "params.overlay" },
+	{ value: "soft-light", labelKey: "params.softLight" },
+	{ value: "hard-light", labelKey: "params.hardLight" },
+	{ value: "difference", labelKey: "params.difference" },
+	{ value: "exclusion", labelKey: "params.exclusion" },
+	{ value: "hue", labelKey: "params.hue" },
+	{ value: "saturation", labelKey: "params.saturation" },
+	{ value: "color", labelKey: "common.color" },
+	{ value: "luminosity", labelKey: "params.luminosity" },
 ];
 
 const visualElementParams: ElementParamDefinition[] = [
 	{
 		key: "transform.positionX",
-		label: "Position X",
+		labelKey: "params.positionX",
 		type: "number",
 		default: DEFAULTS.element.transform.position.x,
 		min: -100_000,
@@ -105,7 +106,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "transform.positionY",
-		label: "Position Y",
+		labelKey: "params.positionY",
 		type: "number",
 		default: DEFAULTS.element.transform.position.y,
 		min: -100_000,
@@ -113,7 +114,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "transform.scaleX",
-		label: "Scale X",
+		labelKey: "params.scaleX",
 		type: "number",
 		default: DEFAULTS.element.transform.scaleX,
 		min: MIN_TRANSFORM_SCALE,
@@ -121,7 +122,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "transform.scaleY",
-		label: "Scale Y",
+		labelKey: "params.scaleY",
 		type: "number",
 		default: DEFAULTS.element.transform.scaleY,
 		min: MIN_TRANSFORM_SCALE,
@@ -129,7 +130,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "transform.rotate",
-		label: "Rotate",
+		labelKey: "params.rotate",
 		type: "number",
 		default: DEFAULTS.element.transform.rotate,
 		min: -360,
@@ -138,7 +139,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "shake.intensity",
-		label: "Shake (px)",
+		labelKey: "params.shake",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -147,7 +148,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "shake.frequency",
-		label: "Shake speed (per s)",
+		labelKey: "params.shakeSpeed",
 		type: "number",
 		default: 8,
 		min: 0.1,
@@ -157,7 +158,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "shake.rotation",
-		label: "Shake rotation (°)",
+		labelKey: "params.shakeRotation",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -167,7 +168,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "shake.seed",
-		label: "Shake pattern",
+		labelKey: "params.shakePattern",
 		type: "number",
 		default: 1,
 		min: 0,
@@ -177,7 +178,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "opacity",
-		label: "Opacity",
+		labelKey: "params.opacity",
 		type: "number",
 		default: DEFAULTS.element.opacity,
 		min: 0,
@@ -186,7 +187,7 @@ const visualElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "blendMode",
-		label: "Blend Mode",
+		labelKey: "params.blendMode",
 		type: "select",
 		default: DEFAULTS.element.blendMode,
 		keyframable: false,
@@ -195,22 +196,22 @@ const visualElementParams: ElementParamDefinition[] = [
 ];
 
 export const model3dParams: ElementParamDefinition[] = [
-	{ key: "rotationX", label: "Rotation X", type: "number", default: 0, min: -3600, max: 3600, step: 1 },
-	{ key: "rotationY", label: "Rotation Y", type: "number", default: 0, min: -3600, max: 3600, step: 1 },
-	{ key: "rotationZ", label: "Rotation Z", type: "number", default: 0, min: -3600, max: 3600, step: 1 },
-	{ key: "modelScale", label: "Model scale", type: "number", default: 1, min: 0.01, max: 10, step: 0.01 },
-	{ key: "cameraDistance", label: "Camera distance", type: "number", default: 3.5, min: 0.1, max: 50, step: 0.1 },
-	{ key: "cameraFov", label: "Camera FOV", type: "number", default: 45, min: 5, max: 150, step: 1 },
-	{ key: "lightIntensity", label: "Light intensity", type: "number", default: 2, min: 0, max: 10, step: 0.1 },
-	{ key: "lightX", label: "Light X", type: "number", default: 3, min: -20, max: 20, step: 0.1 },
-	{ key: "lightY", label: "Light Y", type: "number", default: 4, min: -20, max: 20, step: 0.1 },
-	{ key: "lightZ", label: "Light Z", type: "number", default: 5, min: -20, max: 20, step: 0.1 },
+	{ key: "rotationX", labelKey: "params.rotationX", type: "number", default: 0, min: -3600, max: 3600, step: 1 },
+	{ key: "rotationY", labelKey: "params.rotationY", type: "number", default: 0, min: -3600, max: 3600, step: 1 },
+	{ key: "rotationZ", labelKey: "params.rotationZ", type: "number", default: 0, min: -3600, max: 3600, step: 1 },
+	{ key: "modelScale", labelKey: "params.modelScale", type: "number", default: 1, min: 0.01, max: 10, step: 0.01 },
+	{ key: "cameraDistance", labelKey: "params.cameraDistance", type: "number", default: 3.5, min: 0.1, max: 50, step: 0.1 },
+	{ key: "cameraFov", labelKey: "params.cameraFov", type: "number", default: 45, min: 5, max: 150, step: 1 },
+	{ key: "lightIntensity", labelKey: "params.lightIntensity", type: "number", default: 2, min: 0, max: 10, step: 0.1 },
+	{ key: "lightX", labelKey: "params.lightX", type: "number", default: 3, min: -20, max: 20, step: 0.1 },
+	{ key: "lightY", labelKey: "params.lightY", type: "number", default: 4, min: -20, max: 20, step: 0.1 },
+	{ key: "lightZ", labelKey: "params.lightZ", type: "number", default: 5, min: -20, max: 20, step: 0.1 },
 ];
 
 const audioElementParams: ElementParamDefinition[] = [
 	{
 		key: "volume",
-		label: "Volume",
+		labelKey: "params.volume",
 		type: "number",
 		default: DEFAULTS.element.volume,
 		min: VOLUME_DB_MIN,
@@ -219,7 +220,7 @@ const audioElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "fadeIn",
-		label: "Fade in (s)",
+		labelKey: "params.fadeIn",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -229,7 +230,7 @@ const audioElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "fadeOut",
-		label: "Fade out (s)",
+		labelKey: "params.fadeOut",
 		type: "number",
 		default: 0,
 		min: 0,
@@ -239,7 +240,7 @@ const audioElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "muted",
-		label: "Muted",
+		labelKey: "params.muted",
 		type: "boolean",
 		default: false,
 		keyframable: false,
@@ -249,21 +250,21 @@ const audioElementParams: ElementParamDefinition[] = [
 const textElementParams: ElementParamDefinition[] = [
 	{
 		key: "content",
-		label: "Content",
+		labelKey: "params.content",
 		type: "text",
 		default: "Default text",
 		keyframable: false,
 	},
 	{
 		key: "fontFamily",
-		label: "Font Family",
+		labelKey: "params.fontFamily",
 		type: "font",
 		default: "Arial",
 		keyframable: false,
 	},
 	{
 		key: "fontSize",
-		label: "Font Size",
+		labelKey: "params.fontSize",
 		type: "number",
 		default: 15,
 		min: 1,
@@ -271,59 +272,59 @@ const textElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "color",
-		label: "Color",
+		labelKey: "common.color",
 		type: "color",
 		default: "#ffffff",
 	},
 	{
 		key: "textAlign",
-		label: "Text Align",
+		labelKey: "params.textAlign",
 		type: "select",
 		default: "center",
 		keyframable: false,
 		options: [
-			{ value: "left", label: "Left" },
-			{ value: "center", label: "Center" },
-			{ value: "right", label: "Right" },
+			{ value: "left", labelKey: "params.left" },
+			{ value: "center", labelKey: "params.center" },
+			{ value: "right", labelKey: "params.right" },
 		],
 	},
 	{
 		key: "fontWeight",
-		label: "Font Weight",
+		labelKey: "params.fontWeight",
 		type: "select",
 		default: "normal",
 		keyframable: false,
 		options: [
-			{ value: "normal", label: "Normal" },
-			{ value: "bold", label: "Bold" },
+			{ value: "normal", labelKey: "params.normal" },
+			{ value: "bold", labelKey: "params.bold" },
 		],
 	},
 	{
 		key: "fontStyle",
-		label: "Font Style",
+		labelKey: "params.fontStyle",
 		type: "select",
 		default: "normal",
 		keyframable: false,
 		options: [
-			{ value: "normal", label: "Normal" },
-			{ value: "italic", label: "Italic" },
+			{ value: "normal", labelKey: "params.normal" },
+			{ value: "italic", labelKey: "params.italic" },
 		],
 	},
 	{
 		key: "textDecoration",
-		label: "Text Decoration",
+		labelKey: "params.textDecoration",
 		type: "select",
 		default: "none",
 		keyframable: false,
 		options: [
-			{ value: "none", label: "None" },
-			{ value: "underline", label: "Underline" },
-			{ value: "line-through", label: "Line Through" },
+			{ value: "none", labelKey: "params.none" },
+			{ value: "underline", labelKey: "params.underline" },
+			{ value: "line-through", labelKey: "params.lineThrough" },
 		],
 	},
 	{
 		key: "letterSpacing",
-		label: "Letter Spacing",
+		labelKey: "params.letterSpacing",
 		type: "number",
 		default: DEFAULTS.text.letterSpacing,
 		min: -100,
@@ -331,7 +332,7 @@ const textElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "lineHeight",
-		label: "Line Height",
+		labelKey: "params.lineHeight",
 		type: "number",
 		default: DEFAULTS.text.lineHeight,
 		min: 0.1,
@@ -340,7 +341,7 @@ const textElementParams: ElementParamDefinition[] = [
 	{
 		// Share of the characters shown, in reading order (the typewriter animation animates it).
 		key: "typewriter",
-		label: "Typed",
+		labelKey: "params.typed",
 		type: "number",
 		default: 1,
 		min: 0,
@@ -349,21 +350,21 @@ const textElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "background.enabled",
-		label: "Background Enabled",
+		labelKey: "params.backgroundEnabled",
 		type: "boolean",
 		default: DEFAULTS.text.background.enabled,
 		keyframable: false,
 	},
 	{
 		key: "background.color",
-		label: "Background Color",
+		labelKey: "params.backgroundColor",
 		type: "color",
 		default: DEFAULTS.text.background.color,
 		dependencies: [{ param: "background.enabled", equals: true }],
 	},
 	{
 		key: "background.cornerRadius",
-		label: "Background Radius",
+		labelKey: "params.backgroundRadius",
 		type: "number",
 		default: DEFAULTS.text.background.cornerRadius,
 		min: CORNER_RADIUS_MIN,
@@ -373,7 +374,7 @@ const textElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "background.paddingX",
-		label: "Background Padding X",
+		labelKey: "params.backgroundPaddingX",
 		type: "number",
 		default: DEFAULTS.text.background.paddingX,
 		min: 0,
@@ -382,7 +383,7 @@ const textElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "background.paddingY",
-		label: "Background Padding Y",
+		labelKey: "params.backgroundPaddingY",
 		type: "number",
 		default: DEFAULTS.text.background.paddingY,
 		min: 0,
@@ -391,7 +392,7 @@ const textElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "background.offsetX",
-		label: "Background Offset X",
+		labelKey: "params.backgroundOffsetX",
 		type: "number",
 		default: DEFAULTS.text.background.offsetX,
 		min: -100_000,
@@ -400,7 +401,7 @@ const textElementParams: ElementParamDefinition[] = [
 	},
 	{
 		key: "background.offsetY",
-		label: "Background Offset Y",
+		labelKey: "params.backgroundOffsetY",
 		type: "number",
 		default: DEFAULTS.text.background.offsetY,
 		min: -100_000,

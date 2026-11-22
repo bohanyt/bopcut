@@ -1,3 +1,4 @@
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { ParamDefinition, ParamValues } from "@/params";
 
 export interface Effect {
@@ -35,6 +36,7 @@ export interface EffectRendererConfig {
 export interface EffectDefinition {
 	type: string;
 	name: string;
+	nameKey: StaticMessageKey;
 	keywords: string[];
 	params: ParamDefinition[];
 	renderer: EffectRendererConfig;

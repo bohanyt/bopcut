@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { Input } from "@/components/ui/input";
@@ -21,6 +22,7 @@ export function CompoundTab({
 	element: CompoundElement;
 	trackId: string;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const [draft, setDraft] = useState<string | null>(null);
 
@@ -34,14 +36,14 @@ export function CompoundTab({
 	return (
 		<Section sectionKey={`${element.id}:compound`}>
 			<SectionHeader>
-				<SectionTitle>Compound clip</SectionTitle>
+				<SectionTitle>{t("properties.compound")}</SectionTitle>
 			</SectionHeader>
 			<SectionContent>
 				<SectionFields>
-					<SectionField label="Name">
+					<SectionField label={t("common.name")}>
 						<Input
 							size="sm"
-							aria-label="Compound clip name"
+							aria-label={t("properties.compoundName")}
 							value={draft ?? element.name}
 							onChange={(event) => setDraft(event.target.value)}
 							onBlur={commitName}
@@ -62,7 +64,7 @@ export function CompoundTab({
 								})
 							}
 						>
-							Open
+							{t("common.open")}
 						</Button>
 						<Button
 							size="sm"
@@ -75,12 +77,11 @@ export function CompoundTab({
 								})
 							}
 						>
-							Break apart
+							{t("timeline.breakApart")}
 						</Button>
 					</div>
 					<p className="text-muted-foreground text-xs">
-						Double-click the clip to edit inside it. Volume applies to all nested audio
-						and cannot be keyframed.
+						{t("properties.compoundHint")}
 					</p>
 				</SectionFields>
 			</SectionContent>

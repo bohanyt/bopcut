@@ -183,6 +183,7 @@ function computeSplitMaskParamUpdate({
 export const splitMaskDefinition: MaskDefinition<"split"> = {
 	type: "split",
 	name: "Split",
+	nameKey: "timeline.split",
 	features: {
 		hasPosition: true,
 		hasRotation: true,
@@ -238,7 +239,7 @@ export const splitMaskDefinition: MaskDefinition<"split"> = {
 	params: [
 		{
 			key: "centerX",
-			label: "X",
+			labelKey: "params.x",
 			type: "number",
 			default: 0,
 			min: -100,
@@ -248,7 +249,7 @@ export const splitMaskDefinition: MaskDefinition<"split"> = {
 		},
 		{
 			key: "centerY",
-			label: "Y",
+			labelKey: "params.y",
 			type: "number",
 			default: 0,
 			min: -100,
@@ -258,7 +259,7 @@ export const splitMaskDefinition: MaskDefinition<"split"> = {
 		},
 		{
 			key: "rotation",
-			label: "Rotation",
+			labelKey: "params.rotation",
 			type: "number",
 			default: 0,
 			min: 0,

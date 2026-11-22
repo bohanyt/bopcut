@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { useShiftKey } from "@/hooks/use-shift-key";
 import { useEditor } from "@/editor/use-editor";
@@ -87,6 +88,7 @@ export function BezierGraph({
 	onChangeEnd?: (value: NormalizedCubicBezier) => void;
 	onCancel?: () => void;
 }) {
+	const { t } = useI18n();
 	const { timeline } = useEditor();
 	const svgRef = useRef<SVGSVGElement>(null);
 	const [activeHandle, setActiveHandle] = useState<BezierHandle | null>(null);
@@ -187,7 +189,7 @@ export function BezierGraph({
 			onPointerCancel={onPointerCancel}
 			onLostPointerCapture={onPointerCancel}
 		>
-			<title>Bezier curve editor</title>
+			<title>{t("graph.bezierEditor")}</title>
 			<line
 				x1={p0.x}
 				y1={p0.y}

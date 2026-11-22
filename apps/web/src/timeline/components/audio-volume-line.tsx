@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { PreviewGesture } from "@/core/managers/timeline-manager";
 import { createPortal } from "react-dom";
@@ -58,6 +59,7 @@ export function AudioVolumeLine({
 	element: AudioElement;
 	trackId: string;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const surfaceRef = useRef<HTMLDivElement>(null);
 	const drag = useRef<{ pointerId: number; owner: PreviewGesture } | null>(null);
@@ -249,7 +251,7 @@ export function AudioVolumeLine({
 					onPointerUp={handlePointerUp}
 					onPointerCancel={handlePointerCancel}
 					onLostPointerCapture={handlePointerCancel}
-					title="Drag to adjust clip volume"
+					title={t("timeline.dragVolume")}
 				/>
 				{isDragging &&
 					tooltipClientPos &&

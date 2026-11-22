@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { registerCanceller } from "@/editor/cancel-interaction";
@@ -13,6 +14,7 @@ import {
 } from "./session";
 
 export function useGraphEditorController() {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const renderTracks = useEditor(
 		(currentEditor) =>
@@ -164,11 +166,14 @@ export function useGraphEditorController() {
 		[editor, state],
 	);
 
+	const message = state.status === "ready" ? "" : t(state.messageKey);
+
 	return {
 		open,
 		onOpenChange: handleOpenChange,
 		canOpen: state.status === "ready",
-		tooltip: state.status === "ready" ? "Open graph editor" : state.message,
+		tooltip: state.status === "ready" ? t("graph.open") : message,
+		message,
 		state,
 		onActiveComponentKeyChange: handleActiveComponentKeyChange,
 		onPreviewValue: handlePreviewValue,

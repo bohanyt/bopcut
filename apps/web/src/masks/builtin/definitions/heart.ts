@@ -81,6 +81,7 @@ function buildHeartPath({
 export const heartMaskDefinition: MaskDefinition<"heart"> = {
 	type: "heart",
 	name: "Heart",
+	nameKey: "shapes.heart",
 	features: {
 		hasPosition: true,
 		hasRotation: true,

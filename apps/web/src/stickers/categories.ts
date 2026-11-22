@@ -1,8 +1,8 @@
 export const STICKER_CATEGORIES = {
-	all: "All",
+	all: "common.all",
 	// v0.4.0
 	// logos: "Logos",
-	flags: "Flags",
-	icons: "Icons",
-	shapes: "Shapes",
-};
+	flags: "stickers.flags",
+	icons: "stickers.icons",
+	shapes: "stickers.shapes",
+} as const;

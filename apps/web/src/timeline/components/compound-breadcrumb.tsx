@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { Fragment, useMemo } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import { TIMELINE_COMPOUND_THEME } from "./theme";
 
 /** Shown while a compound clip is open: Main › Compound clip 2 › …, ancestors clickable. */
 export function CompoundBreadcrumb() {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const scenes = useEditor((e) => e.scenes.getScenes());
 	const activeScene = useEditor((e) => e.scenes.getActiveSceneOrNull());
@@ -33,13 +35,13 @@ export function CompoundBreadcrumb() {
 				variant="text"
 				size="icon"
 				className="size-6"
-				aria-label="Back to parent (Esc)"
-				title="Back to parent (Esc)"
+				aria-label={t("timeline.backToParent")}
+				title={t("timeline.backToParent")}
 				onClick={() => editor.scenes.exitCompound()}
 			>
 				<HugeiconsIcon icon={ArrowLeft01Icon} size={14} />
 			</Button>
-			<Breadcrumb aria-label="Compound clip path">
+			<Breadcrumb aria-label={t("timeline.compoundPath")}>
 				<BreadcrumbList className="gap-1 text-xs sm:gap-1.5">
 					{path.map((crumb, index) => (
 						<Fragment key={crumb.sceneId}>

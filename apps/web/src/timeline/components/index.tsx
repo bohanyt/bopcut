@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Delete02Icon,
@@ -63,7 +64,6 @@ import { SELECTED_TRACK_ROW_CLASS } from "./theme";
 import {
 	computeTrackExpansionHeight,
 	getTrackExpandedRows,
-	getPropertyLabel,
 	type ExpandedRow,
 } from "./expanded-layout";
 import { TIMELINE_HORIZONTAL_WHEEL_STEP_PX } from "./interaction";
@@ -116,6 +116,7 @@ const TRACK_ICONS: Record<TimelineTrack["type"], ReactNode> = {
 };
 
 export function Timeline() {
+	const { t } = useI18n();
 	const snappingEnabled = useTimelineStore((s) => s.snappingEnabled);
 	const {
 		selectedElements,
@@ -433,7 +434,7 @@ export function Timeline() {
 				"panel bg-background relative flex h-full flex-col overflow-hidden rounded-sm border"
 			}
 			{...dragProps}
-			aria-label="Timeline"
+			aria-label={t("shortcuts.category.timeline")}
 		>
 			<TimelineToolbar
 				zoomLevel={zoomLevel}
@@ -751,6 +752,7 @@ function TimelineTrackRows({
 	isDragOver: boolean;
 	dropTarget: DropTarget | null;
 }) {
+	const { t } = useI18n();
 	const timeline = useEditor((e) => e.timeline);
 	const scene = useEditor((e) => e.scenes.getActiveSceneOrNull());
 	const tracks = useMemo<TimelineTrack[]>(
@@ -843,7 +845,7 @@ function TimelineTrackRows({
 								invokeAction("paste-copied");
 							}}
 						>
-							Paste elements
+							{t("timeline.pasteElements")}
 						</ContextMenuItem>
 						<ContextMenuItem
 							icon={<HugeiconsIcon icon={VolumeHighIcon} />}
@@ -853,8 +855,8 @@ function TimelineTrackRows({
 							}}
 						>
 							{canTrackHaveAudio(track) && track.muted
-								? "Unmute track"
-								: "Mute track"}
+								? t("timeline.unmuteTrack")
+								: t("timeline.muteTrack")}
 						</ContextMenuItem>
 						<ContextMenuItem
 							icon={<HugeiconsIcon icon={ViewIcon} />}
@@ -864,8 +866,8 @@ function TimelineTrackRows({
 							}}
 						>
 							{canTrackBeHidden(track) && track.hidden
-								? "Show track"
-								: "Hide track"}
+								? t("timeline.showTrack")
+								: t("timeline.hideTrack")}
 						</ContextMenuItem>
 						{track.id !== mainTrackId && (
 							<ContextMenuItem
@@ -876,7 +878,7 @@ function TimelineTrackRows({
 								}}
 								variant="destructive"
 							>
-								Delete track
+								{t("timeline.deleteTrack")}
 							</ContextMenuItem>
 						)}
 					</ContextMenuContent>
@@ -935,6 +937,7 @@ function TrackToggleIcon({
 }
 
 function PropertyTree({ rows }: { rows: ExpandedRow[] }) {
+	const { t } = useI18n();
 	return (
 		<div className="flex flex-col overflow-hidden">
 			{rows.map((row) => (
@@ -944,7 +947,7 @@ function PropertyTree({ rows }: { rows: ExpandedRow[] }) {
 					style={{ height: `${KEYFRAME_LANE_HEIGHT_PX}px` }}
 				>
 					<span className="text-muted-foreground truncate text-xs leading-none">
-						{getPropertyLabel(row.propertyPath)}
+						{row.labelKey ? t(row.labelKey) : row.fallbackLabel ?? row.propertyPath}
 					</span>
 				</div>
 			))}
