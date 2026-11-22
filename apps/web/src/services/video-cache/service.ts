@@ -1,11 +1,13 @@
 import {
 	ALL_FORMATS,
 	BlobSource,
+	EncodedPacketSink,
 	Input,
 	VideoSampleSink,
 	type InputVideoTrack,
 	type VideoSample,
 } from "mediabunny";
+import { getDecodableVideoTrack } from "@/media/video-probe";
 
 type VideoSize = { width: number; height: number };
 type VideoFrame = {
@@ -21,6 +23,7 @@ type VideoSource = {
 	cursors: VideoCursor[];
 	requests: Map<number, VideoRequest>;
 	used: Set<VideoCursor>;
+	lastPacketTime?: Promise<number | undefined>;
 };
 
 class VideoCursor {
@@ -28,6 +31,7 @@ class VideoCursor {
 	private currentStart = 0;
 	private current: VideoSample | null = null;
 	private next: Promise<VideoSample | null> | null = null;
+	exhausted = false;
 	private sink: VideoSampleSink;
 	private surfaces: { canvas: OffscreenCanvas; timestamp: number }[] = [];
 	private frames = new Map<string, VideoFrame>();
@@ -88,7 +92,10 @@ class VideoCursor {
 
 	private prefetch(iterator: AsyncGenerator<VideoSample, void, unknown>): void {
 		this.next = iterator.next().then(({ value }) => {
-			if (iterator === this.iterator) return value ?? null;
+			if (iterator === this.iterator) {
+				this.exhausted = value === undefined;
+				return value ?? null;
+			}
 			value?.close();
 			return null;
 		});
@@ -142,6 +149,7 @@ class VideoCursor {
 		const { iterator, next } = this;
 		this.iterator = null;
 		this.next = null;
+		this.exhausted = false;
 		this.current?.close();
 		this.current = null;
 		// A resolved lookahead belongs to this cursor even if we never advance to it.
@@ -159,6 +167,7 @@ class VideoCursor {
 /** Video samples and surfaces belong to one renderer. A cursor serves one source time per frame. */
 export class VideoCache {
 	private sources = new Map<File, VideoSource>();
+	private failedSources = new WeakMap<File, { error: unknown }>();
 
 	async getFrameAt({
 		file,
@@ -174,8 +183,20 @@ export class VideoCache {
 		signal?: AbortSignal;
 	}): Promise<VideoFrame | null> {
 		signal?.throwIfAborted();
+		const failed = this.failedSources.get(file);
+		if (failed) {
+			if (throwOnSeekError) throw failed.error;
+			return null;
+		}
 		const source = this.getSource(file);
-		const track = await source.track;
+		let track: InputVideoTrack;
+		try {
+			track = await source.track;
+		} catch (error) {
+			signal?.throwIfAborted();
+			if (throwOnSeekError) throw error;
+			return null;
+		}
 		signal?.throwIfAborted();
 		if (this.sources.get(file) !== source) return null;
 
@@ -208,6 +229,19 @@ export class VideoCache {
 		}
 		signal?.throwIfAborted();
 		if (this.sources.get(file) !== source || !sample) return null;
+		if (throwOnSeekError && request.cursor.exhausted && time > sample.timestamp &&
+			time >= sample.timestamp + sample.duration) {
+			// Real VFR gaps and holds past a video's last frame are valid. An early end
+			// while the container still advertises later packets is a failed decode.
+			source.lastPacketTime ??= new EncodedPacketSink(track).getPacket(Infinity, { metadataOnly: true })
+				.then((packet) => packet?.timestamp);
+			const lastPacketTime = await source.lastPacketTime;
+			signal?.throwIfAborted();
+			if (this.sources.get(file) !== source) return null;
+			if (lastPacketTime !== undefined && lastPacketTime - sample.timestamp > 1e-6) {
+				throw new Error("Video decoding ended before the last packet");
+			}
+		}
 		const scale = getScale?.({ width: track.displayWidth, height: track.displayHeight }) ?? 1;
 		return request.cursor.rasterize(sample, track, scale);
 	}
@@ -217,17 +251,12 @@ export class VideoCache {
 		if (existing) return existing;
 
 		const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
-		const track = (async () => {
-			const videoTrack = await input.getPrimaryVideoTrack();
-			if (!videoTrack) throw new Error("No video track found");
-			if (!(await videoTrack.canDecode())) {
-				throw new Error("Video codec not supported for decoding");
-			}
-			return videoTrack;
-		})().catch((error) => {
+		const track = getDecodableVideoTrack(input).catch((error) => {
 			if (this.sources.get(file)?.input === input) {
 				this.sources.delete(file);
+				this.failedSources.set(file, { error });
 				input.dispose();
+				console.warn(`Failed to open video "${file.name}":`, error);
 			}
 			throw error;
 		});
@@ -258,5 +287,6 @@ export class VideoCache {
 			source.input.dispose();
 		}
 		this.sources.clear();
+		this.failedSources = new WeakMap();
 	}
 }

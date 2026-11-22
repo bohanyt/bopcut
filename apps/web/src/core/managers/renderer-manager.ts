@@ -15,6 +15,7 @@ import type { TCanvasSize } from "@/project/types";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
 import { rendererDevice } from "@/services/renderer/renderer-device";
+import { verifyVideoFile } from "@/media/video-probe";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
@@ -303,13 +304,34 @@ export class RendererManager {
 			if (preflight) return preflight;
 			if (rendererDevice.status.state !== "idle") rendererDevice.requireReady();
 			const mediaAssets = media.getAssets();
+			const assetsById = new Map(mediaAssets.map((asset) => [asset.id, asset]));
+			const videoIds = new Set(collectVisibleMedia({ tracks, scenes, duration })
+				.filter(({ type }) => type === "video").map(({ mediaId }) => mediaId));
+			const videoProbes = new Map<File, MediaLoadFailure["error"] | undefined>();
+			for (const id of videoIds) {
+				const asset = assetsById.get(id);
+				if (!asset || asset.type !== "video" || !asset.url) continue;
+				if (!videoProbes.has(asset.file)) {
+					try {
+						await verifyVideoFile(asset.file, signal);
+						videoProbes.set(asset.file, undefined);
+					} catch (error) {
+						signal.throwIfAborted();
+						videoProbes.set(asset.file, error instanceof Error ? error.message : String(error));
+					}
+				}
+				const error = videoProbes.get(asset.file);
+				if (error !== undefined) failures.set(id, { id, name: asset.name, error, unreadable: true });
+			}
+			if (failures.size && allowMissing !== true) return unavailableMedia([...failures.values()]);
+			const exportAssets = failures.size ? mediaAssets.filter(({ id }) => !failures.has(id)) : mediaAssets;
 
 			let firstAudioBlock: AudioBuffer | undefined;
 			if (includeAudio) {
 				onProgress?.({ progress: 0.05 });
 				signal.throwIfAborted();
 				audioBlocks = mixTimelineAudio({
-					tracks, mediaAssets, duration, scenes, signal,
+					tracks, mediaAssets: exportAssets, duration, scenes, signal,
 					onFailure: (failure) => {
 						failures.set(failure.id, failure);
 						if (allowMissing !== true) mediaFailure.abort();
@@ -324,7 +346,7 @@ export class RendererManager {
 
 			const scene = buildScene({
 				tracks,
-				mediaAssets,
+				mediaAssets: exportAssets,
 				duration,
 				canvasSize,
 				background,
@@ -339,7 +361,7 @@ export class RendererManager {
 				quality,
 				audio: firstAudioBlock && audioBlocks ? { first: firstAudioBlock, blocks: audioBlocks } : undefined,
 				onMediaFailure: (id, error) => {
-					const name = mediaAssets.find((asset) => asset.id === id)?.name ?? id;
+					const name = assetsById.get(id)?.name ?? id;
 					failures.set(id, { id, name, error: error instanceof Error ? error.message : String(error), unreadable: true });
 					if (allowMissing !== true) mediaFailure.abort();
 				},

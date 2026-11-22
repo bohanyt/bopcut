@@ -4,6 +4,8 @@ import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 import * as mediaProcessing from "@/media/processing";
+import { EncodedPacket, EncodedPacketSink, Input, InputAudioTrack, InputVideoTrack, VideoSample, VideoSampleSink } from "mediabunny";
+import { toast } from "sonner";
 
 // Stub the GPU modules (unused here) before EditorCore pulls them in; see scene-history.test.ts.
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
@@ -22,6 +24,7 @@ beforeEach(() => {
 const { EditorCore } = await import("@/core");
 const { agentSnapshot, applyDraft, pollDraft, pollChanges } = await import("./bridge");
 const { snapshotHistory } = await import("./history");
+const { importAgentBundle } = await import("./importer");
 const { storageService } = await import("@/services/storage/service");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
@@ -125,6 +128,74 @@ afterEach(() => {
 });
 
 describe("draft imports stay private until commit", () => {
+	test("corrupt video bytes cannot reach the draft's bin or timeline", async () => {
+		const editor = setup();
+		restoreProcessing();
+		restoreProcessing = () => {};
+		const backend = fakeBackend();
+		const fetchBackend = fetch;
+		globalThis.fetch = (async (url, init) =>
+			String(url).startsWith("/api/agent/file")
+				? new Response(new Blob(["broken video"], { type: "video/mp4" }))
+				: fetchBackend(url, init)) as typeof fetch;
+		const storage = spyOn(storageService, "canStoreFile")
+			.mockResolvedValue({ canStore: true, availableBytes: null, reason: "estimate-unavailable" });
+		restore = () => { storage.mockRestore(); backend.restore(); };
+		await applyDraft(draft([{
+			op: "add", track: { name: "Main" },
+			element: { agent_id: "broken", name: "Broken", asset: { path: "broken.mp4", type: "video" }, start: 3 },
+		}]));
+		expect(backend.state.results.at(-1)).toMatchObject({ applied: false, results: [{ ok: false, error: expect.stringContaining("broken.mp4") }] });
+		expect(backend.state.saved).toEqual([]);
+		expect(backend.state.promoted).toEqual([]);
+		expect(elements(editor).some(({ agentId }) => agentId === "broken")).toBe(false);
+	});
+
+	test("a bundle keeps the video when its audio codec is unsupported", async () => {
+		const editor = setup();
+		restoreProcessing();
+		restoreProcessing = () => {};
+		const backend = fakeBackend();
+		const writes = projectWrites({});
+		const close = mock(() => {});
+		const warn = spyOn(toast, "warning");
+		const videoTrack: InputVideoTrack = Object.create(InputVideoTrack.prototype, {
+			canDecode: { value: async () => true }, computeDuration: { value: async () => 2 },
+			getFirstTimestamp: { value: async () => 0 }, computePacketStats: { value: async () => ({ averagePacketRate: 30 }) },
+			displayWidth: { value: 16 }, displayHeight: { value: 16 },
+		});
+		const audioTrack: InputAudioTrack = Object.create(InputAudioTrack.prototype, {
+			canDecode: { value: async () => false },
+		});
+		const stubs = [
+			warn,
+			spyOn(storageService, "canStoreFile").mockResolvedValue({ canStore: true, availableBytes: null, reason: "estimate-unavailable" }),
+			spyOn(Input.prototype, "computeDuration").mockResolvedValue(2),
+			spyOn(Input.prototype, "getPrimaryVideoTrack").mockResolvedValue(videoTrack),
+			spyOn(Input.prototype, "getPrimaryAudioTrack").mockResolvedValue(audioTrack),
+			spyOn(EncodedPacketSink.prototype, "getPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 0, 2)),
+			spyOn(VideoSampleSink.prototype, "getSample").mockResolvedValue(Object.create(VideoSample.prototype, { close: { value: close } })),
+		];
+		const fetchBackend = fetch;
+		globalThis.fetch = (async (url, init) => {
+			if (String(url) === "/api/agent/bundle") return Response.json({
+				name: "Bundle", width: 16, height: 16,
+				assets: [{ key: "clip", name: "Clip", path: "clip.mp4", type: "video" }],
+				main: [{ agent_id: "picture", name: "Picture", asset: "clip", start: 0, sourceAudio: true }],
+			});
+			if (String(url).startsWith("/api/agent/file")) return new Response(new Blob(["video"], { type: "video/mp4" }));
+			return fetchBackend(url, init);
+		}) as typeof fetch;
+		restore = () => { for (const stub of stubs) stub.mockRestore(); writes.restore(); backend.restore(); };
+		await importAgentBundle({ onStatus: () => {} });
+		const [asset] = editor.media.getAssets();
+		expect(asset).toMatchObject({ name: "Clip", type: "video", hasAudio: false, duration: 2 });
+		expect(backend.state.saved).toEqual([asset.id]);
+		expect(editor.scenes.getActiveScene().tracks.main.elements).toMatchObject([{ type: "video", mediaId: asset.id, duration: T(2) }]);
+		expect(warn).toHaveBeenCalledWith("Audio unavailable in clip.mp4", expect.anything());
+		expect(close).toHaveBeenCalledTimes(1);
+	});
+
 	test("a failing draft's rollback never deletes media another edit already uses", async () => {
 		const editor = setup();
 		const slowBad = gate();

@@ -4,23 +4,10 @@ import { formatStorageBytes } from "@/services/storage/quota";
 import { storageService } from "@/services/storage/service";
 import type { MediaAsset } from "@/media/types";
 import { readVideoFile } from "./mediabunny";
-import type { VideoFileData } from "./mediabunny";
 import { renderThumbnailDataUrl } from "./thumbnail";
 import { releaseMediaAssetUrls } from "./url-release";
 
 export interface ProcessedMediaAsset extends Omit<MediaAsset, "id"> {}
-
-const getUnsupportedVideoDescription = ({
-	codec,
-}: {
-	codec: VideoFileData["codec"];
-}): string => {
-	const codecLabel = codec ? codec.toUpperCase() : "this video codec";
-
-	return codec === "hevc"
-		? `${codecLabel} cannot be decoded in this browser, so this clip may not preview correctly. Convert it to H.264 MP4 or try importing it in Safari.`
-		: `${codecLabel} cannot be decoded in this browser, so this clip may not preview correctly. Convert it to H.264 MP4 and reimport it.`;
-};
 
 const getStorageLimitDescription = ({
 	fileSize,
@@ -158,6 +145,7 @@ export async function processMediaFile({
 		} else if (fileType === "video") {
 			try {
 				const videoData = await readVideoFile({ file, signal });
+				if (signal.aborted) return null;
 				duration = videoData.duration;
 				width = videoData.width;
 				height = videoData.height;
@@ -165,15 +153,10 @@ export async function processMediaFile({
 				hasAudio = videoData.hasAudio;
 				thumbnailUrl = videoData.thumbnailUrl ?? undefined;
 
-				if (!videoData.canDecode) {
-					const description = getUnsupportedVideoDescription({ codec: videoData.codec });
-					if (inferredType) throw new Error(description);
-					toast.error(`Can't preview ${file.name}`, {
-						description,
+				if (videoData.audioUnavailable) {
+					toast.warning(`Audio unavailable in ${file.name}`, {
+						description: "The video can be used without its soundtrack. Convert the audio to AAC if you need it.",
 					});
-				}
-				if (inferredType && (!Number.isFinite(duration) || duration <= 0)) {
-					throw new Error("The file does not contain playable video");
 				}
 			} catch (error) {
 				const message =
@@ -182,10 +165,7 @@ export async function processMediaFile({
 						: "Could not process video";
 
 				if (!signal.aborted) toast.error(`Couldn't process ${file.name}`, { description: message });
-				if (inferredType) {
-					releaseMediaAssetUrls({ thumbnailUrl });
-					return null;
-				}
+				return null;
 			}
 		} else if (fileType === "audio") {
 			url = URL.createObjectURL(file);
