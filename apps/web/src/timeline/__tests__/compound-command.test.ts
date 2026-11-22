@@ -425,7 +425,7 @@ describe("insertion and batch rollback", () => {
 		}
 	});
 
-	test.each([true, false])("first-media sizing waits for graphics and respects undo before recovery (%s)", (undoBeforeRecovery) => {
+	test.each(["ready", "undo", "retry"])("first-media sizing waits for graphics (%s)", (outcome) => {
 		const listeners = new Set<() => void>();
 		const subscription = spyOn(graphics.rendererDevice, "subscribe").mockImplementation((listener) => {
 			listeners.add(listener);
@@ -438,12 +438,21 @@ describe("insertion and batch rollback", () => {
 			editor.command.execute({ command: firstVideo() });
 			expect(editor.scenes.getActiveScene().tracks.main.elements).toHaveLength(1);
 			expect(settingsOf(editor).canvasSize).toEqual(before.canvasSize);
-			if (undoBeforeRecovery) editor.command.undo();
+			if (outcome === "undo") editor.command.undo();
+			if (outcome === "retry") {
+				Object.defineProperty(graphics.rendererDevice, "status", {
+					configurable: true, value: { state: "unavailable", detail: "Startup failed" },
+				});
+				for (const listener of listeners) listener();
+				expect(listeners.size).toBe(1);
+				expect(settingsOf(editor).canvasSize).toEqual(before.canvasSize);
+				Object.defineProperty(graphics.rendererDevice, "status", { configurable: true, value: { state: "ready" } });
+			}
 
 			limits.mockReturnValue({ maxTextureDimension: 4096, maxSurfaceDimension: 4096 });
 			for (const listener of listeners) listener();
 			expect(listeners.size).toBe(0);
-			if (undoBeforeRecovery) {
+			if (outcome === "undo") {
 				expect(settingsOf(editor)).toEqual(before);
 				editor.command.redo();
 			}
@@ -451,6 +460,7 @@ describe("insertion and batch rollback", () => {
 			editor.command.undo();
 			expect(settingsOf(editor)).toEqual(before);
 		} finally {
+			if (outcome === "retry") Reflect.deleteProperty(graphics.rendererDevice, "status");
 			limits.mockRestore();
 			subscription.mockRestore();
 		}

@@ -203,9 +203,11 @@ export function SettingsView() {
 
 	const selectCustomCanvasSize = () => {
 		const canvasSize = lastCustomCanvasSize ?? currentCanvasSize;
-		const error = customCanvasSizeError(canvasSize);
-		if (error && !areCanvasSizesEqual({ left: canvasSize, right: currentCanvasSize })) {
-			toast.error(error);
+		if (customCanvasSizeError(canvasSize)) {
+			// Open the fields at the current size and keep the preference for a capable device.
+			if (canvasSizeMode !== "custom") {
+				editor.project.updateSettings({ settings: { canvasSizeMode: "custom" } });
+			}
 			return;
 		}
 		updateCustomCanvasSize({ canvasSize });

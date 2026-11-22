@@ -181,7 +181,6 @@ export class InsertElementCommand extends Command {
 	}
 
 	private deferCanvasSize(editor: EditorCore, source: TCanvasSize) {
-		if (rendererDevice.status.state === "unavailable") return;
 		const signal = editor.project.getSessionSignal();
 		const settings = editor.project.getActive().settings;
 		const tracks = editor.scenes.getActiveScene().tracks;
@@ -192,10 +191,10 @@ export class InsertElementCommand extends Command {
 		};
 		const unsubscribe = rendererDevice.subscribe(() => {
 			const { maxSurfaceDimension } = getRendererLimits();
-			if (maxSurfaceDimension === undefined && rendererDevice.status.state !== "unavailable") return;
+			if (maxSurfaceDimension === undefined) return;
 			cancel();
 			// Later edits carry their own undo snapshots. Never resize the canvas underneath them.
-			if (maxSurfaceDimension !== undefined && !signal.aborted && !editor.timeline.isPreviewActive() &&
+			if (!signal.aborted && !editor.timeline.isPreviewActive() &&
 				editor.project.getActiveOrNull()?.settings === settings &&
 				editor.scenes.getActiveSceneOrNull()?.tracks === tracks) {
 				this.setCanvasSize(editor, source, maxSurfaceDimension);
