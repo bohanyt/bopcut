@@ -81,6 +81,7 @@ export type JobConnection = {
 };
 
 export async function runJob(connection: JobConnection, options: {
+	id?: string;
 	timeoutMs: number;
 	launch(submission: Submission): RunningBrowser;
 	progress(update: JobUpdate): void;
@@ -117,7 +118,10 @@ export async function runJob(connection: JobConnection, options: {
 	} finally {
 		if (interrupt) signal.removeEventListener("abort", interrupt);
 		try { await browser?.stop(); }
-		finally { if (job) await connection.cancel(job.id); }
+		finally {
+			const id = options.id ?? job?.id;
+			if (id) await connection.cancel(id);
+		}
 	}
 }
 
@@ -144,15 +148,16 @@ async function main(args: string[], signal: AbortSignal) {
 		return call<JobBody>(options.command + project, AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs)]));
 	}
 	const request = options.file ? await readInput(options.command, options.file) : options.request;
+	const id = crypto.randomUUID();
 	let lastProgress = "";
 	return runJob({
-		submit: (abort) => call("submit", abort, { command: options.command, projectId: options.projectId, request, timeoutMs: options.timeoutMs }),
+		submit: (abort) => call("submit", abort, { id, command: options.command, projectId: options.projectId, request, timeoutMs: options.timeoutMs }),
 		wait: (id, version, abort) => call(`wait/${id}?version=${version}`, abort),
 		async cancel(id) {
 			await call(`cancel/${id}`, AbortSignal.timeout(5000), {}).catch(() => {});
 		},
 	}, {
-		timeoutMs: options.timeoutMs, signal,
+		id, timeoutMs: options.timeoutMs, signal,
 		launch: ({ id, profile }) => {
 			if (!profile) throw new Error("The server did not supply a browser profile. Restart the editor server and retry.");
 			return launchBrowser(`${options.origin}/agent/job/${id}`, profile);

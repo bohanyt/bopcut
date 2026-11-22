@@ -55,6 +55,24 @@ describe("job lifetime", () => {
 	});
 });
 
+test("cancelling a submission before its reply still cancels the predetermined job", async () => {
+	let cancelled: string | undefined;
+	const server = connection({
+		submit: () => new Promise(() => {}),
+		cancel: async (id) => { cancelled = id; },
+	});
+	await expect(runJob(server, { id: "known", timeoutMs: 20, launch: () => { throw new Error("unexpected launch"); }, progress: () => {} }))
+		.rejects.toThrow("Timed out while waiting for a tab");
+	expect(cancelled).toBe("known");
+});
+
+test("a cancellation received before submission prevents the late job from reserving the slot", async () => {
+	const jobs = new AgentJobs();
+	await jobs.cancel("cancelled");
+	expect(() => jobs.create("project", "draft", {}, 1000, "cancelled")).toThrow("cancelled");
+	expect(jobs.active).toBeNull();
+});
+
 test("a real editor waits for a hidden draft's durable write before opening", async () => {
 	const jobs = new AgentJobs();
 	const job = jobs.create("project", "draft", {}, 1000);

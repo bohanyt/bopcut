@@ -258,7 +258,7 @@ export async function mediaResponse(
  * Deletes a media file and its metadata. Also removes a file whose metadata write failed
  * (`<mediaId>.<ext>` without metadata), so a failed import leaves nothing behind.
  */
-export async function removeMedia(id: string, mediaId: string): Promise<void> {
+export async function removeMedia(id: string, mediaId: string, { interruptedUpload = false } = {}): Promise<void> {
 	const dir = path.join(projectDir(id), "media");
 	safeId(mediaId);
 	const metaFile = path.join(dir, "_metadata", `${mediaId}.json`);
@@ -267,6 +267,10 @@ export async function removeMedia(id: string, mediaId: string): Promise<void> {
 	const files = meta && own.test(meta.diskFile)
 		? [meta.diskFile as string]
 		: (await fs.readdir(dir).catch(() => [] as string[])).filter((name) => own.test(name));
+	if (interruptedUpload) {
+		const temporary = new RegExp(`^${mediaId}\\.[a-f0-9-]{36}\\.tmp$`);
+		for (const name of await fs.readdir(dir).catch(() => [] as string[])) if (temporary.test(name)) files.push(name);
+	}
 	for (const name of files) await retryTransient(() => fs.rm(path.join(dir, name), { force: true }));
 	await retryTransient(() => fs.rm(metaFile, { force: true }));
 }

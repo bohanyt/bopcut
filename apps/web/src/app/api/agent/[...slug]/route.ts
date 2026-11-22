@@ -5,6 +5,7 @@
 // AGENT_FILES_ROOT  bundle asset root (default = AGENT_WORKSPACE). Files outside this root are not served.
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { jobRunner } from "@/retrieval/job-runner";
 import { handleRetrieve } from "@/retrieval/server";
 import { handleGif } from "@/media/gif-server";
 import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
@@ -16,7 +17,7 @@ import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
 import { handleExportFile, handleExportResult } from "@/agent/export-server";
 import { handleCli, offerVisibleJob, requestKey } from "@/agent/cli-api";
-import { finishJob, getJob, JobError } from "@/agent/cli-job-server";
+import { finishJob, getJob, JobError, writeWorkspaceSnapshot } from "@/agent/cli-job-server";
 import { JOB_HEADER, type AgentJob } from "@/agent/cli-jobs";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -118,6 +119,15 @@ async function writeJobResult(req: Request, job: AgentJob, action: string) {
 		await finishJob(job, body);
 		return Response.json({ ok: true });
 	};
+	if (job.command === "draft") {
+		const runner = jobRunner(job.signal);
+		if (action === "gif") return handleGif(req, runner);
+		if (action === "retrieve" || action === "music" || action === "sfx") {
+			const handler = action === "retrieve" ? handleRetrieve : action === "music" ? handleMusic : handleSfx;
+			const result = await handler(await req.json().catch(() => null), { filesRoot: FILES_ROOT, runner, jobId: job.id });
+			return Response.json(result.body, { status: result.status });
+		}
+	}
 	if (job.command === "export") {
 		if (action === "export-result") {
 			const body = await req.json();
@@ -134,7 +144,7 @@ async function writeJobResult(req: Request, job: AgentJob, action: string) {
 	if ((job.command === "draft" && action === "applied") || action === job.command + "-result") return finish(await req.json());
 	if (job.hidden && job.command === "draft" && action === "sync" && job.committed) {
 		const body = await req.json();
-		await writeAtomic(path.join(WORKSPACE, "sync", job.projectId + ".json"), JSON.stringify(body, null, 1));
+		await writeWorkspaceSnapshot(WORKSPACE, body, true);
 		return Response.json({ ok: true });
 	}
 	return Response.json({ error: "Invalid result for this job" }, { status: 400 });
@@ -172,11 +182,7 @@ async function legacyPost(req: Request, slug: string[]) {
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "sync") {
-		const body = await req.json();
-		const text = JSON.stringify(body, null, 1);
-		const safe = String(body.projectId ?? "tanpa-id").replace(/[^a-zA-Z0-9-]/g, "");
-		await writeAtomic(path.join(WORKSPACE, "sync", `${safe}.json`), text);
-		await writeAtomic(path.join(WORKSPACE, "project.json"), text);
+		await writeWorkspaceSnapshot(WORKSPACE, await req.json());
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "edits") {

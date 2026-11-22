@@ -1,6 +1,7 @@
 import { localizeErrorDetail } from "@/i18n/error-details";
 import { getBrowserTranslator } from "@/i18n/browser";
 import { releaseMediaAssetUrls } from "@/media/url-release";
+import type { AgentFetch } from "@/agent/cli-transport";
 import { processMediaFile } from "@/media/processing";
 import type { EditorCore } from "@/core";
 import { toast } from "sonner";
@@ -11,15 +12,7 @@ import { waveformCache } from "@/services/waveform-cache/service";
 import { BatchCommand, RemoveMediaAssetCommand } from "@/commands";
 
 /** Media ids used by elements anywhere in these scenes. */
-export function mediaIdsInScenes(scenes: readonly { tracks: { main: { elements: readonly unknown[] }; overlay: readonly { elements: readonly unknown[] }[]; audio: readonly { elements: readonly unknown[] }[] } }[]): Set<string> {
-	const ids = new Set<string>();
-	for (const scene of scenes) {
-		for (const track of [scene.tracks.main, ...scene.tracks.overlay, ...scene.tracks.audio]) {
-			for (const element of track.elements as { mediaId?: unknown }[]) if (typeof element.mediaId === "string") ids.add(element.mediaId);
-		}
-	}
-	return ids;
-}
+import { mediaIdsInScenes } from "@/media/project-media";
 
 /** Outcome of discarding staged imports: ids removed from storage, and those that could not be. */
 export type DiscardResult = { removed: string[]; failed: { id: string; error: string }[] };
@@ -90,17 +83,18 @@ export class MediaManager {
 		await Promise.allSettled([...(this.binWrites.get(projectId)?.values() ?? [])].map(({ done }) => done));
 	}
 
-	async importFile({ session, file, name, words, ratchetFps = true, stagedIds }: {
+	async importFile({ session, file, name, words, ratchetFps = true, stagedIds, convertGif }: {
 		session: MediaImportSession;
 		file: File;
 		name?: string;
 		words?: MediaAsset["words"];
 		ratchetFps?: boolean;
 		stagedIds?: string[];
+		convertGif?: AgentFetch;
 	}): Promise<MediaAsset | null> {
 		if (!this.isCurrentImport(session)) return null;
 		const { projectId, signal } = session;
-		const processed = await processMediaFile({ file, signal: session.cancel ? AbortSignal.any([signal, session.cancel]) : signal });
+		const processed = await processMediaFile({ file, convertGif, signal: session.cancel ? AbortSignal.any([signal, session.cancel]) : signal });
 		if (!processed) return null;
 		if (!this.isCurrentImport(session)) {
 			releaseMediaAssetUrls(processed);

@@ -26,13 +26,14 @@ import { AgentDraftCommand } from "./draft-command";
 import { getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildAllEditItems, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { NO_SELECTION } from "./selection-payload";
-import { mediaIdsInScenes } from "@/core/managers/media-manager";
+import { mediaIdsInScenes } from "@/media/project-media";
 import type { SaveSession } from "@/core/managers/save-manager";
 import type { TProject } from "@/project/types";
 import { loadTextPresets } from "@/text/presets";
 import { resolveCaptionPreset } from "./captions";
 import { editorTab, runClaimedJob, type ClaimedJob } from "./cli-browser";
 import type { AgentFetch, JobTransport } from "./cli-transport";
+import { waitWithAbort } from "@/utils/abort";
 
 export type { Draft, DraftOp } from "./draft";
 
@@ -241,26 +242,34 @@ export function installAgentBridge() {
 	};
 	(window as any).agent = { editor, snapshot: consoleSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
 	push();
-	setInterval(pollDraft, 2000);
-	// Frames wait for media and saves too: otherwise a frame can miss content that is still loading.
-	// One timer for frame and change requests (two small reads of the workspace every 2 s).
 	setInterval(() => {
-		void pollFrames(agentReadiness);
-		void pollChanges();
-		void pollExport();
+		void pollDraft();
+		if (!runningCliJob) {
+			trackLegacyPass(pollFrames(agentReadiness));
+			trackLegacyPass(pollChanges());
+			trackLegacyPass(pollExport());
+		}
 	}, 2000);
 }
 
-export async function runEditorJob(claimed: ClaimedJob, job: JobTransport) {
+const legacyPasses = new Set<Promise<unknown>>();
+
+export function trackLegacyPass(pass: Promise<unknown>) {
+	legacyPasses.add(pass);
+	const clear = () => legacyPasses.delete(pass);
+	void pass.then(clear, clear);
+}
+
+export async function runEditorJob(claimed: ClaimedJob, job: JobTransport, target = {
+	session: currentSession(), rootSceneId: agentRootScene()?.id ?? null,
+}) {
 	if (claimed.command === "frames") return pollFrames(agentReadiness, job);
 	if (claimed.command === "export") return pollExport(job);
 	if (claimed.command === "changes") return pollChanges(job);
-	const session = currentSession();
-	const rootSceneId = agentRootScene()?.id ?? null;
 	const response = await job.request("/api/agent/draft");
 	if (!response.ok) throw new Error("The draft is unavailable. Check the project and submit it again.");
 	const draft: Draft = await response.json();
-	await applyDraft(draft, { session, rootSceneId, job });
+	await applyDraft(draft, { ...target, job });
 }
 
 export function retryMissingMedia(failures?: MediaLoadFailure[]): Promise<MediaLoadFailure[]> {
@@ -528,7 +537,9 @@ export async function pollDraft() {
 					if (draftSessionError({ draft: { projectId: claimed.projectId }, queued: session, now: currentSession() })) {
 						throw new Error("The editor switched projects. Reopen the original project and retry.");
 					}
-					await runEditorJob(claimed, job);
+					await waitWithAbort(Promise.allSettled(legacyPasses), job.signal);
+					job.signal.throwIfAborted();
+					await runEditorJob(claimed, job, { session, rootSceneId });
 				});
 			} finally {
 				runningCliJob = false;
@@ -607,6 +618,7 @@ export function draftSessionError({ draft, queued, now }: { draft: Pick<Draft, "
 async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSceneId: string | null, job?: JobTransport) {
 	const send = job?.request ?? fetch;
 	job?.signal.throwIfAborted();
+	const progress = (stage: string) => job?.progress(stage).catch(() => {});
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
 	const active = editor.scenes.getActiveSceneOrNull();
@@ -660,7 +672,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		return;
 	}
 
-	await job?.progress("loading media");
+	await progress("loading media");
 	// Load icons and assets first (async), then change the timeline at once.
 	const media = new Map<AgentElement, LoadedMedia>();
 	const byPath = new Map<string, Promise<LoadedMedia>>();
@@ -751,7 +763,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 					const asset = e.asset;
 					const key = assetKey(asset);
 					const withWords = wordsByAsset.has(key) ? { ...asset, words: wordsByAsset.get(key) as SourceWord[] } : asset;
-					if (!byPath.has(key)) byPath.set(key, loadAgentAsset({ session: importSession, asset: withWords, stagedIds: staged }));
+					if (!byPath.has(key)) byPath.set(key, loadAgentAsset({ session: importSession, asset: withWords, stagedIds: staged, send: job?.request }));
 					media.set(e, await byPath.get(key)!);
 				}
 			} catch (error) {
@@ -780,6 +792,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 			words ? `; the words of ${words} ${words === 1 ? "media file" : "media files"} could not be put back` : "",
 		].join("");
 	};
+	await progress("applying");
 	if (job?.signal.aborted) { await discard(); return; }
 	// The user started dragging while assets loaded: committing now would cancel the drag, so the draft
 	// waits for the release (at most a minute).
@@ -788,6 +801,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		await report({ ok: false, applied: false, error: "the user kept dragging on the timeline; nothing was applied, resend" + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
 	}
+	if (job?.signal.aborted) { await discard(); return; }
 	// Loading (for example a slow URL section) took a while. If another project is open now, its timeline
 	// is not the one this draft was made for, and the staged imports belong to the first project: stop here.
 	if (draftSessionError({ draft, queued: session, now: currentSession() })) {
@@ -817,8 +831,6 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 
 	const loadedWords = new Map<string, SourceWord[]>();
 	for (const loaded of media.values()) if (loaded.words) loadedWords.set(loaded.id, loaded.words);
-	await job?.progress("applying");
-	if (job?.signal.aborted) { await discard(); return; }
 	// Read the scenes after loading: the human may have edited meanwhile.
 	const before = editor.scenes.getScenes();
 	const openScene = editor.scenes.getActiveScene();
@@ -881,7 +893,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		await report({ sceneId: root.id, ok: false, applied: false, ...(stale ? { stale: true } : {}), error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
 		return;
 	}
-	await job?.progress("saving");
+	const saving = progress("saving");
 	const cleanup = await discard(new Set(publish));
 	// Words the draft set (already stored) are the media's words in the editor from now on.
 	for (const [mediaId, words] of outcome.words) editor.media.setMediaWords({ id: mediaId, words });
@@ -915,6 +927,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		const promoteError = await editor.media.promotePublishedMediaAssets({ projectId, ids });
 		if (promoteError) console.warn("Staged media not promoted (they still load because the timeline uses them):", promoteError);
 	});
+	await saving;
 	const saved = await ownSession.settle(revision);
 	if (saved) await promotion;
 	const failed = outcome.results.filter((r) => !r?.ok).length;

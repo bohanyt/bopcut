@@ -105,11 +105,11 @@ export async function readProject(id: string) {
 		}),
 		statFile(thumbnailFile(id)),
 	]);
-	const { metadata } = project;
+	const { metadata, agentJob: _agentJob, ...value } = project as SerializedProject & { agentJob?: string };
 	return {
 		etag: revision(project),
 		value: {
-			...project,
+			...value,
 			navigation: navigation ?? undefined,
 			metadata: metadata && {
 				...metadata,
@@ -122,22 +122,23 @@ export async function readProject(id: string) {
 }
 
 /** The caller holds the project lock. Preserve an old thumbnail before removing its inline bytes. */
-export async function writeProject(id: string, value: SerializedProject, current: SerializedProject | null) {
+export async function writeProject(id: string, value: SerializedProject, current: SerializedProject | null, agentJob?: string) {
 	const legacyThumbnail = inlineThumbnail(value.metadata.thumbnail)
 		? value.metadata.thumbnail
 		: current?.metadata?.thumbnail;
 	await preserveInlineThumbnail(id, legacyThumbnail);
-	const { navigation: _navigation, ...project } = value;
+	const { navigation: _navigation, agentJob: _previousJob, ...project } = value as SerializedProject & { agentJob?: string };
 	project.metadata.thumbnail = storedThumbnail(value.metadata.thumbnail);
 	// Preserve inline view state written by older versions until it is superseded by navigation.json.
 	project.timelineViewState ??= current?.timelineViewState;
-	await atomicWrite(projectFile(id), JSON.stringify(project));
+	const saved = agentJob ? { ...project, agentJob } : project;
+	await atomicWrite(projectFile(id), JSON.stringify(saved));
 	const stat = await statFile(projectFile(id)).catch((error) => {
 		console.error(`Could not check project summary (${id}):`, error);
 		return null;
 	});
 	if (stat) await cacheSummary(id, stat, summarize(id, project));
-	return revision(project);
+	return revision(saved);
 }
 
 export async function writeProjectNavigation(id: string, value: ProjectNavigation) {

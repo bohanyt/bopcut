@@ -1,9 +1,65 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { atomicWrite, dataRoot, projectDir, readJson, removeMedia, statFile, withProjectLock } from "@/services/storage/server/files";
+import { atomicWrite, dataRoot, projectDir, readJson, removeMedia, safeId, withProjectLock } from "@/services/storage/server/files";
+import { mediaIdsInScenes } from "@/media/project-media";
 import { AgentJobs, type AgentJob, type JobBody } from "./cli-jobs";
 
-const globals = globalThis as typeof globalThis & { bopencutAgentJobs?: AgentJobs };
+type DraftRecovery = { projectId: string; staged: string[]; words: [string, unknown][] };
+
+const globals = globalThis as typeof globalThis & { bopencutAgentJobs?: AgentJobs; bopencutAgentRecovery?: Map<string, Promise<void>> };
+const recovered = globals.bopencutAgentRecovery ??= new Map();
+const recoveryDir = () => path.join(dataRoot(), ".agent-jobs");
+const recoveryFile = (jobId: string) => path.join(recoveryDir(), safeId(jobId) + ".recovery");
+
+export async function rememberDraft(job: AgentJob) {
+	const data: DraftRecovery = { projectId: job.projectId, staged: [...job.staged], words: [...job.words] };
+	await atomicWrite(recoveryFile(job.id), JSON.stringify(data));
+}
+
+async function rollbackDraft(jobId: string, { projectId, staged, words }: DraftRecovery) {
+	await withProjectLock(projectId, async () => {
+		const dir = projectDir(projectId);
+		const project = await readJson(path.join(dir, "project.json"));
+		if (!project) return;
+		const committed = project.agentJob === jobId;
+		const used = committed ? mediaIdsInScenes(project.scenes ?? []) : new Set<string>();
+		for (const id of staged) {
+			if (used.has(id)) continue;
+			await removeMedia(projectId, safeId(id), { interruptedUpload: true });
+		}
+		if (committed) return;
+		for (const [id, previous] of words) {
+			const file = path.join(dir, "media", "_metadata", safeId(id) + ".json");
+			const current = await readJson(file);
+			if (current) await atomicWrite(file, JSON.stringify({ ...current, words: previous ?? undefined }));
+		}
+	});
+}
+
+export function recoverAgentJobs() {
+	const root = recoveryDir();
+	const existing = recovered.get(root);
+	if (existing) return existing;
+	const scan = (async () => {
+		const files = await fs.readdir(root).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return [];
+			throw error;
+		});
+		for (const name of files) {
+			const match = /^([a-zA-Z0-9_-]{1,128})\.(recovery|json)$/.exec(name);
+			if (!match) continue;
+			const file = path.join(root, name);
+			if (match[2] === "recovery") {
+				const data: DraftRecovery | null = await readJson(file);
+				if (data) await rollbackDraft(match[1], data);
+			}
+			await fs.rm(file, { force: true });
+		}
+	})();
+	recovered.set(root, scan);
+	void scan.catch(() => recovered.delete(root));
+	return scan;
+}
 export const agentJobs = globals.bopencutAgentJobs ??= new AgentJobs(async (job) => {
 	if (job.resultFile) await fs.rm(job.resultFile, { force: true });
 	if (!job.update.done && job.frameFiles.size) {
@@ -11,13 +67,9 @@ export const agentJobs = globals.bopencutAgentJobs ??= new AgentJobs(async (job)
 		const [file] = job.frameFiles;
 		await fs.rmdir(path.dirname(file));
 	}
-	if (job.hidden && job.command === "draft" && !job.committed && (job.staged.size || job.words.size)) {
-		await withProjectLock(job.projectId, async () => {
-			for (const id of job.staged) await removeMedia(job.projectId, id);
-			if (await statFile(path.join(projectDir(job.projectId), "project.json"))) {
-				for (const [file, previous] of job.words) await atomicWrite(file, JSON.stringify(previous));
-			}
-		});
+	if (job.hidden && job.command === "draft" && (job.staged.size || job.words.size)) {
+		if (!job.committed || !job.update.done) await rollbackDraft(job.id, { projectId: job.projectId, staged: [...job.staged], words: [...job.words] });
+		await fs.rm(recoveryFile(job.id), { force: true });
 	}
 });
 
@@ -37,6 +89,7 @@ export async function finishJob(job: AgentJob, body: JobBody) {
 	const file = path.join(dataRoot(), ".agent-jobs", job.id + ".json");
 	job.resultFile = file;
 	await atomicWrite(file, JSON.stringify({ ...body, rev: job.body.rev, projectId: job.projectId }));
+	job.signal.throwIfAborted();
 	job.progress(job.update.stage, job.update.percent, true);
 }
 
@@ -44,6 +97,21 @@ export async function waitForJob(job: AgentJob, version: number, signal: AbortSi
 	const update = await job.wait(version, signal);
 	if (job.signal.aborted) throw new JobError("The agent job expired. Check the project before retrying.", 410);
 	return { ...update, ...(update.done && job.resultFile ? { result: await readJson(job.resultFile) } : {}) };
+}
+
+let syncWrites: Promise<unknown> = Promise.resolve();
+
+export function writeWorkspaceSnapshot(workspace: string, body: JobBody, hidden = false) {
+	const writing = syncWrites.then(async () => {
+		const text = JSON.stringify(body, null, 1);
+		const safe = String(body.projectId ?? "tanpa-id").replace(/[^a-zA-Z0-9_-]/g, "");
+		await atomicWrite(path.join(workspace, "sync", `${safe}.json`), text);
+		const last = path.join(workspace, "project.json");
+		const lastProject = hidden ? await readJson(last) : null;
+		if (!hidden || lastProject?.projectId === body.projectId) await atomicWrite(last, text);
+	});
+	syncWrites = writing.catch(() => {});
+	return writing;
 }
 
 export async function snapshotFor(workspace: string, projectId?: string) {

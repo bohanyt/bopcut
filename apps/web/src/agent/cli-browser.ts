@@ -39,8 +39,12 @@ export async function runClaimedJob(job: ClaimedJob, hidden: boolean, run: (tran
 		await run({
 			signal,
 			async progress(stage) {
-				const response = await post("progress", { stage });
-				if (!response.ok) controller.abort();
+				try {
+					const response = await post("progress", { stage });
+					if (!response.ok) controller.abort();
+				} catch {
+					controller.abort();
+				}
 			},
 			async request(input, init) {
 				const target = String(input).replace("/api/agent/", `/api/agent/job/${job.id}/`);

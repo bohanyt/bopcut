@@ -1,6 +1,6 @@
 import { Command } from "@/commands/base-command";
 import { EditorCore } from "@/core";
-import { mediaIdsInScenes } from "@/core/managers/media-manager";
+import { mediaIdsInScenes } from "@/media/project-media";
 import { RemoveMediaAssetCommand } from "./remove-media-asset";
 
 /** Includes an already saved import in the history entry that inserts its first clip. */

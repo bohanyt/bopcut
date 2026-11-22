@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { agentJobs, getJob, JobError } from "@/agent/cli-job-server";
+import { agentJobs, getJob, JobError, recoverAgentJobs, rememberDraft } from "@/agent/cli-job-server";
 import { JOB_HEADER, type AgentJob } from "@/agent/cli-jobs";
 import {
 	atomicWrite,
@@ -54,6 +54,7 @@ async function handle(
 		return Response.json({ error: "Origin ditolak" }, { status: 403 });
 	const s = (await params).slug;
 	try {
+		await recoverAgentJobs();
 		const owner = req.headers.get(JOB_HEADER);
 		if (owner) {
 			const job = getJob(owner);
@@ -61,8 +62,9 @@ async function handle(
 				throw new JobError("The worker can only access its assigned project.", 403);
 			}
 			if (req.method === "GET" || req.method === "HEAD") return await storage(req, s, job);
-			if (job.command !== "draft" || req.headers.has("x-migration") ||
-				(s.length > 2 && s[2] !== "media" && s[2] !== "navigation")) {
+			const draftWrite = (req.method === "PUT" && (s.length === 2 || (s.length === 3 && s[2] === "navigation"))) ||
+				(s.length === 4 && s[2] === "media" && ["PUT", "POST", "DELETE"].includes(req.method));
+			if (job.command !== "draft" || req.headers.has("x-migration") || !draftWrite) {
 				throw new JobError("Open the editor once to finish preparing this project, then retry.", 409);
 			}
 			return await job.use(() => storage(req, s, job));
@@ -145,7 +147,8 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 					const expected = req.headers.get("if-match");
 					if (!migrating && expected !== (current ? revision(current) : "new"))
 						return Response.json({ error: "Project changed" }, { status: 409 });
-					const etag = await writeProject(id, value, current);
+					job?.signal.throwIfAborted();
+					const etag = await writeProject(id, value, current, job?.id);
 					if (job) job.committed = true;
 					if (migrating)
 						await atomicWrite(marker(id), JSON.stringify({ migrated: true }));
@@ -262,6 +265,7 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 						if (job) {
 							if (metadata.staged !== true) throw new JobError("Open the editor to migrate this project's media, then retry.", 409);
 							job.staged.add(mediaId);
+							await rememberDraft(job);
 						}
 						await saveMedia(id, mediaId, metadata, req.body, job?.signal);
 						return Response.json({ ok: true });
@@ -275,7 +279,10 @@ async function storage(req: Request, s: string[], job?: AgentJob): Promise<Respo
 						if (!old || metadata.id !== mediaId)
 							return new Response(null, { status: 400 });
 						job?.signal.throwIfAborted();
-						if (job && !job.committed && !job.staged.has(mediaId) && !job.words.has(file)) job.words.set(file, old);
+						if (job && !job.committed && !job.staged.has(mediaId) && !job.words.has(mediaId)) {
+							job.words.set(mediaId, old.words);
+							await rememberDraft(job);
+						}
 						await atomicWrite(
 							file,
 							JSON.stringify({ ...metadata, diskFile: old.diskFile }),

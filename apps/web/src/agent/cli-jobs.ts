@@ -7,13 +7,12 @@ export type JobUpdate = { version: number; stage: string; percent?: number; done
 export { JOB_HEADER } from "./cli-transport";
 
 export class AgentJob {
-	readonly id = randomUUID();
 	readonly controller = new AbortController();
 	readonly released = Promise.withResolvers<void>();
 	readonly pending = new Set<Promise<unknown>>();
 	readonly staged = new Set<string>();
 	readonly frameFiles = new Set<string>();
-	readonly words = new Map<string, JobBody>();
+	readonly words = new Map<string, unknown>();
 	readonly expires: ReturnType<typeof setTimeout>;
 	owner: string | null = null;
 	committed = false;
@@ -29,6 +28,7 @@ export class AgentJob {
 		readonly hidden: boolean,
 		timeoutMs: number,
 		onExpire: () => void,
+		readonly id: string,
 	) {
 		this.expires = setTimeout(onExpire, timeoutMs + 15000);
 		this.expires.unref();
@@ -79,6 +79,7 @@ export class AgentJob {
 
 export class AgentJobs {
 	active: AgentJob | null = null;
+	private readonly cancelled = new Map<string, number>();
 	private readonly tabs = new Map<string, Map<string, object>>();
 
 	constructor(private readonly cleanup: (job: AgentJob) => Promise<void> = async () => {}) {}
@@ -104,13 +105,20 @@ export class AgentJobs {
 		if (job?.hidden && job.command === "draft" && job.projectId === projectId) await job.released.promise;
 	}
 
-	create(projectId: string, command: JobCommand, body: JobBody, timeoutMs: number): AgentJob {
+	create(projectId: string, command: JobCommand, body: JobBody, timeoutMs: number, id: string = randomUUID()): AgentJob {
+		for (const [key, expiry] of this.cancelled) if (expiry <= Date.now()) this.cancelled.delete(key);
+		if (this.cancelled.has(id)) throw new Error("The command was cancelled. Submit a new job to retry.");
 		if (this.active) throw new Error("An agent command is already running. Wait for it to finish and try again.");
 		const job = new AgentJob(projectId, command, body, !this.serving(projectId), timeoutMs, () => {
 			void this.close(job).catch((error) => console.error("Agent cleanup failed:", error));
-		});
+		}, id);
 		this.active = job;
 		return job;
+	}
+
+	async cancel(id: string): Promise<void> {
+		if (this.active?.id === id) return this.close(this.active, "The command was cancelled");
+		this.cancelled.set(id, Date.now() + 30000);
 	}
 
 	close(job: AgentJob, reason = "The job ended"): Promise<void> {

@@ -86,9 +86,11 @@ async function generateImageThumbnail({
 export async function processMediaFile({
 	file: original,
 	signal,
+	convertGif = fetch,
 }: {
 	file: File;
 	signal: AbortSignal;
+	convertGif?: import("@/agent/cli-transport").AgentFetch;
 }): Promise<ProcessedMediaAsset | null> {
 	if (signal.aborted) return null;
 	// Convert GIF to video on the local server to preserve animation and transparency.
@@ -97,7 +99,7 @@ export async function processMediaFile({
 	let hasVariableGifDelay = false;
 	if (original.type === "image/gif" || (hasGenericMediaMimeType(original) && /\.gif$/i.test(original.name))) {
 		try {
-			const res = await fetch("/api/agent/gif", { method: "POST", body: original, signal });
+			const res = await convertGif("/api/agent/gif", { method: "POST", body: original, signal });
 			if (!res.ok) throw new Error(await res.text());
 			const converted = await res.blob();
 			const type = converted.type;

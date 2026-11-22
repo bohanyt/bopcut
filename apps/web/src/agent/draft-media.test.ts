@@ -22,7 +22,7 @@ beforeEach(() => {
 	restoreProcessing = () => process.mockRestore();
 });
 const { EditorCore } = await import("@/core");
-const { agentSnapshot, applyDraft, pollDraft, pollChanges } = await import("./bridge");
+const { agentSnapshot, applyDraft, pollDraft, pollChanges, trackLegacyPass } = await import("./bridge");
 const { snapshotHistory } = await import("./history");
 const { importAgentBundle } = await import("./importer");
 const { storageService } = await import("@/services/storage/service");
@@ -539,6 +539,38 @@ describe("malformed element trees", () => {
 });
 
 describe("the draft poller", () => {
+	test("a claimed CLI job waits for an in-flight file pass", async () => {
+		setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const existing = gate();
+		const watching = gate();
+		let started = false;
+		trackLegacyPass(existing.promise);
+		const original = fetch;
+		globalThis.fetch = (async (url, init) => {
+			if (url === "/api/agent/draft") {
+				return new Response("null", { headers: { "x-bopencut-claim": JSON.stringify({ id: "job", command: "draft", projectId: "p" }) } });
+			}
+			if (url === "/api/agent/cli/watch/job") {
+				watching.open();
+				return new Promise<Response>((resolve) => init?.signal?.addEventListener("abort", () => resolve(new Response("{}")), { once: true }));
+			}
+			if (url === "/api/agent/job/job/draft") {
+				started = true;
+				return Response.json(draft([{ op: "set", match: { agentId: "old" }, start: 1 }]));
+			}
+			if (url === "/api/agent/job/job/applied") return original("/api/agent/applied", init);
+			return original(url, init);
+		}) as typeof fetch;
+		const running = pollDraft();
+		await watching.promise;
+		try { expect(started).toBe(false); }
+		finally { existing.open(); await running; }
+		expect(started).toBe(true);
+		expect(backend.state.results[0]).toMatchObject({ applied: true });
+	});
+
 	test("a project opened while draft.json is read: the draft is left for the next poll, not applied or refused", async () => {
 		const editor = setup();
 		const store = new Map<string, string>();
@@ -796,6 +828,49 @@ describe("basedOn is checked before anything is imported", () => {
 			}
 		});
 	}
+
+	test("a root switch during CLI applying progress refuses the draft", async () => {
+		const editor = setup();
+		const other = scene("other", { overlay: [], main: { id: "t-other", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, audio: [] });
+		editor.scenes.setScenes({ scenes: [...editor.scenes.getScenes(), { ...other, isMain: false }], activeSceneId: "main" });
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const entered = gate();
+		const resume = gate();
+		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("ok.png", "late") }]), {
+			job: {
+				request: fetch,
+				signal: new AbortController().signal,
+				async progress(stage) { if (stage === "applying") { entered.open(); await resume.promise; } },
+			},
+		});
+		await entered.promise;
+		try { await editor.scenes.switchToScene({ sceneId: "other" }); }
+		finally { resume.open(); await run; }
+		expect(backend.state.results[0]).toMatchObject({ applied: false });
+		expect(backend.state.deleted).toEqual(backend.state.saved);
+	});
+
+	test("cancelling during CLI applying progress rolls back a staged import", async () => {
+		setup();
+		const backend = fakeBackend();
+		restore = backend.restore;
+		const controller = new AbortController();
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("ok.png", "late") }]), {
+			job: {
+				request: fetch,
+				signal: controller.signal,
+				async progress(stage) {
+					if (stage !== "applying") return;
+					controller.abort();
+					throw controller.signal.reason;
+				},
+			},
+		});
+		expect(backend.state.saved).toHaveLength(1);
+		expect(backend.state.deleted).toEqual(backend.state.saved);
+		expect(backend.state.results).toHaveLength(0);
+	});
 
 	test("another root scene opened while the draft loads: nothing applies to it", async () => {
 		const editor = setup();
