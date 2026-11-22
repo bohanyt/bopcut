@@ -866,6 +866,7 @@ export class ProjectManager {
 		this.cancelExport();
 		this.resetExportState();
 		this.editor.command.clear();
+		this.editor.timeline.cancelPreviewGesture();
 		this.editor.timeline.discardPreview();
 		previous.abort();
 	}

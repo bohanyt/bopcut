@@ -1,6 +1,7 @@
 // In and out animation presets for a clip: drawn on top of the clip's own animation, so its keyframes
 // stay as they are, and trims, speed changes and copies keep them.
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import type { PreviewGesture } from "@/core/managers/timeline-manager";
 import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
 import { NumberField } from "@/components/ui/number-field";
@@ -44,6 +45,10 @@ const LABELS: Record<string, string> = {
 	fall: "Fall",
 	dissolve: "Dissolve",
 };
+
+const RANGE_KEYS = [
+	"ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown",
+];
 
 function PresetSide({
 	side,
@@ -118,28 +123,20 @@ function PresetDuration({
 	const value = clampDuration(duration);
 	const resetValue = clampDuration(defaultDuration);
 	const [draft, setDraft] = useState<string | null>(null);
-	const drag = useRef<{ pointerId: number; previewing: boolean } | null>(null);
+	const drag = useRef<{
+		pointerId: number;
+		previewing: boolean;
+		owner: PreviewGesture;
+	} | null>(null);
+	const ignoreRangeChanges = useRef(false);
 	const label = side === "in" ? "In length" : "Out length";
 	const durationKey = side === "in" ? PRESET_PARAM.inDuration : PRESET_PARAM.outDuration;
 
-	useEffect(() => {
-		const finish = (event: PointerEvent) => {
-			if (drag.current?.pointerId !== event.pointerId) return;
-			const { previewing } = drag.current;
-			drag.current = null;
-			if (!previewing) return;
-			if (event.type === "pointercancel") timeline.discardPreview();
-			else timeline.commitPreview();
-		};
-		window.addEventListener("pointerup", finish);
-		window.addEventListener("pointercancel", finish);
-		return () => {
-			window.removeEventListener("pointerup", finish);
-			window.removeEventListener("pointercancel", finish);
-			if (drag.current?.previewing) timeline.discardPreview();
-			drag.current = null;
-		};
-	}, [timeline]);
+	useLayoutEffect(() => () => drag.current?.owner.cancel(), [
+		timeline,
+		trackId,
+		element.id,
+	]);
 
 	return (
 		<SectionField label="Length">
@@ -154,13 +151,38 @@ function PresetDuration({
 					disabled={min === max}
 					className="accent-primary min-w-0 flex-1 disabled:opacity-50"
 					onPointerDown={(event) => {
-						if (event.button === 0 && event.isPrimary) {
-							// Commit a focused number field before the range input starts changing.
-							event.currentTarget.focus();
-							drag.current = { pointerId: event.pointerId, previewing: false };
-						}
+						if (event.button !== 0 || !event.isPrimary) return;
+						const { currentTarget: input, pointerId } = event;
+						// Commit a focused number field before the range input starts changing.
+						input.focus();
+						const owner = timeline.beginPreviewGesture(() => {
+							drag.current = null;
+							// Native range input events can continue after capture is released.
+							ignoreRangeChanges.current = true;
+							if (input.hasPointerCapture(pointerId)) input.releasePointerCapture(pointerId);
+						});
+						ignoreRangeChanges.current = false;
+						drag.current = { pointerId, previewing: false, owner };
+						input.setPointerCapture(pointerId);
+					}}
+					onPointerUp={(event) => {
+						const gesture = drag.current;
+						if (gesture?.pointerId !== event.pointerId) return;
+						drag.current = null;
+						gesture.owner.finish();
+						if (gesture.previewing) timeline.commitPreview();
+					}}
+					onPointerCancel={(event) => {
+						if (drag.current?.pointerId === event.pointerId) drag.current.owner.cancel();
+					}}
+					onLostPointerCapture={(event) => {
+						if (drag.current?.pointerId === event.pointerId) drag.current.owner.cancel();
+					}}
+					onKeyDown={(event) => {
+						if (RANGE_KEYS.includes(event.key)) ignoreRangeChanges.current = false;
 					}}
 					onChange={(event) => {
+						if (ignoreRangeChanges.current) return;
 						const raw = event.currentTarget.valueAsNumber;
 						const gesture = drag.current;
 						// The range input serializes fractional endpoints with reduced precision.

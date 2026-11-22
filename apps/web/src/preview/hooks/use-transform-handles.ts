@@ -4,7 +4,6 @@ import type { OnSnapLinesChange } from "@/preview/hooks/use-preview-interaction"
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
-import { registerCanceller } from "@/editor/cancel-interaction";
 import {
 	TransformHandleController,
 	type TransformHandleDeps,
@@ -43,7 +42,7 @@ export function useTransformHandles({
 			previewElements: (updates) =>
 				editor.timeline.previewElements({ updates }),
 			commitPreview: () => editor.timeline.commitPreview(),
-			discardPreview: () => editor.timeline.discardPreview(),
+			beginPreviewGesture: editor.timeline.beginPreviewGesture,
 		},
 		preview: {
 			onSnapLinesChange,
@@ -56,11 +55,6 @@ export function useTransformHandles({
 
 	const [, rerender] = useReducer((n: number) => n + 1, 0);
 	useEffect(() => controller.subscribe(rerender), [controller]);
-
-	useEffect(() => {
-		if (!controller.isActive) return;
-		return registerCanceller({ fn: () => controller.cancel() });
-	}, [controller, controller.isActive]);
 
 	useEffect(() => () => controller.destroy(), [controller]);
 

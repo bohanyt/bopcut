@@ -1,11 +1,13 @@
 "use client";
 
-import { useRef, useState, type PointerEvent } from "react";
+import { useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { useShiftKey } from "@/hooks/use-shift-key";
-import { useCommittedRef } from "@/hooks/use-committed-ref";
+import { useEditor } from "@/editor/use-editor";
+import type { PreviewGesture } from "@/core/managers/timeline-manager";
 import { getBezierPoint } from "@/animation/bezier";
 import type { NormalizedCubicBezier } from "@/animation/types";
 import { cn } from "@/utils/ui";
+import { finishFocusedField } from "@/utils/browser";
 
 const GRAPH_WIDTH = 140;
 const GRAPH_HEIGHT = 94;
@@ -85,10 +87,18 @@ export function BezierGraph({
 	onChangeEnd?: (value: NormalizedCubicBezier) => void;
 	onCancel?: () => void;
 }) {
+	const { timeline } = useEditor();
 	const svgRef = useRef<SVGSVGElement>(null);
 	const [activeHandle, setActiveHandle] = useState<BezierHandle | null>(null);
 	const isShiftPressedRef = useShiftKey();
-	const latestValueRef = useCommittedRef(value);
+	const drag = useRef<{
+		handle: BezierHandle;
+		pointerId: number;
+		owner: PreviewGesture;
+		value: NormalizedCubicBezier | null;
+	} | null>(null);
+
+	useLayoutEffect(() => () => drag.current?.owner.cancel(), []);
 
 	function getPointerPosition({
 		event,
@@ -107,15 +117,26 @@ export function BezierGraph({
 
 	function onHandlePointerDown({ handle }: { handle: BezierHandle }) {
 		return (event: PointerEvent<SVGCircleElement>) => {
+			if (event.button !== 0 || drag.current) return;
 			event.preventDefault();
 			event.stopPropagation();
+			finishFocusedField(event.currentTarget);
+			const { currentTarget: target, pointerId } = event;
+			const owner = timeline.beginPreviewGesture(() => {
+				drag.current = null;
+				setActiveHandle(null);
+				if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+				onCancel?.();
+			});
+			drag.current = { handle, pointerId, owner, value: null };
 			setActiveHandle(handle);
-			event.currentTarget.setPointerCapture(event.pointerId);
+			target.setPointerCapture(pointerId);
 		};
 	}
 
 	function onPointerMove({ event }: { event: PointerEvent<SVGSVGElement> }) {
-		if (!activeHandle) return;
+		const gesture = drag.current;
+		if (gesture?.pointerId !== event.pointerId) return;
 		const pointerPos = getPointerPosition({ event });
 		const x = fromSvgX({ svgX: pointerPos.x });
 		const y = snap({
@@ -124,27 +145,28 @@ export function BezierGraph({
 			isEnabled: !isShiftPressedRef.current,
 		});
 		const next: NormalizedCubicBezier = [...value];
-		if (activeHandle === "c1") {
+		if (gesture.handle === "c1") {
 			next[0] = x;
 			next[1] = y;
 		} else {
 			next[2] = x;
 			next[3] = y;
 		}
-		latestValueRef.current = next;
+		gesture.value = next;
 		onChange?.(next);
 	}
 
-	function onPointerUp() {
-		if (!activeHandle) return;
+	function onPointerUp(event: PointerEvent<SVGSVGElement>) {
+		const gesture = drag.current;
+		if (gesture?.pointerId !== event.pointerId) return;
+		drag.current = null;
+		gesture.owner.finish();
 		setActiveHandle(null);
-		onChangeEnd?.(latestValueRef.current);
+		if (gesture.value) onChangeEnd?.(gesture.value);
 	}
 
-	function onPointerCancel() {
-		if (!activeHandle) return;
-		setActiveHandle(null);
-		onCancel?.();
+	function onPointerCancel(event: PointerEvent<SVGSVGElement>) {
+		if (drag.current?.pointerId === event.pointerId) drag.current.owner.cancel();
 	}
 
 	const path = curvePath({ curve: value });
@@ -163,6 +185,7 @@ export function BezierGraph({
 			onPointerMove={(event) => onPointerMove({ event })}
 			onPointerUp={onPointerUp}
 			onPointerCancel={onPointerCancel}
+			onLostPointerCapture={onPointerCancel}
 		>
 			<title>Bezier curve editor</title>
 			<line

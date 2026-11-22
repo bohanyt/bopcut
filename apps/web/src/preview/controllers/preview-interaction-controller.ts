@@ -3,6 +3,8 @@ import type {
 	PointerEvent as ReactPointerEvent,
 } from "react";
 import type { MediaAsset } from "@/media/types";
+import { finishFocusedField } from "@/utils/browser";
+import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import {
 	getVisibleElementsWithBounds,
 	type ElementWithBounds,
@@ -125,7 +127,7 @@ export interface TimelineOps {
 	}) => Array<{ track: TimelineTrack; element: TimelineElement }>;
 	previewElements: (updates: readonly TimelinePreviewUpdate[]) => void;
 	commitPreview: () => void;
-	discardPreview: () => void;
+	beginPreviewGesture: TimelineManager["beginPreviewGesture"];
 }
 
 export interface PlaybackApi {
@@ -230,6 +232,7 @@ export class PreviewInteractionController {
 	private readonly subscribers = new Set<() => void>();
 
 	private gesture: GestureSession = IDLE_GESTURE;
+	private gestureOwner: PreviewGesture | null = null;
 	private editingTextState: EditingTextState | null = null;
 	private memberId: string | null = null;
 	private wasPlaying: boolean;
@@ -244,6 +247,7 @@ export class PreviewInteractionController {
 		this.onPointerMove = this.onPointerMove.bind(this);
 		this.onPointerUp = this.onPointerUp.bind(this);
 		this.commitTextEdit = this.commitTextEdit.bind(this);
+		this.previewTextEdit = this.previewTextEdit.bind(this);
 		this.handlePlaybackChange = this.handlePlaybackChange.bind(this);
 
 		this.unsubscribePlayback = this.deps.playback.subscribe(
@@ -253,10 +257,6 @@ export class PreviewInteractionController {
 
 	private get deps(): PreviewInteractionDeps {
 		return this.depsRef.current;
-	}
-
-	get isDragging(): boolean {
-		return this.gesture.kind === "dragging";
 	}
 
 	get editingText(): EditingTextState | null {
@@ -271,40 +271,57 @@ export class PreviewInteractionController {
 	destroy(): void {
 		this.unsubscribePlayback?.();
 		this.unsubscribePlayback = null;
-		this.abortActiveGesture();
-		this.editingTextState = null;
 		this.subscribers.clear();
+		this.cancel();
 	}
 
 	cancel(): void {
 		this.memberId = null;
-		if (this.gesture.kind === "idle") return;
-		this.abortActiveGesture();
-		this.notify();
+		this.gestureOwner?.cancel();
 	}
 
-	private abortActiveGesture(): void {
-		if (this.gesture.kind === "idle") return;
+	private startGesture(): void {
+		this.gestureOwner = this.deps.timeline.beginPreviewGesture(() => {
+			this.gestureOwner = null;
+			this.editingTextState = null;
+			this.endPointerGesture();
+			this.notify();
+		});
+	}
 
-		if (this.gesture.kind === "dragging") {
-			this.deps.timeline.discardPreview();
-		}
-
-		this.releaseCapturedPointer({ pointerState: this.gesture });
+	private endPointerGesture(): void {
+		const gesture = this.gesture;
 		this.gesture = IDLE_GESTURE;
+		if (gesture.kind === "idle") return;
 		this.clearSnapLines();
+		this.releaseCapturedPointer({ pointerState: gesture });
+	}
+
+	private finishGesture(): void {
+		this.gestureOwner?.finish();
+		this.gestureOwner = null;
+		this.endPointerGesture();
+	}
+
+	previewTextEdit(content: string): void {
+		if (!this.editingTextState) return;
+		const { trackId, elementId } = this.editingTextState;
+		this.deps.timeline.previewElements([
+			{ trackId, elementId, updates: { params: { content } } },
+		]);
 	}
 
 	commitTextEdit(): void {
 		if (!this.editingTextState) return;
 
 		this.editingTextState = null;
+		this.finishGesture();
 		this.deps.timeline.commitPreview();
 		this.notify();
 	}
 
 	onDoubleClick({ clientX, clientY }: ReactMouseEvent): void {
-		if (this.editingTextState || this.deps.preview.isMaskMode()) return;
+		if (this.gestureOwner || this.deps.preview.isMaskMode()) return;
 
 		const startPos = this.deps.viewport.screenToCanvas({
 			clientX,
@@ -328,6 +345,7 @@ export class PreviewInteractionController {
 		}
 		if (hit.element.type !== "text") return;
 
+		this.startGesture();
 		this.editingTextState = {
 			trackId: hit.trackId,
 			elementId: hit.elementId,
@@ -343,10 +361,11 @@ export class PreviewInteractionController {
 		pointerId,
 		button,
 	}: ReactPointerEvent): void {
-		if (this.editingTextState) return;
+		if (this.gestureOwner) return;
 		if (this.deps.preview.isMaskMode()) return;
 		if (button !== PRIMARY_POINTER_BUTTON) return;
 
+		finishFocusedField(currentTarget);
 		const startPos = this.deps.viewport.screenToCanvas({
 			clientX,
 			clientY,
@@ -360,6 +379,7 @@ export class PreviewInteractionController {
 		});
 		const selectedElements = this.deps.selection.getSelected();
 
+		this.startGesture();
 		this.gesture = {
 			kind: "pending",
 			origin: startPos,
@@ -376,7 +396,8 @@ export class PreviewInteractionController {
 		currentTarget.setPointerCapture(pointerId);
 	}
 
-	onPointerMove({ clientX, clientY }: ReactPointerEvent): void {
+	onPointerMove({ clientX, clientY, pointerId }: ReactPointerEvent): void {
+		if (this.gesture.kind === "idle" || this.gesture.pointerId !== pointerId) return;
 		const currentPos = this.deps.viewport.screenToCanvas({
 			clientX,
 			clientY,
@@ -406,41 +427,28 @@ export class PreviewInteractionController {
 		});
 	}
 
-	onPointerUp({ type }: ReactPointerEvent): void {
+	onPointerUp({ type, pointerId }: ReactPointerEvent): void {
+		if (this.gesture.kind === "idle" || this.gesture.pointerId !== pointerId) return;
+		if (type === "pointercancel" || type === "lostpointercapture") {
+			this.cancel();
+			return;
+		}
 		if (this.gesture.kind === "dragging") {
-			const drag = this.gesture;
-
-			if (type === "pointercancel") {
-				this.deps.timeline.discardPreview();
-			} else {
-				this.deps.timeline.commitPreview();
-			}
-
-			this.gesture = IDLE_GESTURE;
-			this.clearSnapLines();
-			this.releaseCapturedPointer({ pointerState: drag });
+			this.finishGesture();
+			this.deps.timeline.commitPreview();
 			this.notify();
 			return;
 		}
 
-		if (this.gesture.kind !== "pending") return;
-
-		const pending = this.gesture;
-
-		if (type !== "pointercancel") {
-			const clickTarget = pending.topmostHit;
-			if (!clickTarget) {
-				this.memberId = null;
-				this.deps.selection.clearSelection();
-			} else {
-				if (this.memberId !== clickTarget.elementId) this.memberId = null;
-				this.deps.selection.setSelected(this.groupSelection(clickTarget));
-			}
+		const clickTarget = this.gesture.topmostHit;
+		this.finishGesture();
+		if (!clickTarget) {
+			this.memberId = null;
+			this.deps.selection.clearSelection();
+		} else {
+			if (this.memberId !== clickTarget.elementId) this.memberId = null;
+			this.deps.selection.setSelected(this.groupSelection(clickTarget));
 		}
-
-		this.gesture = IDLE_GESTURE;
-		this.clearSnapLines();
-		this.releaseCapturedPointer({ pointerState: pending });
 	}
 
 	private groupSelection(hit: ElementWithBounds): ElementRef[] {
@@ -497,9 +505,7 @@ export class PreviewInteractionController {
 	private beginDragFromPending({ pending }: { pending: PendingGesture }): void {
 		const dragTarget = pending.selectedHit ?? pending.topmostHit;
 		if (!dragTarget) {
-			this.gesture = IDLE_GESTURE;
-			this.clearSnapLines();
-			this.releaseCapturedPointer({ pointerState: pending });
+			this.finishGesture();
 			return;
 		}
 
@@ -516,9 +522,7 @@ export class PreviewInteractionController {
 		});
 
 		if (draggableElements.length === 0) {
-			this.gesture = IDLE_GESTURE;
-			this.clearSnapLines();
-			this.releaseCapturedPointer({ pointerState: pending });
+			this.finishGesture();
 			return;
 		}
 

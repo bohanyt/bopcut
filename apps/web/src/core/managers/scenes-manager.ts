@@ -185,6 +185,10 @@ export class ScenesManager {
 	 */
 	private enterScene(target: TScene | null, playhead?: MediaTime): void {
 		const previous = this.active;
+		if (previous?.id !== target?.id || previous?.tracks !== target?.tracks) {
+			this.editor.timeline.cancelPreviewGesture();
+			this.editor.timeline.discardPreview();
+		}
 		if (!target || previous?.id === target.id) {
 			this.active = target;
 			return;

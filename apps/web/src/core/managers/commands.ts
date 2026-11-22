@@ -86,6 +86,7 @@ export class CommandManager {
 	undo(): void {
 		const entry = this.history.at(-1);
 		if (!entry || !this.showSceneOf({ entry, direction: "undo" })) return;
+		this.cancelPreview();
 		this.history.pop();
 		entry.command.undo();
 		this.editor.scenes.applyDerivedChanges({ changes: entry.derived, side: "before" });
@@ -107,6 +108,7 @@ export class CommandManager {
 	redo(): void {
 		const entry = this.redoStack.at(-1);
 		if (!entry || !this.showSceneOf({ entry, direction: "redo" })) return;
+		this.cancelPreview();
 		this.redoStack.pop();
 
 		const beforeTracks =
@@ -161,6 +163,11 @@ export class CommandManager {
 
 	canUndo(): boolean {
 		return this.history.length > 0;
+	}
+
+	private cancelPreview(): void {
+		this.editor.timeline.cancelPreviewGesture();
+		this.editor.timeline.discardPreview();
 	}
 
 	canRedo(): boolean {

@@ -400,6 +400,7 @@ function MaskParamsFields({
 	previewParam: PreviewParamHandler;
 	onCommit: () => void;
 }) {
+	const { timeline } = useEditor();
 	const featherParam = getNumberParamDefinition({
 		definition,
 		key: "feather",
@@ -607,6 +608,7 @@ function MaskParamsFields({
 							onCommit={onCommit}
 						/>
 						<ColorPicker
+							beginDragGesture={timeline.beginPreviewGesture}
 							className=""
 							value={mask.params.strokeColor.replace(/^#/, "").toUpperCase()}
 							onChange={(color) => previewStrokeColor(`#${color}`)}
@@ -780,6 +782,7 @@ function MaskNumberField({
 	icon?: React.ReactNode;
 	className?: string;
 }) {
+	const { timeline } = useEditor();
 	const isPercent = param.unit === "percent";
 	const percentMax = param.max ?? 100;
 	const displayMultiplier = isPercent
@@ -830,6 +833,7 @@ function MaskNumberField({
 			onBlur={draft.onBlur}
 			onScrub={previewFromDisplay}
 			onScrubEnd={onCommit}
+			beginScrubGesture={timeline.beginPreviewGesture}
 		/>
 	);
 }

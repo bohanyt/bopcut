@@ -65,7 +65,7 @@ export function MaskHandles({
 			return;
 		}
 
-		handlePointerUp();
+		handlePointerUp(event);
 	};
 	const handleMaskPointerDown = ({
 		event,

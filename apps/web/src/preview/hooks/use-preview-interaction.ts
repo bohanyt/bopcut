@@ -4,7 +4,6 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
 import { usePreviewViewport } from "@/preview/components/preview-viewport";
 import type { SnapLine } from "@/preview/preview-snap";
-import { registerCanceller } from "@/editor/cancel-interaction";
 import {
 	PreviewInteractionController,
 	type PreviewInteractionDeps,
@@ -49,7 +48,7 @@ export function usePreviewInteraction({
 			previewElements: (updates) =>
 				editor.timeline.previewElements({ updates: [...updates] }),
 			commitPreview: () => editor.timeline.commitPreview(),
-			discardPreview: () => editor.timeline.discardPreview(),
+			beginPreviewGesture: editor.timeline.beginPreviewGesture,
 		},
 		playback: {
 			getIsPlaying: () => editor.playback.getIsPlaying(),
@@ -72,11 +71,6 @@ export function usePreviewInteraction({
 	);
 
 	useEffect(() => {
-		if (!controller.isDragging) return;
-		return registerCanceller({ fn: () => controller.cancel() });
-	}, [controller.isDragging, controller]);
-
-	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
 			if (event.key === "Escape") controller.cancel();
 		};
@@ -93,5 +87,6 @@ export function usePreviewInteraction({
 		onDoubleClick: controller.onDoubleClick,
 		editingText: controller.editingText,
 		commitTextEdit: controller.commitTextEdit,
+		previewTextEdit: controller.previewTextEdit,
 	};
 }

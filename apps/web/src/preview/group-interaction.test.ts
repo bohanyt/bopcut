@@ -51,7 +51,7 @@ function fixture() {
 		commitPreview: () => {
 			commits++;
 		},
-		discardPreview: () => {},
+		beginPreviewGesture: (cancel: () => void) => ({ cancel, finish: () => {} }),
 	};
 	const selection = {
 		getSelected: () => selected,
@@ -63,6 +63,7 @@ function fixture() {
 		},
 	};
 	const target = {
+		ownerDocument: { activeElement: null },
 		setPointerCapture() {},
 		hasPointerCapture: () => true,
 		releasePointerCapture() {},
@@ -140,14 +141,14 @@ describe("preview groups", () => {
 		expect(
 			f.updates().map((u) => u.updates.params["transform.scaleX"]),
 		).toEqual([0.2, 0.2]);
-		c.onPointerUp();
+		c.onPointerUp(f.event(800, 600));
 		expect(f.commits()).toBe(1);
 		c.onRotationPointerDown({ event: f.event(500, 400) });
 		c.onPointerMove({ event: f.event(600, 500) });
 		expect(
 			f.updates().map((u) => Math.round(u.updates.params["transform.rotate"])),
 		).toEqual([90, 90]);
-		c.onPointerUp();
+		c.onPointerUp(f.event(600, 500));
 		c.destroy();
 	});
 });

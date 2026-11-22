@@ -1,4 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
+import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import {
 	buildMoveGroup,
 	resolveGroupMove,
@@ -21,6 +22,7 @@ import type { FrameRate } from "opencut-wasm";
 import { computeDropTarget } from "@/timeline/components/drop-target";
 import { getMouseTimeFromClientX } from "@/timeline/drag-utils";
 import { generateUUID } from "@/utils/id";
+import { finishFocusedField } from "@/utils/browser";
 import { beginTimelineGesture } from "@/timeline/gesture-state";
 import type { SnapPoint } from "@/timeline/snapping";
 import type {
@@ -66,6 +68,7 @@ export interface PlaybackReader {
 
 export interface TimelineOps {
 	moveElements: (args: Pick<GroupMoveResult, "moves" | "createTracks">) => void;
+	beginPreviewGesture: TimelineManager["beginPreviewGesture"];
 }
 
 export interface SnapConfig {
@@ -298,6 +301,7 @@ export class ElementInteractionController {
 	private lastGestureWasDrag = false;
 	// Set while a move drag runs (agent drafts wait for its release, see gesture-state).
 	private endGesture: (() => void) | null = null;
+	private gestureOwner: PreviewGesture | null = null;
 
 	private readonly subscribers = new Set<() => void>();
 	private readonly depsRef: ElementInteractionDepsRef;
@@ -333,23 +337,14 @@ export class ElementInteractionController {
 		};
 	}
 
-	get isActive(): boolean {
-		return this.session.kind !== "idle";
-	}
-
 	subscribe(fn: () => void): () => void {
 		this.subscribers.add(fn);
 		return () => this.subscribers.delete(fn);
 	}
 
-	cancel = (): void => {
-		this.lastGestureWasDrag = false;
-		this.finishSession();
-	};
-
 	destroy(): void {
-		this.cancel();
 		this.subscribers.clear();
+		this.gestureOwner?.cancel();
 	}
 
 	onElementMouseDown = ({
@@ -371,6 +366,14 @@ export class ElementInteractionController {
 		}
 
 		event.stopPropagation();
+		finishFocusedField(event.currentTarget);
+		const currentTrack = orderedTracks(this.deps.scene.getTracks()).find((item) => item.id === track.id);
+		const currentElement = currentTrack?.elements.find((item) => item.id === element.id);
+		if (!currentElement) return;
+		this.gestureOwner = this.deps.timeline.beginPreviewGesture(() => {
+			this.lastGestureWasDrag = true;
+			this.finishSession();
+		});
 		this.lastGestureWasDrag = false;
 
 		const ref = { trackId: track.id, elementId: element.id };
@@ -389,7 +392,7 @@ export class ElementInteractionController {
 				origin: { x: event.clientX, y: event.clientY },
 				elementId: element.id,
 				trackId: track.id,
-				startElementTime: element.startTime,
+				startElementTime: currentElement.startTime,
 				clickOffsetTime: pixelToClickOffsetTime({
 					clientX: event.clientX,
 					elementRect: event.currentTarget.getBoundingClientRect(),
@@ -447,6 +450,8 @@ export class ElementInteractionController {
 	}
 
 	private finishSession(): void {
+		this.gestureOwner?.finish();
+		this.gestureOwner = null;
 		this.session = { kind: "idle" };
 		this.endGesture?.();
 		this.endGesture = null;
@@ -725,6 +730,7 @@ export class ElementInteractionController {
 			);
 		});
 
+		this.finishSession();
 		if (didMove || groupMoveResult.createTracks.length > 0) {
 			this.deps.timeline.moveElements({
 				moves: groupMoveResult.moves,
@@ -732,6 +738,5 @@ export class ElementInteractionController {
 			});
 		}
 
-		this.finishSession();
 	};
 }

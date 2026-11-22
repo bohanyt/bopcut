@@ -24,6 +24,7 @@ import {
 import { usePropertyDraft } from "../hooks/use-property-draft";
 import { KeyframeToggle } from "./keyframe-toggle";
 import { Textarea } from "@/components/ui/textarea";
+import { useEditor } from "@/editor/use-editor";
 
 export function PropertyParamField({
 	param,
@@ -77,6 +78,7 @@ function ParamInput({
 	onPreview: (value: ParamValue) => void;
 	onCommit: () => void;
 }) {
+	const { timeline } = useEditor();
 	if (param.type === "number") {
 		return (
 			<NumberParamField
@@ -126,6 +128,7 @@ function ParamInput({
 	if (param.type === "color") {
 		return (
 			<ColorPicker
+				beginDragGesture={timeline.beginPreviewGesture}
 				value={String(value).replace(/^#/, "").toUpperCase()}
 				onChange={(color) => onPreview(`#${color}`)}
 				onChangeEnd={(color) => {
@@ -171,6 +174,7 @@ function NumberParamField({
 	onPreview: (value: number) => void;
 	onCommit: () => void;
 }) {
+	const { timeline } = useEditor();
 	const { min, max, step, displayMultiplier = 1 } = param;
 	const displayValue = value * displayMultiplier;
 	const clampDisplayValue = (nextDisplayValue: number) =>
@@ -218,6 +222,7 @@ function NumberParamField({
 			onBlur={draft.onBlur}
 			onScrub={previewFromDisplay}
 			onScrubEnd={onCommit}
+			beginScrubGesture={timeline.beginPreviewGesture}
 			onReset={handleReset}
 		/>
 	);

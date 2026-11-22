@@ -46,3 +46,12 @@ export function isTypableDOMElement({
 
 	return false;
 }
+
+// Pointer handlers run before the browser's default focus change. A field's
+// blur commit must finish before the new gesture starts using timeline tracks.
+export function finishFocusedField(target: Element): void {
+	const focused = target.ownerDocument.activeElement as HTMLElement | null;
+	if (focused && typeof focused.blur === "function" && isTypableDOMElement({ element: focused })) {
+		focused.blur();
+	}
+}

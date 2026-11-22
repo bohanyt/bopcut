@@ -299,19 +299,16 @@ function BookmarkPopoverContent({
 	onPopoverClose: () => void;
 }) {
 	const editor = useEditor();
+	const committedColor = (bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR)
+		.replace("#", "")
+		.toUpperCase();
 	const [draftColorHex, setDraftColorHex] = useState(
-		(bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR)
-			.replace("#", "")
-			.toUpperCase(),
+		committedColor,
 	);
 
 	useEffect(() => {
-		setDraftColorHex(
-			(bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR)
-				.replace("#", "")
-				.toUpperCase(),
-		);
-	}, [bookmark.color]);
+		setDraftColorHex(committedColor);
+	}, [committedColor]);
 
 	const handleRemove = () => {
 		editor.scenes.removeBookmark({ time });
@@ -365,6 +362,8 @@ function BookmarkPopoverContent({
 				<Label className="text-xs">Color</Label>
 				<div className="relative">
 					<ColorPicker
+						beginDragGesture={editor.timeline.beginPreviewGesture}
+						onDragCancel={(color) => setDraftColorHex(uppercase({ string: color }))}
 						value={uppercase({ string: draftColorHex })}
 						onChange={(color) => setDraftColorHex(uppercase({ string: color }))}
 						onChangeEnd={(color) =>

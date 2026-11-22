@@ -1,4 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
+import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import type { FrameRate } from "opencut-wasm";
 import { BASE_TIMELINE_PIXELS_PER_SECOND } from "@/timeline/scale";
 import {
@@ -19,6 +20,7 @@ import { BatchCommand } from "@/commands";
 import type { SelectedKeyframeRef } from "@/animation/types";
 import type { TimelineElement } from "@/timeline";
 import type { Command } from "@/commands/base-command";
+import { finishFocusedField } from "@/utils/browser";
 
 // --- Session ---
 
@@ -71,6 +73,7 @@ export interface KeyframeDragConfig {
 		isAdditive: boolean;
 	}) => void;
 	executeCommand: (command: Command) => void;
+	beginPreviewGesture: TimelineManager["beginPreviewGesture"];
 	seek: (args: { time: MediaTime }) => void;
 	getTotalDuration: () => MediaTime;
 }
@@ -85,6 +88,8 @@ export class KeyframeDragController {
 	private session: Session = { kind: "idle" };
 	// Persists through mouseup so the click handler can detect drag vs click
 	private mouseDownX: number | null = null;
+	private gestureOwner: PreviewGesture | null = null;
+	private canceledMouseDown = false;
 	private readonly subscribers = new Set<() => void>();
 	private readonly configRef: KeyframeDragConfigRef;
 
@@ -99,10 +104,6 @@ export class KeyframeDragController {
 
 	private get config(): KeyframeDragConfig {
 		return this.configRef.current;
-	}
-
-	get isActive(): boolean {
-		return this.session.kind !== "idle";
 	}
 
 	get keyframeDragState(): KeyframeDragState {
@@ -121,14 +122,9 @@ export class KeyframeDragController {
 		return () => this.subscribers.delete(fn);
 	}
 
-	cancel(): void {
-		this.mouseDownX = null;
-		this.finishSession();
-	}
-
 	destroy(): void {
-		this.deactivate();
 		this.subscribers.clear();
+		this.gestureOwner?.cancel();
 	}
 
 	onKeyframeMouseDown({
@@ -141,6 +137,12 @@ export class KeyframeDragController {
 		event.preventDefault();
 		event.stopPropagation();
 
+		finishFocusedField(event.currentTarget);
+		this.gestureOwner = this.config.beginPreviewGesture(() => {
+			this.canceledMouseDown = true;
+			this.finishSession();
+		});
+		this.canceledMouseDown = false;
 		this.mouseDownX = event.clientX;
 
 		const anySelected = keyframes.some((kf) =>
@@ -174,9 +176,10 @@ export class KeyframeDragController {
 	}): void {
 		event.stopPropagation();
 
-		const wasDrag =
-			this.mouseDownX !== null &&
-			Math.abs(event.clientX - this.mouseDownX) > TIMELINE_DRAG_THRESHOLD_PX;
+		const wasDrag = this.canceledMouseDown ||
+			(this.mouseDownX !== null &&
+				Math.abs(event.clientX - this.mouseDownX) > TIMELINE_DRAG_THRESHOLD_PX);
+		this.canceledMouseDown = false;
 		this.mouseDownX = null;
 
 		if (wasDrag) return;
@@ -256,6 +259,8 @@ export class KeyframeDragController {
 	}
 
 	private finishSession(): void {
+		this.gestureOwner?.finish();
+		this.gestureOwner = null;
 		this.session = { kind: "idle" };
 		this.deactivate();
 		this.notify();
@@ -348,10 +353,10 @@ export class KeyframeDragController {
 			(kf) => kf.elementId === element.id && draggingIds.has(kf.keyframeId),
 		);
 
+		this.finishSession();
 		if (draggingRefs.length > 0 && deltaTicks !== 0) {
 			this.commitDrag({ keyframeRefs: draggingRefs, deltaTicks });
 		}
 
-		this.finishSession();
 	}
 }

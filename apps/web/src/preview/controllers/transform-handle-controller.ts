@@ -1,4 +1,6 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { finishFocusedField } from "@/utils/browser";
+import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import type { MediaAsset } from "@/media/types";
 import {
 	getVisibleElementsWithBounds,
@@ -153,7 +155,7 @@ export interface TimelinePreviewUpdate {
 export interface TimelineOps {
 	previewElements: (updates: readonly TimelinePreviewUpdate[]) => void;
 	commitPreview: () => void;
-	discardPreview: () => void;
+	beginPreviewGesture: TimelineManager["beginPreviewGesture"];
 }
 
 export interface PreviewOptions {
@@ -327,6 +329,7 @@ export class TransformHandleController {
 	private readonly subscribers = new Set<() => void>();
 
 	private session: TransformSession = IDLE_SESSION;
+	private gestureOwner: PreviewGesture | null = null;
 
 	constructor({ depsRef }: { depsRef: TransformHandleDepsRef }) {
 		this.depsRef = depsRef;
@@ -364,36 +367,31 @@ export class TransformHandleController {
 		}
 	}
 
-	get isActive(): boolean {
-		return this.session.kind !== "idle";
-	}
-
 	subscribe(fn: () => void): () => void {
 		this.subscribers.add(fn);
 		return () => this.subscribers.delete(fn);
 	}
 
 	destroy(): void {
-		if (this.session.kind !== "idle") {
-			const session = this.session;
-			this.session = IDLE_SESSION;
-			this.deps.timeline.discardPreview();
-			this.clearSnapLines();
-			this.releaseCapturedPointer(session);
-		}
-
 		this.subscribers.clear();
+		this.gestureOwner?.cancel();
 	}
 
-	cancel(): void {
+	private beginGesture(): void {
+		this.gestureOwner = this.deps.timeline.beginPreviewGesture(() => {
+			this.gestureOwner = null;
+			this.endGesture();
+			this.notify();
+		});
+	}
+
+	private endGesture(): void {
 		if (this.session.kind === "idle") return;
 
 		const session = this.session;
 		this.session = IDLE_SESSION;
-		this.deps.timeline.discardPreview();
 		this.clearSnapLines();
 		this.releaseCapturedPointer(session);
-		this.notify();
 	}
 
 	onCornerPointerDown({
@@ -403,6 +401,8 @@ export class TransformHandleController {
 		event: ReactPointerEvent;
 		corner: Corner;
 	}): void {
+		if (this.session.kind !== "idle" || event.button !== 0) return;
+		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, corner)) return;
 		const context = this.getSelectedVisualContext();
 		if (!context) return;
@@ -414,6 +414,7 @@ export class TransformHandleController {
 				animations: context.element.animations,
 			});
 
+		this.beginGesture();
 		this.session = {
 			kind: "corner-scale",
 			corner,
@@ -442,6 +443,8 @@ export class TransformHandleController {
 	}
 
 	onRotationPointerDown({ event }: { event: ReactPointerEvent }): void {
+		if (this.session.kind !== "idle" || event.button !== 0) return;
+		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, "rotation")) return;
 		const context = this.getSelectedVisualContext();
 		if (!context) return;
@@ -458,6 +461,7 @@ export class TransformHandleController {
 		const deltaY = position.y - context.bounds.cy;
 		const initialAngle = (Math.atan2(deltaY, deltaX) * 180) / Math.PI;
 
+		this.beginGesture();
 		this.session = {
 			kind: "rotation",
 			trackId: context.trackId,
@@ -484,6 +488,8 @@ export class TransformHandleController {
 		event: ReactPointerEvent;
 		edge: Edge;
 	}): void {
+		if (this.session.kind !== "idle" || event.button !== 0) return;
+		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, edge)) return;
 		const context = this.getSelectedVisualContext();
 		if (!context) return;
@@ -496,6 +502,7 @@ export class TransformHandleController {
 				edge,
 			});
 
+		this.beginGesture();
 		this.session = {
 			kind: "edge-scale",
 			edge,
@@ -521,7 +528,7 @@ export class TransformHandleController {
 	}
 
 	onPointerMove({ event }: { event: ReactPointerEvent }): void {
-		if (this.session.kind === "idle") return;
+		if (this.session.kind === "idle" || this.session.pointerId !== event.pointerId) return;
 
 		const position = this.deps.viewport.screenToCanvas({
 			clientX: event.clientX,
@@ -556,14 +563,16 @@ export class TransformHandleController {
 		}
 	}
 
-	onPointerUp(): void {
-		if (this.session.kind === "idle") return;
-
-		const session = this.session;
-		this.session = IDLE_SESSION;
+	onPointerUp(event: ReactPointerEvent): void {
+		if (this.session.kind === "idle" || this.session.pointerId !== event.pointerId) return;
+		if (event.type === "pointercancel" || event.type === "lostpointercapture") {
+			this.gestureOwner?.cancel();
+			return;
+		}
+		this.gestureOwner?.finish();
+		this.gestureOwner = null;
+		this.endGesture();
 		this.deps.timeline.commitPreview();
-		this.clearSnapLines();
-		this.releaseCapturedPointer(session);
 		this.notify();
 	}
 
@@ -651,6 +660,7 @@ export class TransformHandleController {
 				};
 			});
 		event.stopPropagation();
+		this.beginGesture();
 		this.session = {
 			kind: "group",
 			handle,

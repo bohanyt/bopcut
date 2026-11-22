@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import type { PreviewGesture } from "@/core/managers/timeline-manager";
 import { createPortal } from "react-dom";
 import { useEditor } from "@/editor/use-editor";
 import {
@@ -18,6 +19,7 @@ import {
 	snapToStep,
 } from "@/utils/math";
 import { cn } from "@/utils/ui";
+import { finishFocusedField } from "@/utils/browser";
 
 const HIT_AREA_HEIGHT_PX = 14;
 const TOOLTIP_OFFSET_PX = 10;
@@ -58,7 +60,7 @@ export function AudioVolumeLine({
 }) {
 	const editor = useEditor();
 	const surfaceRef = useRef<HTMLDivElement>(null);
-	const activePointerIdRef = useRef<number | null>(null);
+	const drag = useRef<{ pointerId: number; owner: PreviewGesture } | null>(null);
 	const startVolumeRef = useRef(getElementVolume({ element }));
 	const lastPreviewVolumeRef = useRef(getElementVolume({ element }));
 	const hasChangedRef = useRef(false);
@@ -106,23 +108,17 @@ export function AudioVolumeLine({
 		[editor, element.id, trackId],
 	);
 
-	const finishDrag = useCallback(
-		({ shouldCommit }: { shouldCommit: boolean }) => {
-			activePointerIdRef.current = null;
-			setIsDragging(false);
+	const resetDrag = useCallback(() => {
+		drag.current = null;
+		setIsDragging(false);
+		setTooltipClientPos(null);
+	}, []);
 
-			if (shouldCommit && hasChangedRef.current) {
-				editor.timeline.commitPreview();
-			} else {
-				editor.timeline.discardPreview();
-			}
-
-			hasChangedRef.current = false;
-			lastPreviewVolumeRef.current = startVolumeRef.current;
-			setTooltipClientPos(null);
-		},
-		[editor],
-	);
+	useLayoutEffect(() => () => drag.current?.owner.cancel(), [
+		element.id,
+		trackId,
+		hasAnimatedEnvelope,
+	]);
 
 	const updateFromPointer = useCallback(
 		({ clientX, clientY }: { clientX: number; clientY: number }) => {
@@ -151,32 +147,38 @@ export function AudioVolumeLine({
 
 	const handlePointerDown = useCallback(
 		(event: React.PointerEvent<HTMLDivElement>) => {
-			if (event.button !== 0) {
+			if (event.button !== 0 || !event.isPrimary || drag.current) {
 				return;
 			}
 
 			event.preventDefault();
 			event.stopPropagation();
+			finishFocusedField(event.currentTarget);
 			editor.selection.setSelectedElements({
 				elements: [{ trackId, elementId: element.id }],
 			});
-			activePointerIdRef.current = event.pointerId;
+			const { currentTarget: target, pointerId } = event;
+			const owner = editor.timeline.beginPreviewGesture(() => {
+				resetDrag();
+				if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+			});
+			drag.current = { pointerId, owner };
 			startVolumeRef.current = currentVolume;
 			lastPreviewVolumeRef.current = currentVolume;
 			hasChangedRef.current = false;
 			setIsDragging(true);
-			event.currentTarget.setPointerCapture(event.pointerId);
+			target.setPointerCapture(pointerId);
 			updateFromPointer({
 				clientX: event.clientX,
 				clientY: event.clientY,
 			});
 		},
-		[currentVolume, editor.selection, element.id, trackId, updateFromPointer],
+		[currentVolume, editor, element.id, resetDrag, trackId, updateFromPointer],
 	);
 
 	const handlePointerMove = useCallback(
 		(event: React.PointerEvent) => {
-			if (activePointerIdRef.current !== event.pointerId) {
+			if (drag.current?.pointerId !== event.pointerId) {
 				return;
 			}
 
@@ -191,37 +193,34 @@ export function AudioVolumeLine({
 
 	const handlePointerUp = useCallback(
 		(event: React.PointerEvent) => {
-			if (activePointerIdRef.current !== event.pointerId) {
+			const gesture = drag.current;
+			if (gesture?.pointerId !== event.pointerId) {
 				return;
 			}
 
 			event.preventDefault();
 			event.stopPropagation();
-			finishDrag({ shouldCommit: true });
+			gesture.owner.finish();
+			resetDrag();
+			if (hasChangedRef.current) editor.timeline.commitPreview();
+			else editor.timeline.discardPreview();
 		},
-		[finishDrag],
+		[editor.timeline, resetDrag],
 	);
 
 	const handlePointerCancel = useCallback(
 		(event: React.PointerEvent) => {
-			if (activePointerIdRef.current !== event.pointerId) {
+			const gesture = drag.current;
+			if (gesture?.pointerId !== event.pointerId) {
 				return;
 			}
 
 			event.preventDefault();
 			event.stopPropagation();
-			finishDrag({ shouldCommit: false });
+			gesture.owner.cancel();
 		},
-		[finishDrag],
+		[],
 	);
-
-	const handleLostPointerCapture = useCallback(() => {
-		if (activePointerIdRef.current === null) {
-			return;
-		}
-
-		finishDrag({ shouldCommit: hasChangedRef.current });
-	}, [finishDrag]);
 
 	if (hasAnimatedEnvelope) {
 		return null;
@@ -249,7 +248,7 @@ export function AudioVolumeLine({
 					onPointerMove={handlePointerMove}
 					onPointerUp={handlePointerUp}
 					onPointerCancel={handlePointerCancel}
-					onLostPointerCapture={handleLostPointerCapture}
+					onLostPointerCapture={handlePointerCancel}
 					title="Drag to adjust clip volume"
 				/>
 				{isDragging &&

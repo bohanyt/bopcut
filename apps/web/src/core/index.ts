@@ -76,6 +76,7 @@ export class EditorCore {
 	}
 
 	static reset(): void {
+		EditorCore.instance?.timeline.cancelPreviewGesture();
 		EditorCore.instance?.audio.dispose();
 		if (EditorCore.instance?.playback.getIsPlaying()) EditorCore.instance.playback.pause();
 		// A pending (or retrying) save of the old instance must not fire after the reset.
