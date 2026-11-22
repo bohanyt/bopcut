@@ -1186,6 +1186,30 @@ describe("the export poller", () => {
 			expect(await log.result()).toMatchObject({ status: "done", duration: 5 });
 		}));
 
+	test("does not claim a queued export until graphics are ready", () => {
+		let state = "starting";
+		let loseOnRead = true;
+		return withServer({ request: { rev: "graphics-wait" }, onRequest: () => { if (loseOnRead) state = "recovering"; } }, async (log) => {
+			Object.defineProperty(rendererDevice, "status", { configurable: true, get: () => ({ state }) });
+			try {
+				await pollExport();
+				expect(log.gets).toBe(0);
+				state = "ready";
+				await pollExport();
+				expect(log.posts).toEqual([]);
+				expect(log.exports).toEqual([]);
+				loseOnRead = false;
+				state = "ready";
+				await pollExport();
+				expect(log.posts).toHaveLength(1);
+				expect(log.exports).toHaveLength(1);
+				expect(await log.result()).toMatchObject({ rev: "graphics-wait", status: "done" });
+			} finally {
+				Reflect.deleteProperty(rendererDevice, "status");
+			}
+		});
+	});
+
 	test("takes the editor as it is once the request is taken", () =>
 		withServer({ request: { rev: "e1" }, onClaim: () => open("p", 7) }, async (log) => {
 			await pollExport();

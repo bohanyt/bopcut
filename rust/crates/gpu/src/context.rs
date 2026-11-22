@@ -486,6 +486,17 @@ impl GpuContext {
         self.check_error()?;
         #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
         if let Some(health) = &self.gl_health {
+            // The browser can reject swapchain storage even when wgpu reports
+            // successful configuration. Leave the size unset so it can retry.
+            let error = health.context.get_error();
+            if error == web_sys::WebGl2RenderingContext::CONTEXT_LOST_WEBGL {
+                return Err(GpuError::SurfaceLost);
+            }
+            if error != web_sys::WebGl2RenderingContext::NO_ERROR {
+                return Err(GpuError::WebGlOperation(format!(
+                    "surface configuration reported GL error {error:#06x}"
+                )));
+            }
             health.configured_size.set(Some((width, height)));
         }
         Ok(())

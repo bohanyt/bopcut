@@ -8,6 +8,7 @@ mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initia
 const { EditorCore } = await import("@/core");
 const { pollFrames } = await import("./frames");
 const { snapshotHistory } = await import("./history");
+const { rendererDevice } = await import("@/services/renderer/renderer-device");
 
 const T = (seconds: number) => mediaTimeFromSeconds({ seconds });
 const date = new Date(0);
@@ -100,6 +101,34 @@ afterEach(() => {
 });
 
 const ready = () => ({ ready: true, missingMedia: [] });
+
+test("a frames request remains unanswered through graphics startup and recovery", async () => {
+	const { render, results, entered, release } = setup({ pauseAt: "/api/agent/frames-request", times: [0] });
+	let state = "starting";
+	Object.defineProperty(rendererDevice, "status", { configurable: true, get: () => ({ state }) });
+	cleanups.push(() => { Reflect.deleteProperty(rendererDevice, "status"); });
+	const starting = pollFrames(ready);
+	try {
+		await Promise.race([
+			starting,
+			entered.then(() => { throw new Error("Read a frames request during graphics startup"); }),
+		]);
+		state = "ready";
+		const pending = pollFrames(ready);
+		await entered;
+		state = "recovering";
+		release();
+		await pending;
+		expect(results).toEqual([]);
+		expect(render).not.toHaveBeenCalled();
+		state = "ready";
+		await pollFrames(ready);
+		expect(results).toEqual([{ rev: "frame-test", projectId: "p", files: ["frame-1.jpg"] }]);
+	} finally {
+		release();
+		await starting;
+	}
+});
 
 test("keeps the live and compare states fixed across a frame upload", async () => {
 	const { editor, scenes, render, results, entered, release } = setup({ compare: { syncedAt: "compare-frame" } });

@@ -41,6 +41,11 @@ export const rendererDevice = new DeviceLifecycle({
 	scheduleRecovery: (recover) => setTimeout(recover, 250),
 });
 
+export function isGraphicsInitializing(): boolean {
+	const { state } = rendererDevice.status;
+	return state === "starting" || state === "recovering";
+}
+
 export function checkGraphicsContext(): void {
 	const signal = rendererDevice.requireReady();
 	if (gl?.isContextLost()) notifyLoss?.();
