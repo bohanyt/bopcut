@@ -24,6 +24,7 @@ export function usePreviewInteraction({
 	const viewport = usePreviewViewport();
 	const deps: PreviewInteractionDeps = {
 		viewport: {
+			pointerCapture: viewport.pointerCapture,
 			screenToCanvas: viewport.screenToCanvas,
 			screenPixelsToLogicalThreshold: viewport.screenPixelsToLogicalThreshold,
 		},

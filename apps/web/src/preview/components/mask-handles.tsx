@@ -101,6 +101,7 @@ export function MaskHandles({
 					onPointerMove={onPointerMove}
 					onPointerUp={onPointerUp}
 					onPointerCancel={onPointerUp}
+					onLostPointerCapture={onPointerUp}
 				/>
 			) : null}
 			{overlays.map((overlay) => {

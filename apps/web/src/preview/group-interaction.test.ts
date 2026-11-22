@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { PreviewInteractionController } from "./controllers/preview-interaction-controller";
 import { TransformHandleController } from "./controllers/transform-handle-controller";
+import { PreviewPan, PreviewPointerCapture } from "./pointer-capture";
 
 function fixture() {
 	const el = (id: string, x: number) => ({
@@ -28,7 +29,9 @@ function fixture() {
 	let selected: any[] = [],
 		updates: any[] = [],
 		commits = 0;
+	let cancelGesture: (() => void) | undefined;
 	const viewport = {
+		pointerCapture: new PreviewPointerCapture(),
 		screenToCanvas: ({ clientX, clientY }: any) => ({ x: clientX, y: clientY }),
 		screenPixelsToLogicalThreshold: () => ({ x: 0, y: 0 }),
 	};
@@ -51,7 +54,18 @@ function fixture() {
 		commitPreview: () => {
 			commits++;
 		},
-		beginPreviewGesture: (cancel: () => void) => ({ cancel, finish: () => {} }),
+		beginPreviewGesture: (onCancel: () => void) => {
+			cancelGesture?.();
+			const finish = () => {
+				if (cancelGesture === cancel) cancelGesture = undefined;
+			};
+			const cancel = () => {
+				finish();
+				onCancel();
+			};
+			cancelGesture = cancel;
+			return { cancel, finish };
+		},
 	};
 	const selection = {
 		getSelected: () => selected,
@@ -104,7 +118,76 @@ function createCanvasController(f: ReturnType<typeof fixture>) {
 	});
 }
 
+function createTransformController(f: ReturnType<typeof fixture>) {
+	return new TransformHandleController({
+		depsRef: {
+			current: {
+				...f,
+				input: { isShiftHeld: () => true },
+				preview: {},
+			} as any,
+		},
+	});
+}
+
 describe("preview canvas pointer ownership", () => {
+	test("pan cannot start during a clip drag or consume events from another pointer", () => {
+		const f = fixture();
+		const canvas = createCanvasController(f);
+		const pan = new PreviewPan(f.viewport.pointerCapture);
+		const center = { x: 500, y: 500 };
+		try {
+			canvas.onPointerDown(f.event(400, 500));
+			canvas.onPointerMove(f.event(430, 520));
+			expect(pan.start(f.event(530, 500, 2), center)).toBe(false);
+			canvas.onPointerUp(f.event(430, 520));
+			expect(f.commits()).toBe(1);
+
+			expect(pan.start(f.event(530, 500, 2), center)).toBe(true);
+			expect(pan.start(f.event(540, 500, 3), center)).toBe(false);
+			expect(pan.move(f.event(450, 520), 1)).toBeNull();
+			expect(pan.finish(f.event(450, 520))).toBe(false);
+			canvas.onPointerDown(f.event(400, 500));
+			expect(f.captured).toEqual(new Set([2]));
+			expect(pan.move(f.event(550, 510, 2), 1)).toEqual({ x: 480, y: 490 });
+
+			f.captured.delete(2);
+			expect(pan.finish(f.event(550, 510, 2, "lostpointercapture"))).toBe(true);
+			canvas.onPointerDown(f.event(400, 500));
+			expect(f.captured).toEqual(new Set([1]));
+		} finally {
+			pan.finish();
+			canvas.destroy();
+		}
+	});
+
+	test("a clip drag and transform handle cannot steal each other's capture", () => {
+		const f = fixture();
+		const canvas = createCanvasController(f);
+		const handle = createTransformController(f);
+		try {
+			canvas.onPointerDown(f.event(400, 500));
+			canvas.onPointerMove(f.event(430, 520));
+			const preview = f.updates();
+			handle.onCornerPointerDown({ event: f.event(650, 550, 2), corner: "bottom-right" });
+			handle.onPointerMove({ event: f.event(800, 600, 2) });
+			expect(f.captured).toEqual(new Set([1]));
+			expect(f.updates()).toBe(preview);
+			canvas.onPointerUp(f.event(430, 520));
+			expect(f.commits()).toBe(1);
+
+			handle.onCornerPointerDown({ event: f.event(650, 550, 2), corner: "bottom-right" });
+			canvas.onPointerDown(f.event(400, 500));
+			expect(f.captured).toEqual(new Set([2]));
+			handle.onPointerUp(f.event(650, 550, 2, "lostpointercapture"));
+			canvas.onPointerDown(f.event(400, 500));
+			expect(f.captured).toEqual(new Set([1]));
+		} finally {
+			canvas.destroy();
+			handle.destroy();
+		}
+	});
+
 	test("a second pointer cannot start, move or finish the captured drag", () => {
 		const f = fixture();
 		const controller = createCanvasController(f);
@@ -184,15 +267,7 @@ describe("preview groups", () => {
 			{ trackId: "t", elementId: "a" },
 			{ trackId: "t", elementId: "b" },
 		]);
-		const c = new TransformHandleController({
-			depsRef: {
-				current: {
-					...f,
-					input: { isShiftHeld: () => true },
-					preview: {},
-				} as any,
-			},
-		});
+		const c = createTransformController(f);
 		c.onCornerPointerDown({ event: f.event(650, 550), corner: "bottom-right" });
 		c.onPointerMove({ event: f.event(800, 600) });
 		expect(

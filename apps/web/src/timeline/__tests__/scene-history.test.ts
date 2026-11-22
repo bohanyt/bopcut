@@ -7,6 +7,7 @@ import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
 import { cancelInteraction } from "@/editor/cancel-interaction";
 import { PreviewInteractionController } from "@/preview/controllers/preview-interaction-controller";
+import { PreviewPointerCapture } from "@/preview/pointer-capture";
 import { ElementInteractionController } from "@/timeline/controllers/element-interaction-controller";
 import { startColorDrag } from "@/components/ui/color-drag";
 import { appendAlpha, parseHexAlpha } from "@/utils/color";
@@ -309,6 +310,7 @@ describe("preview gesture history boundaries", () => {
 				depsRef: {
 					current: {
 						viewport: {
+							pointerCapture: new PreviewPointerCapture(),
 							screenToCanvas: ({ clientX, clientY }) => ({ x: clientX, y: clientY }),
 							screenPixelsToLogicalThreshold: () => ({ x: 0, y: 0 }),
 						},

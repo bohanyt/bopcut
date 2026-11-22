@@ -83,7 +83,7 @@ export function PreviewInteractionOverlay() {
 				onPointerMove={handlePointerMove}
 				onPointerUp={handlePointerUp}
 				onPointerCancel={handlePointerUp}
-				onLostPointerCapture={onPointerUp}
+				onLostPointerCapture={handlePointerUp}
 				onDoubleClick={onDoubleClick}
 				onDragStart={(e) => e.preventDefault()}
 			/>
