@@ -21,7 +21,9 @@ See [`AGENT.md`](AGENT.md) for the workflow (drafts, notes, frames, preferences,
 - CI must pass: in `apps/web`, run `bun run build`, `bunx tsc --noEmit -p .`, and `bun test`. Do not suppress type errors (`@ts-ignore`, `any` to avoid errors, `ignoreBuildErrors`) or delete tests to pass.
 - Test in a browser only through browser tab automation. Do not use desktop controls (mouse, keyboard, screen screenshots, or system clipboard) on the owner's machine.
 - Do not commit project data or agent workspace folders (`workspace/`, `BOPENCUT_DATA`, `AGENT_WORKSPACE`).
-- Follow the surrounding code style. **All code, comments, docs and commit messages are in English; only README.md is in Indonesian.**
+- Follow the surrounding code style. Write code, comments, agent docs, commits, and PRs in English.
+- Add user-visible UI text to both the English and Indonesian dictionaries in `apps/web/src/i18n/`. Use the [Indonesian UI glossary](docs/glossary-id.md) for consistent editing terms.
+- Keep the [Indonesian README](README.md) and [English README](README.en.md) in sync.
 - The agent workspace protocol (bundles, drafts, notes, frames, preferences) is in `AGENT.md`; update it when the format changes.
 
 ## Repository layout

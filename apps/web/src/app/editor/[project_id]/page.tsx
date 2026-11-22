@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useParams } from "next/navigation";
 import {
 	ResizablePanelGroup,
@@ -58,6 +59,7 @@ export default function Editor() {
 }
 
 function GraphicsStatusBanner() {
+	const { t } = useI18n();
 	const status = useSyncExternalStore(rendererDevice.subscribe, rendererDevice.getSnapshot, rendererDevice.getSnapshot);
 	if (status.state === "ready") return null;
 
@@ -65,30 +67,32 @@ function GraphicsStatusBanner() {
 		<div role="status" className="bg-accent border-b flex flex-wrap items-center justify-center gap-2 px-3 py-2 text-xs text-muted-foreground">
 			{status.state === "unavailable" ? (
 				<>
-					<span title={status.detail}>Graphics could not start. Preview and export are unavailable.</span>
+					<span title={status.detail}>{t("editor.graphicsUnavailable")}</span>
 					<Button variant="outline" size="sm" onClick={() => void rendererDevice.retry()}>
-						Retry graphics
+						{t("editor.retryGraphics")}
 					</Button>
 				</>
 			) : (
-				<span>{status.state === "recovering" ? "Recovering graphics…" : "Starting graphics…"}</span>
+				<span>{t(status.state === "recovering" ? "editor.recoveringGraphics" : "editor.startingGraphics")}</span>
 			)}
 		</div>
 	);
 }
 
 function ModelGraphicsStatusBanner() {
+	const { t } = useI18n();
 	const unavailable = useSyncExternalStore(modelGraphics.subscribe, modelGraphics.getSnapshot, () => false);
 	if (!unavailable) return null;
 	return (
 		<div role="status" className="bg-accent border-b flex flex-wrap items-center justify-center gap-2 px-3 py-2 text-xs text-muted-foreground">
-			<span>3D graphics are unavailable.</span>
-			<Button variant="outline" size="sm" onClick={retryModelGraphics}>Retry 3D graphics</Button>
+			<span>{t("editor.modelGraphicsUnavailable")}</span>
+			<Button variant="outline" size="sm" onClick={retryModelGraphics}>{t("editor.retryModelGraphics")}</Button>
 		</div>
 	);
 }
 
 function EditorLayout() {
+	const { t } = useI18n();
 	usePasteMedia();
 	const editor = useEditor();
 	const isPreviewRight = usePanelStore((state) => state.layout === "preview-right");
@@ -167,7 +171,7 @@ function EditorLayout() {
 				<EditorWorkArea />
 			</ResizablePanel>
 			<ResizableHandle
-				aria-label="Resize preview column"
+				aria-label={t("editor.resizePreview")}
 				className="bg-border hover:bg-accent-foreground/40"
 			/>
 			<ResizablePanel defaultSize={rightPanels.preview} minSize={24} maxSize={45}>

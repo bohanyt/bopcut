@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useState, useEffect } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { invokeAction } from "@/actions";
@@ -35,6 +36,7 @@ export function PreviewToolbar({
 	compact: boolean;
 	onToggleFullscreen: () => void;
 }) {
+	const { t } = useI18n();
 	return (
 		<div className={
 			compact
@@ -63,7 +65,7 @@ export function PreviewToolbar({
 						)}
 					</Button>
 				</GridPopover> */}
-				<Button variant="text" onClick={onToggleFullscreen}>
+				<Button variant="text" onClick={onToggleFullscreen} aria-label={t("preview.fullscreen")}>
 					<HugeiconsIcon icon={FullScreenIcon} />
 				</Button>
 			</div>
@@ -73,12 +75,13 @@ export function PreviewToolbar({
 
 /** Name of the open compound clip, so the preview says what it is showing. */
 function CompoundSceneLabel() {
+	const { t } = useI18n();
 	const scene = useEditor((e) => e.scenes.getActiveSceneOrNull());
 	if (scene?.kind !== "compound") return null;
 	return (
 		<span
 			className="flex min-w-0 items-center gap-1 text-xs"
-			title="Editing inside a compound clip"
+			title={t("preview.compound")}
 		>
 			<HugeiconsIcon
 				icon={Layers01Icon}
@@ -131,9 +134,10 @@ function TimecodeDisplay() {
 }
 
 function QualitySelect() {
+	const { t } = useI18n();
 	const quality = usePreviewStore((state) => state.quality);
 	const setQuality = usePreviewStore((state) => state.setQuality);
-	const labels = { full: "Full", half: "\u00bd", quarter: "\u00bc" };
+	const labels = { full: t("preview.full"), half: "\u00bd", quarter: "\u00bc" };
 	return (
 		<Select
 			value={quality}
@@ -141,11 +145,11 @@ function QualitySelect() {
 				if (isPreviewQuality(value)) setQuality(value);
 			}}
 		>
-			<SelectTrigger aria-label="Kualitas preview">
+			<SelectTrigger aria-label={t("preview.quality")}>
 				{labels[quality]}
 			</SelectTrigger>
 			<SelectContent>
-				<SelectItem value="full">Full</SelectItem>
+				<SelectItem value="full">{labels.full}</SelectItem>
 				<SelectItem value="half">{"\u00bd"}</SelectItem>
 				<SelectItem value="quarter">{"\u00bc"}</SelectItem>
 			</SelectContent>
@@ -154,10 +158,11 @@ function QualitySelect() {
 }
 
 function ZoomSelect() {
+	const { t } = useI18n();
 	const { isAtFit, zoomPercent, fitToScreen, setViewportPercent } =
 		usePreviewViewport();
 
-	const displayLabel = isAtFit ? "Fit" : `${zoomPercent}%`;
+	const displayLabel = isAtFit ? t("preview.fit") : `${zoomPercent}%`;
 
 	const onValueChange = (value: string) => {
 		if (value === "fit") {
@@ -172,9 +177,9 @@ function ZoomSelect() {
 			value={isAtFit ? "fit" : String(zoomPercent)}
 			onValueChange={onValueChange}
 		>
-			<SelectTrigger className="tabular-nums">{displayLabel}</SelectTrigger>
+			<SelectTrigger className="tabular-nums" aria-label={t("preview.zoom")}>{displayLabel}</SelectTrigger>
 			<SelectContent>
-				<SelectItem value="fit">Fit</SelectItem>
+				<SelectItem value="fit">{t("preview.fit")}</SelectItem>
 				<SelectSeparator />
 				{PREVIEW_ZOOM_PRESETS.map((preset) => (
 					<SelectItem key={preset} value={String(preset)}>
@@ -187,12 +192,14 @@ function ZoomSelect() {
 }
 
 function PlayPauseButton() {
+	const { t } = useI18n();
 	const isPlaying = useEditor((e) => e.playback.getIsPlaying());
 
 	return (
 		<Button
 			variant="text"
 			size="icon"
+			aria-label={t(isPlaying ? "preview.pause" : "preview.play")}
 			onClick={() => invokeAction("toggle-play")}
 		>
 			<HugeiconsIcon icon={isPlaying ? PauseIcon : PlayIcon} />

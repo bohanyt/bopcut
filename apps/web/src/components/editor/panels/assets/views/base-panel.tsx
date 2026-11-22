@@ -4,6 +4,7 @@ interface PanelViewProps extends React.HTMLAttributes<HTMLDivElement> {
 	title?: string;
 	actions?: React.ReactNode;
 	children: React.ReactNode;
+	headerClassName?: string;
 	contentClassName?: string;
 	scrollClassName?: string;
 	hideHeader?: boolean;
@@ -17,6 +18,7 @@ export function PanelView({
 	actions,
 	children,
 	className,
+	headerClassName,
 	contentClassName,
 	scrollClassName,
 	hideHeader = false,
@@ -32,7 +34,7 @@ export function PanelView({
 			{...rest}
 		>
 			{!hideHeader && (
-				<div className="bg-background h-11 shrink-0 pl-3 pr-2 flex items-center justify-between border-b">
+				<div className={cn("bg-background h-11 shrink-0 pl-3 pr-2 flex items-center justify-between border-b", headerClassName)}>
 					{title && (
 						<span className="text-muted-foreground text-sm">{title}</span>
 					)}

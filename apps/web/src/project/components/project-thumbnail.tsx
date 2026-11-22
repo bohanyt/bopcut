@@ -4,7 +4,7 @@ export function ProjectThumbnail({ src }: { src: string }) {
 	return (
 		<Image
 			src={src}
-			alt="Project thumbnail"
+			alt=""
 			fill
 			className="object-cover"
 			// Disk thumbnails are already sized and revalidated by the storage route.

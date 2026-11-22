@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useI18n } from "@/i18n/provider";
+import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { EditorCore } from "@/core";
@@ -18,11 +19,13 @@ interface EditorProviderProps {
 }
 
 export function EditorProvider({ projectId, children }: EditorProviderProps) {
+	const { t } = useI18n();
 	const activeProject = useEditor((e) => e.project.getActiveOrNull());
 	const router = useRouter();
 	const [isLoading, setIsLoading] = useState(true);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useState<{ key: "projects.createFailed" | "projects.loadFailed"; detail?: string } | null>(null);
 	const { setLoadingProject } = useKeybindingsStore();
+	const getUntitledProjectName = useEffectEvent(() => t("editor.untitled"));
 
 	useEffect(() => {
 		setLoadingProject(isLoading);
@@ -53,11 +56,11 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 				if (isNotFound) {
 					try {
 						const newProjectId = await editor.project.createNewProject({
-							name: "Untitled Project",
+							name: getUntitledProjectName(),
 						});
 						router.replace(`/editor/${newProjectId}`);
 					} catch (_createErr) {
-						setError("Failed to create project");
+						setError({ key: "projects.createFailed" });
 						setIsLoading(false);
 					}
 				} else {
@@ -65,11 +68,9 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 						.__wasmPanic;
 					if (wasmPanic) {
 						delete (window as Window & { __wasmPanic?: string }).__wasmPanic;
-						setError(wasmPanic);
+						setError({ key: "projects.loadFailed", detail: wasmPanic });
 					} else {
-						setError(
-							err instanceof Error ? err.message : "Failed to load project",
-						);
+						setError({ key: "projects.loadFailed", detail: err instanceof Error ? err.message : undefined });
 					}
 					setIsLoading(false);
 				}
@@ -88,7 +89,8 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 		return (
 			<div className="bg-background flex h-screen w-screen items-center justify-center">
 				<div className="flex flex-col items-center gap-4">
-					<p className="text-destructive text-sm">{error}</p>
+					<p className="text-destructive text-sm">{t(error.key)}</p>
+					{error.detail && <p className="text-muted-foreground text-sm">{error.detail}</p>}
 				</div>
 			</div>
 		);
@@ -99,7 +101,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 			<div className="bg-background flex h-screen w-screen items-center justify-center">
 				<div className="flex flex-col items-center gap-4">
 					<Loader2 className="text-muted-foreground size-8 animate-spin" />
-					<p className="text-muted-foreground text-sm">Loading project...</p>
+					<p className="text-muted-foreground text-sm">{t("editor.loadingProject")}</p>
 				</div>
 			</div>
 		);
@@ -110,7 +112,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 			<div className="bg-background flex h-screen w-screen items-center justify-center">
 				<div className="flex flex-col items-center gap-4">
 					<Loader2 className="text-muted-foreground size-8 animate-spin" />
-					<p className="text-muted-foreground text-sm">Exiting project...</p>
+					<p className="text-muted-foreground text-sm">{t("editor.exitingProject")}</p>
 				</div>
 			</div>
 		);

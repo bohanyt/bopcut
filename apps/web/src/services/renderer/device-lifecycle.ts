@@ -7,7 +7,22 @@ type DeviceOptions = {
 	scheduleRecovery: (recover: () => void) => void;
 };
 
-export class GraphicsDeviceError extends Error {}
+export type GraphicsIssueKind =
+	| "graphicsUnavailable"
+	| "graphicsNotReady"
+	| "graphicsLost"
+	| "graphicsModel"
+	| "graphicsSurface";
+
+export class GraphicsDeviceError extends Error {
+	constructor(
+		public readonly kind: GraphicsIssueKind,
+		message: string,
+		options?: ErrorOptions,
+	) {
+		super(message, options);
+	}
+}
 
 export class DeviceLifecycle {
 	private current: DeviceStatus = { state: "idle" };
@@ -49,10 +64,10 @@ export class DeviceLifecycle {
 	requireReady(): AbortSignal {
 		const status = this.current;
 		if (status.state === "unavailable") {
-			throw new GraphicsDeviceError(`Preview and export are unavailable. Retry graphics initialization. ${status.detail}`);
+			throw new GraphicsDeviceError("graphicsUnavailable", `Preview and export are unavailable. Retry graphics initialization. ${status.detail}`);
 		}
 		if (status.state !== "ready") {
-			throw new GraphicsDeviceError("Graphics device is starting or recovering. Try again when it is ready.");
+			throw new GraphicsDeviceError("graphicsNotReady", "Graphics device is starting or recovering. Try again when it is ready.");
 		}
 		return this.signal;
 	}
@@ -86,7 +101,7 @@ export class DeviceLifecycle {
 
 	private deviceLost(attempt: AbortController): void {
 		if (this.generation !== attempt || attempt.signal.aborted) return;
-		const error = new GraphicsDeviceError("Graphics device was lost. Try again after graphics recovery.");
+		const error = new GraphicsDeviceError("graphicsLost", "Graphics device was lost. Try again after graphics recovery.");
 		attempt.abort(error);
 		if (this.current.state !== "ready") return;
 		if (!this.autoRecover) {

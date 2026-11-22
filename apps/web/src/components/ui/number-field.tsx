@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { cn } from "@/utils/ui";
 import { clamp } from "@/utils/math";
 import { useRef, useState, useLayoutEffect, type ComponentProps } from "react";
@@ -140,6 +141,7 @@ function NumberField({
 	ref,
 	...props
 }: NumberFieldProps & { ref?: React.Ref<HTMLInputElement> }) {
+	const { t } = useI18n();
 	const inputRef = useRef<HTMLInputElement>(null);
 	const ghostRef = useRef<HTMLSpanElement>(null);
 	const cancelScrub = useRef<(() => void) | null>(null);
@@ -258,7 +260,7 @@ function NumberField({
 				(canScrub ? (
 					<button
 						type="button"
-						aria-label="Drag to adjust value"
+						aria-label={t("common.dragToAdjust")}
 						disabled={disabled}
 						className="text-muted-foreground [&_svg]:size-3.5! shrink-0 select-none pl-2.5 text-sm leading-none cursor-ew-resize"
 						onMouseDown={(event) => event.preventDefault()}
@@ -306,7 +308,7 @@ function NumberField({
 					<Button
 						variant="text"
 						size="text"
-						aria-label="Reset to default"
+						aria-label={t("common.resetToDefault")}
 						onClick={onReset}
 					>
 						<HugeiconsIcon icon={ArrowTurnBackwardIcon} className="size-3.5!" />

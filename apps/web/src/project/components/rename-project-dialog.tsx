@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/provider";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -22,6 +23,7 @@ export function RenameProjectDialog({
 	onConfirm: (newName: string) => void;
 	projectName: string;
 }) {
+	const { t } = useI18n();
 	const [name, setName] = useState(projectName);
 
 	const handleOpenChange = (open: boolean) => {
@@ -35,11 +37,11 @@ export function RenameProjectDialog({
 		<Dialog open={isOpen} onOpenChange={handleOpenChange}>
 			<DialogContent>
 				<DialogHeader>
-					<DialogTitle>Rename project</DialogTitle>
+					<DialogTitle>{t("projects.renameProject")}</DialogTitle>
 				</DialogHeader>
 
 				<DialogBody className="gap-3">
-					<Label>New name</Label>
+					<Label>{t("projects.newName")}</Label>
 					<Input
 						value={name}
 						onChange={(e) => setName(e.target.value)}
@@ -49,7 +51,7 @@ export function RenameProjectDialog({
 								onConfirm(name);
 							}
 						}}
-						placeholder="Enter a new name"
+						placeholder={t("projects.enterName")}
 					/>
 				</DialogBody>
 
@@ -62,9 +64,9 @@ export function RenameProjectDialog({
 							onOpenChange(false);
 						}}
 					>
-						Cancel
+						{t("common.cancel")}
 					</Button>
-					<Button onClick={() => onConfirm(name)}>Rename</Button>
+					<Button onClick={() => onConfirm(name)}>{t("common.rename")}</Button>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>

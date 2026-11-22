@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/provider";
 import {
 	Dialog,
 	DialogBody,
@@ -35,6 +36,7 @@ export function ProjectInfoDialog({
 	onOpenChange: (open: boolean) => void;
 	project: TProjectMetadata;
 }) {
+	const { locale, t } = useI18n();
 	const durationSeconds = mediaTimeToSeconds({ time: project.duration });
 	const durationFormatted =
 		project.duration > 0
@@ -51,17 +53,17 @@ export function ProjectInfoDialog({
 				</DialogHeader>
 
 				<DialogBody className="flex flex-col">
-					<InfoRow label="Duration" value={durationFormatted} />
+					<InfoRow label={t("projects.duration")} value={durationFormatted} />
 					<InfoRow
-						label="Created"
-						value={formatDate({ date: project.createdAt })}
+						label={t("projects.created")}
+						value={formatDate({ date: project.createdAt, locale })}
 					/>
 					<InfoRow
-						label="Modified"
-						value={formatDate({ date: project.updatedAt })}
+						label={t("projects.modified")}
+						value={formatDate({ date: project.updatedAt, locale })}
 					/>
 					<InfoRow
-						label="Project ID"
+						label={t("projects.projectId")}
 						value={
 							<code className="text-xs bg-muted px-1.5 py-0.5 rounded">
 								{project.id.slice(0, 8)}
@@ -71,9 +73,9 @@ export function ProjectInfoDialog({
 				</DialogBody>
 				<DialogFooter>
 					<Button variant="outline" onClick={() => onOpenChange(false)}>
-						Close
+						{t("common.close")}
 					</Button>
-					<Button onClick={() => onOpenChange(false)}>Done</Button>
+					<Button onClick={() => onOpenChange(false)}>{t("common.done")}</Button>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>

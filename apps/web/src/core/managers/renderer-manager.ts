@@ -1,6 +1,7 @@
 import type { EditorCore } from "@/core";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import type { ExportOptions, ExportResult } from "@/export";
+import { getExportFailure } from "@/export/failure";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { SceneExporter } from "@/services/renderer/scene-exporter";
 import { buildScene, collectVisibleMedia } from "@/services/renderer/scene-builder";
@@ -14,7 +15,7 @@ import { isElementMuted } from "@/timeline/audio-state";
 import type { TCanvasSize } from "@/project/types";
 import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
-import { canvasSizeError, rendererDevice } from "@/services/renderer/renderer-device";
+import { describeCanvasSizeIssue, getCanvasSizeIssue, rendererDevice } from "@/services/renderer/renderer-device";
 import { verifyVideoFile } from "@/media/video-probe";
 
 type SnapshotResult =
@@ -189,11 +190,12 @@ export class RendererManager {
 		canvasSize: TCanvasSize;
 		duration?: number;
 	}): ExportResult | null {
-		const sizeError = canvasSizeError(canvasSize);
-		if (sizeError) return { success: false, error: sizeError };
+		const sizeIssue = getCanvasSizeIssue(canvasSize);
+		if (sizeIssue) return { success: false, error: describeCanvasSizeIssue(sizeIssue), issue: sizeIssue };
 		if (format === "mp4" && (canvasSize.width % 2 !== 0 || canvasSize.height % 2 !== 0)) {
 			return {
 				success: false,
+				issue: { kind: "evenDimensions", ...canvasSize },
 				error: `MP4 needs even canvas dimensions (${canvasSize.width} × ${canvasSize.height}). Choose WebM or set both dimensions to even numbers in project settings.`,
 			};
 		}
@@ -225,7 +227,7 @@ export class RendererManager {
 		signal?: AbortSignal;
 	}): Promise<ExportResult> {
 		if (this.exportRunning) {
-			return { success: false, error: "Another export is running; try again when it finishes" };
+			return { success: false, error: "Another export is running; try again when it finishes", issue: { kind: "alreadyRunning" } };
 		}
 		const sessionSignal = this.editor.project.getSessionSignal();
 		const signal = job.signal ? AbortSignal.any([job.signal, sessionSignal]) : sessionSignal;
@@ -265,18 +267,18 @@ export class RendererManager {
 			const active = this.editor.scenes.getActiveScene();
 			const exported = sceneId ? scenes.find((scene) => scene.id === sceneId) : active;
 			if (!exported) {
-				return { success: false, error: "Scene not found" };
+				return { success: false, error: "Scene not found", issue: { kind: "sceneNotFound" } };
 			}
 			const tracks = exported.tracks;
 			const activeProject = this.editor.project.getActive();
 
 			if (!activeProject) {
-				return { success: false, error: "No active project" };
+				return { success: false, error: "No active project", issue: { kind: "noProject" } };
 			}
 
 			const duration = exported.id === active.id ? this.editor.timeline.getTotalDuration() : calculateTotalDuration({ tracks });
 			if (duration === 0) {
-				return { success: false, error: "Project is empty" };
+				return { success: false, error: "Project is empty", issue: { kind: "empty" } };
 			}
 
 			const exportFps = fps ?? activeProject.settings.fps;
@@ -376,7 +378,7 @@ export class RendererManager {
 			signal.throwIfAborted();
 
 			if (!buffer) {
-				return { success: false, error: "Export failed to produce buffer" };
+				return { success: false, error: "Export failed to produce buffer", issue: { kind: "noBuffer" } };
 			}
 
 			return { success: true, buffer };
@@ -384,10 +386,7 @@ export class RendererManager {
 			if (callerSignal.aborted) return { success: false, cancelled: true };
 			if (mediaFailure.signal.aborted) return unavailableMedia([...failures.values()]);
 			console.error("Export failed:", error);
-			return {
-				success: false,
-				error: error instanceof Error ? error.message : "Unknown export error",
-			};
+			return getExportFailure(error);
 		} finally {
 			await audioBlocks?.return();
 		}

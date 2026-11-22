@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+import type { TActionCategory } from "./definitions";
 import { useMemo } from "react";
 import { useKeybindingsStore } from "@/actions/keybindings-store";
 import { ACTIONS, type TActionWithOptionalArgs } from "@/actions";
@@ -12,7 +14,7 @@ export interface KeyboardShortcut {
 	id: string;
 	keys: string[];
 	description: string;
-	category: string;
+	category: TActionCategory;
 	action: TActionWithOptionalArgs;
 	icon?: React.ReactNode;
 }
@@ -36,6 +38,7 @@ function formatKey({ key }: { key: string }): string {
 }
 
 export function useKeyboardShortcutsHelp() {
+	const { locale, t } = useI18n();
 	const { keybindings } = useKeybindingsStore();
 
 	const shortcuts = useMemo(() => {
@@ -57,7 +60,7 @@ export function useKeyboardShortcutsHelp() {
 			result.push({
 				id: action,
 				keys,
-				description: actionDef.description,
+				description: t(`shortcuts.action.${action}`),
 				category: actionDef.category,
 				action,
 			});
@@ -67,9 +70,9 @@ export function useKeyboardShortcutsHelp() {
 			if (a.category !== b.category) {
 				return a.category.localeCompare(b.category);
 			}
-			return a.description.localeCompare(b.description);
+			return a.description.localeCompare(b.description, locale);
 		});
-	}, [keybindings]);
+	}, [keybindings, locale, t]);
 
 	return {
 		shortcuts,

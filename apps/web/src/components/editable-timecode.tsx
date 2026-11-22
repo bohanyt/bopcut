@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { useEffect, useRef, useState } from "react";
 import type { FrameRate, TimeCodeFormat } from "opencut-wasm";
 import { cn } from "@/utils/ui";
@@ -29,6 +30,7 @@ export function EditableTimecode({
 	className,
 	disabled = false,
 }: EditableTimecodeProps) {
+	const { t } = useI18n();
 	const [isEditing, setIsEditing] = useState(false);
 	const [inputValue, setInputValue] = useState("");
 	const [hasError, setHasError] = useState(false);
@@ -150,7 +152,7 @@ export function EditableTimecode({
 				disabled && "cursor-default hover:bg-transparent",
 				className,
 			)}
-			title={disabled ? undefined : "Click to edit time"}
+			title={disabled ? undefined : t("preview.editTime")}
 		>
 			{formattedTime}
 		</button>

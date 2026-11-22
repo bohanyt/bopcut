@@ -8,6 +8,7 @@ import type {
 	TTimelineViewState,
 } from "@/project/types";
 import type { ExportOptions, ExportResult, ExportState } from "@/export";
+import { getExportFailure } from "@/export/failure";
 import { storageService } from "@/services/storage/service";
 import { toast } from "sonner";
 import { generateUUID } from "@/utils/id";
@@ -332,7 +333,7 @@ export class ProjectManager {
 		restoreMissingMedia?: boolean;
 	}): Promise<ExportResult> {
 		if (this.exportController) {
-			return { success: false, error: "Another export is running; try again when it finishes" };
+			return { success: false, error: "Another export is running; try again when it finishes", issue: { kind: "alreadyRunning" } };
 		}
 		const session = this.session;
 		const isCurrentRetry = () => this.exportState.result === retryResult && this.exportTarget?.session === session;
@@ -370,7 +371,7 @@ export class ProjectManager {
 				});
 			}
 		} catch (error) {
-			result = { success: false, error: error instanceof Error ? error.message : "Unknown export error" };
+			result = getExportFailure(error);
 		} finally {
 			this.exportController = null;
 		}

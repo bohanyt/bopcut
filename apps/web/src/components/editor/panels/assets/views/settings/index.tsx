@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+import { getCanvasIssueMessage } from "@/i18n/canvas-messages";
 import { useState } from "react";
 import { PanelView } from "@/components/editor/panels/assets/views/base-panel";
 import {
@@ -32,10 +34,12 @@ import { formatNumberForDisplay } from "@/utils/math";
 import { OcSquarePlusIcon } from "@/components/icons";
 import type { TCanvasSize } from "@/project/types";
 import { toast } from "sonner";
-import { canvasSizeError, getRendererLimits } from "@/services/renderer/renderer-device";
+import { getCanvasSizeIssue, getRendererLimits } from "@/services/renderer/renderer-device";
 import { MIN_GPU_CANVAS_DIMENSION } from "@/canvas/sizes";
 
 type SettingsView = "project-info" | "background";
+
+const SETTINGS_TAB_CLASS = "h-auto min-h-6.5 min-w-0 max-w-full wrap-anywhere whitespace-normal px-1.5";
 
 function isSettingsView(value: string): value is SettingsView {
 	return value === "project-info" || value === "background";
@@ -77,9 +81,9 @@ function customCanvasSizeError(size: TCanvasSize, changedDimension?: keyof TCanv
 	// Let users repair the two sides of an oversized saved canvas independently.
 	const changedSize = changedDimension ? { width: 1, height: 1, [changedDimension]: size[changedDimension] } : size;
 	const { maxSurfaceDimension } = getRendererLimits();
-	if (canvasSizeError(changedSize, maxSurfaceDimension)) return canvasSizeError(size, maxSurfaceDimension);
+	if (getCanvasSizeIssue(changedSize, maxSurfaceDimension)) return getCanvasSizeIssue(size, maxSurfaceDimension);
 	if (maxSurfaceDimension === undefined && Math.max(changedSize.width, changedSize.height) > MIN_GPU_CANVAS_DIMENSION) {
-		return `Wait for graphics to be ready before setting a canvas dimension above ${MIN_GPU_CANVAS_DIMENSION} pixels.`;
+		return { kind: "graphicsNotReady", max: MIN_GPU_CANVAS_DIMENSION } as const;
 	}
 }
 
@@ -110,6 +114,7 @@ function useCanvasDimensionDraft({
 }
 
 export function SettingsView() {
+	const { t } = useI18n();
 	const [view, setView] = useState<SettingsView>("project-info");
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
@@ -217,7 +222,11 @@ export function SettingsView() {
 		const canvasSize = { ...currentCanvasSize, [dimension]: value };
 		const error = customCanvasSizeError(canvasSize, dimension);
 		if (error) {
-			toast.error(error);
+			toast.error(
+				error.kind === "graphicsNotReady"
+					? t("settings.graphicsNotReady", { max: error.max })
+					: getCanvasIssueMessage(error, t),
+			);
 			return;
 		}
 		updateCustomCanvasSize({ canvasSize });
@@ -237,10 +246,12 @@ export function SettingsView() {
 
 	return (
 		<PanelView
+			headerClassName="h-auto min-h-11 px-1.5 py-1"
 			contentClassName="px-0"
 			scrollClassName="pt-0"
 			actions={
 				<Tabs
+					className="min-w-0"
 					value={view}
 					onValueChange={(value) => {
 						if (isSettingsView(value)) {
@@ -248,9 +259,13 @@ export function SettingsView() {
 						}
 					}}
 				>
-					<TabsList>
-						<TabsTrigger value="project-info">Project info</TabsTrigger>
-						<TabsTrigger value="background">Background</TabsTrigger>
+					<TabsList className="flex flex-wrap gap-1">
+						<TabsTrigger value="project-info" className={SETTINGS_TAB_CLASS}>
+							{t("settings.projectInfo")}
+						</TabsTrigger>
+						<TabsTrigger value="background" className={SETTINGS_TAB_CLASS}>
+							{t("settings.background")}
+						</TabsTrigger>
 					</TabsList>
 				</Tabs>
 			}
@@ -259,25 +274,28 @@ export function SettingsView() {
 				<div className="flex flex-col">
 					<Section showTopBorder={false}>
 						<SectionHeader>
-							<SectionTitle className="flex-1">Name</SectionTitle>
-							<span className="text-sm truncate">
+							<SectionTitle className="flex-1">{t("common.name")}</SectionTitle>
+							<span className="min-w-0 text-sm truncate">
 								{activeProject.metadata.name}
 							</span>
 						</SectionHeader>
 					</Section>
 					<Section showTopBorder={false}>
 						<SectionHeader className="justify-between">
-							<SectionTitle className="flex-1">Frame rate</SectionTitle>
-					<Select
-							value={fpsOption.value}
-							onValueChange={(value) => {
-								if (value === fpsOption.value) return;
-								const fps = floatToFrameRate(Number(value));
-								editor.project.updateSettings({ settings: { fps } });
-							}}
+							<SectionTitle className="flex-1">{t("settings.frameRate")}</SectionTitle>
+							<Select
+								value={fpsOption.value}
+								onValueChange={(value) => {
+									if (value === fpsOption.value) return;
+									const fps = floatToFrameRate(Number(value));
+									editor.project.updateSettings({ settings: { fps } });
+								}}
 							>
-								<SelectTrigger className="bg-transparent border-none p-1 h-auto">
-									<SelectValue placeholder="Select a frame rate" />
+								<SelectTrigger
+									className="bg-transparent border-none p-1 h-auto"
+									aria-label={t("settings.frameRate")}
+								>
+									<SelectValue placeholder={t("settings.selectFrameRate")} />
 								</SelectTrigger>
 								<SelectContent>
 									{fpsOptions.map((preset) => (
@@ -295,7 +313,7 @@ export function SettingsView() {
 						sectionKey="settings:aspect-ratio"
 					>
 						<SectionHeader>
-							<SectionTitle className="flex-1">Aspect ratio</SectionTitle>
+							<SectionTitle className="flex-1">{t("settings.aspectRatio")}</SectionTitle>
 						</SectionHeader>
 						<SectionContent className="px-2 flex flex-col gap-1 pb-2">
 							{presetItems.map((preset) => (
@@ -313,7 +331,7 @@ export function SettingsView() {
 							))}
 							<div className="pb-2">
 								<AspectRatioItem
-									label="Custom"
+									label={t("common.custom")}
 									previewIcon={<OcSquarePlusIcon />}
 									isSelected={isCustomSelected}
 									onClick={selectCustomCanvasSize}
@@ -323,16 +341,16 @@ export function SettingsView() {
 									<div className="flex items-center gap-2 rounded-b-md border border-t-0 border-secondary-border bg-secondary px-2 pb-2 text-foreground">
 										<NumberField
 											value={widthDraft.displayValue}
-											className="w-full"
-											aria-label="Canvas width"
+											className="w-full min-w-0"
+											aria-label={t("settings.canvasWidth")}
 											onFocus={widthDraft.onFocus}
 											onChange={widthDraft.onChange}
 											onBlur={widthDraft.onBlur}
 										/>
 										<NumberField
 											value={heightDraft.displayValue}
-											className="w-full"
-											aria-label="Canvas height"
+											className="w-full min-w-0"
+											aria-label={t("settings.canvasHeight")}
 											onFocus={heightDraft.onFocus}
 											onChange={heightDraft.onChange}
 											onBlur={heightDraft.onBlur}
@@ -377,7 +395,7 @@ function AspectRatioItem({
 					<div className="flex items-center justify-center size-5">
 						{previewIcon}
 					</div>
-					<span className="text-sm truncate">{label}</span>
+					<span className="min-w-0 text-sm truncate">{label}</span>
 				</div>
 				<div>
 					{isSelected && <HugeiconsIcon icon={Tick02Icon} className="size-4" />}

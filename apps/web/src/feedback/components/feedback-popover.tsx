@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { ClockIcon } from "lucide-react";
+import { ClockIcon, MessageSquare } from "lucide-react";
 import {
 	Popover,
 	PopoverContent,
@@ -19,6 +19,9 @@ import {
 	FormControl,
 	clearFormDraft,
 } from "@/components/ui/form";
+import { useI18n } from "@/i18n/provider";
+import type { Locale } from "@/i18n/locale";
+import type { createTranslator } from "@/i18n/translate";
 import type { FeedbackEntry } from "../types";
 
 const PERSIST_KEY = "feedback-draft";
@@ -47,6 +50,7 @@ function writeHistory({ entries }: { entries: FeedbackEntry[] }): void {
 }
 
 function useFeedback() {
+	const { t } = useI18n();
 	const [entries, setEntries] = useState<FeedbackEntry[]>(readHistory);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -77,11 +81,11 @@ function useFeedback() {
 			setEntries(next);
 			writeHistory({ entries: next });
 			onSuccess();
-			toast.success("Feedback sent");
+			toast.success(t("feedback.sent"));
 		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Failed to send feedback",
-			);
+			toast.error(t("feedback.failed"), {
+				description: error instanceof Error ? error.message : undefined,
+			});
 		} finally {
 			setIsSubmitting(false);
 		}
@@ -91,16 +95,18 @@ function useFeedback() {
 }
 
 export function FeedbackPopover() {
+	const { t } = useI18n();
 	const [open, setOpen] = useState(false);
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
-				<Button variant="outline" className="h-8">
-					Send feedback
+				<Button variant="outline" className="h-8" aria-label={t("feedback.open")}>
+					<MessageSquare className="sm:hidden" />
+					<span className="hidden sm:inline">{t("feedback.open")}</span>
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent align="end" className="w-80 p-0">
+			<PopoverContent align="end" className="w-80 max-w-[calc(100vw-1rem)] p-0">
 				<FeedbackPopoverContent onClose={() => setOpen(false)} />
 			</PopoverContent>
 		</Popover>
@@ -110,6 +116,7 @@ export function FeedbackPopover() {
 type View = "compose" | "history";
 
 function FeedbackPopoverContent({ onClose }: { onClose: () => void }) {
+	const { t } = useI18n();
 	const { entries, isSubmitting, submit } = useFeedback();
 	const [view, setView] = useState<View>("compose");
 
@@ -148,7 +155,7 @@ function FeedbackPopoverContent({ onClose }: { onClose: () => void }) {
 						onClick={() => setView("compose")}
 						className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
 					>
-						← Back
+						{t("feedback.back")}
 					</button>
 				</div>
 			</div>
@@ -166,7 +173,7 @@ function FeedbackPopoverContent({ onClose }: { onClose: () => void }) {
 							<FormItem>
 								<FormControl>
 									<Textarea
-										placeholder="Thoughts, bugs, ideas..."
+										placeholder={t("feedback.placeholder")}
 										className="min-h-[7rem] text-sm p-3 bg-background shadow-none border-none! resize-none"
 										{...field}
 									/>
@@ -179,6 +186,7 @@ function FeedbackPopoverContent({ onClose }: { onClose: () => void }) {
 							<button
 								type="button"
 								onClick={() => setView("history")}
+								aria-label={t("feedback.history")}
 								className="flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
 							>
 								<ClockIcon className="size-3" />
@@ -195,7 +203,7 @@ function FeedbackPopoverContent({ onClose }: { onClose: () => void }) {
 									size="sm"
 									onClick={onClose}
 								>
-									Cancel
+									{t("common.cancel")}
 								</Button>
 							)}
 							<Button
@@ -203,7 +211,7 @@ function FeedbackPopoverContent({ onClose }: { onClose: () => void }) {
 								size="sm"
 								disabled={isSubmitting || !form.watch("message").trim()}
 							>
-								{isSubmitting ? <Spinner /> : "Send"}
+								{isSubmitting ? <Spinner /> : t("feedback.send")}
 							</Button>
 						</div>
 					</div>
@@ -213,29 +221,30 @@ function FeedbackPopoverContent({ onClose }: { onClose: () => void }) {
 	);
 }
 
-function relativeDate(iso: string): string {
+function relativeDate(iso: string, locale: Locale, t: ReturnType<typeof createTranslator>): string {
 	const diff = Date.now() - new Date(iso).getTime();
 	const mins = Math.floor(diff / 60_000);
-	if (mins < 1) return "just now";
-	if (mins < 60) return `${mins}m ago`;
+	if (mins < 1) return t("feedback.now");
+	if (mins < 60) return t("feedback.minutes", { count: mins });
 	const hrs = Math.floor(mins / 60);
-	if (hrs < 24) return `${hrs}h ago`;
+	if (hrs < 24) return t("feedback.hours", { count: hrs });
 	const days = Math.floor(hrs / 24);
-	if (days < 7) return `${days}d ago`;
-	return new Date(iso).toLocaleDateString(undefined, {
+	if (days < 7) return t("feedback.days", { count: days });
+	return new Date(iso).toLocaleDateString(locale === "id" ? "id-ID" : "en-US", {
 		month: "short",
 		day: "numeric",
 	});
 }
 
 function FeedbackEntryItem({ entry }: { entry: FeedbackEntry }) {
+	const { locale, t } = useI18n();
 	return (
 		<div className="px-3 py-2.5">
 			<p className="text-sm text-muted-foreground leading-snug whitespace-pre-wrap break-words">
 				{entry.message}
 			</p>
 			<span className="mt-1 block text-[11px] text-muted-foreground/50">
-				{relativeDate(entry.createdAt)}
+				{relativeDate(entry.createdAt, locale, t)}
 			</span>
 		</div>
 	);

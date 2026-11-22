@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+import { LanguageSwitch } from "@/i18n/language-switch";
 import { useState } from "react";
 import Link from "next/link";
 import { motion } from "motion/react";
@@ -26,24 +28,25 @@ import {
 } from "./ui/context-menu";
 
 export function Header() {
+	const { t } = useI18n();
 	const [isMenuOpen, setIsMenuOpen] = useState(false);
 	const closeMenu = () => setIsMenuOpen(false);
 
 	const links = [
 		{
-			label: "Roadmap",
+			label: t("header.roadmap"),
 			href: "/roadmap",
 		},
 		{
-			label: "Contributors",
+			label: t("header.contributors"),
 			href: "/contributors",
 		},
 		{
-			label: "Sponsors",
+			label: t("header.sponsors"),
 			href: "/sponsors",
 		},
 		{
-			label: "Blog",
+			label: t("header.blog"),
 			href: "/blog",
 		},
 	];
@@ -57,7 +60,7 @@ export function Header() {
 							<Link href="/" className="flex items-center gap-3">
 								<Image
 									src={DEFAULT_LOGO_URL}
-									alt="OpenCut Logo"
+									alt={t("header.logo")}
 									className="invert dark:invert-0"
 									width={32}
 									height={32}
@@ -73,7 +76,7 @@ export function Header() {
 								}}
 							>
 								<HugeiconsIcon icon={Copy01Icon} />
-								Copy SVG
+								{t("header.copySvg")}
 							</ContextMenuItem>
 							<ContextMenuItem
 								onClick={() => {
@@ -84,12 +87,12 @@ export function Header() {
 								}}
 							>
 								<HugeiconsIcon icon={Download01Icon} />
-								Download SVG
+								{t("header.downloadSvg")}
 							</ContextMenuItem>
 							<Link href="/brand">
 								<ContextMenuItem>
 									<HugeiconsIcon icon={LinkSquare02Icon} />
-									Brand assets
+									{t("header.brand")}
 								</ContextMenuItem>
 							</Link>
 						</ContextMenuContent>
@@ -106,12 +109,15 @@ export function Header() {
 					</nav>
 				</div>
 
-				<div className="relative z-10">
+				<div className="relative z-10 flex items-center gap-2">
+					<LanguageSwitch />
 					<div className="flex items-center gap-3 md:hidden">
 						<Button
 							variant="text"
 							size="icon"
 							className="flex items-center justify-center p-0"
+							aria-label={t("header.openMenu")}
+							aria-expanded={isMenuOpen}
 							onClick={() => setIsMenuOpen(!isMenuOpen)}
 						>
 							<HugeiconsIcon icon={Menu02Icon} size={30} />
@@ -126,7 +132,7 @@ export function Header() {
 						</Link>
 						<Link href="/projects">
 							<Button className="text-sm">
-								Projects
+								{t("header.projects")}
 								<ArrowRight className="size-4" />
 							</Button>
 						</Link>
@@ -143,7 +149,7 @@ export function Header() {
 					<div className="relative h-full">
 						<button
 							type="button"
-							aria-label="Close menu"
+							aria-label={t("header.closeMenu")}
 							className="absolute inset-0"
 							onClick={closeMenu}
 							onKeyDown={(event) => {

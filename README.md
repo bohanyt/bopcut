@@ -1,3 +1,5 @@
+[Read in English](README.en.md)
+
 # bopencut — satu timeline untuk kamu dan AI
 
 **bopencut** adalah editor video web tempat **manusia dan AI mengedit timeline yang sama**. AI menyusun draf video dari skrip; kamu menggeser, memotong, dan menata di UI seperti CapCut; lalu AI merapikan bagian yang kamu tunjuk. Semua perubahan AI bisa di-Undo, dan editanmu tidak tertimpa.
@@ -36,6 +38,8 @@ cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
 ```
 
 Buka `http://127.0.0.1:3000/projects`.
+
+Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa Indonesia. Pilihanmu akan diingat di browser itu.
 
 ## Di mana data disimpan
 

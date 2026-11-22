@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import {
 	Section,
@@ -39,6 +40,7 @@ const BlurPreview = memo(
 		isSelected: boolean;
 		onSelect: () => void;
 	}) => {
+		const { t } = useI18n();
 		const canvasRef = useRef<HTMLCanvasElement>(null);
 
 		useEffect(() => {
@@ -62,12 +64,12 @@ const BlurPreview = memo(
 		return (
 			<button
 				className={cn(
-					"border-foreground/15 hover:border-primary relative aspect-square size-20 cursor-pointer overflow-hidden rounded-sm border",
+					"border-foreground/15 hover:border-primary relative aspect-square size-20 max-w-full cursor-pointer overflow-hidden rounded-sm border",
 					isSelected && "border-primary border-2",
 				)}
 				onClick={onSelect}
 				type="button"
-				aria-label={`Select ${blur.label} blur`}
+				aria-label={t("settings.selectBlur", { level: blur.label })}
 			>
 				<canvas
 					ref={canvasRef}
@@ -99,13 +101,14 @@ const BackgroundPreviews = memo(
 		onSelect: (bg: string) => void;
 		useBackgroundColor?: boolean;
 	}) => {
+		const { t } = useI18n();
 		return useMemo(
 			() =>
 				backgrounds.map((bg) => (
 					<button
 						key={bg}
 						className={cn(
-							"border-foreground/15 hover:border-primary aspect-square size-20 cursor-pointer rounded-sm border",
+							"border-foreground/15 hover:border-primary aspect-square size-20 max-w-full cursor-pointer rounded-sm border",
 							isColorBackground &&
 								bg.toLowerCase() === currentBackgroundColor.toLowerCase() &&
 								"border-primary border-2",
@@ -122,7 +125,7 @@ const BackgroundPreviews = memo(
 						}
 						onClick={() => onSelect(bg)}
 						type="button"
-						aria-label={`Select background ${bg}`}
+						aria-label={t("settings.selectBackground", { color: bg })}
 					/>
 				)),
 			[
@@ -131,6 +134,7 @@ const BackgroundPreviews = memo(
 				currentBackgroundColor,
 				onSelect,
 				useBackgroundColor,
+				t,
 			],
 		);
 	},
@@ -149,6 +153,7 @@ function CustomColorPreview({
 	onPreview: (color: string) => void;
 	onCommit: (color: string) => void;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const readDragBaseline = () => {
 		// The picker blurs its text input first, which can commit a different background.
@@ -172,11 +177,11 @@ function CustomColorPreview({
 			<PopoverTrigger asChild>
 				<button
 					className={cn(
-						"border-foreground/15 hover:border-primary relative aspect-square size-20 cursor-pointer overflow-hidden rounded-sm border",
+						"border-foreground/15 hover:border-primary relative aspect-square size-20 max-w-full cursor-pointer overflow-hidden rounded-sm border",
 						isSelected && "border-primary border-2",
 					)}
 					type="button"
-					aria-label="Pick a custom background color"
+					aria-label={t("settings.customBackground")}
 				>
 					<span
 						className="absolute inset-0"
@@ -200,12 +205,13 @@ function CustomColorPreview({
 }
 
 const COLOR_SECTIONS = [
-	{ id: "colors", title: "Colors", backgrounds: colors, useBackgroundColor: true, showCustomPicker: true },
-	{ id: "pattern-craft", title: "Pattern craft", backgrounds: patternCraftGradients, showCustomPicker: false },
-	{ id: "syntax-ui", title: "Syntax UI", backgrounds: syntaxUIGradients, showCustomPicker: false },
+	{ id: "colors", title: "settings.colors", backgrounds: colors, useBackgroundColor: true, showCustomPicker: true },
+	{ id: "pattern-craft", title: "settings.patternCraft", backgrounds: patternCraftGradients, showCustomPicker: false },
+	{ id: "syntax-ui", title: "settings.syntaxUi", backgrounds: syntaxUIGradients, showCustomPicker: false },
 ] as const;
 
 export function BackgroundContent() {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
 
@@ -266,12 +272,12 @@ export function BackgroundContent() {
 			BACKGROUND_BLUR_INTENSITY_PRESETS.map((blur) => (
 				<BlurPreview
 					key={blur.value}
-					blur={blur}
+					blur={{ value: blur.value, label: t(blur.labelKey) }}
 					isSelected={isBlurBackground && currentBlurIntensity === blur.value}
 					onSelect={() => handleBlurSelect(blur.value)}
 				/>
 			)),
-		[isBlurBackground, currentBlurIntensity, handleBlurSelect],
+		[isBlurBackground, currentBlurIntensity, handleBlurSelect, t],
 	);
 
 	return (
@@ -283,7 +289,7 @@ export function BackgroundContent() {
 				showTopBorder={false}
 			>
 				<SectionHeader>
-					<SectionTitle>Blur</SectionTitle>
+					<SectionTitle>{t("settings.blur")}</SectionTitle>
 				</SectionHeader>
 				<SectionContent>
 					<div className="flex flex-wrap gap-2">{blurPreviews}</div>
@@ -297,7 +303,7 @@ export function BackgroundContent() {
 					sectionKey={`settings:background-${section.id}`}
 				>
 					<SectionHeader>
-						<SectionTitle>{section.title}</SectionTitle>
+						<SectionTitle>{t(section.title)}</SectionTitle>
 					</SectionHeader>
 					<SectionContent>
 						<div className="flex flex-wrap gap-2">

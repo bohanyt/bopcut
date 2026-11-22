@@ -1,4 +1,4 @@
-> Original OpenCut (classic) README, preserved as an archive and credit. The setup instructions below (Docker, Postgres, Redis) are **not required** to run bopencut; see the main README.
+> Original OpenCut (classic) README, preserved as an archive and credit. The setup instructions below (Docker, Postgres, Redis) are **not required** to run bopencut; see the [English README](../README.en.md) or the [Indonesian README](../README.md).
 
 # OpenCut (Legacy)
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+import { LanguageSwitch } from "@/i18n/language-switch";
 import { Button } from "../ui/button";
 import { useRef, useState } from "react";
 import {
@@ -26,19 +28,21 @@ import { CommandIcon, Logout05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ShortcutsDialog } from "@/actions/components/shortcuts-dialog";
 import Image from "next/image";
+import { PanelRight } from "lucide-react";
 import { cn } from "@/utils/ui";
 
 export function EditorHeader() {
 	return (
 		<header className="bg-background flex h-[3.4rem] items-center justify-between px-3 pt-0.5">
-			<div className="flex items-center gap-1">
+			<div className="flex min-w-0 items-center gap-1">
 				<ProjectDropdown />
 				<EditableProjectName />
 			</div>
-			<nav className="flex items-center gap-2">
+			<nav className="flex shrink-0 items-center gap-1 sm:gap-2">
 				<PreviewLayoutToggle />
 				<FeedbackPopover />
 				<ExportButton />
+				<LanguageSwitch />
 				<ThemeToggle />
 			</nav>
 		</header>
@@ -46,6 +50,7 @@ export function EditorHeader() {
 }
 
 function PreviewLayoutToggle() {
+	const { t } = useI18n();
 	const layout = usePanelStore((state) => state.layout);
 	const setLayout = usePanelStore((state) => state.setLayout);
 	const isExportRunning = useEditor((editor) => editor.renderer.isExportRunning());
@@ -56,16 +61,19 @@ function PreviewLayoutToggle() {
 			variant={isPreviewRight ? "secondary" : "outline"}
 			size="sm"
 			aria-pressed={isPreviewRight}
+			aria-label={t("editor.previewRight")}
 			disabled={isExportRunning}
-			title={isExportRunning ? "Change layout after export finishes" : undefined}
+			title={isExportRunning ? t("editor.changeLayoutAfterExport") : undefined}
 			onClick={() => setLayout(isPreviewRight ? "classic" : "preview-right")}
 		>
-			Preview on right
+			<PanelRight className="sm:hidden" />
+			<span className="hidden sm:inline">{t("editor.previewRight")}</span>
 		</Button>
 	);
 }
 
 function ProjectDropdown() {
+	const { t } = useI18n();
 	const [openDialog, setOpenDialog] = useState<
 		"delete" | "rename" | "shortcuts" | null
 	>(null);
@@ -101,9 +109,9 @@ function ProjectDropdown() {
 					name: newName.trim(),
 				});
 			} catch (error) {
-				toast.error("Failed to rename project", {
+				toast.error(t("projects.renameFailed"), {
 					description:
-						error instanceof Error ? error.message : "Please try again",
+						error instanceof Error ? error.message : t("common.tryAgain"),
 				});
 			} finally {
 				setOpenDialog(null);
@@ -119,9 +127,9 @@ function ProjectDropdown() {
 				});
 				router.push("/projects");
 			} catch (error) {
-				toast.error("Failed to delete project", {
+				toast.error(t("projects.deleteFailed"), {
 					description:
-						error instanceof Error ? error.message : "Please try again",
+						error instanceof Error ? error.message : t("common.tryAgain"),
 				});
 			} finally {
 				setOpenDialog(null);
@@ -133,30 +141,30 @@ function ProjectDropdown() {
 		<>
 			<DropdownMenu>
 				<DropdownMenuTrigger asChild>
-					<Button variant="ghost" size="icon" className="p-1 rounded-sm size-8">
+					<Button variant="ghost" size="icon" className="p-1 rounded-sm size-8 shrink-0" aria-label={t("projects.menu")}>
 						<Image
 							src={DEFAULT_LOGO_URL}
-							alt="Project thumbnail"
+							alt=""
 							width={32}
 							height={32}
 							className="invert dark:invert-0 size-5"
 						/>
 					</Button>
 				</DropdownMenuTrigger>
-				<DropdownMenuContent align="start" className="z-100 w-44">
+				<DropdownMenuContent align="start" className="z-100 min-w-44">
 					<DropdownMenuItem
 						onClick={handleExit}
 						disabled={isExiting}
 						icon={<HugeiconsIcon icon={Logout05Icon} />}
 					>
-						Exit project
+						{t("editor.exitProject")}
 					</DropdownMenuItem>
 
 					<DropdownMenuItem
 						onClick={() => setOpenDialog("shortcuts")}
 						icon={<HugeiconsIcon icon={CommandIcon} />}
 					>
-						Shortcuts
+						{t("editor.shortcuts")}
 					</DropdownMenuItem>
 
 					<DropdownMenuSeparator />
@@ -167,7 +175,7 @@ function ProjectDropdown() {
 							target="_blank"
 							rel="noopener noreferrer"
 						>
-							Discord
+							{t("editor.discord")}
 						</Link>
 					</DropdownMenuItem>
 				</DropdownMenuContent>
@@ -193,6 +201,7 @@ function ProjectDropdown() {
 }
 
 function EditableProjectName() {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
 	const [isEditing, setIsEditing] = useState(false);
@@ -228,9 +237,9 @@ function EditableProjectName() {
 					name: newName,
 				});
 			} catch (error) {
-				toast.error("Failed to rename project", {
+				toast.error(t("projects.renameFailed"), {
 					description:
-						error instanceof Error ? error.message : "Please try again",
+						error instanceof Error ? error.message : t("common.tryAgain"),
 				});
 			}
 		}
@@ -256,13 +265,14 @@ function EditableProjectName() {
 			ref={inputRef}
 			type="text"
 			defaultValue={projectName}
+			aria-label={t("common.name")}
 			readOnly={!isEditing}
 			onClick={startEditing}
 			onBlur={saveEdit}
 			onKeyDown={handleKeyDown}
 			style={{ fieldSizing: "content" }}
 			className={cn(
-				"text-[0.9rem] h-8 px-2 py-1 rounded-sm bg-transparent outline-none cursor-pointer hover:bg-accent hover:text-accent-foreground",
+				"text-[0.9rem] h-8 min-w-0 max-w-full px-2 py-1 rounded-sm bg-transparent truncate outline-none cursor-pointer hover:bg-accent hover:text-accent-foreground",
 				isEditing && "ring-1 ring-ring cursor-text hover:bg-transparent",
 			)}
 		/>
