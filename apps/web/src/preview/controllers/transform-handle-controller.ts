@@ -2,6 +2,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { finishFocusedField } from "@/utils/browser";
 import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import type { MediaAsset } from "@/media/types";
+import type { PreviewPointerCapture } from "@/preview/pointer-capture";
 import {
 	getVisibleElementsWithBounds,
 	getCornerPosition,
@@ -42,7 +43,7 @@ type HandleType = Corner | Edge | "rotation";
 
 interface CapturedPointerState {
 	readonly pointerId: number;
-	readonly captureTarget: HTMLElement;
+	readonly releasePointer: () => void;
 }
 
 interface CornerScaleSession extends CapturedPointerState {
@@ -120,6 +121,7 @@ interface VisualSelectionContext {
 }
 
 export interface PreviewViewportAdapter {
+	pointerCapture: PreviewPointerCapture;
 	screenToCanvas: ({
 		clientX,
 		clientY,
@@ -377,12 +379,18 @@ export class TransformHandleController {
 		this.gestureOwner?.cancel();
 	}
 
-	private beginGesture(): void {
+	private beginGesture(event: ReactPointerEvent): (() => void) | null {
+		const releasePointer = this.deps.viewport.pointerCapture.tryCapture(
+			event,
+			() => this.gestureOwner?.cancel(),
+		);
+		if (!releasePointer) return null;
 		this.gestureOwner = this.deps.timeline.beginPreviewGesture(() => {
 			this.gestureOwner = null;
 			this.endGesture();
 			this.notify();
 		});
+		return releasePointer;
 	}
 
 	private endGesture(): void {
@@ -391,7 +399,7 @@ export class TransformHandleController {
 		const session = this.session;
 		this.session = IDLE_SESSION;
 		this.clearSnapLines();
-		this.releaseCapturedPointer(session);
+		session.releasePointer();
 	}
 
 	onCornerPointerDown({
@@ -401,7 +409,7 @@ export class TransformHandleController {
 		event: ReactPointerEvent;
 		corner: Corner;
 	}): void {
-		if (this.session.kind !== "idle" || event.button !== 0) return;
+		if (event.button !== 0 || this.deps.viewport.pointerCapture.isActive) return;
 		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, corner)) return;
 		const context = this.getSelectedVisualContext();
@@ -414,7 +422,8 @@ export class TransformHandleController {
 				animations: context.element.animations,
 			});
 
-		this.beginGesture();
+		const releasePointer = this.beginGesture(event);
+		if (!releasePointer) return;
 		this.session = {
 			kind: "corner-scale",
 			corner,
@@ -433,17 +442,14 @@ export class TransformHandleController {
 			shouldClearScaleAnimation,
 			animationsWithoutScale,
 			pointerId: event.pointerId,
-			captureTarget: this.capturePointer({
-				target: event.currentTarget as HTMLElement,
-				pointerId: event.pointerId,
-			}),
+			releasePointer,
 		};
 
 		this.notify();
 	}
 
 	onRotationPointerDown({ event }: { event: ReactPointerEvent }): void {
-		if (this.session.kind !== "idle" || event.button !== 0) return;
+		if (event.button !== 0 || this.deps.viewport.pointerCapture.isActive) return;
 		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, "rotation")) return;
 		const context = this.getSelectedVisualContext();
@@ -461,7 +467,8 @@ export class TransformHandleController {
 		const deltaY = position.y - context.bounds.cy;
 		const initialAngle = (Math.atan2(deltaY, deltaX) * 180) / Math.PI;
 
-		this.beginGesture();
+		const releasePointer = this.beginGesture(event);
+		if (!releasePointer) return;
 		this.session = {
 			kind: "rotation",
 			trackId: context.trackId,
@@ -472,10 +479,7 @@ export class TransformHandleController {
 			initialBoundsCx: context.bounds.cx,
 			initialBoundsCy: context.bounds.cy,
 			pointerId: event.pointerId,
-			captureTarget: this.capturePointer({
-				target: event.currentTarget as HTMLElement,
-				pointerId: event.pointerId,
-			}),
+			releasePointer,
 		};
 
 		this.notify();
@@ -488,7 +492,7 @@ export class TransformHandleController {
 		event: ReactPointerEvent;
 		edge: Edge;
 	}): void {
-		if (this.session.kind !== "idle" || event.button !== 0) return;
+		if (event.button !== 0 || this.deps.viewport.pointerCapture.isActive) return;
 		finishFocusedField(event.currentTarget);
 		if (this.beginGroupGesture(event, edge)) return;
 		const context = this.getSelectedVisualContext();
@@ -502,7 +506,8 @@ export class TransformHandleController {
 				edge,
 			});
 
-		this.beginGesture();
+		const releasePointer = this.beginGesture(event);
+		if (!releasePointer) return;
 		this.session = {
 			kind: "edge-scale",
 			edge,
@@ -518,10 +523,7 @@ export class TransformHandleController {
 			shouldClearScaleAnimation,
 			animationsWithoutScale,
 			pointerId: event.pointerId,
-			captureTarget: this.capturePointer({
-				target: event.currentTarget as HTMLElement,
-				pointerId: event.pointerId,
-			}),
+			releasePointer,
 		};
 
 		this.notify();
@@ -584,25 +586,6 @@ export class TransformHandleController {
 		this.deps.preview.onSnapLinesChange?.([]);
 	}
 
-	private capturePointer({
-		target,
-		pointerId,
-	}: {
-		target: HTMLElement;
-		pointerId: number;
-	}): HTMLElement {
-		target.setPointerCapture(pointerId);
-		return target;
-	}
-
-	private releaseCapturedPointer(pointerState: CapturedPointerState): void {
-		if (!pointerState.captureTarget.hasPointerCapture(pointerState.pointerId)) {
-			return;
-		}
-
-		pointerState.captureTarget.releasePointerCapture(pointerState.pointerId);
-	}
-
 	private getVisibleElementsWithBounds(): ElementWithBounds[] {
 		return getVisibleElementsWithBounds({
 			tracks: this.deps.scene.getTracks(),
@@ -660,7 +643,8 @@ export class TransformHandleController {
 				};
 			});
 		event.stopPropagation();
-		this.beginGesture();
+		const releasePointer = this.beginGesture(event);
+		if (!releasePointer) return true;
 		this.session = {
 			kind: "group",
 			handle,
@@ -669,10 +653,7 @@ export class TransformHandleController {
 			start,
 			members,
 			pointerId: event.pointerId,
-			captureTarget: this.capturePointer({
-				target: event.currentTarget as HTMLElement,
-				pointerId: event.pointerId,
-			}),
+			releasePointer,
 		};
 		this.notify();
 		return true;

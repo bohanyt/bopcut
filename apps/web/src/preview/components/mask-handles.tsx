@@ -53,20 +53,8 @@ export function MaskHandles({
 	const { x: scaleX, y: scaleY } = viewport.getDisplayScale();
 	const canvasOrigin = toOverlay({ canvasX: 0, canvasY: 0 });
 
-	const onPointerMove = (event: React.PointerEvent) => {
-		if (viewport.handlePanPointerMove({ event })) {
-			return;
-		}
-
-		handlePointerMove({ event });
-	};
-	const onPointerUp = (event: React.PointerEvent) => {
-		if (viewport.handlePanPointerUp({ event })) {
-			return;
-		}
-
-		handlePointerUp(event);
-	};
+	const onPointerMove = (event: React.PointerEvent) => handlePointerMove({ event });
+	const onPointerUp = handlePointerUp;
 	const handleMaskPointerDown = ({
 		event,
 		handleId,
@@ -101,6 +89,7 @@ export function MaskHandles({
 					onPointerMove={onPointerMove}
 					onPointerUp={onPointerUp}
 					onPointerCancel={onPointerUp}
+					onLostPointerCapture={onPointerUp}
 				/>
 			) : null}
 			{overlays.map((overlay) => {

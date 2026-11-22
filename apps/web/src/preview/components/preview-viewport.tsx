@@ -6,7 +6,6 @@ import {
 	useContext,
 	useEffect,
 	useMemo,
-	useRef,
 	useState,
 } from "react";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
@@ -19,12 +18,14 @@ import {
 } from "@/preview/preview-coords";
 import { clamp, isNearlyEqual } from "@/utils/math";
 import { PREVIEW_ZOOM } from "@/preview/zoom";
+import { PreviewPan, PreviewPointerCapture } from "@/preview/pointer-capture";
 
 const MIDDLE_MOUSE_BUTTON = 1;
 const IS_AT_FIT_EPSILON = 0.001;
 const IS_AT_ACTUAL_SIZE_EPSILON = 0.01;
 
 interface PreviewViewportContextValue {
+	pointerCapture: PreviewPointerCapture;
 	canPan: boolean;
 	isAtFit: boolean;
 	isAtActualSize: boolean;
@@ -83,6 +84,15 @@ interface PreviewViewportContextValue {
 const PreviewViewportContext =
 	createContext<PreviewViewportContextValue | null>(null);
 
+export function usePreviewCaptureTarget() {
+	const { pointerCapture } = usePreviewViewport();
+	return useCallback((target: Element | null) => {
+		if (!target) return;
+		// Removing a handle before capture takes effect may produce no browser event.
+		return () => pointerCapture.cancelCaptureOn(target);
+	}, [pointerCapture]);
+}
+
 interface PreviewViewportProviderProps {
 	children: React.ReactNode;
 	value: PreviewViewportContextValue;
@@ -94,14 +104,6 @@ interface PreviewViewportStateOptions {
 	viewportHeight: number;
 	viewportRef: React.RefObject<HTMLDivElement | null>;
 	viewportWidth: number;
-}
-
-interface PanSession {
-	centerX: number;
-	centerY: number;
-	clientX: number;
-	clientY: number;
-	pointerId: number;
 }
 
 function getClampedCenterAxis({
@@ -219,7 +221,8 @@ export function usePreviewViewportState({
 		y: canvasHeight / 2,
 	}));
 	const [isPanning, setIsPanning] = useState(false);
-	const panSessionRef = useRef<PanSession | null>(null);
+	const [pointerCapture] = useState(() => new PreviewPointerCapture());
+	const [pan] = useState(() => new PreviewPan(pointerCapture));
 	const centerRef = useCommittedRef(center);
 
 	const fitScale = useMemo(
@@ -394,44 +397,38 @@ export function usePreviewViewportState({
 
 	const handlePanPointerDown = useCallback(
 		({ event }: { event: React.PointerEvent }) => {
-			if (event.button !== MIDDLE_MOUSE_BUTTON || zoom <= 1) {
+			const target = viewportRef.current;
+			if (!target || event.button !== MIDDLE_MOUSE_BUTTON || zoom <= 1) {
 				return false;
 			}
 
 			event.preventDefault();
 			event.stopPropagation();
 
-			panSessionRef.current = {
-				centerX: centerRef.current.x,
-				centerY: centerRef.current.y,
-				clientX: event.clientX,
-				clientY: event.clientY,
-				pointerId: event.pointerId,
-			};
-			setIsPanning(true);
-			event.currentTarget.setPointerCapture(event.pointerId);
+			const { pointerId, clientX, clientY } = event;
+			if (pan.start(
+				{ currentTarget: target, pointerId, clientX, clientY },
+				centerRef.current,
+				() => setIsPanning(false),
+			)) setIsPanning(true);
 			return true;
 		},
-		[centerRef, zoom],
+		[centerRef, pan, viewportRef, zoom],
 	);
 
 	const handlePanPointerMove = useCallback(
 		({ event }: { event: React.PointerEvent }) => {
-			const panSession = panSessionRef.current;
-			if (!panSession) {
-				return false;
-			}
+			const center = pan.move(event, viewportScale);
+			if (!center) return false;
 
 			event.preventDefault();
 			event.stopPropagation();
 
-			const deltaX = event.clientX - panSession.clientX;
-			const deltaY = event.clientY - panSession.clientY;
 			const nextCenter = clampViewportCenter({
 				canvasHeight,
 				canvasWidth,
-				centerX: panSession.centerX - deltaX / viewportScale,
-				centerY: panSession.centerY - deltaY / viewportScale,
+				centerX: center.x,
+				centerY: center.y,
 				scale: viewportScale,
 				viewportHeight,
 				viewportWidth,
@@ -440,27 +437,16 @@ export function usePreviewViewportState({
 			setCenter(nextCenter);
 			return true;
 		},
-		[canvasHeight, canvasWidth, viewportHeight, viewportScale, viewportWidth],
+		[canvasHeight, canvasWidth, pan, viewportHeight, viewportScale, viewportWidth],
 	);
 
 	const handlePanPointerUp = useCallback(
 		({ event }: { event: React.PointerEvent }) => {
-			const panSession = panSessionRef.current;
-			if (!panSession) {
-				return false;
-			}
-
-			if (
-				event.currentTarget.hasPointerCapture(panSession.pointerId)
-			) {
-				event.currentTarget.releasePointerCapture(panSession.pointerId);
-			}
-
-			panSessionRef.current = null;
+			if (!pan.finish(event)) return false;
 			setIsPanning(false);
 			return true;
 		},
-		[],
+		[pan],
 	);
 
 	useEffect(() => {
@@ -469,9 +455,11 @@ export function usePreviewViewportState({
 			x: canvasWidth / 2,
 			y: canvasHeight / 2,
 		});
-		panSessionRef.current = null;
 		setIsPanning(false);
-	}, [canvasHeight, canvasWidth]);
+		return () => {
+			pan.finish();
+		};
+	}, [canvasHeight, canvasWidth, pan]);
 
 	useEffect(() => {
 		setCenter((previousCenter) =>
@@ -496,6 +484,7 @@ export function usePreviewViewportState({
 
 	return useMemo(
 		() => ({
+			pointerCapture,
 			canPan,
 			isAtActualSize: isNearlyEqual({
 				leftValue: viewportScale,
@@ -531,6 +520,7 @@ export function usePreviewViewportState({
 			zoomOut,
 		}),
 		[
+			pointerCapture,
 			canPan,
 			viewportScale,
 			zoom,

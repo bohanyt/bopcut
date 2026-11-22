@@ -3,6 +3,7 @@
 import { cn } from "@/utils/ui";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { IconSvgElement } from "@hugeicons/react";
+import { usePreviewCaptureTarget } from "./preview-viewport";
 
 export const HANDLE_SIZE = 10;
 export const HANDLE_HIT_AREA_SIZE = 18;
@@ -38,8 +39,10 @@ export function HandleButton({
 	onPointerUp: (event: React.PointerEvent) => void;
 	children: React.ReactNode;
 }) {
+	const captureTarget = usePreviewCaptureTarget();
 	return (
 		<button
+			ref={captureTarget}
 			type="button"
 			className={cn(
 				"absolute flex items-center justify-center outline-none",
@@ -222,8 +225,10 @@ export function BoundingBoxOutline({
 	onPointerMove?: (event: React.PointerEvent) => void;
 	onPointerUp?: (event: React.PointerEvent) => void;
 }) {
+	const captureTarget = usePreviewCaptureTarget();
 	return (
 		<svg
+			ref={captureTarget}
 			className="absolute overflow-visible"
 			aria-hidden="true"
 			focusable="false"
@@ -281,8 +286,10 @@ export function ShapeOutline({
 	onPointerMove?: (event: React.PointerEvent) => void;
 	onPointerUp?: (event: React.PointerEvent) => void;
 }) {
+	const captureTarget = usePreviewCaptureTarget();
 	return (
 		<svg
+			ref={captureTarget}
 			className="absolute overflow-visible"
 			aria-hidden="true"
 			focusable="false"
@@ -340,8 +347,10 @@ export function CanvasPathOutline({
 	onPointerMove?: (event: React.PointerEvent) => void;
 	onPointerUp?: (event: React.PointerEvent) => void;
 }) {
+	const captureTarget = usePreviewCaptureTarget();
 	return (
 		<svg
+			ref={captureTarget}
 			className="absolute inset-0 overflow-visible"
 			aria-hidden="true"
 			focusable="false"
@@ -388,6 +397,7 @@ export function LineOverlay({
 	onPointerMove?: (event: React.PointerEvent) => void;
 	onPointerUp?: (event: React.PointerEvent) => void;
 }) {
+	const captureTarget = usePreviewCaptureTarget();
 	const dx = end.x - start.x;
 	const dy = end.y - start.y;
 	const length = Math.sqrt(dx * dx + dy * dy);
@@ -406,6 +416,7 @@ export function LineOverlay({
 		<>
 			{onPointerDown && (
 				<div
+					ref={captureTarget}
 					className="absolute"
 					style={{
 						...sharedStyle,

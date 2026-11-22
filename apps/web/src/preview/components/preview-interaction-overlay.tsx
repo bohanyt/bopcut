@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { usePreviewViewport } from "@/preview/components/preview-viewport";
+import { usePreviewCaptureTarget, usePreviewViewport } from "@/preview/components/preview-viewport";
 import { usePreviewInteraction } from "@/preview/hooks/use-preview-interaction";
 import type { SnapLine } from "@/preview/preview-snap";
 import { TransformHandles } from "./transform-handles";
@@ -13,6 +13,7 @@ export function PreviewInteractionOverlay() {
 	const [snapLines, setSnapLines] = useState<SnapLine[]>([]);
 	const editor = useEditor();
 	const viewport = usePreviewViewport();
+	const captureTarget = usePreviewCaptureTarget();
 	const selectedElements = useEditor((e) => e.selection.getSelectedElements());
 	const activeTabPerType = usePropertiesStore((s) => s.activeTabPerType);
 
@@ -50,25 +51,10 @@ export function PreviewInteractionOverlay() {
 		onPointerDown(event);
 	};
 
-	const handlePointerMove = (event: React.PointerEvent) => {
-		if (viewport.handlePanPointerMove({ event })) {
-			return;
-		}
-
-		onPointerMove(event);
-	};
-
-	const handlePointerUp = (event: React.PointerEvent) => {
-		if (viewport.handlePanPointerUp({ event })) {
-			return;
-		}
-
-		onPointerUp(event);
-	};
-
 	return (
 		<div className="absolute inset-0">
 			<div
+				ref={captureTarget}
 				className="absolute inset-0 pointer-events-auto"
 				role="application"
 				aria-label="Preview canvas"
@@ -80,9 +66,9 @@ export function PreviewInteractionOverlay() {
 							: undefined,
 				}}
 				onPointerDown={handlePointerDown}
-				onPointerMove={handlePointerMove}
-				onPointerUp={handlePointerUp}
-				onPointerCancel={handlePointerUp}
+				onPointerMove={onPointerMove}
+				onPointerUp={onPointerUp}
+				onPointerCancel={onPointerUp}
 				onLostPointerCapture={onPointerUp}
 				onDoubleClick={onDoubleClick}
 				onDragStart={(e) => e.preventDefault()}

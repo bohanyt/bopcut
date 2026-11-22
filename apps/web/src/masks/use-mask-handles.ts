@@ -97,13 +97,14 @@ export function useMaskHandles({
 	const editor = useEditor();
 	const isShiftHeldRef = useShiftKey();
 	const viewport = usePreviewViewport();
+	const { pointerCapture } = viewport;
 	const [activeHandleId, setActiveHandleId] = useState<MaskHandleId | null>(null);
 	const dragStateRef = useRef<DragState | null>(null);
 	const gestureOwner = useRef<PreviewGesture | null>(null);
 	const pendingSegmentInsertRef = useRef<PendingSegmentInsertState | null>(
 		null,
 	);
-	const captureRef = useRef<{ element: Element; pointerId: number } | null>(
+	const captureRef = useRef<{ release: () => void; pointerId: number } | null>(
 		null,
 	);
 
@@ -312,22 +313,20 @@ export function useMaskHandles({
 	const releaseCapturedPointer = useCallback(() => {
 		const capture = captureRef.current;
 		captureRef.current = null;
-		if (!capture) return;
-
-		if (capture.element.hasPointerCapture(capture.pointerId)) {
-			capture.element.releasePointerCapture(capture.pointerId);
-		}
+		capture?.release();
 	}, []);
 
-	const capturePointer = useCallback(({ currentTarget, pointerId }: React.PointerEvent) => {
+	const capturePointer = useCallback((event: React.PointerEvent) => {
+		const release = pointerCapture.tryCapture(event, () => gestureOwner.current?.cancel());
+		if (!release) return false;
 		gestureOwner.current = editor.timeline.beginPreviewGesture(() => {
 			gestureOwner.current = null;
 			clearMaskHandleState();
 			releaseCapturedPointer();
 		});
-		currentTarget.setPointerCapture(pointerId);
-		captureRef.current = { element: currentTarget, pointerId };
-	}, [clearMaskHandleState, editor.timeline, releaseCapturedPointer]);
+		captureRef.current = { release, pointerId: event.pointerId };
+		return true;
+	}, [clearMaskHandleState, editor.timeline, pointerCapture, releaseCapturedPointer]);
 
 	useLayoutEffect(() => () => gestureOwner.current?.cancel(), [
 		selectedWithMask?.trackId,
@@ -344,7 +343,7 @@ export function useMaskHandles({
 			handleId: MaskHandleId;
 		}) => {
 			if (!selectedWithMask) return;
-			if (event.button !== 0 || gestureOwner.current) return;
+			if (event.button !== 0 || pointerCapture.isActive) return;
 			event.stopPropagation();
 			finishFocusedField(event.currentTarget);
 			const anchorHandle =
@@ -396,7 +395,7 @@ export function useMaskHandles({
 			if (!pos) return;
 
 			if (segmentHandle && selectedWithMask.mask.type === "freeform") {
-				capturePointer(event);
+				if (!capturePointer(event)) return;
 				setActiveHandleId(handleId);
 				pendingSegmentInsertRef.current = {
 					trackId: selectedWithMask.trackId,
@@ -425,7 +424,7 @@ export function useMaskHandles({
 				editor.selection.clearMaskPointSelection();
 			}
 
-			capturePointer(event);
+			if (!capturePointer(event)) return;
 			dragStateRef.current = {
 				trackId: selectedWithMask.trackId,
 				elementId: selectedWithMask.elementId,
@@ -442,6 +441,7 @@ export function useMaskHandles({
 			editor.selection,
 			editor.timeline,
 			isCreatingFreeformPathMask,
+			pointerCapture,
 			selectedWithMask,
 			updateFreeformPathMaskPointSelection,
 			viewport,
@@ -453,7 +453,7 @@ export function useMaskHandles({
 			if (!selectedWithMask || !isCreatingFreeformPathMask) {
 				return;
 			}
-			if (event.button !== 0) {
+			if (event.button !== 0 || pointerCapture.isActive) {
 				return;
 			}
 			if (selectedWithMask.mask.type !== "freeform") {
@@ -494,7 +494,7 @@ export function useMaskHandles({
 				],
 			});
 		},
-		[editor.timeline, isCreatingFreeformPathMask, selectedWithMask, viewport],
+		[editor.timeline, isCreatingFreeformPathMask, pointerCapture, selectedWithMask, viewport],
 	);
 
 	const handlePointerMove = useCallback(

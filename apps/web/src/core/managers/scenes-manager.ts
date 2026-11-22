@@ -185,12 +185,8 @@ export class ScenesManager {
 	 */
 	private enterScene(target: TScene | null, playhead?: MediaTime): void {
 		const previous = this.active;
-		if (previous?.id !== target?.id || previous?.tracks !== target?.tracks) {
-			this.editor.timeline.cancelPreviewGesture();
-			this.editor.timeline.discardPreview();
-		}
 		if (!target || previous?.id === target.id) {
-			this.active = target;
+			this.replaceActiveScene(target);
 			return;
 		}
 
@@ -201,7 +197,7 @@ export class ScenesManager {
 		if (playback.getIsPlaying()) {
 			playback.pause();
 		}
-		this.active = target;
+		this.replaceActiveScene(target);
 		selection.clearSelection();
 		playback.seek({ time: playhead ?? this.playheads.get(target.id) ?? ZERO_MEDIA_TIME });
 
@@ -209,6 +205,16 @@ export class ScenesManager {
 			sceneId: target.id,
 			viewState: { ...project.getTimelineViewState(), playheadTime: playback.getCurrentTime() },
 		});
+	}
+
+	private replaceActiveScene(target: TScene | null): void {
+		if (this.active?.id !== target?.id || this.active?.tracks !== target?.tracks) {
+			// The caller publishes the new scene after its view state has been restored.
+			// Clear the overlay first so gesture cleanup cannot publish it against either scene.
+			this.editor.timeline.discardPreview({ notify: false });
+			this.editor.timeline.cancelPreviewGesture();
+		}
+		this.active = target;
 	}
 
 	async toggleBookmark({ time }: { time: MediaTime }): Promise<void> {
@@ -285,13 +291,13 @@ export class ScenesManager {
 				});
 
 				this.list = ensuredScenes;
-				this.active = currentScene;
+				this.replaceActiveScene(currentScene);
 				this.notify();
 			}
 		} catch (error) {
 			console.error("Failed to load project scenes:", error);
 			this.list = [];
-			this.active = null;
+			this.replaceActiveScene(null);
 			this.notify();
 		}
 	}
@@ -311,7 +317,7 @@ export class ScenesManager {
 		const fallbackScene = getMainScene({ scenes: ensuredScenes });
 
 		this.list = ensuredScenes;
-		this.active = currentScene || fallbackScene;
+		this.replaceActiveScene(currentScene || fallbackScene);
 		this.notify();
 
 		const hasAddedMainScene = ensuredScenes.length > scenes.length;
@@ -336,7 +342,7 @@ export class ScenesManager {
 
 	clearScenes(): void {
 		this.list = [];
-		this.active = null;
+		this.replaceActiveScene(null);
 		this.playheads.clear();
 		this.compoundParents.clear();
 		this.notify();

@@ -4,6 +4,7 @@ import type {
 } from "react";
 import type { MediaAsset } from "@/media/types";
 import { finishFocusedField } from "@/utils/browser";
+import type { PreviewPointerCapture } from "@/preview/pointer-capture";
 import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import {
 	getVisibleElementsWithBounds,
@@ -39,7 +40,7 @@ type Point = { readonly x: number; readonly y: number };
 
 interface CapturedPointerState {
 	readonly pointerId: number;
-	readonly captureTarget: HTMLElement;
+	readonly releasePointer: () => void;
 }
 
 interface PendingGesture extends CapturedPointerState {
@@ -82,6 +83,7 @@ export interface EditingTextState {
 }
 
 export interface PreviewViewportAdapter {
+	pointerCapture: PreviewPointerCapture;
 	screenToCanvas: ({
 		clientX,
 		clientY,
@@ -294,7 +296,7 @@ export class PreviewInteractionController {
 		this.gesture = IDLE_GESTURE;
 		if (gesture.kind === "idle") return;
 		this.clearSnapLines();
-		this.releaseCapturedPointer({ pointerState: gesture });
+		gesture.releasePointer();
 	}
 
 	private finishGesture(): void {
@@ -321,7 +323,11 @@ export class PreviewInteractionController {
 	}
 
 	onDoubleClick({ clientX, clientY }: ReactMouseEvent): void {
-		if (this.gestureOwner || this.deps.preview.isMaskMode()) return;
+		if (
+			this.gestureOwner ||
+			this.deps.viewport.pointerCapture.isActive ||
+			this.deps.preview.isMaskMode()
+		) return;
 
 		const startPos = this.deps.viewport.screenToCanvas({
 			clientX,
@@ -362,6 +368,7 @@ export class PreviewInteractionController {
 		button,
 	}: ReactPointerEvent): void {
 		if (this.gestureOwner) return;
+		if (this.deps.viewport.pointerCapture.isActive) return;
 		if (this.deps.preview.isMaskMode()) return;
 		if (button !== PRIMARY_POINTER_BUTTON) return;
 
@@ -379,12 +386,17 @@ export class PreviewInteractionController {
 		});
 		const selectedElements = this.deps.selection.getSelected();
 
+		const releasePointer = this.deps.viewport.pointerCapture.tryCapture(
+			{ currentTarget, pointerId },
+			() => this.cancel(),
+		);
+		if (!releasePointer) return;
 		this.startGesture();
 		this.gesture = {
 			kind: "pending",
 			origin: startPos,
 			pointerId,
-			captureTarget: currentTarget as HTMLElement,
+			releasePointer,
 			topmostHit: hits[0] ?? null,
 			selectedHit: resolvePreferredHit({
 				hits,
@@ -392,8 +404,6 @@ export class PreviewInteractionController {
 			}),
 			selectedElements,
 		};
-
-		currentTarget.setPointerCapture(pointerId);
 	}
 
 	onPointerMove({ clientX, clientY, pointerId }: ReactPointerEvent): void {
@@ -471,20 +481,6 @@ export class PreviewInteractionController {
 		this.deps.preview.onSnapLinesChange?.([]);
 	}
 
-	private releaseCapturedPointer({
-		pointerState,
-	}: {
-		pointerState: CapturedPointerState | null;
-	}): void {
-		if (!pointerState) return;
-
-		if (!pointerState.captureTarget.hasPointerCapture(pointerState.pointerId)) {
-			return;
-		}
-
-		pointerState.captureTarget.releasePointerCapture(pointerState.pointerId);
-	}
-
 	private getVisibleElementsWithBounds(): ElementWithBounds[] {
 		return getVisibleElementsWithBounds({
 			tracks: this.deps.scene.getTracks(),
@@ -534,7 +530,7 @@ export class PreviewInteractionController {
 			kind: "dragging",
 			origin: pending.origin,
 			pointerId: pending.pointerId,
-			captureTarget: pending.captureTarget,
+			releasePointer: pending.releasePointer,
 			bounds: {
 				width: dragTarget.bounds.width,
 				height: dragTarget.bounds.height,
