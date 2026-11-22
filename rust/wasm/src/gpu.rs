@@ -102,6 +102,11 @@ pub(crate) fn gpu_error_to_js(error: GpuError) -> JsValue {
     match error {
         GpuError::SurfaceLost => JsValue::from_str("GPU_SURFACE_LOST"),
         GpuError::SurfaceUnavailable => JsValue::from_str("GPU_SURFACE_UNAVAILABLE"),
+        error @ GpuError::WebGlOperation(_) => {
+            let js_error = js_sys::Error::new(&error.to_string());
+            js_error.set_name("WebGlOperationError");
+            js_error.into()
+        }
         _ => js_sys::Error::new(&error.to_string()).into(),
     }
 }
@@ -141,7 +146,7 @@ pub(crate) fn render_texture_to_canvas(
     width: u32,
     height: u32,
 ) -> Result<wgpu::web_sys::OffscreenCanvas, JsValue> {
-    context.check_error().map_err(gpu_error_to_js)?;
+    context.check_render_result("effect rendering").map_err(gpu_error_to_js)?;
     let canvas = wgpu::web_sys::OffscreenCanvas::new(width, height)?;
     context
         .render_texture_to_offscreen_canvas(texture, &canvas, width, height)

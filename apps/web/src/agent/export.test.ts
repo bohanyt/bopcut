@@ -324,6 +324,24 @@ async function inTemp(run: (dir: string, fs: typeof import("node:fs").promises, 
 }
 
 describe("the result file", () => {
+	test("only the current tab can release its own revision and project", () =>
+		inTemp(async (workspace) => {
+			const write = (result: { rev: string; status: string; tab: string; projectId: string }, now?: number) =>
+				writeExportResult({ workspace, result, now });
+			const original = { rev: "owned", status: "exporting", tab: "a", projectId: "p" };
+			await write(original, 1000);
+			await write({ ...original, tab: "b" }, 1000 + CLAIM_MS);
+			for (const release of [
+				{ ...original, status: "release" },
+				{ ...original, status: "release", tab: "b", projectId: "q" },
+				{ ...original, status: "release", tab: "b", rev: "earlier" },
+			]) {
+				expect(await write(release)).toEqual({ ok: false, reason: "claimed" });
+			}
+			expect(await write({ ...original, status: "release", tab: "b" })).toEqual({ ok: true });
+			expect(await write(original)).toEqual({ ok: true });
+		}));
+
 	test("a final answer is never replaced; a running export belongs to the tab that took it", () =>
 		inTemp(async (workspace, fs, path) => {
 			const t0 = 1_000_000;
@@ -1216,6 +1234,24 @@ describe("the export poller", () => {
 			expect(log.exports[0].duration).toBe(T(7));
 			expect(await log.result()).toMatchObject({ status: "done", duration: 7 });
 		}));
+
+	test("releases a claim if graphics recovery starts before the export", () => {
+		let state = "ready";
+		return withServer({ request: { rev: "release-on-recovery" }, onClaim: () => { state = "recovering"; } }, async (log) => {
+			Object.defineProperty(rendererDevice, "status", { configurable: true, get: () => ({ state }) });
+			try {
+				await pollExport();
+				expect(log.exports).toHaveLength(0);
+				expect(await log.result()).toBeNull();
+				state = "ready";
+				await pollExport();
+				expect(log.exports).toHaveLength(1);
+				expect(await log.result()).toMatchObject({ rev: "release-on-recovery", status: "done" });
+			} finally {
+				Reflect.deleteProperty(rendererDevice, "status");
+			}
+		});
+	});
 
 	test("a project switch while the request is read leaves the request alone", () =>
 		withServer({ request: { rev: "e1", projectId: "p" }, onRequest: () => open("q") }, async (log) => {

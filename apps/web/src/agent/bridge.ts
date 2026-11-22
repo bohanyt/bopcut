@@ -356,7 +356,10 @@ async function answerExport() {
 	if (claim === "answered") return markAnswered(key, rev);
 	if (claim !== "ok") return;
 	const now = exportable();
-	if (!now || now.project.metadata.id !== projectId) return; // taken again on the next poll
+	if (!now || now.project.metadata.id !== projectId) {
+		await sendExportResult({ rev, projectId, status: "release" });
+		return;
+	}
 	const { project, root } = now;
 	const settings = project.settings;
 	const fps = request.fps ? { numerator: Math.round(request.fps * 1000), denominator: 1000 } : settings.fps;

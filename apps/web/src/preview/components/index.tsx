@@ -8,7 +8,7 @@ import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
-import { rendererDevice } from "@/services/renderer/renderer-device";
+import { RecoverableSurfaceError, rendererDevice } from "@/services/renderer/renderer-device";
 import { modelGraphics } from "@/model3d/render";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
@@ -246,18 +246,18 @@ function PreviewCanvas({
 		const graphics = rendererDevice.signal;
 		const task = editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
 		if (!task) return;
-		lastSceneRef.current = renderTree;
-		lastFrameRef.current = frame;
 		return task
 			.then(() => {
 				// Keep the previous frame visible while the new render target is waiting.
 				const mount = canvasMountRef.current;
+				if (signal.aborted || graphics.aborted || !mount) return;
 				const outputCanvas = renderer.getOutputCanvas();
-				if (!signal.aborted && !graphics.aborted && mount && outputCanvas.parentElement !== mount) {
-					mount.replaceChildren(outputCanvas);
-				}
+				if (outputCanvas.parentElement !== mount) mount.replaceChildren(outputCanvas);
+				lastSceneRef.current = renderTree;
+				lastFrameRef.current = frame;
 			})
 			.catch((error) => {
+				if (!signal.aborted && !graphics.aborted && error instanceof RecoverableSurfaceError) throw error;
 				if (!signal.aborted && !(error instanceof GraphicsDeviceError)) {
 					console.error("Preview render failed:", error);
 				}
@@ -270,6 +270,7 @@ function PreviewCanvas({
 			render: () => renderRef.current(),
 			requestFrame: requestAnimationFrame,
 			cancelFrame: cancelAnimationFrame,
+			shouldRetry: (error) => error instanceof RecoverableSurfaceError,
 		});
 		schedulerRef.current = scheduler;
 		const redraw = () => {

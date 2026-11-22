@@ -212,7 +212,7 @@ pub fn render_frame(options: JsValue) -> Result<(), JsValue> {
                     .compositor
                     .render_frame_to_texture(&gpu_runtime.context, &frame)
                     .map_err(|error| JsValue::from_str(&error.to_string()));
-                if let Err(error) = gpu_runtime.context.check_error() {
+                if let Err(error) = gpu_runtime.context.check_render_result("frame compositing") {
                     runtime.compositor.discard_temporary_textures();
                     return Err(gpu_error_to_js(error));
                 }

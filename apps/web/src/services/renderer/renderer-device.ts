@@ -6,6 +6,8 @@ let gl: WebGL2RenderingContext | null = null;
 let detachContextListener: (() => void) | undefined;
 let notifyLoss: (() => void) | undefined;
 
+export class RecoverableSurfaceError extends GraphicsDeviceError {}
+
 function disposeGpu() {
 	detachContextListener?.();
 	detachContextListener = undefined;
@@ -59,7 +61,10 @@ export function rethrowGraphicsFailure(error: unknown): never {
 		signal.throwIfAborted();
 	}
 	if (error === "GPU_SURFACE_UNAVAILABLE") {
-		throw new GraphicsDeviceError("The graphics surface is temporarily unavailable. Try again.");
+		throw new RecoverableSurfaceError("The graphics surface is temporarily unavailable. Try again.");
+	}
+	if (error instanceof Error && error.name === "WebGlOperationError") {
+		throw new RecoverableSurfaceError(error.message, { cause: error });
 	}
 	throw error;
 }

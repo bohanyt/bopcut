@@ -57,6 +57,35 @@ impl WebGlHealth {
         }
         error.map_or(Ok(()), |error| Err(GpuError::WebGlOperation(error)))
     }
+
+    fn check_result(&self, operation: &str) -> Result<(), GpuError> {
+        use web_sys::WebGl2RenderingContext as Gl;
+
+        let reported = self.check();
+        if matches!(reported, Err(GpuError::SurfaceLost)) {
+            return reported;
+        }
+        // The browser can set GL errors even when wgpu returns success.
+        let error = self.context.get_error();
+        if error == Gl::NO_ERROR {
+            return reported;
+        }
+        if error == Gl::CONTEXT_LOST_WEBGL {
+            return Err(GpuError::SurfaceLost);
+        }
+        // Clear any other error flags from this operation so they cannot affect a retry.
+        for _ in 0..8 {
+            match self.context.get_error() {
+                Gl::NO_ERROR => break,
+                Gl::CONTEXT_LOST_WEBGL => return Err(GpuError::SurfaceLost),
+                _ => {}
+            }
+        }
+        reported?;
+        Err(GpuError::WebGlOperation(format!(
+            "{operation} reported GL error {error:#06x}"
+        )))
+    }
 }
 
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -431,6 +460,14 @@ impl GpuContext {
         Ok(())
     }
 
+    pub fn check_render_result(&self, _operation: &str) -> Result<(), GpuError> {
+        #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+        if let Some(health) = &self.gl_health {
+            return health.check_result(_operation);
+        }
+        Ok(())
+    }
+
     /// The HTML canvas that owns the backing WebGL context, if running on the
     /// WebGL fallback. Callers on that path can mount this canvas directly
     /// instead of copying pixels out of it every frame.
@@ -467,7 +504,7 @@ impl GpuContext {
         self.encode_texture_blit_to_view(&mut encoder, texture, &target_view, "gpu-surface-blit");
         self.queue.submit([encoder.finish()]);
         surface_texture.present();
-        self.check_error()
+        self.check_render_result("surface presentation")
     }
 
     pub fn configure_surface(
@@ -483,20 +520,9 @@ impl GpuContext {
         }
         self.check_error()?;
         surface.configure(&self.device, &config);
-        self.check_error()?;
+        self.check_render_result("surface configuration")?;
         #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
         if let Some(health) = &self.gl_health {
-            // The browser can reject swapchain storage even when wgpu reports
-            // successful configuration. Leave the size unset so it can retry.
-            let error = health.context.get_error();
-            if error == web_sys::WebGl2RenderingContext::CONTEXT_LOST_WEBGL {
-                return Err(GpuError::SurfaceLost);
-            }
-            if error != web_sys::WebGl2RenderingContext::NO_ERROR {
-                return Err(GpuError::WebGlOperation(format!(
-                    "surface configuration reported GL error {error:#06x}"
-                )));
-            }
             health.configured_size.set(Some((width, height)));
         }
         Ok(())
@@ -605,7 +631,7 @@ impl GpuContext {
         label: &'static str,
     ) -> Result<wgpu::Texture, GpuError> {
         let texture = self.create_render_texture(width, height, label);
-        self.check_error()?;
+        self.check_render_result("upload texture allocation")?;
 
         if self.supports_external_texture_copies {
             self.queue.copy_external_image_to_texture(
@@ -671,7 +697,7 @@ impl GpuContext {
             );
         }
 
-        self.check_error()?;
+        self.check_render_result("texture upload")?;
         Ok(texture)
     }
 
