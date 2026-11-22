@@ -4,6 +4,7 @@ import {
 	Input, InputAudioTrack, InputVideoTrack, MP4, Mp4OutputFormat, Output, StreamSource, VideoSample, VideoSampleSink,
 } from "mediabunny";
 import { toast } from "sonner";
+import { getRaisedProjectFpsForImportedMedia } from "@/fps/utils";
 import { storageService } from "@/services/storage/service";
 import { processMediaFile } from "./processing";
 import { releaseMediaAssetUrls } from "./url-release";
@@ -11,6 +12,55 @@ import { withFirstVideoFrame } from "./video-probe";
 
 const allowStorage = () => spyOn(storageService, "canStoreFile")
 	.mockResolvedValue({ canStore: true, availableBytes: null, reason: "estimate-unavailable" });
+
+test.each([
+	["video/webm", undefined, "webm", "application/octet-stream", true],
+	["video/mp4", undefined, "mp4", "image/gif", false],
+	["video/mp4", "20", "mp4", "image/gif", true],
+] as const)("imports GIF conversion as %s with source cadence %p", async (mime, cadence, extension, originalMime, variableDelay) => {
+	const file = new File(["GIF"], "overlay.GIF", { type: originalMime });
+	const track: InputVideoTrack = Object.create(InputVideoTrack.prototype, {
+		displayWidth: { value: 16 },
+		displayHeight: { value: 16 },
+		canDecode: { value: async () => true },
+		getFirstTimestamp: { value: async () => 0 },
+		computeDuration: { value: async () => 1 },
+		computePacketStats: { value: async () => ({ averagePacketRate: cadence ? 100 : 12 }) },
+	});
+	const headers = new Headers({ "Content-Type": mime });
+	if (cadence) headers.set("X-Bopencut-GIF-FPS", cadence);
+	if (variableDelay) headers.set("X-Bopencut-GIF-Variable-Delay", "1");
+	const stubs = [
+		allowStorage(),
+		spyOn(globalThis, "fetch").mockResolvedValue(new Response("converted", { headers })),
+		spyOn(Input.prototype, "getPrimaryVideoTrack").mockResolvedValue(track),
+		spyOn(Input.prototype, "getPrimaryAudioTrack").mockResolvedValue(null),
+		spyOn(EncodedPacketSink.prototype, "getPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 0, 1)),
+		spyOn(EncodedPacketSink.prototype, "getNextPacket").mockResolvedValue(null),
+		spyOn(VideoSampleSink.prototype, "samples").mockImplementation(async function* () {
+			yield Object.create(VideoSample.prototype, { close: { value: () => {} } });
+		}),
+	];
+	try {
+		const imported = await processMediaFile({ file, signal: new AbortController().signal });
+		try {
+			expect(imported).toMatchObject({ name: `overlay.${extension}`, type: "video", duration: 1, hasAudio: false, fps: cadence ? Number(cadence) : 12 });
+			expect(imported?.file.type).toBe(mime);
+			expect(imported?.hasVariableGifDelay).toBe(variableDelay ? true : undefined);
+			expect(await imported?.file.text()).toBe("converted");
+			if (imported) {
+				expect(getRaisedProjectFpsForImportedMedia({
+					currentFps: { numerator: 30, denominator: 1 },
+					importedAssets: [imported],
+				})).toBeNull();
+			}
+		} finally {
+			if (imported) releaseMediaAssetUrls(imported);
+		}
+	} finally {
+		for (const stub of stubs) stub.mockRestore();
+	}
+});
 
 test.each(["usable", "unsupported", "corrupt", "absent"] as const)("video import with %s audio retains the original and measured FPS without a thumbnail", async (audio) => {
 	const file = new File(["video"], "footage.mkv", { type: "application/octet-stream" });

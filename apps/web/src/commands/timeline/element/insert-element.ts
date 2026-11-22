@@ -120,7 +120,9 @@ export class InsertElementCommand extends Command {
 			const sourceFps = asset?.type === "video" && asset.fps !== undefined
 				? importedVideoProjectRate(asset.fps)
 				: null;
-			if (sourceFps && shouldInitializeFps({ current: fps, source: sourceFps, mediaAssets })) {
+			if (sourceFps && shouldInitializeFps({
+				current: fps, source: sourceFps, mediaAssets, hasVariableGifDelay: asset?.hasVariableGifDelay,
+			})) {
 				this.savedSettings = { ...this.savedSettings, fps };
 				editor.project.updateSettings({
 					settings: { fps: sourceFps },
@@ -335,13 +337,17 @@ function shouldInitializeFps({
 	current,
 	source,
 	mediaAssets,
+	hasVariableGifDelay,
 }: {
 	current: TProjectSettings["fps"];
 	source: TProjectSettings["fps"];
 	mediaAssets: MediaAsset[];
+	hasVariableGifDelay?: boolean;
 }): boolean {
 	const currentRate = frameRateToFloat(current);
 	const sourceRate = frameRateToFloat(source);
+	// The average cadence can miss short GIF frames when used as the export sampling rate.
+	if (hasVariableGifDelay && sourceRate < currentRate) return false;
 	if (!frameRateHasWholeTicks(current) || sourceRate > currentRate) return true;
 	if (sourceRate === currentRate || currentRate !== frameRateToFloat(DEFAULT_FPS)) return false;
 

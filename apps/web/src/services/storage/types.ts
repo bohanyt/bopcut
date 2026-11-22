@@ -26,6 +26,7 @@ export interface MediaAssetData {
 	height?: number;
 	duration?: number;
 	fps?: number;
+	hasVariableGifDelay?: boolean;
 	hasAudio?: boolean;
 	ephemeral?: boolean;
 	thumbnailUrl?: string;

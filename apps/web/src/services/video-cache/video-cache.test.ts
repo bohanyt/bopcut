@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { Canvas } from "@napi-rs/canvas";
 import { EncodedPacket, EncodedPacketSink, Input, InputVideoTrack, VideoSample, VideoSampleSink } from "mediabunny";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { VideoCache } from "./service";
@@ -31,14 +32,15 @@ async function withVideo(
 		closed: number[];
 		pixels: Map<OffscreenCanvas, TestFrame>;
 	}) => Promise<void>,
-	{ width = 3840, height = 2160, rotation = 0, seekError }: {
+	{ width = 3840, height = 2160, rotation = 0, seekError, draw }: {
 		width?: number; height?: number; rotation?: number; seekError?: Error;
+		draw?: (ctx: OffscreenCanvasRenderingContext2D, frame: TestFrame) => void;
 	} = {},
 ) {
 	const previous = Object.getOwnPropertyDescriptors(globalThis);
 	const globals = {
 		document: { createElement: () => new TestCanvas() },
-		OffscreenCanvas: TestCanvas,
+		OffscreenCanvas: draw ? Canvas : TestCanvas,
 	};
 	for (const [key, value] of Object.entries(globals)) {
 		Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
@@ -68,6 +70,7 @@ async function withVideo(
 					drawWithFit: {
 						value: (ctx: OffscreenCanvasRenderingContext2D, options: { fit: string; rotation: number }) => {
 							expect(options).toEqual({ fit: "fill", rotation });
+							draw?.(ctx, frame);
 							pixels.set(ctx.canvas, frame);
 						},
 					},
@@ -115,6 +118,38 @@ const constantRate = (seconds: number) => Array.from({ length: seconds * 30 }, (
 	timestamp: i / 30,
 	duration: 1 / 30,
 }));
+
+test.each(["preview", "export"])("%s video textures retain alpha when a frame surface is reused", (mode) =>
+	withVideo(constantRate(1), async ({ file }) => {
+		const renderer = rendererAt(mode === "preview" ? 0.25 : 1, mode === "export");
+		const node = new RootNode({ duration: ticks(1) }).add(clip(file));
+		const textureAt = async (time: number) => {
+			const { textures } = await resolveFrame(renderer, node, time);
+			const [texture] = textures;
+			if (texture?.kind !== "external" || !(texture.source instanceof OffscreenCanvas)) {
+				throw new Error("Missing video frame texture");
+			}
+			return texture.source;
+		};
+		try {
+			const first = await textureAt(0);
+			const ctx = first.getContext("2d")!;
+			expect(ctx.getImageData(0, 0, 1, 1).data[3]).toBe(255);
+			expect(ctx.getImageData(first.width - 1, 0, 1, 1).data[3]).toBe(0);
+			expect(await textureAt(1 / 30)).toBe(first);
+			expect(ctx.getImageData(0, 0, 1, 1).data[3]).toBe(0);
+			expect(ctx.getImageData(first.width - 1, 0, 1, 1).data[3]).toBe(255);
+		} finally {
+			renderer.videoCache.clear();
+		}
+	}, {
+		width: 16, height: 16,
+		draw: (ctx, frame) => {
+			const half = ctx.canvas.width / 2;
+			ctx.fillStyle = "red";
+			ctx.fillRect(frame.timestamp === 0 ? 0 : half, 0, half, ctx.canvas.height);
+		},
+	}));
 
 test("overlapping clips keep distinct source pixels and a matching blur background shares the decode", () =>
 	withVideo(constantRate(12), async ({ file, starts, pixels }) => {

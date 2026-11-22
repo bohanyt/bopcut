@@ -185,7 +185,7 @@ The settings are in the Transform tab of the properties panel. Preview and expor
 **Frame rate.** The project frame rate is never changed by agent imports: a bundle sets it with `fps` (default 30; e.g. `"fps":30` or `29.97`) and imported footage with a higher frame rate does not raise it; draft assets do not change it either. Media dropped by hand in the editor still raise it to the fastest footage (upstream behaviour), now with a toast saying so.
 
 ## Other changes from upstream
-- Dropped GIFs are converted to silent MP4 (local ffmpeg) so they animate.
+- Dropped GIFs are converted to silent video with the configured FFmpeg command. Transparent GIFs use VP9 WebM and opaque GIFs use H.264 MP4.
 - Fix: preview interruption on effect tracks (`effect_pass_groups`).
 - Removed: React Scan, Next dev indicator, databuddy analytics.
 

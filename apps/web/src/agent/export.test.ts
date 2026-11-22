@@ -133,6 +133,58 @@ describe("export frame timing", () => {
 				render.mockRestore();
 			}
 		}));
+
+	test("a first variable-delay GIF keeps an export sample in every short frame", () =>
+		withCanvas(async () => {
+			EditorCore.reset();
+			const editor = EditorCore.getInstance();
+			editor.save.stop();
+			const { InsertElementCommand } = await import("@/commands");
+			const { buildElementFromMedia } = await import("@/timeline/element-utils");
+			const scene: TScene = {
+				id: "gif-scene", name: "GIF", isMain: true, bookmarks: [],
+				createdAt: new Date(0), updatedAt: new Date(0),
+				tracks: { main: { id: "main", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, overlay: [], audio: [] },
+			};
+			const fps = { numerator: 30, denominator: 1 };
+			const project = {
+				metadata: { id: "gif-project", name: "GIF" }, scenes: [scene], currentSceneId: scene.id,
+				settings: { fps, canvasSize: { width: 16, height: 16 } },
+			} as TProject;
+			editor.project.setActiveProject({ project });
+			editor.scenes.setScenes({ scenes: [scene], activeSceneId: scene.id });
+			const file = new File(["converted"], "animation.webm", { type: "video/webm" });
+			const asset = { id: "gif", name: file.name, type: "video" as const, file, fps: 20, hasVariableGifDelay: true };
+			editor.media.setAssets({ assets: [asset] });
+			const stubs = [
+				spyOn(CanvasRenderer.prototype, "render").mockResolvedValue(undefined),
+				spyOn(Output.prototype, "start").mockResolvedValue(undefined),
+				spyOn(Output.prototype, "finalize").mockResolvedValue(undefined),
+				spyOn(CanvasSource.prototype, "add").mockResolvedValue(undefined),
+				spyOn(CanvasSource.prototype, "close").mockImplementation(() => {}),
+			] as const;
+			try {
+				editor.command.execute({ command: new InsertElementCommand({
+					element: buildElementFromMedia({ mediaId: asset.id, mediaType: asset.type, name: asset.name, startTime: T(0), duration: T(0.45) }),
+					placement: { mode: "explicit", trackId: scene.tracks.main.id },
+				}) });
+				const rate = editor.project.getActive().settings.fps;
+				const [clip] = editor.scenes.getActiveScene().tracks.main.elements;
+				const exporter = new SceneExporter({ width: 16, height: 16, fps: rate, format: "mp4", quality: "high" });
+				await exporter.export({ rootNode: new RootNode({ duration: clip.duration }) });
+				const samples = stubs[0].mock.calls.map(([{ time }]) => time);
+				// Each 150 ms loop has a 40 ms frame after its first 60 ms hold.
+				for (const loop of [0, 1, 2]) {
+					const start = T(0.15 * loop + 0.06);
+					const end = T(0.15 * loop + 0.10);
+					expect(samples.some((time) => time >= start && time < end)).toBe(true);
+				}
+				expect(rate).toEqual(fps);
+			} finally {
+				for (const stub of stubs) stub.mockRestore();
+				EditorCore.reset();
+			}
+		}));
 });
 
 test("abort during a later audio encoder write cancels the muxer without waiting for the write", () =>

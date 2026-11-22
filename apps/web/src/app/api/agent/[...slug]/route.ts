@@ -5,10 +5,8 @@
 // AGENT_FILES_ROOT  bundle asset root (default = AGENT_WORKSPACE). Files outside this root are not served.
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import os from "node:os";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { handleRetrieve } from "@/retrieval/server";
+import { handleGif } from "@/media/gif-server";
 import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
 import { MUSIC_LIBRARY, handleMusic } from "@/sounds/music-server";
 import { handleDuck } from "@/sounds/duck-server";
@@ -18,7 +16,6 @@ import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
 import { handleExportFile, handleExportResult } from "@/agent/export-server";
 
-const run = promisify(execFile);
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 const FILES_ROOT = path.resolve(process.env.AGENT_FILES_ROOT ?? WORKSPACE);
 const TYPES: Record<string, string> = { ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".avif": "image/avif", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac", ".aac": "audio/aac", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".json": "application/json" };
@@ -158,16 +155,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		const result = await handleRetrieve(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
 		return Response.json(result.body, { status: result.status });
 	}
-	if (slug[0] === "gif") {
-		// GIF -> silent MP4 (looped 3x) for timeline animation; OpenCut renders GIFs as still images.
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "oc-gif-"));
-		try {
-			await fs.writeFile(path.join(dir, "in.gif"), Buffer.from(await req.arrayBuffer()));
-			await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-stream_loop", "2", "-i", path.join(dir, "in.gif"), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-movflags", "+faststart", path.join(dir, "out.mp4")]);
-			return new Response(new Uint8Array(await fs.readFile(path.join(dir, "out.mp4"))), { headers: { "Content-Type": "video/mp4" } });
-		} finally {
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	}
+	if (slug[0] === "gif") return handleGif(req);
 	return Response.json({ error: "Not found" }, { status: 404 });
 }
