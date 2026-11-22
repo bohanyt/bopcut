@@ -1,3 +1,4 @@
+import { getBrowserTranslator } from "@/i18n/browser";
 import { Command, type CommandResult } from "@/commands/base-command";
 import { EditorCore } from "@/core";
 import type {
@@ -172,7 +173,7 @@ export class InsertElementCommand extends Command {
 				next.width = Math.max(2, 2 * Math.floor(next.width / 2));
 				next.height = Math.max(2, 2 * Math.floor(next.height / 2));
 			}
-			toast.info(`Canvas set to ${next.width} × ${next.height} to fit this graphics device.`);
+			toast.info(getBrowserTranslator()("canvas.fitDevice", { width: next.width, height: next.height }));
 		}
 		editor.project.updateSettings({
 			settings: { canvasSize: next, ...(!originalCanvasSize ? { originalCanvasSize: next } : {}) },

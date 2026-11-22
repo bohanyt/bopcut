@@ -1,5 +1,7 @@
 "use client";
 
+import { getBrowserTranslator } from "@/i18n/browser";
+
 import { useI18n } from "@/i18n/provider";
 import type { StaticMessageKey } from "@/i18n/translate";
 import Image from "next/image";
@@ -87,7 +89,7 @@ export function MediaView() {
 	const processFiles = async (files: File[], session: MediaImportSession | null) => {
 		if (!files || files.length === 0) return;
 		if (!session) {
-			toast.error("No active project");
+			toast.error(getBrowserTranslator()("projects.noneActive"));
 			return;
 		}
 

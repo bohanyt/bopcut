@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import { useEffect } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { showMediaUploadToast } from "@/media/upload-toast";
@@ -47,7 +49,7 @@ export function usePasteMedia() {
 				const { file, error } = await fetchWebMedia(links, session.signal);
 				if (session.signal.aborted) return;
 				if (!file) {
-					toast.error(`Could not add the pasted link${error ? `: ${error}` : ""}`);
+					toast.error(getBrowserTranslator()("media.pasteFailed"), { description: error ? localizeErrorDetail(error, getBrowserTranslator()) : undefined });
 					return;
 				}
 				files = [file];

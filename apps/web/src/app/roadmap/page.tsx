@@ -1,3 +1,5 @@
+import type { StaticMessageKey, createTranslator } from "@/i18n/translate";
+import { getServerI18n } from "@/i18n/server";
 import type { Metadata } from "next";
 import { BasePage } from "@/app/base-page";
 import { GitHubContributeSection } from "@/components/gitHub-contribute-section";
@@ -5,61 +7,59 @@ import { Badge } from "@/components/ui/badge";
 import { ReactMarkdownWrapper } from "@/components/ui/react-markdown-wrapper";
 import { cn } from "@/utils/ui";
 
-const LAST_UPDATED = "February 25, 2026";
-
 type StatusType = "complete" | "pending" | "default" | "info";
 
 interface Status {
-	text: string;
+	text: StaticMessageKey;
 	type: StatusType;
 }
 
 interface RoadmapItem {
-	title: string;
-	description: string;
+	title: StaticMessageKey;
+	description: StaticMessageKey;
 	status: Status;
 }
 
 const roadmapItems: RoadmapItem[] = [
 	{
-		title: "Start",
+		title: "roadmap.start",
 		description:
-			"This is where it all started. Repository created, initial project structure, and the vision for a free, open-source video editor. [Check out the first tweet](https://x.com/mazeincoding/status/1936706642512388188) to see where it started.",
+			"roadmap.startDescription",
 		status: {
-			text: "Completed",
+			text: "roadmap.complete",
 			type: "complete",
 		},
 	},
 	{
-		title: "Core UI",
+		title: "roadmap.core",
 		description:
-			"Build the foundation - main layout, header, sidebar, timeline container, and basic component structure. Not all functionality yet, but the UI framework that everything else builds on.",
+			"roadmap.coreDescription",
 		status: {
-			text: "Completed",
+			text: "roadmap.complete",
 			type: "complete",
 		},
 	},
 	{
-		title: "Essential functionality",
+		title: "roadmap.essential",
 		description:
-			"Everything that makes a video editor **useful**. Timeline interactivity, storage, effects, transitions, etc.",
+			"roadmap.essentialDescription",
 		status: {
-			text: "In progress",
+			text: "roadmap.pending",
 			type: "pending",
 		},
 	},
 	{
-		title: "Native app (mobile/desktop)",
+		title: "roadmap.native",
 		description:
-			"Native OpenCut apps for Mac, Windows, Linux, and iOS/Android.",
+			"roadmap.nativeDescription",
 		status: {
-			text: "Not started",
+			text: "roadmap.notStarted",
 			type: "default",
 		},
 	},
 ];
 
-export const metadata: Metadata = {
+const metadata: Metadata = {
 	title: "Roadmap - OpenCut",
 	description:
 		"See what's coming next for OpenCut - the free, open-source video editor that respects your privacy.",
@@ -86,39 +86,46 @@ export const metadata: Metadata = {
 	},
 };
 
-export default function RoadmapPage() {
+export async function generateMetadata(): Promise<Metadata> {
+	const { t } = await getServerI18n();
+	return {
+		...metadata,
+		title: t("site.pageTitle", { title: t("header.roadmap") }),
+	};
+}
+
+export default async function RoadmapPage() {
+	const { t } = await getServerI18n();
 	return (
 		<BasePage
-			title="Roadmap"
-			description={`What's coming next for OpenCut (last updated: ${LAST_UPDATED})`}
+			title={t("header.roadmap")}
+			description={t("roadmap.description", { date: t("roadmap.date") })}
 		>
 			<div className="mx-auto flex max-w-4xl flex-col gap-16">
 				<div className="flex flex-col gap-6">
 					{roadmapItems.map((item, index) => (
-						<RoadmapItem key={item.title} item={item} index={index} />
+						<RoadmapItem key={item.title} item={item} index={index} t={t} />
 					))}
 				</div>
 				<GitHubContributeSection
-					title="Want to help?"
-					description="OpenCut is open source and built by the community. Every contribution,
-          no matter how small, helps us build the best free video editor
-          possible."
+					title={t("roadmap.help")}
+					description={t("roadmap.helpDescription")}
 				/>
 			</div>
 		</BasePage>
 	);
 }
 
-function RoadmapItem({ item, index }: { item: RoadmapItem; index: number }) {
+function RoadmapItem({ item, index, t }: { item: RoadmapItem; index: number; t: ReturnType<typeof createTranslator> }) {
 	return (
 		<div className="flex flex-col gap-2">
 			<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg font-medium">
 				<span className="leading-normal select-none">{index + 1}</span>
-				<h3>{item.title}</h3>
-				<StatusBadge status={item.status} className="ml-1" />
+				<h3>{t(item.title)}</h3>
+				<StatusBadge status={item.status} text={t(item.status.text)} className="ml-1" />
 			</div>
 			<div className="text-foreground/70 leading-relaxed">
-				<ReactMarkdownWrapper>{item.description}</ReactMarkdownWrapper>
+				<ReactMarkdownWrapper>{t(item.description)}</ReactMarkdownWrapper>
 			</div>
 		</div>
 	);
@@ -126,9 +133,11 @@ function RoadmapItem({ item, index }: { item: RoadmapItem; index: number }) {
 
 function StatusBadge({
 	status,
+	text,
 	className,
 }: {
 	status: Status;
+	text: string;
 	className?: string;
 }) {
 	return (
@@ -140,7 +149,7 @@ function StatusBadge({
 				"bg-foreground/10! text-accent-foreground": status.type === "default",
 			})}
 		>
-			{status.text}
+			{text}
 		</Badge>
 	);
 }

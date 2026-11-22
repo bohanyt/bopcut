@@ -1,3 +1,4 @@
+import { getServerI18n } from "@/i18n/server";
 import type { Metadata } from "next";
 import { BasePage } from "@/app/base-page";
 import { Separator } from "@/components/ui/separator";
@@ -13,7 +14,7 @@ import {
 	ReleaseChanges,
 } from "@/changelog/components/release";
 
-export const metadata: Metadata = {
+const metadata: Metadata = {
 	title: "Changelog - OpenCut",
 	description: "What's new in OpenCut",
 	openGraph: {
@@ -37,11 +38,21 @@ export const metadata: Metadata = {
 	},
 };
 
-export default function ChangelogPage() {
+export async function generateMetadata(): Promise<Metadata> {
+	const { t } = await getServerI18n();
+	return {
+		...metadata,
+		title: t("site.pageTitle", { title: t("footer.changelog") }),
+		description: t("changelog.description"),
+	};
+}
+
+export default async function ChangelogPage() {
+	const { t } = await getServerI18n();
 	const releases = getSortedReleases();
 
 	return (
-		<BasePage title="Changelog" description="See what's new in OpenCut">
+		<BasePage title={t("footer.changelog")} description={t("changelog.description")}>
 			<div className="mx-auto w-full max-w-3xl">
 				<div className="relative">
 					<div

@@ -1,0 +1,109 @@
+import type { createTranslator, StaticMessageKey } from "./translate";
+
+// Protocol messages are stable. Translate known details where they are shown to people.
+const messageKeys = new Map<string, StaticMessageKey>([
+	["url must be an http(s) link", "retrieval.url"],
+	["start is required (seconds, 1:02:03, or a link with t=)", "retrieval.startRequired"],
+	["start is not a valid time", "retrieval.invalidStart"],
+	["end or duration is required", "retrieval.endRequired"],
+	["end is not a valid time", "retrieval.invalidEnd"],
+	["end must be after start", "retrieval.endOrder"],
+	["this is a playlist link; use the link of one video", "retrieval.playlist"],
+	["not a valid link", "retrieval.invalidLink"],
+	["links to this machine or the local network are not fetched (set BOPENCUT_ALLOW_PRIVATE_URLS=1 to allow)", "retrieval.privateLink"],
+	["too many redirects", "retrieval.redirects"],
+	["this link is a live stream that is still running; use it once the replay is available", "retrieval.live"],
+	["nothing was downloaded (a live stream that is still running, or an unsupported link)", "retrieval.noDownload"],
+	["the link gave an empty file", "retrieval.emptyFile"],
+	["SVG images are not supported; use a PNG or JPEG of it", "retrieval.svg"],
+	["the fetched file could not be read", "retrieval.unreadable"],
+	["the saved file could not be read", "sounds.unreadable"],
+	["Failed to load sounds", "sounds.loadFailed"],
+	["Failed to load saved sounds", "sounds.savedLoadFailed"],
+	["Failed to submit", "feedback.submitFailed"],
+	["No audio track found", "media.noAudioTrack"],
+	["No video track found in the file", "media.noVideoTrack"],
+	["The track has missing packet data", "media.incompleteTrack"],
+	["No video frames could be decoded", "media.noDecodedFrames"],
+	["The file does not have a finite video duration", "media.invalidVideoDuration"],
+	["Could not load text presets", "text.presetsLoadFailed"],
+	["Invalid preset list", "text.invalidPresetList"],
+	["Could not save text preset", "text.presetSaveFailed"],
+	["Unsupported subtitle format", "captions.unsupportedFormat"],
+	["Cannot delete main scene", "timeline.cannotDeleteMain"],
+	["Scene is used by a compound clip", "timeline.sceneInUse"],
+	["Compound clip was not created", "timeline.compoundNotCreated"],
+	["A rename of this project is still being saved; try again in a moment", "projects.renamePending"],
+	["The project kept changing while it was reopened", "projects.changedWhileOpening"],
+	["a save of it is still running; try again in a moment", "projects.savePending"],
+	["The project kept changing; try again", "storage.projectChanging"],
+	["The project was deleted; not saved", "storage.projectDeleted"],
+	["This project is being deleted", "projects.deleting"],
+	["the project is still loading", "projects.stillLoading"],
+	["saving is off", "storage.saveOff"],
+	["save did not finish", "storage.saveIncomplete"],
+	["save did not finish; it is retried in the background", "storage.saveRetryBackground"],
+	["Unknown export error", "export.unknownError"],
+	["No active project", "projects.noneActive"],
+]);
+
+export function localizeErrorDetail(detail: string, t: ReturnType<typeof createTranslator>): string {
+	const key = messageKeys.get(detail);
+	if (key) return t(key);
+
+	let match: RegExpExecArray | null;
+	if ((match = /^section is (\d+) s; the limit is (\d+) s \(whole videos are not fetched\)$/.exec(detail))) {
+		return t("retrieval.sectionLimit", { seconds: match[1], limit: match[2] });
+	}
+	if ((match = /^the link's host could not be resolved: (.+)$/.exec(detail))) {
+		return t("retrieval.host", { host: match[1] });
+	}
+	if ((match = /^the file is larger than (\d+) MB$/.exec(detail))) {
+		return t("retrieval.fileSize", { size: match[1] });
+	}
+	if ((match = /^the link answered (\d+)$/.exec(detail))) {
+		return t("retrieval.httpStatus", { status: match[1] });
+	}
+	if ((match = /^the link is not a supported image, video or sound \((.+)\)$/.exec(detail))) {
+		return t("retrieval.unsupported", { type: match[1] });
+	}
+	if ((match = /^request failed \((\d+)\)$/.exec(detail))) {
+		return t("network.requestFailed", { status: match[1] });
+	}
+	if ((match = /^Failed to fetch: (\d+)$/.exec(detail))) {
+		return t("network.fetchFailed", { status: match[1] });
+	}
+	if ((match = /^(.+) was not found\. Install it or set ([A-Z0-9_]+)\.$/.exec(detail))) {
+		return t("retrieval.toolMissing", { tool: match[1], setting: match[2] });
+	}
+	if ((match = /^Could not download the link: (.+)$/i.exec(detail))) {
+		return t("retrieval.downloadFailed", { detail: localizeErrorDetail(match[1], t) });
+	}
+	if ((match = /^Project with id (.+) not found$/.exec(detail))) {
+		return t("projects.idNotFound", { id: match[1] });
+	}
+	if ((match = /^Earlier changes of this project are not saved yet: (.+)$/.exec(detail))) {
+		return t("projects.earlierChangesUnsaved", { detail: localizeErrorDetail(match[1], t) });
+	}
+	if ((match = /^Storage failed \((\d+)\): ([\s\S]*)$/.exec(detail))) {
+		return t("storage.requestFailed", { status: match[1], detail: match[2] });
+	}
+	if ((match = /^Failed to download audio: (.+)$/.exec(detail))) {
+		return t("sounds.downloadFailed", { detail: match[1] });
+	}
+	if ((match = /^Cannot (undo|redo) the agent draft: a scene it changed no longer exists$/.exec(detail))) {
+		return t("agentToast.historySceneGone", { action: t(match[1] === "undo" ? "shortcuts.action.undo" : "shortcuts.action.redo") });
+	}
+	if ((match = /^Cannot (undo|redo) the agent draft: (\d+) scenes it changed no longer exist$/.exec(detail))) {
+		return t("agentToast.historyScenesGone", { action: t(match[1] === "undo" ? "shortcuts.action.undo" : "shortcuts.action.redo"), count: match[2] });
+	}
+
+	if ((match = /^(.+) cannot be decoded in this browser\. Convert it to H\.264 MP4( or try importing it in Safari)?\.$/.exec(detail))) {
+		const codec = match[1] === "The video codec" ? t("media.videoCodec") : match[1];
+		return match[2]
+			? t("media.codecUnsupportedSafari", { codec })
+			: t("media.codecUnsupported", { codec });
+	}
+
+	return detail;
+}

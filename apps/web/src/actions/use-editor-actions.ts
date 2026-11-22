@@ -1,5 +1,7 @@
 "use client";
 
+import { getBrowserTranslator } from "@/i18n/browser";
+
 import { useEffect, useState } from "react";
 import { useTimelineStore } from "@/timeline/timeline-store";
 import { useActionHandler } from "@/actions/use-action-handler";
@@ -421,7 +423,7 @@ export function useEditorActions() {
 				editor.timeline.createCompound({ elements: selectedElements });
 			} catch (error) {
 				toast.error(
-					error instanceof Error ? error.message : "Could not create compound clip",
+					error instanceof Error ? error.message : getBrowserTranslator()("timeline.createCompoundFailed"),
 				);
 			}
 		},
@@ -435,7 +437,7 @@ export function useEditorActions() {
 				.getElementsWithTracks({ elements: selectedElements })
 				.filter(({ element }) => isCompoundElement(element));
 			if (compounds.length !== 1) {
-				if (compounds.length > 1) toast.error("Select one compound clip to break apart");
+				if (compounds.length > 1) toast.error(getBrowserTranslator()("timeline.selectOneCompound"));
 				return;
 			}
 			const [{ track, element }] = compounds;

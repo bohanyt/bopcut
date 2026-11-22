@@ -1,12 +1,9 @@
+import { getBrowserTranslator } from "@/i18n/browser";
 import { toast } from "sonner";
 
 export interface MediaUploadToastResult {
 	uploadedCount: number;
 	assetNames?: string[];
-}
-
-function getAssetLabel({ count }: { count: number }): string {
-	return count === 1 ? "media asset" : "media assets";
 }
 
 function waitForNextPaint(): Promise<void> {
@@ -29,22 +26,22 @@ export async function showMediaUploadToast<T extends MediaUploadToastResult>({
 		await waitForNextPaint();
 		return run();
 	}, {
-		loading: `Uploading ${getAssetLabel({ count: filesCount })}...`,
+		loading: filesCount === 1 ? getBrowserTranslator()("media.uploadOne") : getBrowserTranslator()("media.uploadMany"),
 		success: ({ uploadedCount, assetNames }) => {
 			if (uploadedCount === 1) {
 				const assetName = assetNames?.[0];
 				return assetName
-					? `${assetName} has been uploaded`
-					: "1 media asset has been uploaded";
+					? getBrowserTranslator()("media.uploadedNamed", { name: assetName })
+					: getBrowserTranslator()("media.uploadedOne");
 			}
 
 			if (uploadedCount > 1) {
-				return `${uploadedCount} media assets have been uploaded`;
+				return getBrowserTranslator()("media.uploadedMany", { count: uploadedCount });
 			}
 
-			return "No media assets were uploaded";
+			return getBrowserTranslator()("media.uploadedNone");
 		},
-		error: `Failed to upload ${getAssetLabel({ count: filesCount })}`,
+		error: () => filesCount === 1 ? getBrowserTranslator()("media.uploadOneFailed") : getBrowserTranslator()("media.uploadManyFailed"),
 	});
 
 	return toastPromise.unwrap();

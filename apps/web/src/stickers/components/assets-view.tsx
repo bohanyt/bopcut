@@ -1,5 +1,7 @@
 "use client";
 
+import { getBrowserTranslator } from "@/i18n/browser";
+
 import { useI18n } from "@/i18n/provider";
 import Image from "next/image";
 import type { CSSProperties } from "react";
@@ -391,7 +393,7 @@ function StickerItem({
 			addToRecentStickers({ stickerId: item.id });
 		} catch (error) {
 			console.error("Failed to add sticker:", error);
-			toast.error("Failed to add sticker to timeline");
+			toast.error(getBrowserTranslator()("stickers.addFailed"));
 		} finally {
 			setIsAdding(false);
 		}

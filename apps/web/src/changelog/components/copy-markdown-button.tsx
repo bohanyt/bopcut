@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+
 import { useState } from "react";
 import { CheckIcon, ClipboardIcon } from "lucide-react";
 import {
@@ -67,6 +69,7 @@ export function CopyMarkdownButton({
 	description?: string;
 	changes: Change[];
 }) {
+	const { t } = useI18n();
 	const [copied, setCopied] = useState(false);
 
 	const handleCopy = async () => {
@@ -85,14 +88,14 @@ export function CopyMarkdownButton({
 				"flex items-center gap-1.5",
 				copied && "pointer-events-none",
 			)}
-			title="Copy as markdown"
+			title={t("changelog.copyMarkdown")}
 		>
 			{copied ? (
 				<CheckIcon className="size-4" />
 			) : (
 				<ClipboardIcon className="size-4" />
 			)}
-			{copied ? "Copied!" : "Copy markdown"}
+			{copied ? t("common.copied") : t("changelog.copyMarkdown")}
 		</Button>
 	);
 }

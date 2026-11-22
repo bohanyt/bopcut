@@ -1,3 +1,4 @@
+import { getServerI18n } from "@/i18n/server";
 import type { Metadata } from "next";
 import { BasePage } from "@/app/base-page";
 import {
@@ -9,7 +10,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { SOCIAL_LINKS } from "@/site/social";
 
-export const metadata: Metadata = {
+const metadata: Metadata = {
 	title: "Terms of Service - OpenCut",
 	description:
 		"OpenCut's Terms of Service. Fair, transparent terms for our free and open-source video editor.",
@@ -21,11 +22,21 @@ export const metadata: Metadata = {
 	},
 };
 
-export default function TermsPage() {
+export async function generateMetadata(): Promise<Metadata> {
+	const { t } = await getServerI18n();
+	return {
+		...metadata,
+		title: t("site.pageTitle", { title: t("terms.title") }),
+		description: t("terms.description"),
+	};
+}
+
+export default async function TermsPage() {
+	const { t } = await getServerI18n();
 	return (
 		<BasePage
-			title="Terms of service"
-			description="Fair and transparent terms for our free, open-source video editor. Contact us if you have any questions."
+			title={t("terms.title")}
+			description={t("terms.description")}
 		>
 			<Accordion type="single" collapsible className="w-full">
 				<AccordionItem
@@ -33,42 +44,37 @@ export default function TermsPage() {
 					className="rounded-2xl border px-5"
 				>
 					<AccordionTrigger className="no-underline!">
-						Quick summary
+						{t("privacy.summary")}
 					</AccordionTrigger>
 					<AccordionContent>
 						<h3 className="mb-3 text-lg font-medium">
-							You own your content, we own nothing.
+							{t("terms.ownership")}
 						</h3>
 						<ol className="list-decimal space-y-2 pl-6">
 							<li>
-								Everything runs locally in your browser - nothing is ever
-								uploaded to our servers
+								{t("terms.local")}
 							</li>
 							<li>
-								We never claim ownership of your content
+								{t("terms.ownershipClaim")}
 							</li>
 							<li>
-								Free for personal and commercial use with no watermarks or
-								restrictions
+								{t("terms.usage")}
 							</li>
 							<li>
-								You&apos;re responsible for how you use it - don&apos;t break
-								the law
+								{t("terms.law")}
 							</li>
 							<li>
-								Service provided &quot;as is&quot; - we can&apos;t guarantee
-								perfect uptime
+								{t("terms.asIs")}
 							</li>
 							<li>
-								Open source means you can review our code and self-host if
-								needed
+								{t("terms.openSource")}
 							</li>
 							<li>
-								No account required - your exported videos are always yours
+								{t("terms.noAccount")}
 							</li>
 						</ol>
 						<p className="mt-4">
-							Questions? Email us at{" "}
+							{t("privacy.questions")}{" "}
 							<a
 								href="mailto:oss@opencut.app"
 								className="text-primary hover:underline"
@@ -81,72 +87,63 @@ export default function TermsPage() {
 			</Accordion>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">Your Content, Your Rights</h2>
+				<h2 className="text-2xl font-semibold">{t("terms.contentHeading")}</h2>
 				<p>
-					<strong>You own everything you create.</strong> All editing and
-					processing happens locally on your device. We never see, store, or
-					have access to your files. We make no claims to ownership, licensing,
-					or rights over your videos, projects, or any content you create using
-					OpenCut.
+					<strong>{t("terms.contentOwnership")}</strong> {t("terms.contentPrivacy")}
 				</p>
 				<ul className="list-disc space-y-2 pl-6">
 					<li>
-						Your content never leaves your device
+						{t("terms.contentStays")}
 					</li>
-					<li>You retain all intellectual property rights to your content</li>
-					<li>You can export and use your content however you choose</li>
-					<li>No watermarks, no licensing restrictions from OpenCut</li>
+					<li>{t("terms.ipRights")}</li>
+					<li>{t("terms.exports")}</li>
+					<li>{t("terms.watermarks")}</li>
 				</ul>
 			</section>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">How You Can Use OpenCut</h2>
-				<p>OpenCut is free for personal and commercial use. You can:</p>
+				<h2 className="text-2xl font-semibold">{t("terms.useHeading")}</h2>
+				<p>{t("terms.useIntro")}</p>
 				<ul className="list-disc space-y-2 pl-6">
 					<li>
-						Create videos for personal, educational, or commercial purposes
+						{t("terms.personal")}
 					</li>
-					<li>Use OpenCut for client work and paid projects</li>
-					<li>Share and distribute videos created with OpenCut</li>
+					<li>{t("terms.client")}</li>
+					<li>{t("terms.share")}</li>
 					<li>
-						Modify and distribute the OpenCut software (under MIT license)
+						{t("terms.modify")}
 					</li>
 				</ul>
 				<p>
-					You&apos;re responsible for how you use OpenCut and the content you
-					create. Don&apos;t use it for anything illegal in your jurisdiction.
+					{t("terms.legalUse")}
 				</p>
 			</section>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">AI Features</h2>
+				<h2 className="text-2xl font-semibold">{t("terms.featuresHeading")}</h2>
 				<p>
-					AI features like auto captions run entirely in your browser using
-					on-device models. No content is uploaded to any server. These features
-					are optional - you can use OpenCut without them.
+					{t("terms.features")}
 				</p>
 			</section>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">Service</h2>
+				<h2 className="text-2xl font-semibold">{t("terms.serviceHeading")}</h2>
 				<p>
-					OpenCut does not currently require an account. The service is provided
-					&quot;as is&quot; without warranties. While we strive for
-					reliability, we can&apos;t guarantee uninterrupted service.
+					{t("terms.service")}
 				</p>
 			</section>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">Open Source Benefits</h2>
-				<p>Because OpenCut is open source, you have additional rights:</p>
+				<h2 className="text-2xl font-semibold">{t("terms.sourceHeading")}</h2>
+				<p>{t("terms.sourceIntro")}</p>
 				<ul className="list-disc space-y-2 pl-6">
-					<li>Review our code to see exactly how we handle your data</li>
-					<li>Self-host OpenCut on your own servers</li>
-					<li>Modify the software to suit your needs</li>
-					<li>Contribute improvements back to the community</li>
+					<li>{t("terms.review")}</li>
+					<li>{t("terms.selfHost")}</li>
+					<li>{t("terms.customize")}</li>
+					<li>{t("terms.contribute")}</li>
 				</ul>
 				<p>
-					View our source code and license on{" "}
+					{t("terms.license")}{" "}
 					<a
 						href={SOCIAL_LINKS.github}
 						target="_blank"
@@ -160,66 +157,63 @@ export default function TermsPage() {
 			</section>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">Limitations and Liability</h2>
+				<h2 className="text-2xl font-semibold">{t("terms.liabilityHeading")}</h2>
 				<p>
-					OpenCut is provided free of charge. To the extent permitted by law:
+					{t("terms.liability")}
 				</p>
 				<ul className="list-disc space-y-2 pl-6">
-					<li>We&apos;re not liable for any loss of data or content</li>
+					<li>{t("terms.loss")}</li>
 					<li>
-						Projects are stored in your browser and may be lost if you clear
-						browser data
+						{t("terms.browserData")}
 					</li>
-					<li>We&apos;re not responsible for how you use the service</li>
-					<li>Our liability is limited to the maximum extent allowed by law</li>
+					<li>{t("terms.responsibility")}</li>
+					<li>{t("terms.limit")}</li>
 				</ul>
 				<p>
-					Since your content stays on your device, we have no way to recover
-					lost projects. Consider exporting important videos when finished
-					editing.
+					{t("terms.recovery")}
 				</p>
 			</section>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">Service Changes</h2>
-				<p>We may update OpenCut and these terms:</p>
+				<h2 className="text-2xl font-semibold">{t("terms.changesHeading")}</h2>
+				<p>{t("terms.changes")}</p>
 				<ul className="list-disc space-y-2 pl-6">
-					<li>We&apos;ll notify you of significant changes to these terms</li>
-					<li>Continued use means you accept any updates</li>
-					<li>You can always self-host an older version if you prefer</li>
-					<li>Major changes will be discussed with the community on GitHub</li>
+					<li>{t("terms.notice")}</li>
+					<li>{t("terms.acceptance")}</li>
+					<li>{t("terms.older")}</li>
+					<li>{t("terms.community")}</li>
 				</ul>
 			</section>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">Stopping Use</h2>
-				<p>You can stop using OpenCut at any time:</p>
+				<h2 className="text-2xl font-semibold">{t("terms.stopHeading")}</h2>
+				<p>{t("terms.stop")}</p>
 				<ul className="list-disc space-y-2 pl-6">
-					<li>Clear your browser data to remove local projects</li>
+					<li>{t("terms.clear")}</li>
 				</ul>
 			</section>
 
 			<section className="flex flex-col gap-3">
-				<h2 className="text-2xl font-semibold">Contact Us</h2>
-				<p>Questions about these terms or need to report an issue?</p>
+				<h2 className="text-2xl font-semibold">{t("privacy.contactHeading")}</h2>
+				<p>{t("terms.questions")}</p>
 				<p>
-					Contact us through our{" "}
+					{t("terms.contact")}{" "}
 					<a
 						href={`${SOCIAL_LINKS.github}/issues`}
 						target="_blank"
 						rel="noopener noreferrer"
 						className="text-primary hover:underline"
 					>
-						GitHub repository
+						{t("privacy.repository")}
 					</a>
-					, email us at{" "}
+					{t("privacy.email")}{" "}
 					<a
 						href="mailto:oss@opencut.app"
 						className="text-primary hover:underline"
 					>
 						oss@opencut.app
 					</a>
-					, or reach out on{" "}
+					{t("privacy.social")}{" "}
 					<a
 						href={SOCIAL_LINKS.x}
 						target="_blank"
@@ -231,14 +225,12 @@ export default function TermsPage() {
 					.
 				</p>
 				<p>
-					These terms are governed by applicable law in your jurisdiction. We
-					prefer to resolve disputes through friendly discussion in our
-					open-source community.
+					{t("terms.disputes")}
 				</p>
 			</section>
 			<Separator />
 			<p className="text-muted-foreground text-sm">
-				Last updated: March 15, 2026
+				{t("privacy.date")}
 			</p>
 		</BasePage>
 	);

@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 // Every timeline change is written to AGENT_WORKSPACE/project.json (seconds, pixels),
 // so the agent can see each item's location, time, and position without opening the browser.
 import { draftHistory, isForOtherProject, nextSnapshotTime, snapshotHistory } from "./history";
@@ -383,7 +385,7 @@ async function answerExport() {
 				posting = null;
 			});
 	};
-	const toastId = toast.loading("Exporting a video for the agent", { description: "The export button waits until it is done" });
+	const toastId = toast.loading(getBrowserTranslator()("agentToast.exporting"), { description: getBrowserTranslator()("agentToast.exportWait") });
 	let result: ExportResult;
 	try {
 		// No wait between the checks above and this call: the export takes the timeline as it is now. It
@@ -562,7 +564,9 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	if (refused) {
 		const projectId = session?.projectId ?? project?.metadata.id;
 		const ops: DraftOp[] = Array.isArray(draft?.ops) ? draft.ops : [];
-		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: refused });
+		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), { description: !session
+			? getBrowserTranslator()("agentToast.noProject")
+			: getBrowserTranslator()("agentToast.projectMismatch") });
 		await fetch("/api/agent/applied", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -592,7 +596,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 				? "basedOn is unknown (the editor reloaded or the snapshot is too old); re-read the snapshot and resend"
 				: "basedOn belongs to a different project or root scene; re-read the snapshot and resend";
 		const results = ops.map((op) => ({ op: op?.op, ...opLabel(op), ...(op && "match" in op && op.match !== undefined ? { match: op.match } : {}), ok: false, stale: true, error }));
-		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: error });
+		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), { description: getBrowserTranslator()("agentToast.stale") });
 		await report({ sceneId: rootBefore, ok: false, applied: false, stale: true, error, results });
 		return;
 	}
@@ -746,8 +750,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		const count = failures.filter(Boolean).length;
 		const results = ops.map((op, i) => ({ op: op?.op, ...opLabel(op), ok: false, ...(failures[i] ? { error: failures[i] } : { skipped: true, error: "not applied: assets of another op failed to load" }) }));
 		const error = (root ? "assets failed to load; nothing was applied" : "no scene") + cleanupNote(cleanup);
-		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, {
-			description: (root ? `${count} ${count === 1 ? "op" : "ops"} could not load assets; nothing changed (see draft-result.json)` : "No scene is open") + cleanupNote(cleanup),
+		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), {
+			description: [root ? getBrowserTranslator()("agentToast.assetsFailed", { count }) : getBrowserTranslator()("agentToast.noScene"), cleanup?.failed.length ? getBrowserTranslator()("agentToast.cleanupFailed") : null].filter(Boolean).join(" "),
 		});
 		await report({ ...(root ? { sceneId: root.id } : {}), ok: false, applied: false, error, rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results });
 		return;
@@ -812,7 +816,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	}
 	if (error) {
 		const cleanup = await discard();
-		toast.error(`Agent draft not applied: ${draft.label ?? draft.rev}`, { description: error + cleanupNote(cleanup) });
+		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), { description: cleanup?.failed.length ? getBrowserTranslator()("agentToast.cleanupFailed") : getBrowserTranslator()("agentToast.draftDetails") });
 		await report({ sceneId: root.id, ok: false, applied: false, ...(stale ? { stale: true } : {}), error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
 		return;
 	}
@@ -852,10 +856,12 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	const saved = await ownSession.settle(revision);
 	if (saved) await promotion;
 	const failed = outcome.results.filter((r) => !r?.ok).length;
-	const description = `${outcome.results.length - failed} changes${failed ? `, ${failed} failed` : ""} · changed items selected · Ctrl+Z to undo`;
+	const description = failed
+		? getBrowserTranslator()("agentToast.partialSummary", { count: outcome.results.length - failed, failed })
+		: getBrowserTranslator()("agentToast.appliedSummary", { count: outcome.results.length });
 	const saveError = saved ? null : (ownSession.lastError ?? (!editor.save.isRunning() ? "saving is off" : ownSession.isLoading() ? "the project is still loading" : editor.save.getCurrent() === ownSession ? "save did not finish" : "save did not finish; it is retried in the background"));
-	if (!saved) toast.error(`Agent draft applied but not saved: ${draft.label ?? draft.rev}`, { description: saveError ?? undefined });
-	else if (failed) toast.warning(`Agent draft partly applied: ${draft.label ?? draft.rev}`, { description });
-	else toast(`Agent draft applied: ${draft.label ?? draft.rev}`, { description });
+	if (!saved) toast.error(getBrowserTranslator()("agentToast.notSaved", { name: draft.label ?? draft.rev }), { description: saveError ? localizeErrorDetail(saveError, getBrowserTranslator()) : undefined });
+	else if (failed) toast.warning(getBrowserTranslator()("agentToast.partlyApplied", { name: draft.label ?? draft.rev }), { description });
+	else toast(getBrowserTranslator()("agentToast.applied", { name: draft.label ?? draft.rev }), { description });
 	await report({ sceneId: root.id, applied: true, saved, savedAt: ownSession.savedAt?.toISOString() ?? null, ...(saved ? {} : { saveError }), ...(cleanup ? { cleanup } : {}), results: outcome.results });
 }

@@ -1,5 +1,8 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+
+import type { StaticMessageKey } from "@/i18n/translate";
 import type { CSSProperties } from "react";
 import Image from "next/image";
 import Link from "next/link";
@@ -32,72 +35,72 @@ type AssetTheme = "dark" | "light" | "icon";
 interface AssetVariant {
 	src: string;
 	theme: AssetTheme;
-	label: string;
+	label: StaticMessageKey;
 	width: number;
 	height: number;
 }
 
 interface AssetSection {
-	title: string;
-	description: string;
+	title: StaticMessageKey;
+	description: StaticMessageKey;
 	cols: "1" | "2";
 	assets: AssetVariant[];
 }
 
 const ASSET_SECTIONS: AssetSection[] = [
 	{
-		title: "Symbol",
+		title: "brand.symbol",
 		description:
-			"Use the symbol on its own when the OpenCut name is already present nearby or space is limited.",
+			"brand.symbolDescription",
 		cols: "2",
 		assets: [
 			{
 				src: "/logos/opencut/symbol.svg",
 				theme: "dark",
-				label: "Symbol",
+				label: "brand.symbol",
 				width: 400,
 				height: 400,
 			},
 			{
 				src: "/logos/opencut/symbol-light.svg",
 				theme: "light",
-				label: "Symbol",
+				label: "brand.symbol",
 				width: 400,
 				height: 400,
 			},
 		],
 	},
 	{
-		title: "Lockup",
+		title: "brand.lockup",
 		description:
-			"The full lockup combines the symbol and wordmark. Prefer this in most contexts where you have enough horizontal space.",
+			"brand.lockupDescription",
 		cols: "2",
 		assets: [
 			{
 				src: "/logos/opencut/logo.svg",
 				theme: "dark",
-				label: "Logo",
+				label: "brand.logo",
 				width: 1809,
 				height: 400,
 			},
 			{
 				src: "/logos/opencut/logo-light.svg",
 				theme: "light",
-				label: "Logo",
+				label: "brand.logo",
 				width: 1809,
 				height: 400,
 			},
 			{
 				src: "/logos/opencut/text.svg",
 				theme: "dark",
-				label: "Text",
+				label: "brand.wordmark",
 				width: 1760,
 				height: 400,
 			},
 			{
 				src: "/logos/opencut/text-light.svg",
 				theme: "light",
-				label: "Text",
+				label: "brand.wordmark",
 				width: 1760,
 				height: 400,
 			},
@@ -106,13 +109,14 @@ const ASSET_SECTIONS: AssetSection[] = [
 ];
 
 export default function BrandPage() {
+	const { t } = useI18n();
 	return (
 		<BasePage
 			maxWidth="6xl"
-			title="Brand"
+			title={t("footer.brand")}
 			description={
 				<>
-					Download OpenCut brand assets for use in your projects.{" "}
+					{t("brand.intro")}{" "}
 					<Link
 						href="#guidelines"
 						className="underline underline-offset-4"
@@ -122,7 +126,7 @@ export default function BrandPage() {
 								?.scrollIntoView({ behavior: "smooth" })
 						}
 					>
-						Read the brand guidelines.
+						{t("brand.readGuidelines")}
 					</Link>
 				</>
 			}
@@ -138,7 +142,7 @@ export default function BrandPage() {
 					}}
 				>
 					<Download />
-					Download all
+					{t("brand.downloadAll")}
 				</Button>
 			}
 		>
@@ -146,9 +150,9 @@ export default function BrandPage() {
 				{ASSET_SECTIONS.map((section) => (
 					<div key={section.title} className="flex flex-col gap-4">
 						<div className="flex flex-col gap-1">
-							<h2 className="font-semibold text-lg">{section.title}</h2>
+							<h2 className="font-semibold text-lg">{t(section.title)}</h2>
 							<p className="text-muted-foreground text-sm">
-								{section.description}
+								{t(section.description)}
 							</p>
 						</div>
 						<div
@@ -171,14 +175,9 @@ export default function BrandPage() {
 
 			<div id="guidelines" className="flex flex-col gap-8 text-sm">
 				<div className="flex flex-col gap-3">
-					<h2 className="font-semibold text-lg">Usage</h2>
+					<h2 className="font-semibold text-lg">{t("brand.usage")}</h2>
 					<p className="text-muted-foreground text-base leading-relaxed">
-						OpenCut is open source — the code is free to use under its license.
-						That license does not cover the name or logo. You can say you use
-						OpenCut, that your project integrates with OpenCut, or that it was
-						built on top of OpenCut. You cannot name your product OpenCut, imply
-						we made or endorse your product, or use the marks commercially
-						without asking first. For anything unclear, reach out at{" "}
+						{t("brand.usageRules")}{" "}
 						<Link
 							href="mailto:brand@opencut.app"
 							className="underline underline-offset-4"
@@ -190,13 +189,13 @@ export default function BrandPage() {
 				</div>
 
 				<div className="flex flex-col gap-3">
-					<h2 className="font-semibold text-lg">What&apos;s not allowed</h2>
+					<h2 className="font-semibold text-lg">{t("brand.prohibited")}</h2>
 					<ul className="text-muted-foreground text-base flex flex-col gap-2 leading-relaxed">
 						{[
-							"Using OpenCut in the name of your product, service, or domain.",
-							"Implying that OpenCut made, sponsors, or endorses your work.",
-							"Using the logo or name on merchandise or commercial marketing.",
-							"Modifying the marks.",
+							t("brand.productName"),
+							t("brand.endorsement"),
+							t("brand.marketing"),
+							t("brand.modify"),
 						].map((item) => (
 							<li key={item} className="flex gap-2">
 								<span className="mt-0.5 shrink-0">-</span>
@@ -228,6 +227,7 @@ const CHECKER_STYLES: Record<"dark" | "light", CSSProperties> = {
 };
 
 function AssetCard({ variant }: { variant: AssetVariant }) {
+	const { t } = useI18n();
 	const [copied, setCopied] = useState(false);
 
 	async function handleCopy() {
@@ -246,7 +246,7 @@ function AssetCard({ variant }: { variant: AssetVariant }) {
 			<div className="flex h-56 items-center justify-center px-12 py-8">
 				<Image
 					src={variant.src}
-					alt={variant.label}
+					alt={t(variant.label)}
 					width={variant.width}
 					height={variant.height}
 					className="max-h-16 w-auto select-none object-contain"
@@ -257,6 +257,7 @@ function AssetCard({ variant }: { variant: AssetVariant }) {
 
 			<Button
 				variant="outline"
+				aria-label={t("header.copySvg")}
 				size="icon"
 				className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 size-9"
 				onClick={handleCopy}

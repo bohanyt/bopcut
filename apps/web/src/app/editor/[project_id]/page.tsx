@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import { useParams } from "next/navigation";
 import {
@@ -67,7 +69,7 @@ function GraphicsStatusBanner() {
 		<div role="status" className="bg-accent border-b flex flex-wrap items-center justify-center gap-2 px-3 py-2 text-xs text-muted-foreground">
 			{status.state === "unavailable" ? (
 				<>
-					<span title={status.detail}>{t("editor.graphicsUnavailable")}</span>
+					<span title={status.detail && localizeErrorDetail(status.detail, t)}>{t("editor.graphicsUnavailable")}</span>
 					<Button variant="outline" size="sm" onClick={() => void rendererDevice.retry()}>
 						{t("editor.retryGraphics")}
 					</Button>

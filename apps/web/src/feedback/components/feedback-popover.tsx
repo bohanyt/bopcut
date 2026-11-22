@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -84,7 +86,7 @@ function useFeedback() {
 			toast.success(t("feedback.sent"));
 		} catch (error) {
 			toast.error(t("feedback.failed"), {
-				description: error instanceof Error ? error.message : undefined,
+				description: error instanceof Error ? localizeErrorDetail(error.message, t) : undefined,
 			});
 		} finally {
 			setIsSubmitting(false);

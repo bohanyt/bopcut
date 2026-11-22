@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import type { EditorCore } from "@/core";
 import type { Command, CommandResult } from "@/commands";
 import type { EditorSelectionSnapshot } from "@/selection/editor-selection";
@@ -147,7 +149,7 @@ export class CommandManager {
 
 		const blocked = entry.command.getBlockedReason({ direction });
 		if (blocked) {
-			toast.error(blocked);
+			toast.error(localizeErrorDetail(blocked, getBrowserTranslator()));
 			return false;
 		}
 		const { sceneId } = entry;
@@ -157,7 +159,7 @@ export class CommandManager {
 			return entry.projectSession === this.editor.project.getSession();
 		}
 		if (entry.command.restoresScene({ sceneId, direction })) return true;
-		toast.error(`Cannot ${direction}: the scene this change was made in no longer exists`);
+		toast.error(getBrowserTranslator()("timeline.historySceneGone", { action: getBrowserTranslator()(direction === "undo" ? "shortcuts.action.undo" : "shortcuts.action.redo") }));
 		return false;
 	}
 

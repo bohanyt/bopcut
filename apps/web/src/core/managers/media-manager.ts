@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import { releaseMediaAssetUrls } from "@/media/url-release";
 import { processMediaFile } from "@/media/processing";
 import type { EditorCore } from "@/core";
@@ -152,8 +154,8 @@ export class MediaManager {
 			// A failed response can arrive after another tab has seen the saved asset.
 			if (!this.isCurrentImport(session)) return null;
 			console.error("Failed to save media asset:", error);
-			toast.error(storageService.isQuotaExceededError({ error }) ? "Not enough browser storage" : "Failed to save media", {
-				description: error instanceof Error ? error.message : undefined,
+			toast.error(storageService.isQuotaExceededError({ error }) ? getBrowserTranslator()("media.storageFull") : getBrowserTranslator()("media.saveFailed"), {
+				description: error instanceof Error ? localizeErrorDetail(error.message, getBrowserTranslator()) : undefined,
 			});
 			return null;
 		} finally {
@@ -267,7 +269,7 @@ export class MediaManager {
 					const now = Date.now();
 					if (total < 20 || generation !== this.loadGeneration || (now - lastToast < 250 && loaded < total)) return;
 					lastToast = now;
-					toast.loading(`Loading media ${loaded}/${total}`, { id: toastId });
+					toast.loading(getBrowserTranslator()("media.loadingProgress", { loaded, total }), { id: toastId });
 				},
 				onFailed: (failure) => missing.push(failure),
 			});
@@ -394,7 +396,7 @@ export class MediaManager {
 
 	private reportMissing({ projectId }: { projectId: string }): void {
 		const count = this.missing.length;
-		toast.error(`${count} media ${count === 1 ? "file" : "files"} could not be loaded`, {
+		toast.error(count === 1 ? getBrowserTranslator()("media.loadOneFailed") : getBrowserTranslator()("media.loadManyFailed", { count }), {
 			id: `missing-media-${projectId}`,
 			description: this.missing.slice(0, 3).map((m) => m.name).join(", ") + (count > 3 ? ", …" : ""),
 			duration: Number.POSITIVE_INFINITY,

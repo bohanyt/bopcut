@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n/provider";
 import { useState } from "react";
 import { usePreviewCaptureTarget, usePreviewViewport } from "@/preview/components/preview-viewport";
 import { usePreviewInteraction } from "@/preview/hooks/use-preview-interaction";
@@ -10,6 +11,7 @@ import { usePropertiesStore } from "@/components/editor/panels/properties/stores
 import { useEditor } from "@/editor/use-editor";
 
 export function PreviewInteractionOverlay() {
+	const { t } = useI18n();
 	const [snapLines, setSnapLines] = useState<SnapLine[]>([]);
 	const editor = useEditor();
 	const viewport = usePreviewViewport();
@@ -57,7 +59,7 @@ export function PreviewInteractionOverlay() {
 				ref={captureTarget}
 				className="absolute inset-0 pointer-events-auto"
 				role="application"
-				aria-label="Preview canvas"
+				aria-label={t("preview.canvasLabel")}
 				style={{
 					cursor: viewport.isPanning
 						? "grabbing"

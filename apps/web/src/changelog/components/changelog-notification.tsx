@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/i18n/provider";
+
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
@@ -11,6 +13,7 @@ import type { Release } from "../utils";
 const STORAGE_KEY = "last-seen-version";
 
 export function ChangelogNotification() {
+	const { t } = useI18n();
 	const [release, setRelease] = useState<Release | null>(null);
 
 	useEffect(() => {
@@ -63,7 +66,7 @@ export function ChangelogNotification() {
 					size="icon"
 					className="-mr-1 -mt-1 shrink-0"
 					onClick={() => setRelease(null)}
-					aria-label="Dismiss"
+					aria-label={t("changelog.dismiss")}
 				>
 					<HugeiconsIcon icon={Cancel01Icon} className="size-4" />
 				</Button>
@@ -78,7 +81,7 @@ export function ChangelogNotification() {
 			<div className="flex justify-end">
 				<Button asChild size="sm">
 					<Link href="/changelog" onClick={() => setRelease(null)}>
-						See full changelog
+						{t("changelog.seeFull")}
 					</Link>
 				</Button>
 			</div>

@@ -1,3 +1,4 @@
+import { getServerI18n } from "@/i18n/server";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -23,13 +24,15 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 	const { version } = await params;
 	const release = getReleaseByVersion({ version });
 	if (!release) return {};
+	const { t } = await getServerI18n();
 	return {
-		title: `${release.title} (${release.version}) - OpenCut Changelog`,
+		title: t("changelog.releaseTitle", { title: release.title, version: release.version }),
 		description: release.description,
 	};
 }
 
 export default async function ReleaseDetailPage({ params }: Props) {
+	const { t } = await getServerI18n();
 	const { version } = await params;
 	const releases = getSortedReleases();
 	const index = releases.findIndex((entry) => entry.version === version);
@@ -46,7 +49,7 @@ export default async function ReleaseDetailPage({ params }: Props) {
 					className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1 w-fit"
 				>
 					<ChevronLeftIcon className="size-4" />
-					All releases
+					{t("changelog.all")}
 				</Link>
 
 				<ReleaseArticle variant="detail">
@@ -74,7 +77,7 @@ export default async function ReleaseDetailPage({ params }: Props) {
 						>
 							<ChevronLeftIcon className="size-4" />
 							<div className="flex flex-col">
-								<span className="text-xs text-muted-foreground/60">Older</span>
+								<span className="text-xs text-muted-foreground/60">{t("changelog.older")}</span>
 								<span className="font-medium">{older.title}</span>
 							</div>
 						</Link>
@@ -87,7 +90,7 @@ export default async function ReleaseDetailPage({ params }: Props) {
 							className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground group text-right"
 						>
 							<div className="flex flex-col">
-								<span className="text-xs text-muted-foreground/60">Newer</span>
+								<span className="text-xs text-muted-foreground/60">{t("changelog.newer")}</span>
 								<span className="font-medium">{newer.title}</span>
 							</div>
 							<ChevronRightIcon className="size-4" />

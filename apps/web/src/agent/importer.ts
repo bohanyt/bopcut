@@ -1,3 +1,4 @@
+import { getBrowserTranslator } from "@/i18n/browser";
 // Import an agent bundle (AGENT_WORKSPACE/bundle/bundle.json) as a normal OpenCut project.
 // All elements remain native OpenCut elements and can be moved, trimmed, or deleted as usual.
 // An element with `compound:{main?,overlay?,audio?,elements?}` becomes a compound clip whose
@@ -86,7 +87,7 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 
 	let done = 0;
 	for (const a of bundle.assets) {
-		onStatus(`Loading asset ${++done}/${bundle.assets.length}: ${a.name}`);
+		onStatus(getBrowserTranslator()("agentImport.asset", { done: ++done, total: bundle.assets.length, name: a.name }));
 		media.set(a.key, await loadAgentAsset({ session, asset: a }));
 	}
 
@@ -99,7 +100,7 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 	if (settings?.fps) await editor.project.updateSettings({ settings: { fps: settings.fps }, pushHistory: false });
 
 	session.signal.throwIfAborted();
-	onStatus("Building timeline…");
+	onStatus(getBrowserTranslator()("agentImport.timeline"));
 	const main = editor.scenes.getActiveScene();
 	// Elements are sized for the canvas the project really has (an invalid bundle size keeps the default).
 	const canvas = editor.project.getActive().settings.canvasSize;
@@ -111,6 +112,6 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 	editor.scenes.setScenes({ scenes, activeSceneId: main.id });
 	editor.timeline.updateTracks(editor.scenes.getActiveScene().tracks);
 	await editor.project.saveCurrentProject();
-	onStatus(`Done · ${bundle.assets.length} assets · opening editor…`);
+	onStatus(getBrowserTranslator()("agentImport.done", { count: bundle.assets.length }));
 	return projectId;
 }

@@ -1,5 +1,7 @@
 "use client";
 
+import { localizeErrorDetail } from "@/i18n/error-details";
+
 import { useI18n } from "@/i18n/provider";
 import { useState } from "react";
 import { useEditor } from "@/editor/use-editor";
@@ -107,7 +109,7 @@ export function FromUrlDialog({
 						<Checkbox id="from-url-audio" checked={audioOnly} onCheckedChange={(v) => setAudioOnly(v === true)} disabled={busy} />
 						<Label htmlFor="from-url-audio">{t("assets.soundOnly")}</Label>
 					</div>
-					{error && <p className="text-destructive text-sm">{error}</p>}
+					{error && <p className="text-destructive text-sm">{localizeErrorDetail(error, t)}</p>}
 					{busy && <p className="text-muted-foreground text-sm">{t("assets.fetchingSection")}</p>}
 				</DialogBody>
 				<DialogFooter>

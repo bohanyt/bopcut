@@ -1,3 +1,4 @@
+import { getBrowserTranslator } from "@/i18n/browser";
 import { toast } from "sonner";
 import { PasteCommand } from "@/commands/timeline";
 import { collectCompoundScenes } from "@/timeline/compound";
@@ -79,7 +80,7 @@ export const ElementsClipboardHandler = {
 		].filter((mediaId) => !available.has(mediaId));
 		if (missing.length > 0) {
 			toast.error(
-				"Cannot paste: the copied clips use media that is not in this project. Import the media here first.",
+				getBrowserTranslator()("clipboard.missingMedia"),
 			);
 			return null;
 		}

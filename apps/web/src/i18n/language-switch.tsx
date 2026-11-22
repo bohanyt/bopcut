@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { Languages } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,7 +12,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useI18n } from "./provider";
 
-export function LanguageSwitch() {
+export function LanguageSwitch({ refreshOnChange = false }: { refreshOnChange?: boolean }) {
+	const router = useRouter();
 	const { locale, setLocale, t } = useI18n();
 
 	return (
@@ -26,7 +28,10 @@ export function LanguageSwitch() {
 				<DropdownMenuRadioGroup
 					value={locale}
 					onValueChange={(value) => {
-						if (value === "en" || value === "id") setLocale(value);
+						if ((value === "en" || value === "id") && value !== locale) {
+							setLocale(value);
+							if (refreshOnChange) router.refresh();
+						}
 					}}
 				>
 					<DropdownMenuRadioItem value="en" lang="en">{t("language.en")}</DropdownMenuRadioItem>

@@ -1,3 +1,5 @@
+import { localizeErrorDetail } from "@/i18n/error-details";
+import { getBrowserTranslator } from "@/i18n/browser";
 import { useState, useRef } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { toast } from "sonner";
@@ -93,7 +95,7 @@ export function useFileUpload({
 				void fetchWebMedia(links, session.signal).then(({ file, error }) => {
 					if (session.signal.aborted) return;
 					if (file) onFilesSelected([file], session);
-					else toast.error(`Could not add the dropped media${error ? `: ${error}` : ""}`);
+					else toast.error(getBrowserTranslator()("media.dropFailed"), { description: error ? localizeErrorDetail(error, getBrowserTranslator()) : undefined });
 				});
 				return;
 			}
