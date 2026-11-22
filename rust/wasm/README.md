@@ -64,4 +64,4 @@ bun install
 ```
 
 Bump the package version in the template and update the archive paths in both
-package manifests when refreshing the package to give the new artifact its own cache key.
+package manifests and the web Dockerfile. The new version gives the artifact its own cache key.

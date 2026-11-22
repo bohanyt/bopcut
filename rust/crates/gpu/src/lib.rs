@@ -24,6 +24,10 @@ pub enum GpuError {
     SurfaceUnavailable,
     #[error("Graphics surface validation failed")]
     SurfaceValidation,
+    #[error("WebGL2 operation failed: {0}")]
+    WebGlOperation(String),
+    #[error("Could not read the source canvas for texture upload")]
+    CanvasRead,
     #[error("WebGPU initialization failed ({webgpu}); WebGL2 initialization failed ({webgl})")]
     BackendsUnavailable { webgpu: String, webgl: String },
 }

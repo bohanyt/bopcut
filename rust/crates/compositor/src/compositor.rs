@@ -288,6 +288,10 @@ impl Compositor {
         self.textures.remove(id);
     }
 
+    pub fn discard_temporary_textures(&mut self) {
+        self.texture_pool = TexturePool::default();
+    }
+
     /// Composites all frame items into a texture and returns it.
     /// Used on backends that cannot surface-render to an arbitrary canvas (e.g. WebGL).
     pub fn render_frame_to_texture(

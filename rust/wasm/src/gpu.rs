@@ -62,12 +62,13 @@ pub async fn initialize_gpu(on_device_lost: Option<Function>) -> Result<(), JsVa
                 }
             }
         });
+        context.device().on_uncaptured_error(Arc::new(|error| {
+            web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
+        }));
     }
-    context.device().on_uncaptured_error(Arc::new(|error| {
-        web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
-    }));
     let effects = EffectPipeline::new(&context);
     let masks = MaskFeatherPipeline::new(&context);
+    context.check_error().map_err(gpu_error_to_js)?;
 
     GPU_RUNTIME.with(|runtime| {
         runtime.replace(Some(GpuRuntime {
@@ -115,7 +116,12 @@ pub(crate) fn with_gpu_runtime<T>(
                 "GPU context not initialized. Call initializeGpu() first.",
             ));
         };
-        action(gpu_runtime)
+        gpu_runtime.context.check_error().map_err(gpu_error_to_js)?;
+        let result = action(gpu_runtime);
+        if result.is_err() {
+            gpu_runtime.context.check_error().map_err(gpu_error_to_js)?;
+        }
+        result
     })
 }
 
@@ -125,8 +131,8 @@ pub(crate) fn import_canvas_texture(
     width: u32,
     height: u32,
     label: &'static str,
-) -> wgpu::Texture {
-    context.import_offscreen_canvas_texture(canvas, width, height, label)
+) -> Result<wgpu::Texture, JsValue> {
+    context.import_offscreen_canvas_texture(canvas, width, height, label).map_err(gpu_error_to_js)
 }
 
 pub(crate) fn render_texture_to_canvas(
@@ -135,6 +141,7 @@ pub(crate) fn render_texture_to_canvas(
     width: u32,
     height: u32,
 ) -> Result<wgpu::web_sys::OffscreenCanvas, JsValue> {
+    context.check_error().map_err(gpu_error_to_js)?;
     let canvas = wgpu::web_sys::OffscreenCanvas::new(width, height)?;
     context
         .render_texture_to_offscreen_canvas(texture, &canvas, width, height)

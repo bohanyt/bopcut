@@ -44,6 +44,7 @@ pub fn init_compositor(width: u32, height: u32) -> Result<(), JsValue> {
                 .map_err(|_| JsValue::from_str("Failed to create compositor canvas"))?
         };
         let compositor = Compositor::new(&gpu_runtime.context);
+        gpu_runtime.context.check_error().map_err(gpu_error_to_js)?;
         let surface = if gpu_runtime.context.gl_canvas().is_none() {
             canvas.set_width(width);
             canvas.set_height(height);
@@ -140,7 +141,7 @@ pub fn upload_texture(options: JsValue) -> Result<(), JsValue> {
                 width,
                 height,
                 "compositor-upload-texture",
-            );
+            )?;
             runtime.compositor.upsert_texture(id, texture);
             Ok(())
         })
@@ -210,7 +211,12 @@ pub fn render_frame(options: JsValue) -> Result<(), JsValue> {
                 let texture = runtime
                     .compositor
                     .render_frame_to_texture(&gpu_runtime.context, &frame)
-                    .map_err(|error| JsValue::from_str(&error.to_string()))?;
+                    .map_err(|error| JsValue::from_str(&error.to_string()));
+                if let Err(error) = gpu_runtime.context.check_error() {
+                    runtime.compositor.discard_temporary_textures();
+                    return Err(gpu_error_to_js(error));
+                }
+                let texture = texture?;
                 perf::record("wasm.compositeToTexture", perf::now_ms() - t_composite);
 
                 let t_present = perf::now_ms();

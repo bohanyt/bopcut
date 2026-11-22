@@ -21,6 +21,7 @@ import { installAgentBridge } from "@/agent/bridge";
 import { useEditor } from "@/editor/use-editor";
 import { Button } from "@/components/ui/button";
 import { rendererDevice } from "@/services/renderer/renderer-device";
+import { modelGraphics, retryModelGraphics } from "@/model3d/render";
 import { ChangelogNotification } from "@/changelog/components/changelog-notification";
 import {
 	createPreviewOverlayControl,
@@ -43,6 +44,7 @@ export default function Editor() {
 			<EditorProvider projectId={projectId}>
 				<div className="bg-background flex h-screen w-screen flex-col overflow-hidden">
 					<GraphicsStatusBanner />
+					<ModelGraphicsStatusBanner />
 					<EditorHeader />
 					<div className="min-h-0 min-w-0 flex-1">
 						<EditorLayout />
@@ -71,6 +73,17 @@ function GraphicsStatusBanner() {
 			) : (
 				<span>{status.state === "recovering" ? "Recovering graphics…" : "Starting graphics…"}</span>
 			)}
+		</div>
+	);
+}
+
+function ModelGraphicsStatusBanner() {
+	const unavailable = useSyncExternalStore(modelGraphics.subscribe, modelGraphics.getSnapshot, () => false);
+	if (!unavailable) return null;
+	return (
+		<div role="status" className="bg-accent border-b flex flex-wrap items-center justify-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+			<span>3D graphics are unavailable.</span>
+			<Button variant="outline" size="sm" onClick={retryModelGraphics}>Retry 3D graphics</Button>
 		</div>
 	);
 }

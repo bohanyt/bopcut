@@ -1,6 +1,12 @@
 use wgpu::util::DeviceExt;
 
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+use std::{
+    cell::Cell,
+    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+};
+
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 use wasm_bindgen::JsCast;
 
 use crate::{FULLSCREEN_SHADER_SOURCE, GpuError};
@@ -8,6 +14,50 @@ use crate::{FULLSCREEN_SHADER_SOURCE, GpuError};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 #[derive(Debug)]
 struct WebDisplay;
+
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+struct WebGlHealth {
+    context: web_sys::WebGl2RenderingContext,
+    error: Arc<Mutex<Option<String>>>,
+    device_lost: Arc<AtomicBool>,
+    configured_size: Cell<Option<(u32, u32)>>,
+}
+
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+impl WebGlHealth {
+    fn new(canvas: &web_sys::HtmlCanvasElement, device: &wgpu::Device) -> Result<Self, GpuError> {
+        let context = canvas
+            .get_context("webgl2")
+            .ok()
+            .flatten()
+            .and_then(|context| context.dyn_into().ok())
+            .ok_or(GpuError::AdapterUnavailable)?;
+        let error = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&error);
+        // wgpu's WebGL backend delivers the error synchronously. Report it at the
+        // operation boundary so validation cannot trap or look like successful rendering.
+        device.on_uncaptured_error(Arc::new(move |error| {
+            slot.lock().unwrap().get_or_insert_with(|| error.to_string());
+        }));
+        let device_lost = Arc::new(AtomicBool::new(false));
+        let lost = Arc::clone(&device_lost);
+        device.set_device_lost_callback(move |_, _| lost.store(true, Ordering::Relaxed));
+        Ok(Self {
+            context,
+            error,
+            device_lost,
+            configured_size: Cell::new(None),
+        })
+    }
+
+    fn check(&self) -> Result<(), GpuError> {
+        let error = self.error.lock().unwrap().take();
+        if self.device_lost.load(Ordering::Relaxed) || self.context.is_context_lost() {
+            return Err(GpuError::SurfaceLost);
+        }
+        error.map_or(Ok(()), |error| Err(GpuError::WebGlOperation(error)))
+    }
+}
 
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 impl wgpu::rwh::HasDisplayHandle for WebDisplay {
@@ -46,6 +96,8 @@ pub struct GpuContext {
     gl_canvas: Option<web_sys::HtmlCanvasElement>,
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     gl_surface: Option<wgpu::Surface<'static>>,
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    gl_health: Option<WebGlHealth>,
 }
 
 impl GpuContext {
@@ -54,6 +106,11 @@ impl GpuContext {
         let (instance, adapter, device, queue, gl_canvas, gl_surface) = Self::acquire_device().await?;
         #[cfg(not(all(feature = "wasm", target_arch = "wasm32")))]
         let (instance, adapter, device, queue) = Self::acquire_device().await?;
+        #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+        let gl_health = gl_canvas
+            .as_ref()
+            .map(|canvas| WebGlHealth::new(canvas, &device))
+            .transpose()?;
         let texture_format = if adapter.get_info().backend == wgpu::Backend::Gl {
             wgpu::TextureFormat::Rgba8Unorm
         } else {
@@ -157,6 +214,10 @@ impl GpuContext {
             .get_downlevel_capabilities()
             .flags
             .contains(wgpu::DownlevelFlags::UNRESTRICTED_EXTERNAL_TEXTURE_COPIES);
+        #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+        if let Some(health) = &gl_health {
+            health.check()?;
+        }
 
         Ok(Self {
             instance,
@@ -174,6 +235,8 @@ impl GpuContext {
             gl_canvas,
             #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
             gl_surface,
+            #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+            gl_health,
         })
     }
 
@@ -360,6 +423,14 @@ impl GpuContext {
         self.supports_external_texture_copies
     }
 
+    pub fn check_error(&self) -> Result<(), GpuError> {
+        #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+        if let Some(health) = &self.gl_health {
+            return health.check();
+        }
+        Ok(())
+    }
+
     /// The HTML canvas that owns the backing WebGL context, if running on the
     /// WebGL fallback. Callers on that path can mount this canvas directly
     /// instead of copying pixels out of it every frame.
@@ -396,7 +467,7 @@ impl GpuContext {
         self.encode_texture_blit_to_view(&mut encoder, texture, &target_view, "gpu-surface-blit");
         self.queue.submit([encoder.finish()]);
         surface_texture.present();
-        Ok(())
+        self.check_error()
     }
 
     pub fn configure_surface(
@@ -406,7 +477,17 @@ impl GpuContext {
         height: u32,
     ) -> Result<(), GpuError> {
         let config = self.build_surface_configuration(surface, width, height)?;
+        #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+        if let Some(health) = &self.gl_health {
+            health.configured_size.set(None);
+        }
+        self.check_error()?;
         surface.configure(&self.device, &config);
+        self.check_error()?;
+        #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+        if let Some(health) = &self.gl_health {
+            health.configured_size.set(Some((width, height)));
+        }
         Ok(())
     }
 
@@ -445,7 +526,7 @@ impl GpuContext {
         if matches!(current, wgpu::CurrentSurfaceTexture::Outdated)
             && let Some(config) = surface.get_configuration()
         {
-            surface.configure(&self.device, &config);
+            self.configure_surface(surface, config.width, config.height)?;
             current = surface.get_current_texture();
         }
         match current {
@@ -511,8 +592,9 @@ impl GpuContext {
         width: u32,
         height: u32,
         label: &'static str,
-    ) -> wgpu::Texture {
+    ) -> Result<wgpu::Texture, GpuError> {
         let texture = self.create_render_texture(width, height, label);
+        self.check_error()?;
 
         if self.supports_external_texture_copies {
             self.queue.copy_external_image_to_texture(
@@ -540,11 +622,11 @@ impl GpuContext {
                 .get_context("2d")
                 .ok()
                 .flatten()
-                .expect("Failed to get 2d context for texture import")
+                .ok_or(GpuError::CanvasRead)?
                 .unchecked_into();
             let image_data = ctx
                 .get_image_data(0.0, 0.0, width as f64, height as f64)
-                .expect("Failed to read pixel data from canvas");
+                .map_err(|_| GpuError::CanvasRead)?;
             let rgba_bytes = image_data.data();
 
             let pixel_bytes = if self.texture_format == wgpu::TextureFormat::Bgra8Unorm {
@@ -578,7 +660,8 @@ impl GpuContext {
             );
         }
 
-        texture
+        self.check_error()?;
+        Ok(texture)
     }
 
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -635,18 +718,18 @@ impl GpuContext {
             .ok_or(GpuError::AdapterUnavailable)?;
 
         let surface = self.gl_surface.as_ref().ok_or(GpuError::AdapterUnavailable)?;
+        let health = self.gl_health.as_ref().ok_or(GpuError::AdapterUnavailable)?;
         if gl_canvas.width() != width {
             gl_canvas.set_width(width);
         }
         if gl_canvas.height() != height {
             gl_canvas.set_height(height);
         }
-        if !surface.get_configuration().is_some_and(|config| {
-            (config.width, config.height) == (width, height)
-        }) {
+        if health.configured_size.get() != Some((width, height)) {
             self.configure_surface(surface, width, height)?;
         }
 
+        health.check()?;
         self.present_texture_to_surface(texture, surface)?;
 
         Ok(gl_canvas)

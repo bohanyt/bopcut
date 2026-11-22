@@ -9,7 +9,7 @@ import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
 import { rendererDevice } from "@/services/renderer/renderer-device";
-import { ModelGraphicsError, onModelGraphicsRestored, retryModelGraphics } from "@/model3d/render";
+import { modelGraphics } from "@/model3d/render";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import { buildScene } from "@/services/renderer/scene-builder";
@@ -178,13 +178,6 @@ function PreviewCanvas({
 			? Math.min(qualityScale, (viewport.sceneWidth * window.devicePixelRatio) / nativeWidth)
 			: qualityScale;
 	const [settledScale, setSettledScale] = useState(renderScale);
-	const [modelGraphicsLost, setModelGraphicsLost] = useState(false);
-	const modelGraphicsLostRef = useRef(false);
-	const updateModelGraphics = useCallback((lost: boolean) => {
-		if (modelGraphicsLostRef.current === lost) return;
-		modelGraphicsLostRef.current = lost;
-		setModelGraphicsLost(lost);
-	}, []);
 
 	// Fit the displayed frame during the drag and resize the render target after it settles.
 	useEffect(() => {
@@ -214,7 +207,6 @@ function PreviewCanvas({
 		signal.addEventListener("abort", clearVideo, { once: true });
 		renderSignalRef.current = signal;
 		lastFrameRef.current = -1;
-		updateModelGraphics(false);
 		const outputCanvas = renderer.getOutputCanvas();
 		outputCanvas.style.display = "block";
 		outputCanvas.style.width = "100%";
@@ -224,7 +216,7 @@ function PreviewCanvas({
 			renderSignalRef.current = null;
 			controller.abort();
 		};
-	}, [renderer, sessionSignal, updateModelGraphics]);
+	}, [renderer, sessionSignal]);
 
 	const render = useCallback(() => {
 		if (!renderTree || rendererDevice.status.state !== "ready") return;
@@ -261,20 +253,16 @@ function PreviewCanvas({
 				// Keep the previous frame visible while the new render target is waiting.
 				const mount = canvasMountRef.current;
 				const outputCanvas = renderer.getOutputCanvas();
-				if (!signal.aborted && !graphics.aborted && mount) {
-					if (outputCanvas.parentElement !== mount) mount.replaceChildren(outputCanvas);
-					updateModelGraphics(false);
+				if (!signal.aborted && !graphics.aborted && mount && outputCanvas.parentElement !== mount) {
+					mount.replaceChildren(outputCanvas);
 				}
 			})
 			.catch((error) => {
-				if (signal.aborted) return;
-				if (error instanceof ModelGraphicsError) {
-					updateModelGraphics(true);
-				} else if (!(error instanceof GraphicsDeviceError)) {
+				if (!signal.aborted && !(error instanceof GraphicsDeviceError)) {
 					console.error("Preview render failed:", error);
 				}
 			});
-	}, [renderer, renderTree, editor.playback, editor.renderer, editor.timeline, updateModelGraphics]);
+	}, [renderer, renderTree, editor.playback, editor.renderer, editor.timeline]);
 
 	const renderRef = useCommittedRef(render);
 	useEffect(() => {
@@ -295,7 +283,7 @@ function PreviewCanvas({
 			editor.playback.onSeek(scheduler.request),
 			editor.renderer.subscribe(scheduler.request),
 			rendererDevice.subscribe(() => { if (rendererDevice.status.state === "ready") redraw(); }),
-			onModelGraphicsRestored(redraw),
+			modelGraphics.subscribe(() => { if (!modelGraphics.getSnapshot()) redraw(); }),
 		];
 		return () => {
 			schedulerRef.current = null;
@@ -429,14 +417,6 @@ function PreviewCanvas({
 									instances={overlayInstances}
 									plane="over-interaction"
 								/>
-								{modelGraphicsLost && (
-									<div className="absolute bottom-2 z-10 flex items-center gap-2 rounded bg-background px-2 py-1 text-xs">
-										<span role="status">Waiting for 3D graphics to recover.</span>
-										<button type="button" className="underline" onClick={retryModelGraphics}>
-											Retry 3D graphics
-										</button>
-									</div>
-								)}
 							</div>
 						</ContextMenuTrigger>
 						<PreviewContextMenu
