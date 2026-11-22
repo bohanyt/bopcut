@@ -33,16 +33,24 @@ test.each(["usable", "unsupported", "corrupt", "absent"] as const)("video import
 	const closeAudio = mock(() => {});
 	const sample: AudioSample = Object.create(AudioSample.prototype, { close: { value: closeAudio } });
 	const warn = spyOn(toast, "warning");
-	const videoRead = spyOn(VideoSampleSink.prototype, "getSample").mockResolvedValue(frame);
-	const audioRead = spyOn(AudioSampleSink.prototype, "getSample").mockImplementation(async () => {
-		if (audio === "corrupt") throw new Error("Invalid audio packet");
-		return sample;
+	const videoRead = spyOn(VideoSampleSink.prototype, "samples").mockImplementation(async function* () { yield frame; });
+	const returnAudio = mock(() => {});
+	const audioRead = spyOn(AudioSampleSink.prototype, "samples").mockImplementation(async function* () {
+		try {
+			if (audio === "corrupt") throw new Error("Invalid audio packet");
+			yield sample;
+		} finally {
+			returnAudio();
+		}
 	});
 	const stubs = [
+		// A timestamp lookup can return no audio for a valid codec's priming packet.
+		spyOn(AudioSampleSink.prototype, "getSample").mockResolvedValue(null),
 		spyOn(Input.prototype, "getPrimaryVideoTrack").mockResolvedValue(videoTrack),
 		spyOn(Input.prototype, "getPrimaryAudioTrack").mockResolvedValue(audio === "absent" ? null : audioTrack),
 		spyOn(Input.prototype, "computeDuration").mockResolvedValue(4),
 		spyOn(EncodedPacketSink.prototype, "getPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 2, 1)),
+		spyOn(EncodedPacketSink.prototype, "getNextPacket").mockResolvedValue(null),
 		allowStorage(), warn, videoRead, audioRead,
 	];
 	try {
@@ -53,6 +61,7 @@ test.each(["usable", "unsupported", "corrupt", "absent"] as const)("video import
 			expect(videoRead).toHaveBeenCalledWith(2);
 			expect(closeFrame).toHaveBeenCalledTimes(1);
 			expect(closeAudio).toHaveBeenCalledTimes(audio === "usable" ? 1 : 0);
+			expect(returnAudio).toHaveBeenCalledTimes(audio === "usable" || audio === "corrupt" ? 1 : 0);
 			expect(warn).toHaveBeenCalledTimes(audio === "unsupported" || audio === "corrupt" ? 1 : 0);
 		} finally {
 			if (imported) releaseMediaAssetUrls(imported);
@@ -84,14 +93,14 @@ test.each(["application/octet-stream", "video/mp4"])("corrupt video with type %s
 	}
 });
 
-async function videoFile() {
+async function videoFile(timestamps = [0, 1]) {
 	const output = new Output({ format: new Mp4OutputFormat({ fastStart: "in-memory" }), target: new BufferTarget() });
 	const track = new EncodedVideoPacketSource("avc");
 	output.addVideoTrack(track);
 	const data = Uint8Array.from(atob("AAAAAWdkAAqs2V7ARAAAAwAEAAADAMg8SJZYAAAAAWjr48siwAAAAWWIhAAr//72c3wKa22xgQ=="), (byte) => byte.charCodeAt(0));
 	await output.start();
-	for (let i = 0; i < 2; i++) {
-		await track.add(new EncodedPacket(data, "key", i, 1), {
+	for (const [index, timestamp] of timestamps.entries()) {
+		await track.add(new EncodedPacket(data, index === 0 ? "key" : "delta", timestamp, 1), {
 			decoderConfig: { codec: "avc1.64000a", codedWidth: 16, codedHeight: 16 },
 		});
 	}
@@ -100,15 +109,26 @@ async function videoFile() {
 	return output.target.buffer;
 }
 
-test("a truncated MP4 with an intact sample table is rejected before decoding", async () => {
-	const video = await videoFile();
+test.each([false, true])("a truncated MP4 with an intact sample table is rejected (reordered: %p)", async (reordered) => {
+	const video = await videoFile(reordered ? [0, 2, 1] : [0, 1]);
 	const file = new File([video.slice(0, -8)], "truncated.mp4", { type: "video/mp4" });
 	const allow = allowStorage();
 	const canDecode = spyOn(InputVideoTrack.prototype, "canDecode").mockResolvedValue(true);
-	const decode = spyOn(VideoSampleSink.prototype, "getSample").mockResolvedValue(null);
+	const decode = spyOn(VideoSampleSink.prototype, "samples").mockImplementation(async function* () {
+		yield Object.create(VideoSample.prototype, { close: { value: () => {} } });
+	});
 	const input = new Input({ source: new BlobSource(file), formats: [MP4] });
 	try {
-		expect(await input.computeDuration()).toBe(2);
+		expect(await input.computeDuration()).toBe(reordered ? 3 : 2);
+		if (reordered) {
+			const track = await input.getPrimaryVideoTrack();
+			if (!track) throw new Error("Missing video test track");
+			const sink = new EncodedPacketSink(track);
+			const lastPresented = await sink.getPacket(Infinity);
+			if (!lastPresented) throw new Error("Missing last presentation packet");
+			expect(lastPresented.timestamp).toBe(2);
+			await expect(sink.getNextPacket(lastPresented)).rejects.toThrow();
+		}
 		const asset = await processMediaFile({ file, signal: new AbortController().signal });
 		if (asset) releaseMediaAssetUrls(asset);
 		expect(asset).toBeNull();
@@ -135,7 +155,7 @@ test.each(["unsupported", "empty decode"] as const)("valid container with %s pic
 	const stubs = [
 		allowStorage(),
 		spyOn(InputVideoTrack.prototype, "canDecode").mockResolvedValue(failure !== "unsupported"),
-		spyOn(VideoSampleSink.prototype, "getSample").mockResolvedValue(null),
+		spyOn(VideoSampleSink.prototype, "samples").mockImplementation(async function* () {}),
 	];
 	const error = spyOn(toast, "error");
 	try {
@@ -174,17 +194,21 @@ test("an audio-only MP4 cannot be imported as video", async () => {
 
 test("cancelling the video probe disposes the input and closes a late frame", async () => {
 	const file = new File([await videoFile()], "footage.mp4", { type: "video/mp4" });
-	const pending = Promise.withResolvers<VideoSample>();
+	const pending = Promise.withResolvers<IteratorResult<VideoSample, void>>();
 	const reading = Promise.withResolvers<void>();
 	const close = mock(() => {});
+	const closeIterator = mock(async (): Promise<IteratorResult<VideoSample, void>> => ({ done: true, value: undefined }));
 	const dispose = spyOn(Input.prototype, "dispose");
 	const stubs = [
 		allowStorage(), dispose,
 		spyOn(InputVideoTrack.prototype, "canDecode").mockResolvedValue(true),
-		spyOn(VideoSampleSink.prototype, "getSample").mockImplementation(() => {
-			reading.resolve();
-			return pending.promise;
-		}),
+		spyOn(VideoSampleSink.prototype, "samples").mockImplementation(() => Object.assign((async function* () {})(), {
+			next: () => {
+				reading.resolve();
+				return pending.promise;
+			},
+			return: closeIterator,
+		})),
 	];
 	const controller = new AbortController();
 	const importing = processMediaFile({ file, signal: controller.signal });
@@ -193,12 +217,14 @@ test("cancelling the video probe disposes the input and closes a late frame", as
 		controller.abort();
 		expect(await Promise.race([importing, Bun.sleep(0).then(() => "still decoding")])).toBeNull();
 		expect(dispose).toHaveBeenCalledTimes(1);
-		pending.resolve(Object.create(VideoSample.prototype, { close: { value: close } }));
+		expect(closeIterator).toHaveBeenCalledTimes(1);
+		const frame: VideoSample = Object.create(VideoSample.prototype, { close: { value: close } });
+		pending.resolve({ done: false, value: frame });
 		await pending.promise;
 		expect(close).toHaveBeenCalledTimes(1);
 	} finally {
 		controller.abort();
-		pending.resolve(Object.create(VideoSample.prototype, { close: { value: close } }));
+		pending.resolve({ done: true, value: undefined });
 		await importing;
 		for (const stub of stubs) stub.mockRestore();
 	}

@@ -7,7 +7,7 @@ import type { SceneTracks, TScene } from "@/timeline";
 import type { MediaAsset } from "@/media/types";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { renderThumbnailDataUrl } from "./thumbnail";
-import { checkLastPacket, getDecodableVideoTrack, withFirstVideoFrame, withVideoInput } from "./video-probe";
+import { checkPacketTail, getDecodableVideoTrack, withFirstSample, withFirstVideoFrame, withVideoInput } from "./video-probe";
 
 export type VideoFileData = {
 	duration: number;
@@ -33,7 +33,7 @@ export async function readVideoFile({
 		if (!Number.isFinite(duration) || duration <= 0) {
 			throw new Error("The file does not have a finite video duration");
 		}
-		await checkLastPacket(videoTrack);
+		await checkPacketTail(videoTrack, signal);
 		const packetStats = await videoTrack.computePacketStats(100);
 		const { displayWidth: width, displayHeight: height } = videoTrack;
 		const thumbnailUrl = await withFirstVideoFrame(videoTrack, signal, (frame) => {
@@ -69,11 +69,11 @@ async function readVideoAudio(input: Input, signal?: AbortSignal) {
 		if (!await track.canDecode()) return unavailable;
 		const duration = await track.computeDuration();
 		if (!Number.isFinite(duration) || duration <= 0) return unavailable;
-		await checkLastPacket(track);
+		await checkPacketTail(track, signal);
 		const timestamp = await track.getFirstTimestamp();
 		signal?.throwIfAborted();
-		const sample = await new AudioSampleSink(track).getSample(timestamp);
-		sample?.close();
+		// Some codecs consume priming packets before they emit a decoded sample.
+		const sample = await withFirstSample(new AudioSampleSink(track).samples(timestamp), signal, Boolean);
 		return sample ? { duration, unavailable: false } : unavailable;
 	} catch {
 		signal?.throwIfAborted();

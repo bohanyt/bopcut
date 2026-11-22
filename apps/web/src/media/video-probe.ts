@@ -36,11 +36,38 @@ export async function getDecodableVideoTrack(input: Input): Promise<InputVideoTr
 	return track;
 }
 
-/** Check the real packet bytes, since a truncated file can still advertise its full duration. */
-export async function checkLastPacket(track: InputTrack): Promise<void> {
-	const packet = await new EncodedPacketSink(track).getPacket(Infinity);
-	if (!packet?.data.length || packet.data.length !== packet.byteLength) {
-		throw new Error("The track has missing packet data");
+/** Read the end of the encoded stream, including reordered packets after the last presentation timestamp. */
+export async function checkPacketTail(track: InputTrack, signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
+	const sink = new EncodedPacketSink(track);
+	let packet = await sink.getPacket(Infinity);
+	if (!packet) throw new Error("The track has missing packet data");
+	while (packet) {
+		signal?.throwIfAborted();
+		if (!packet.data.length || packet.data.length !== packet.byteLength) {
+			throw new Error("The track has missing packet data");
+		}
+		packet = await sink.getNextPacket(packet);
+	}
+}
+
+export async function withFirstSample<Sample extends { close(): void }, Result>(
+	samples: AsyncGenerator<Sample, void, unknown>,
+	signal: AbortSignal | undefined,
+	use: (sample: Sample | null) => Result,
+): Promise<Result> {
+	try {
+		const first = samples.next().then(({ value }) => {
+			try {
+				signal?.throwIfAborted();
+				return use(value ?? null);
+			} finally {
+				value?.close();
+			}
+		});
+		return await waitWithAbort(first, signal);
+	} finally {
+		await samples.return();
 	}
 }
 
@@ -51,22 +78,16 @@ export async function withFirstVideoFrame<T>(
 ): Promise<T> {
 	const timestamp = await track.getFirstTimestamp();
 	signal?.throwIfAborted();
-	// getSample closes its iterator. This continuation also owns a frame that arrives after abort.
-	const frame = await new VideoSampleSink(track).getSample(timestamp);
-	try {
-		signal?.throwIfAborted();
+	return withFirstSample(new VideoSampleSink(track).samples(timestamp), signal, (frame) => {
 		if (!frame) throw new Error("No video frames could be decoded");
 		return use(frame);
-	} finally {
-		frame?.close();
-	}
+	});
 }
 
 export function verifyVideoFile(file: File, signal: AbortSignal): Promise<void> {
 	return withVideoInput(file, signal, async (input) => {
 		const track = await getDecodableVideoTrack(input);
-		signal.throwIfAborted();
-		await checkLastPacket(track);
+		await checkPacketTail(track, signal);
 		await withFirstVideoFrame(track, signal, () => {});
 	});
 }

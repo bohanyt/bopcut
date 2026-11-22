@@ -318,6 +318,18 @@ test.each([
 		}
 	}, { seekError }));
 
+test("a full-resolution snapshot can omit a failed video seek", () =>
+	withVideo([], async ({ file }) => {
+		const snapshot = rendererAt(1, true);
+		try {
+			const root = new RootNode({ duration: ticks(1) }).add(clip(file));
+			const { textures } = await resolveFrame(snapshot, root, 0);
+			expect(textures).toEqual([]);
+		} finally {
+			snapshot.videoCache.clear();
+		}
+	}, { seekError: new Error("Invalid packet") }));
+
 test("preview keeps drawing other layers and only opens a broken video once", () =>
 	withVideo(constantRate(1), async ({ file }) => {
 		const renderer = rendererAt();

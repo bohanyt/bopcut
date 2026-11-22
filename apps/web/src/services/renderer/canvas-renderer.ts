@@ -23,6 +23,7 @@ export type CanvasRendererParams = {
 	 * Keep video textures at source resolution for exports, snapshots, and thumbnails.
 	 */
 	exactFrames?: boolean;
+	strictVideoDecoding?: boolean;
 	/** Export reports source decode failures in its missing-media result. */
 	onMediaFailure?: (mediaId: string, error: unknown) => void;
 };
@@ -40,12 +41,14 @@ export class CanvasRenderer {
 	private outputCanvas: HTMLCanvasElement;
 
 	readonly exactFrames: boolean;
+	readonly strictVideoDecoding: boolean;
 	readonly onMediaFailure?: CanvasRendererParams["onMediaFailure"];
 	readonly failedMediaIds = new Set<string>();
 	readonly videoCache = new VideoCache();
 
-	constructor({ width, height, fps, renderScale = 1, exactFrames = false, onMediaFailure }: CanvasRendererParams) {
+	constructor({ width, height, fps, renderScale = 1, exactFrames = false, strictVideoDecoding = false, onMediaFailure }: CanvasRendererParams) {
 		this.exactFrames = exactFrames;
+		this.strictVideoDecoding = strictVideoDecoding;
 		this.onMediaFailure = onMediaFailure;
 		this.width = width;
 		this.height = height;

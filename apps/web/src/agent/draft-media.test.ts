@@ -174,7 +174,10 @@ describe("draft imports stay private until commit", () => {
 			spyOn(Input.prototype, "getPrimaryVideoTrack").mockResolvedValue(videoTrack),
 			spyOn(Input.prototype, "getPrimaryAudioTrack").mockResolvedValue(audioTrack),
 			spyOn(EncodedPacketSink.prototype, "getPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 0, 2)),
-			spyOn(VideoSampleSink.prototype, "getSample").mockResolvedValue(Object.create(VideoSample.prototype, { close: { value: close } })),
+			spyOn(EncodedPacketSink.prototype, "getNextPacket").mockResolvedValue(null),
+			spyOn(VideoSampleSink.prototype, "samples").mockImplementation(async function* () {
+				yield Object.create(VideoSample.prototype, { close: { value: close } });
+			}),
 		];
 		const fetchBackend = fetch;
 		globalThis.fetch = (async (url, init) => {

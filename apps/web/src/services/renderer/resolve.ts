@@ -362,7 +362,7 @@ function readVideoFrame(
 		file,
 		time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
 		getScale: context.renderer.exactFrames ? undefined : getScale,
-		throwOnSeekError: context.renderer.exactFrames,
+		throwOnSeekError: context.renderer.strictVideoDecoding,
 		signal: context.signal,
 	}));
 }
