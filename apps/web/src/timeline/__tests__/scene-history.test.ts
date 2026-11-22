@@ -298,11 +298,13 @@ test("an animation duration drag previews every change and commits one undo entr
 });
 
 describe("preview gesture history boundaries", () => {
-	for (const boundary of ["undo", "redo", "track replacement", "scene-list replacement"] as const) {
-		test(`a held canvas drag cannot overwrite ${boundary}`, () => {
+	for (const boundary of ["undo", "redo", "track replacement", "scene-list replacement", "scene switch", "scene initialization"] as const) {
+		test(`a held canvas drag cannot overwrite ${boundary}`, async () => {
 			const { editor, first, main, tracks } = setupSplitHistory();
 			editor.timeline.updateElements({ updates: [{ ...first, patch: { params: { opacity: 0.4 } } }] });
 			if (boundary === "redo") editor.command.undo();
+			const destination = { ...editor.scenes.getActiveScene(), id: "next", isMain: false };
+			editor.scenes.setScenes({ scenes: [...editor.scenes.getScenes(), destination] });
 			const controller = new PreviewInteractionController({
 				depsRef: {
 					current: {
@@ -358,7 +360,9 @@ describe("preview gesture history boundaries", () => {
 				if (boundary === "undo") editor.command.undo();
 				else if (boundary === "redo") editor.command.redo();
 				else if (boundary === "track replacement") editor.timeline.updateTracks(replacement);
-				else editor.scenes.setScenes({ scenes: [{ ...editor.scenes.getActiveScene(), tracks: replacement }] });
+				else if (boundary === "scene-list replacement") editor.scenes.setScenes({ scenes: [{ ...editor.scenes.getActiveScene(), tracks: replacement }] });
+				else if (boundary === "scene switch") await editor.scenes.switchToScene({ sceneId: destination.id });
+				else editor.scenes.initializeScenes({ scenes: editor.scenes.getScenes(), currentSceneId: destination.id });
 				const after = tracks();
 				expect(captured).toBe(false);
 				controller.onPointerMove(pointer(1040, "pointermove"));
@@ -948,6 +952,81 @@ describe("commands that remove clips", () => {
 });
 
 describe("scene transitions", () => {
+	for (const boundary of ["initialize with another scene", "initialize with the same scene ID", "clear"] as const) {
+		test(`a pending preview is retired when scenes ${boundary}`, () => {
+			const { editor, first, tracks } = setupSplitHistory();
+			const source = editor.scenes.getActiveScene();
+			const destination = {
+				...source,
+				id: boundary === "initialize with another scene" ? "next" : source.id,
+				tracks: { ...source.tracks, main: { ...source.tracks.main, elements: [] } },
+			};
+			let canceled = false;
+			editor.timeline.beginPreviewGesture(() => { canceled = true; });
+			editor.timeline.previewElements({ updates: [{ ...first, updates: { duration: t(1) } }] });
+			expect(editor.timeline.getPreviewTracks()).not.toBe(source.tracks);
+
+			if (boundary === "clear") {
+				editor.scenes.clearScenes();
+				expect(editor.timeline.getPreviewTracks()).toBeNull();
+				editor.scenes.initializeScenes({ scenes: [source] });
+			} else {
+				editor.scenes.initializeScenes({ scenes: [destination] });
+			}
+
+			expect(canceled).toBe(true);
+			expect(editor.timeline.isPreviewActive()).toBe(false);
+			editor.timeline.commitPreview();
+			expect(tracks()).toBe(boundary === "clear" ? source.tracks : destination.tracks);
+			expect(editor.command.canUndo()).toBe(false);
+		});
+	}
+
+	test("a preview update received with no scene does not carry over to the next scene", () => {
+		const { editor, first } = setupSplitHistory();
+		const source = editor.scenes.getActiveScene();
+		editor.scenes.clearScenes();
+		editor.timeline.previewElements({ updates: [{ ...first, updates: { duration: t(1) } }] });
+		expect(editor.timeline.isPreviewActive()).toBe(false);
+		editor.scenes.initializeScenes({ scenes: [source] });
+		editor.timeline.commitPreview();
+		expect(editor.scenes.getActiveScene().tracks).toBe(source.tracks);
+		expect(editor.command.canUndo()).toBe(false);
+	});
+
+	test("switching scenes discards the preview and publishes the restored destination", async () => {
+		const { editor, tracks, first } = setupSplitHistory();
+		const source = tracks();
+		const destination = { ...editor.scenes.getActiveScene(), id: "next", isMain: false };
+		editor.scenes.setScenes({ scenes: [...editor.scenes.getScenes(), destination] });
+		await editor.scenes.switchToScene({ sceneId: destination.id });
+		editor.playback.seek({ time: t(3) });
+		await editor.scenes.switchToScene({ sceneId: "main" });
+		editor.timeline.previewElements({ updates: [{ ...first, updates: { duration: t(1) } }] });
+		expect(editor.timeline.getPreviewTracks()?.main.elements[0].duration).toBe(t(1));
+
+		const publications: Array<{ id: string; time: number }> = [];
+		const observe = () => publications.push({
+			id: editor.scenes.getActiveScene().id,
+			time: editor.playback.getCurrentTime(),
+		});
+		const unsubscribeTimeline = editor.timeline.subscribe(observe);
+		const unsubscribeScenes = editor.scenes.subscribe(observe);
+		try {
+			await editor.scenes.switchToScene({ sceneId: destination.id });
+			editor.timeline.commitPreview();
+			expect(publications).toEqual([{ id: destination.id, time: t(3) }]);
+		} finally {
+			unsubscribeTimeline();
+			unsubscribeScenes();
+		}
+		expect(tracks()).toBe(destination.tracks);
+		expect(editor.timeline.isPreviewActive()).toBe(false);
+		expect(editor.command.canUndo()).toBe(false);
+		await editor.scenes.switchToScene({ sceneId: "main" });
+		expect(editor.timeline.getPreviewTracks()).toBe(source);
+	});
+
 	async function sceneWithTitle(editor: ReturnType<typeof setup>) {
 		const sceneId = await editor.scenes.createScene({ name: "A", isMain: false });
 		await editor.scenes.switchToScene({ sceneId });

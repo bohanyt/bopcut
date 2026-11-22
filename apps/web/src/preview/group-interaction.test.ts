@@ -62,20 +62,21 @@ function fixture() {
 			selected = [];
 		},
 	};
+	const captured = new Set<number>();
 	const target = {
 		ownerDocument: { activeElement: null },
-		setPointerCapture() {},
-		hasPointerCapture: () => true,
-		releasePointerCapture() {},
+		setPointerCapture: (pointerId: number) => { captured.add(pointerId); },
+		hasPointerCapture: (pointerId: number) => captured.has(pointerId),
+		releasePointerCapture: (pointerId: number) => { captured.delete(pointerId); },
 	};
-	const event = (x: number, y: number) =>
+	const event = (x: number, y: number, pointerId = 1, type = "pointerup") =>
 		({
 			clientX: x,
 			clientY: y,
 			currentTarget: target,
-			pointerId: 1,
+			pointerId,
 			button: 0,
-			type: "pointerup",
+			type,
 			stopPropagation() {},
 		}) as any;
 	return {
@@ -84,23 +85,82 @@ function fixture() {
 		timeline,
 		selection,
 		event,
+		captured,
 		updates: () => updates,
 		commits: () => commits,
 	};
 }
+
+function createCanvasController(f: ReturnType<typeof fixture>) {
+	return new PreviewInteractionController({
+		depsRef: {
+			current: {
+				...f,
+				input: { isShiftHeld: () => true },
+				playback: { getIsPlaying: () => false, subscribe: () => () => {} },
+				preview: { isMaskMode: () => false },
+			} as any,
+		},
+	});
+}
+
+describe("preview canvas pointer ownership", () => {
+	test("a second pointer cannot start, move or finish the captured drag", () => {
+		const f = fixture();
+		const controller = createCanvasController(f);
+		controller.onPointerDown(f.event(400, 500));
+		controller.onPointerDown(f.event(600, 500, 2));
+		controller.onPointerMove(f.event(640, 520, 2));
+		expect(f.captured).toEqual(new Set([1]));
+		expect(f.updates()).toEqual([]);
+
+		controller.onPointerMove(f.event(430, 520));
+		const preview = f.updates();
+		expect(preview).toHaveLength(2);
+		controller.onPointerMove(f.event(650, 550, 2));
+		for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+			controller.onPointerUp(f.event(650, 550, 2, type));
+		}
+		expect(f.updates()).toBe(preview);
+		expect(f.captured).toEqual(new Set([1]));
+		expect(f.commits()).toBe(0);
+
+		controller.onPointerUp(f.event(430, 520));
+		expect(f.captured.size).toBe(0);
+		expect(f.commits()).toBe(1);
+		controller.destroy();
+	});
+
+	for (const type of ["pointercancel", "lostpointercapture"]) {
+		test(`${type} retires a canvas drag and allows another pointer to start`, () => {
+			const f = fixture();
+			const controller = createCanvasController(f);
+			controller.onPointerDown(f.event(400, 500));
+			controller.onPointerMove(f.event(430, 520));
+			expect(f.updates()).toHaveLength(2);
+			if (type === "lostpointercapture") f.captured.delete(1);
+			controller.onPointerUp(f.event(430, 520, 1, type));
+
+			const preview = f.updates();
+			controller.onPointerMove(f.event(450, 530));
+			controller.onPointerUp(f.event(450, 530));
+			expect(f.updates()).toBe(preview);
+			expect(f.captured.size).toBe(0);
+			expect(f.commits()).toBe(0);
+
+			controller.onPointerDown(f.event(400, 500, 2));
+			controller.onPointerMove(f.event(430, 520, 2));
+			controller.onPointerUp(f.event(430, 520, 2));
+			expect(f.commits()).toBe(1);
+			controller.destroy();
+		});
+	}
+});
+
 describe("preview groups", () => {
 	test("selects and moves members together, double-click isolates one", () => {
 		const f = fixture();
-		const c = new PreviewInteractionController({
-			depsRef: {
-				current: {
-					...f,
-					input: { isShiftHeld: () => true },
-					playback: { getIsPlaying: () => false, subscribe: () => () => {} },
-					preview: { isMaskMode: () => false },
-				} as any,
-			},
-		});
+		const c = createCanvasController(f);
 		c.onPointerDown(f.event(400, 500));
 		c.onPointerUp(f.event(400, 500));
 		expect(f.selection.getSelected().map((r) => r.elementId)).toEqual([

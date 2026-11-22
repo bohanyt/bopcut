@@ -674,6 +674,55 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(backend.state.results[0]).toMatchObject({ applied: true });
 	});
 
+	for (const transition of ["switch", "initialize"] as const) {
+		test(`a draft waiting for a preview wakes on scene ${transition}`, async () => {
+			const editor = setup();
+			addOtherRoot(editor);
+			const destination = editor.scenes.getScenes().find(({ id }) => id === "other")!;
+			const slow = gate();
+			const waiting = gate();
+			const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+			restore = backend.restore;
+			const subscribe = editor.timeline.subscribe.bind(editor.timeline);
+			const subscription = spyOn(editor.timeline, "subscribe").mockImplementation((listener) => {
+				const unsubscribe = subscribe(listener);
+				waiting.open();
+				return unsubscribe;
+			});
+			const run = applyDraft(draft([
+				{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") },
+			]));
+			try {
+				// Let the draft start importing, then stage a user edit while the file is in flight.
+				await Bun.sleep(5);
+				editor.timeline.previewElements({
+					updates: [{ trackId: "t-main", elementId: "old", updates: { startTime: T(1) } }],
+				});
+				slow.open();
+				await Promise.race([waiting.promise, run]);
+				expect(backend.state.results).toEqual([]);
+
+				if (transition === "switch") {
+					await editor.scenes.switchToScene({ sceneId: destination.id });
+				} else {
+					editor.scenes.initializeScenes({ scenes: editor.scenes.getScenes(), currentSceneId: destination.id });
+				}
+				expect(editor.timeline.isPreviewActive()).toBe(false);
+				const finished = await Promise.race([run.then(() => true), Bun.sleep(200).then(() => false)]);
+				expect(finished).toBe(true);
+				expect(backend.state.results[0]).toMatchObject({
+					applied: false, error: expect.stringContaining("another scene"),
+				});
+				expect(editor.scenes.getActiveScene().tracks).toBe(destination.tracks);
+			} finally {
+				subscription.mockRestore();
+				slow.open();
+				editor.timeline.discardPreview();
+				await run;
+			}
+		});
+	}
+
 	test("another root scene opened while the draft loads: nothing applies to it", async () => {
 		const editor = setup();
 		const other = scene("other", { overlay: [], main: { id: "t-other", name: "Main", type: "video", muted: false, hidden: false, elements: [] }, audio: [] });

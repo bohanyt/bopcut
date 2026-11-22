@@ -783,6 +783,9 @@ export class TimelineManager {
 			updates: Partial<TimelineElement>;
 		}[];
 	}): void {
+		const committedTracks = this.editor.scenes.getActiveSceneOrNull()?.tracks;
+		if (!committedTracks) return;
+
 		let changedOverlayCount = 0;
 		for (const { elementId, updates: elementUpdates } of updates) {
 			const existingOverlay = this.previewOverlay.get(elementId);
@@ -800,10 +803,6 @@ export class TimelineManager {
 				} as Partial<TimelineElement>;
 				this.previewOverlay.set(elementId, mergedOverlay);
 			}
-		}
-		const committedTracks = this.editor.scenes.getActiveSceneOrNull()?.tracks;
-		if (!committedTracks) {
-			return;
 		}
 		if (changedOverlayCount === 0) {
 			return;
@@ -830,11 +829,11 @@ export class TimelineManager {
 		this.updateTracks(afterTracks);
 	}
 
-	discardPreview(): void {
+	discardPreview({ notify = true }: { notify?: boolean } = {}): void {
 		if (this.previewOverlay.size === 0) return;
 		this.previewOverlay.clear();
 		this.previewTracks = null;
-		this.notify();
+		if (notify) this.notify();
 	}
 
 	private applyPreviewOverlay(tracks: SceneTracks): SceneTracks {
