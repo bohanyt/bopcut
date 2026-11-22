@@ -15,14 +15,14 @@ export function LanguageSwitch() {
 	const { locale, setLocale, t } = useI18n();
 
 	return (
-		<DropdownMenu>
+		<DropdownMenu modal={false}>
 			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="sm" aria-label={t("language.label")} title={t("language.label")}>
+				<Button variant="ghost" size="sm" data-language-switch aria-label={t("language.label")} title={t("language.label")}>
 					<Languages className="size-4" />
 					{t(locale === "en" ? "language.enShort" : "language.idShort")}
 				</Button>
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end" className="z-100">
+			<DropdownMenuContent data-language-switch align="end" className="z-100">
 				<DropdownMenuRadioGroup
 					value={locale}
 					onValueChange={(value) => {

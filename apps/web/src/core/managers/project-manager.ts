@@ -8,6 +8,7 @@ import type {
 	TTimelineViewState,
 } from "@/project/types";
 import type { ExportOptions, ExportResult, ExportState } from "@/export";
+import { getExportFailure } from "@/export/failure";
 import { storageService } from "@/services/storage/service";
 import { toast } from "sonner";
 import { generateUUID } from "@/utils/id";
@@ -370,7 +371,7 @@ export class ProjectManager {
 				});
 			}
 		} catch (error) {
-			result = { success: false, error: error instanceof Error ? error.message : "Unknown export error" };
+			result = getExportFailure(error);
 		} finally {
 			this.exportController = null;
 		}

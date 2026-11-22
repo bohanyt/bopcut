@@ -1,6 +1,7 @@
 import type { EditorCore } from "@/core";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import type { ExportOptions, ExportResult } from "@/export";
+import { getExportFailure } from "@/export/failure";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { SceneExporter } from "@/services/renderer/scene-exporter";
 import { buildScene, collectVisibleMedia } from "@/services/renderer/scene-builder";
@@ -385,10 +386,7 @@ export class RendererManager {
 			if (callerSignal.aborted) return { success: false, cancelled: true };
 			if (mediaFailure.signal.aborted) return unavailableMedia([...failures.values()]);
 			console.error("Export failed:", error);
-			return {
-				success: false,
-				error: error instanceof Error ? error.message : "Unknown export error",
-			};
+			return getExportFailure(error);
 		} finally {
 			await audioBlocks?.return();
 		}

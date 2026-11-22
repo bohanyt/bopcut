@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { en } from "./en";
 import { id } from "./id";
 import { createTranslator, placeholderPattern, type MessageKey } from "./translate";
+import { getExportFailure } from "@/export/failure";
+import { GraphicsDeviceError, type GraphicsIssueKind } from "@/services/renderer/device-lifecycle";
 import { getExportErrorMessage } from "./export-messages";
 
 function placeholders(message: string): string[] {
@@ -35,4 +37,19 @@ test("formats an export issue for users while preserving the agent diagnostic", 
 test("preserves the technical details of unexpected export errors", () => {
 	expect(getExportErrorMessage({ success: false, error: "encoder refused the configuration" }, createTranslator("id")))
 		.toBe("encoder refused the configuration");
+});
+
+const graphicsErrors: [GraphicsIssueKind, string][] = [
+	["graphicsLost", "Koneksi ke perangkat grafis terputus."],
+	["graphicsModel", "Grafis 3D tidak tersedia."],
+	["graphicsNotReady", "Grafis sedang dimulai atau dipulihkan."],
+	["graphicsSurface", "Permukaan grafis sementara tidak tersedia."],
+	["graphicsUnavailable", "Preview dan ekspor tidak tersedia."],
+];
+
+test.each(graphicsErrors)("translates %s and preserves the diagnostic", (kind, message) => {
+	const diagnostic = "Graphics diagnostic";
+	const result = getExportFailure(new GraphicsDeviceError(kind, diagnostic));
+	expect(getExportErrorMessage(result, createTranslator("id"))).toStartWith(message);
+	expect(result.error).toBe(diagnostic);
 });

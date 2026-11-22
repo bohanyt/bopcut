@@ -1,3 +1,4 @@
+import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { ALL_FORMATS, AudioBufferSource, BufferSource, CanvasSource, EncodedPacket, EncodedPacketSink, EncodedVideoPacketSource, Input, Output } from "mediabunny";
 import type { CompoundElement, LibraryAudioElement, TScene, UploadAudioElement, VideoElement } from "@/timeline";
@@ -1104,8 +1105,12 @@ describe("the export poller", () => {
 			const exporting = editor.renderer.exportProject({ options });
 			try {
 				await Promise.race([entered.promise, exporting.then(() => { throw new Error("Export did not reach encoding"); })]);
-				generation.abort(new Error("Graphics device was lost"));
-				expect(await exporting).toEqual({ success: false, error: "Graphics device was lost" });
+				generation.abort(new GraphicsDeviceError("graphicsLost", "Graphics device was lost"));
+				expect(await exporting).toEqual({
+					success: false,
+					error: "Graphics device was lost",
+					issue: { kind: "graphicsLost" },
+				});
 				expect(cancel).toHaveBeenCalledTimes(1);
 				expect(finalize).not.toHaveBeenCalled();
 				expect(editor.renderer.isExportRunning()).toBe(false);

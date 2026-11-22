@@ -11,7 +11,11 @@ let contextLost = false;
 let generation = 0;
 const graphicsListeners = new Set<() => void>();
 
-export class ModelGraphicsError extends GraphicsDeviceError {}
+export class ModelGraphicsError extends GraphicsDeviceError {
+	constructor(message: string, options?: ErrorOptions) {
+		super("graphicsModel", message, options);
+	}
+}
 
 export const modelGraphics = {
 	getSnapshot: () => contextLost,

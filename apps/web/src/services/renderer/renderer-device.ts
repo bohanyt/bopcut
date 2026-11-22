@@ -10,7 +10,11 @@ let notifyLoss: (() => void) | undefined;
 const noLimits: { maxTextureDimension?: number; maxSurfaceDimension?: number } = {};
 let limits = noLimits;
 
-export class RecoverableSurfaceError extends GraphicsDeviceError {}
+export class RecoverableSurfaceError extends GraphicsDeviceError {
+	constructor(message: string, options?: ErrorOptions) {
+		super("graphicsSurface", message, options);
+	}
+}
 
 function disposeGpu() {
 	detachContextListener?.();

@@ -176,7 +176,15 @@ function ExportPopover({
 	};
 
 	return (
-		<PopoverContent className="bg-background flex w-80 max-w-[calc(100vw-1rem)] flex-col p-0">
+		<PopoverContent
+			className="bg-background flex w-80 max-w-[calc(100vw-1rem)] flex-col p-0"
+			onInteractOutside={(event) => {
+				// Switching languages leaves export controls and in-flight work open.
+				if (event.target instanceof Element && event.target.closest("[data-language-switch]")) {
+					event.preventDefault();
+				}
+			}}
+		>
 			{exportResult && !exportResult.success ? (
 				<ExportError
 					result={exportResult}
