@@ -20,7 +20,9 @@ bun run agent notes
 bun run agent prefs
 ```
 
-`status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. `prefs` reports the contents of `AGENT_PREFS/PREFERENCES.md` and `AGENT_WORKSPACE/PREFERENCES.md` and marks each missing file.
+`status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. `prefs` reports the contents of `AGENT_PREFS/PREFERENCES.md` and `AGENT_WORKSPACE/PREFERENCES.md` and marks each missing file. The editor server reads these paths, so set `AGENT_PREFS` in its environment (`apps/web/.env.local`), not in the shell that runs the command. Reads stay inside their folders: a link that leads out of one is refused.
+
+The agent routes trust every request that reaches the server, so keep the server on `127.0.0.1` (as in *Running* above) and never expose its port to a network.
 
 Status and notes default to the last project that synced. Use `--project-id ID` to choose a project or filter the selection. Use `--url` or `BOPENCUT_URL` to change the server origin from `http://127.0.0.1:3000`. The command writes JSON to stdout and errors to stderr. Use `--timeout SECONDS` to change the 30-second request limit.
 

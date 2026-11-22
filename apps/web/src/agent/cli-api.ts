@@ -6,14 +6,34 @@ import { isForeignOrigin } from "./origin";
 type Snapshot = { projectId?: string; notes?: unknown; syncedAt?: string };
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
 
-async function preference(root?: string) {
-	if (!root) return { missing: true, content: null };
-	try { return { missing: false, content: await fs.readFile(path.join(root, "PREFERENCES.md"), "utf8") }; }
-	catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		return { missing: true, content: null };
+/**
+ * The real path of a regular file under `root`, or null when either is missing. A link that leads out
+ * of the root, or anything that is not a regular file, is refused, so these reads stay in their folder.
+ */
+async function fileInside(root: string, ...parts: string[]): Promise<string | null> {
+	try {
+		const base = await fs.realpath(root);
+		const file = await fs.realpath(path.join(base, ...parts));
+		const relative = path.relative(base, file);
+		if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !(await fs.stat(file)).isFile()) {
+			throw new Error("not a file inside its folder");
+		}
+		return file;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
 	}
 }
+
+async function preference(root?: string) {
+	const file = root ? await fileInside(root, "PREFERENCES.md") : null;
+	return file ? { missing: false, content: await fs.readFile(file, "utf8") } : { missing: true, content: null };
+}
+
+const readInside = async (root: string, ...parts: string[]) => {
+	const file = await fileInside(root, ...parts);
+	return file ? readJson(file) : null;
+};
 
 export async function handleCli(req: Request, action: string, workspace: string): Promise<Response> {
 	const url = new URL(req.url);
@@ -27,11 +47,11 @@ export async function handleCli(req: Request, action: string, workspace: string)
 	try {
 		if (action === "prefs") return json({ general: await preference(process.env.AGENT_PREFS), workspace: await preference(workspace) });
 		if (action === "selection") {
-			const selected = await readJson(path.join(workspace, "selection.json"));
+			const selected = await readInside(workspace, "selection.json");
 			return json({ selection: !requested || requested === selected?.projectId ? selected : null });
 		}
 		if (action === "status" || action === "notes") {
-			const latest: Snapshot | null = requested ? null : await readJson(path.join(workspace, "project.json"));
+			const latest: Snapshot | null = await readInside(workspace, "project.json");
 			const projectId = requested ?? latest?.projectId;
 			if (!projectId || !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) {
 				return json({ error: "No project has synced yet. Open a project in the editor or pass --project-id." }, 404);
@@ -42,8 +62,8 @@ export async function handleCli(req: Request, action: string, workspace: string)
 				return json({ error: "Project was not found on disk. Open it in the editor or pass a valid --project-id." }, 404);
 			}
 			const key = projectId.replaceAll("_", "");
-			const byProject: Snapshot | null = await readJson(path.join(workspace, "sync", key + ".json"));
-			const snapshot = byProject?.projectId === projectId ? byProject : latest;
+			const byProject: Snapshot | null = await readInside(workspace, "sync", key + ".json");
+			const snapshot = byProject?.projectId === projectId ? byProject : latest?.projectId === projectId ? latest : null;
 			return json(action === "status"
 				? { projectId, snapshot }
 				: { projectId, notes: snapshot?.notes ?? [], syncedAt: snapshot?.syncedAt ?? null });
