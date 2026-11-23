@@ -5,6 +5,7 @@ import { atomicWrite, readJson } from "@/services/storage/server/files";
 import { CLAIM_MS, handleExportFile } from "./export-server";
 import { parseExportRequest } from "./export";
 import { parseFrameInput } from "./render-input";
+import { renderTimeoutMessage, waitingForRender } from "./render-timeout";
 import { isForeignOrigin } from "./origin";
 import { profileDirectory, recordOutput, recoverRenderJobs, removeRenderJob, renderJobDir, rollbackOutput } from "./render-output";
 
@@ -23,6 +24,7 @@ type Job = {
 	lease: AbortController;
 	writes: Set<Promise<Response>>;
 	send(event: object): void; finish(result: object, signal: AbortSignal): Promise<void>;
+	reportStage(stage: string, sequence?: number): void;
 	heartbeat(): void; abandon(token: string): void;
 	awaitWatch(): void; watchRegistered(): void;
 };
@@ -92,6 +94,8 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		let expiry: ReturnType<typeof setTimeout>;
 		let registration: ReturnType<typeof setTimeout>;
 		let deadline: ReturnType<typeof setTimeout>;
+		let stage: string;
+		let stageSequence = 0;
 		let stream: ReadableStreamDefaultController<Uint8Array>;
 		let cleanup: Promise<void> | undefined;
 		const close = () => {
@@ -127,6 +131,22 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			framesPromoted: false,
 			send(event) {
 				if (!closed) stream.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
+			},
+			reportStage(next, sequence) {
+				if (closed) return;
+				// The worker can start a later phase before an earlier report arrives.
+				if (sequence !== undefined) {
+					if (!Number.isSafeInteger(sequence) || sequence <= stageSequence) return;
+					stageSequence = sequence;
+				}
+				if (next === stage) return;
+				stage = next;
+				clearTimeout(deadline);
+				deadline = setTimeout(() => {
+					job.send({ result: { rev, projectId, error: renderTimeoutMessage(timeoutMs, stage) } });
+					close();
+				}, timeoutMs);
+				job.send({ stage });
 			},
 			async finish(result, signal) {
 				await atomicWrite(path.join(scratch, `${kind}-result.json`), JSON.stringify(result, null, 1), signal);
@@ -166,6 +186,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 					await fs.rm(path.join(scratch, "frames"), { recursive: true, force: true, maxRetries: 3 });
 					job.owner = undefined;
 					job.lease = new AbortController();
+					stageSequence = 0;
 					await offer();
 				}).catch(() => close());
 			},
@@ -174,10 +195,9 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		const body = new ReadableStream<Uint8Array>({
 			start(output) {
 				stream = output;
-				job.send({ stage: "waiting for a tab" });
+				job.reportStage(waitingForRender);
 				const recentlySeen = Date.now() - (presence.get(projectId) ?? 0) < presenceMs;
 				handoff = setTimeout(() => void offer(), recentlySeen ? seen : grace);
-				deadline = setTimeout(close, timeoutMs + 1000);
 				req.signal.addEventListener("abort", close, { once: true });
 				if (req.signal.aborted) close();
 			},
@@ -217,7 +237,7 @@ export async function renderWorker(req: Request, workspace: string) {
 		if (!job.offered || job.owner || url.searchParams.get("key") !== job.launchKey) return json(null, { status: 404 });
 		job.owner = "hidden";
 		job.awaitWatch();
-		job.send({ stage: "loading project" });
+		job.reportStage("loading project");
 		return json(job.request, { headers: { [tokenHeader]: job.token, "x-bopencut-render-kind": job.kind, "Cache-Control": "no-store" } });
 	}
 	if (req.headers.get(tokenHeader) !== job.token || !job.owner || job.finishing || leaseSignal.aborted) return json(null, { status: 409 });
@@ -230,6 +250,8 @@ export async function renderWorker(req: Request, workspace: string) {
 async function publish(job: Job, req: Request, url: URL, workspace: string, signal: AbortSignal) {
 	const action = url.searchParams.get("action");
 	const body = () => requestBody(req, signal);
+	const sequence = req.headers.get("x-bopencut-render-stage-sequence");
+	const reportStage = (stage: string) => job.reportStage(stage, sequence === null ? undefined : Number(sequence));
 	try {
 		if (action === "failure" && job.owner === "hidden") {
 			const { error } = await body().json();
@@ -239,9 +261,15 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 			}) });
 			return json({ ok: true });
 		}
-		if (action === "stage" && job.owner === "hidden") {
+		if (action === "stage") {
 			const { stage } = await body().json();
-			if (stage === "loading media" || stage === "waiting for graphics") job.send({ stage });
+			signal.throwIfAborted();
+			if (job.finishing) return json(null, { status: 409 });
+			const startup = job.owner === "hidden" && (stage === "loading media" || stage === "waiting for graphics");
+			const valid = typeof stage === "string" && (job.kind === "export"
+				? stage === "mixing audio" || stage === "starting encoding" || stage === "finalizing video" || /^checking video \d{1,12}\/\d{1,12}$/.test(stage)
+				: /^rendering frame \d{1,3}\/\d{1,3}$/.test(stage));
+			if (startup || valid) reportStage(stage);
 			return json({ ok: true });
 		}
 		if (job.kind === "export" && action === "export-result") {
@@ -250,7 +278,11 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 			if (job.finishing || result.rev !== job.rev || result.projectId !== job.projectId) return json(null, { status: 409 });
 			if (result.status === "exporting") {
 				if (job.owner !== "hidden") job.heartbeat();
-				job.send({ stage: `encoding ${Math.round(Number(result.progress) * 100)}%` });
+				const percent = Math.round(Number(result.progress) * 100);
+				if (percent >= 0 && percent <= 100) {
+					const frame = Number.isSafeInteger(result.frame) && result.frame > 0 ? ` (frame ${result.frame})` : "";
+					reportStage(`encoding ${percent}%${frame}`);
+				}
 			} else if (result.status === "release" && job.owner !== "hidden") {
 				job.abandon(job.token);
 			} else if (result.status === "error") {
@@ -260,13 +292,16 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 		}
 		if (job.kind === "export" && action === "export-file" && url.searchParams.get("rev") === job.rev && url.searchParams.get("projectId") === job.projectId) {
 			job.finishing = true;
-			job.send({ stage: "encoding 100%" });
-			job.send({ stage: "saving" });
+			reportStage("uploading video");
 			try {
 				await fs.mkdir(job.scratch, { recursive: true });
 				return await handleExportFile(req, workspace, {
 					signal, temp: path.join(job.scratch, "video.part"),
-					beforePublish: (target, source) => recordOutput(workspace, job.scratch, target, source),
+					onUpload: (bytes) => job.reportStage(`uploading video (${bytes} bytes)`),
+					beforePublish: (target, source) => {
+						job.reportStage("saving video");
+						return recordOutput(workspace, job.scratch, target, source);
+					},
 					finish: (result) => job.finish(result, signal),
 				});
 			} catch (error) {
@@ -284,7 +319,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 				!(image instanceof File) || image.type !== "image/jpeg" || form.has("variant")) return json({ error: "Invalid frame" }, { status: 400 });
 			signal.throwIfAborted();
 			if (job.owner !== "hidden") job.heartbeat();
-			job.send({ stage: "saving" });
+			reportStage("saving");
 			await atomicWrite(path.join(job.scratch, "frames", `${time}.jpg`), new Uint8Array(await image.arrayBuffer()), signal);
 			return json({ file: `frames/${job.rev}/${time}.jpg` });
 		}

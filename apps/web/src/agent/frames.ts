@@ -66,7 +66,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			if (request.rev === pendingCancellation.rev) return await postCancellation(pendingCancellation);
 			pendingCancellation = null;
 		}
-		const { request: send, signal: jobSignal } = transport ?? renderTransport(response);
+		const { request: send, signal: jobSignal, reportStage } = transport ?? renderTransport(response);
 		const signal = jobSignal ? AbortSignal.any([session, jobSignal]) : session;
 		const elements = jobSignal ? request.elements : undefined;
 		if (!elements && (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0))) return;
@@ -147,10 +147,11 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const compared: string[] = [];
 		// A time a state cannot show (outside its timeline, or an empty one) is reported; the others go on.
 		const errors: { time: number; variant?: string; error: string }[] = [];
-		for (const time of times) {
+		for (const [index, time] of times.entries()) {
 			for (const [state, variant] of passes) {
 				if (signal.aborted) return await cancel();
 				try {
+					reportStage?.(`rendering frame ${index + 1}/${times.length}`);
 					const error = missing(state);
 					if (error) throw new Error(error);
 					const before = editor.media.getAssets();

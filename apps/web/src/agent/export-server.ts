@@ -98,7 +98,7 @@ export async function handleExportResult(req: Request, workspace: string): Promi
 
 /** POST export-file: saves the video, then writes the final answer with it (one request, so neither is lost). */
 export async function handleExportFile(req: Request, workspace: string, job?: {
-	signal: AbortSignal; temp: string; beforePublish(file: string, source: string): Promise<void>; finish(result: Result): Promise<void>;
+	signal: AbortSignal; temp: string; onUpload(bytes: number): void; beforePublish(file: string, source: string): Promise<void>; finish(result: Result): Promise<void>;
 }): Promise<Response> {
 	const query = new URL(req.url).searchParams;
 	const rev = query.get("rev") ?? "";
@@ -112,7 +112,7 @@ export async function handleExportFile(req: Request, workspace: string, job?: {
 	if (Number(req.headers.get("content-length") ?? 0) > MAX_EXPORT_BYTES) return Response.json({ error: "Export too large" }, { status: 413 });
 	// Not saved again once the request has its answer (for example from another tab).
 	if (!job && isFinal(await readResult(workspace), rev)) return refused("answered");
-	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, temp: job?.temp, signal: job?.signal, beforePublish: job?.beforePublish });
+	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, temp: job?.temp, signal: job?.signal, beforePublish: job?.beforePublish, onUpload: job?.onUpload });
 	if ("error" in saved) return Response.json({ error: saved.error }, { status: saved.status });
 	const file = `exports/${saved.file}`;
 	const fields = Object.fromEntries(DONE_FIELDS.filter((key) => key in done).map((key) => [key, done[key]]));
@@ -124,7 +124,7 @@ export async function handleExportFile(req: Request, workspace: string, job?: {
 
 export type SavedExport = { file: string; bytes: number } | { error: string; status: number };
 
-async function writeExportBody(temp: string, body: ReadableStream<Uint8Array>, maxBytes: number, signal?: AbortSignal) {
+async function writeExportBody(temp: string, body: ReadableStream<Uint8Array>, maxBytes: number, signal?: AbortSignal, onUpload?: (bytes: number) => void) {
 	const reader = body.getReader();
 	// Cancel the pending web read directly when the render lease ends.
 	const cancel = () => { void reader.cancel(signal?.reason).catch(() => {}); };
@@ -133,6 +133,7 @@ async function writeExportBody(temp: string, body: ReadableStream<Uint8Array>, m
 		const file = await fs.open(temp, "wx");
 		try {
 			let bytes = 0;
+			let lastReport = Date.now();
 			for (;;) {
 				signal?.throwIfAborted();
 				const { done, value: chunk } = await reader.read();
@@ -145,6 +146,10 @@ async function writeExportBody(temp: string, body: ReadableStream<Uint8Array>, m
 					if (!bytesWritten) throw new Error("Could not write export data.");
 					offset += bytesWritten;
 					bytes += bytesWritten;
+				}
+				if (onUpload && Date.now() - lastReport >= 2000) {
+					lastReport = Date.now();
+					onUpload(bytes);
 				}
 			}
 		} finally {
@@ -162,9 +167,10 @@ async function writeExportBody(temp: string, body: ReadableStream<Uint8Array>, m
  * earlier export is never overwritten, also when two saves of one name run at once). Refuses a body over
  * `maxBytes` and an exports folder that is a link (it could point anywhere).
  */
-export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPORT_BYTES, temp = path.join(dir, `.${randomUUID()}.part`), signal, beforePublish }: {
+export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPORT_BYTES, temp = path.join(dir, `.${randomUUID()}.part`), signal, beforePublish, onUpload }: {
 	dir: string; name: string; format: string; body: ReadableStream<Uint8Array>; maxBytes?: number; temp?: string; signal?: AbortSignal;
 	beforePublish?: (file: string, source: string) => Promise<void>;
+	onUpload?: (bytes: number) => void;
 }): Promise<SavedExport> {
 	const safe = safeName(name);
 	if ((format !== "mp4" && format !== "webm") || !safe) return { error: "Invalid export", status: 400 };
@@ -175,7 +181,7 @@ export async function saveExport({ dir, name, format, body, maxBytes = MAX_EXPOR
 	try {
 		let bytes: number;
 		try {
-			bytes = await writeExportBody(temp, body, maxBytes, signal);
+			bytes = await writeExportBody(temp, body, maxBytes, signal, onUpload);
 		} catch (error) {
 			if (error instanceof TooLarge) return { error: `Export larger than ${maxBytes} bytes`, status: 413 };
 			throw error;
