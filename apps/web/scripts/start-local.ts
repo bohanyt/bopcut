@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
-import { assignment, envValues } from "./local-env";
+import { assignment, envValues, managedFolderComment } from "./local-env";
 import { commandFromSetting } from "../src/retrieval/server";
 
 const USAGE = "bun run start:local [--footage <dir>] [--data <dir>] [--port <number>] [--yes]";
@@ -61,7 +61,9 @@ export function mergeEnv(source: string, values: FolderValues, approved: FolderK
 	let result = source.replace(assignment, (line: string, prefix: string, key: FolderKey, _value: string, suffix: string) => {
 		found.add(key);
 		const value = values[key];
-		return value !== undefined && approved.includes(key) ? prefix + quotePath(value) + suffix : line;
+		if (value === undefined || !approved.includes(key)) return line;
+		const marker = suffix.endsWith(managedFolderComment) ? "" : managedFolderComment;
+		return prefix + quotePath(value) + suffix + marker;
 	});
 
 	const newline = source.includes("\r\n") ? "\r\n" : "\n";
@@ -69,7 +71,7 @@ export function mergeEnv(source: string, values: FolderValues, approved: FolderK
 		const value = values[key];
 		if (value === undefined || found.has(key)) continue;
 		if (result && !result.endsWith("\n")) result += newline;
-		result += key + "=" + quotePath(value) + newline;
+		result += key + "=" + quotePath(value) + managedFolderComment + newline;
 	}
 	return result;
 }
@@ -132,9 +134,32 @@ function runBun(args: string[], cwd: string, env = process.env): Promise<number>
 	});
 }
 
-async function setupEnv(file: string, original: string | undefined, options: Options) {
+export async function readDevelopmentSettings(
+	web: string,
+	local: string | undefined,
+	inherited: Record<string, string | undefined>,
+) {
+	const [base, development, higherPriority] = await Promise.all(
+		[".env", ".env.development", ".env.development.local"].map((name) => readOptional(path.join(web, name))),
+	);
+	const overrides = { ...envValues(higherPriority ?? ""), ...inherited };
+	const effective = {
+		...envValues(base ?? ""),
+		...envValues(development ?? ""),
+		...envValues(local ?? ""),
+		...overrides,
+	};
+	return { effective, overrides };
+}
+
+export async function setupEnv(
+	file: string,
+	original: string | undefined,
+	options: Options,
+	settings: Awaited<ReturnType<typeof readDevelopmentSettings>>,
+) {
 	const source = original ?? "";
-	const current = envValues(source);
+	const { effective, overrides } = settings;
 	const firstSetup = !source.split(/\r?\n/).includes(SETUP_COMMENT);
 	const values: FolderValues = {};
 	const approved: FolderKey[] = [];
@@ -144,8 +169,8 @@ async function setupEnv(file: string, original: string | undefined, options: Opt
 
 	try {
 		for (const { key, option, label } of folderSettings) {
-			const configured = Object.hasOwn(current, key);
-			if (process.env[key] !== undefined || (configured && options.yes)) continue;
+			const configured = effective[key] !== undefined;
+			if (overrides[key] !== undefined || (configured && options.yes)) continue;
 			let value = options[option];
 			if (value === undefined && firstSetup && !configured) {
 				value = (await terminal?.question(label + " [Enter for default]: "))?.trim();
@@ -154,7 +179,7 @@ async function setupEnv(file: string, original: string | undefined, options: Opt
 			value = path.resolve(value);
 			if (process.platform === "win32") value = value.replaceAll("\\", "/");
 			if (configured) {
-				if (value === current[key]) continue;
+				if (value === effective[key]) continue;
 				const answer = await terminal?.question("Replace the existing " + key + " setting? [y/N] ");
 				if (!/^y(?:es)?$/i.test(answer?.trim() ?? "")) continue;
 				approved.push(key);
@@ -166,7 +191,7 @@ async function setupEnv(file: string, original: string | undefined, options: Opt
 	}
 
 	// Remember accepted defaults without pinning them to paths in this checkout.
-	const markDefaults = firstSetup && folderSettings.some(({ key }) => !Object.hasOwn(current, key));
+	const markDefaults = firstSetup && folderSettings.some(({ key }) => effective[key] === undefined);
 	const newline = source.includes("\r\n") ? "\r\n" : "\n";
 	const base = markDefaults ? SETUP_COMMENT + newline + source : source;
 	const next = mergeEnv(base, values, approved);
@@ -204,8 +229,8 @@ async function main() {
 	const root = path.resolve(web, "../..");
 	const file = path.join(web, ".env.local");
 	const original = await readOptional(file);
-	const env = { ...envValues(original ?? ""), ...process.env };
-	for (const warning of await toolWarnings(env, (command) => probeTool(command, web))) {
+	const settings = await readDevelopmentSettings(web, original, process.env);
+	for (const warning of await toolWarnings(settings.effective, (command) => probeTool(command, web))) {
 		console.warn(warning);
 	}
 
@@ -222,7 +247,7 @@ async function main() {
 	}
 
 	if (!(await findNext(web, root))) throw new Error("Next.js could not be found after dependency setup.");
-	await setupEnv(file, original, options);
+	await setupEnv(file, original, options, settings);
 	console.log("Editor: http://127.0.0.1:" + options.port + "/projects");
 	console.log('Tell your agent: "Read AGENTS.md, then help me make a video from these sources."');
 	process.exitCode = await runBun(

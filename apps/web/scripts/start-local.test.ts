@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { envValues } from "./local-env";
-import { mergeEnv, parseArgs, toolWarnings } from "./start-local";
+import { directEnvValues, envValues } from "./local-env";
+import { mergeEnv, parseArgs, readDevelopmentSettings, setupEnv, toolWarnings } from "./start-local";
 
 describe("start:local arguments", () => {
 	test("uses port 3000 and prompts by default", () => {
@@ -32,7 +32,7 @@ describe("local env merge", () => {
 	test("appends a missing setting without changing comments or line endings", () => {
 		const original = "# BOPENCUT_DATA=/example\r\nSECRET=private";
 		expect(mergeEnv(original, { BOPENCUT_DATA: "/my data" }))
-			.toBe(original + '\r\nBOPENCUT_DATA="/my data"\r\n');
+			.toBe(original + '\r\nBOPENCUT_DATA="/my data" # bopencut local path\r\n');
 	});
 
 	test("updates approved duplicates without stripping comments or multiline values", () => {
@@ -40,7 +40,7 @@ describe("local env merge", () => {
 			+ 'export AGENT_FILES_ROOT = "/old" # used for footage\nAGENT_FILES_ROOT=/duplicate\n';
 		expect(mergeEnv(original, { AGENT_FILES_ROOT: "/new # footage" }, ["AGENT_FILES_ROOT"]))
 			.toBe('SECRET="first\nAGENT_FILES_ROOT=inside secret\nlast"\n'
-				+ 'export AGENT_FILES_ROOT = "/new # footage" # used for footage\nAGENT_FILES_ROOT="/new # footage"\n');
+				+ 'export AGENT_FILES_ROOT = "/new # footage" # used for footage # bopencut local path\nAGENT_FILES_ROOT="/new # footage" # bopencut local path\n');
 	});
 });
 
@@ -79,4 +79,47 @@ describe("startup tool checks", () => {
 		expect(checked).toEqual([["/opt/media tools/ffmpeg", "-version"], ["python", "-m", "yt_dlp", "--version"]]);
 		expect(warnings).toEqual([]);
 	});
+});
+
+test("leaves an escaped backtick and nested assignment inside a multiline value intact", () => {
+	const original = "SECRET=\x60before \\\x60 escaped\nAGENT_FILES_ROOT=/within-secret\nafter\x60\nAGENT_FILES_ROOT=/real\n";
+	const merged = mergeEnv(original, { AGENT_FILES_ROOT: "/approved" }, ["AGENT_FILES_ROOT"]);
+	expect(merged.slice(0, original.indexOf("/real"))).toBe(original.slice(0, original.indexOf("/real")));
+	expect(envValues(merged).SECRET).toBe(envValues(original).SECRET);
+	expect(envValues(merged).AGENT_FILES_ROOT).toBe("/approved");
+});
+
+test("development settings retain precedence across all Next env files and the process env", async () => {
+	const directory = await mkdtemp(path.join(tmpdir(), "bopencut-precedence-"));
+	try {
+		await writeFile(path.join(directory, ".env"), "BOPENCUT_DATA=/existing\n");
+		await writeFile(path.join(directory, ".env.development"), "AGENT_FILES_ROOT=/development\n");
+		await writeFile(path.join(directory, ".env.development.local"), "AGENT_FILES_ROOT=/developer\n");
+		const settings = await readDevelopmentSettings(directory, undefined, {});
+		expect(settings.effective).toEqual({ BOPENCUT_DATA: "/existing", AGENT_FILES_ROOT: "/developer" });
+		expect(settings.overrides).toEqual({ AGENT_FILES_ROOT: "/developer" });
+		const file = path.join(directory, ".env.local");
+		await setupEnv(file, undefined, parseArgs(["--data", "/other", "--footage", "/other", "--yes"]), settings);
+		expect(envValues(await readFile(file, "utf8"))).toEqual({});
+		const local = await readDevelopmentSettings(directory, "BOPENCUT_DATA=/local\n", { AGENT_FILES_ROOT: "/process" });
+		expect(local.effective).toEqual({ BOPENCUT_DATA: "/local", AGENT_FILES_ROOT: "/process" });
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("direct-file commands retain legacy literal settings and decode launcher paths", () => {
+	const original = 'BOPENCUT_SFX_DIRS=C:/SFX # backups\nAGENT_WORKSPACE="C:\\new\\raw"\n';
+	const merged = mergeEnv(original, { AGENT_FILES_ROOT: "/footage #1 $clip" });
+	expect(directEnvValues(merged)).toEqual({
+		BOPENCUT_SFX_DIRS: "C:/SFX # backups",
+		AGENT_WORKSPACE: "C:\\new\\raw",
+		AGENT_FILES_ROOT: "/footage #1 $clip",
+	});
+});
+
+test("the playbook targets the chosen project for frames and export", async () => {
+	const playbook = await readFile(new URL("../../../AGENTS.md", import.meta.url), "utf8");
+	expect(playbook).toContain("bun run agent frames --project-id PROJECT_ID");
+	expect(playbook).toContain("bun run agent export --project-id PROJECT_ID");
 });
