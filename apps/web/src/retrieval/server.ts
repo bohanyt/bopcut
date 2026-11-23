@@ -1,7 +1,7 @@
 // Server-side media retrieval: resolve source metadata and encode only the requested section or frame.
 // Node only: used by the agent API route and the retrieve CLI.
 import { runProcess } from "./process";
-import { Cancelled, cacheTarget, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "./jobs";
+import { Cancelled, cacheTargets, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "./jobs";
 import { existsSync } from "node:fs";
 import { RetrievalError } from "./server-errors";
 import { assertPublicUrl, fetchPublic, readCapped } from "./net";
@@ -241,11 +241,17 @@ function cachedDownload(
 	work: (scratch: string, signal: AbortSignal) => Promise<{ file: string; result: Omit<RetrievedFile, "path" | "cached"> }>,
 ): Promise<RetrievedFile> {
 	const root = path.resolve(deps.filesRoot);
-	const legacyMedia = path.join(root, directory, key + extension);
 	const legacyMeta = path.join(root, directory, key + ".json");
-	const { media, meta } = cacheTarget(legacyMedia, legacyMeta);
-	const lookup = async () => await readCached(media, meta) ?? await readCached(legacyMedia, legacyMeta);
 	return once(root + "|" + key, deps.signal, (signal) => withScratch(root, signal, async (scratch) => {
+		const { meta, sidecars } = await cacheTargets(legacyMeta);
+		const mediaName = key + extension;
+		const media = path.join(path.dirname(meta), mediaName);
+		const lookup = async () => {
+			for (const sidecar of sidecars) {
+				const found = await readCached(path.join(path.dirname(sidecar), mediaName), sidecar);
+				if (found) return found;
+			}
+		};
 		const cached = await lookup();
 		if (cached) return cached;
 		const { file, result } = await work(scratch, signal);
@@ -347,9 +353,9 @@ export function fetchWebFile(url: string, deps: RetrievalDeps): Promise<Retrieve
 async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl = fetch, env }: RetrievalDeps, scratch: string, signal: AbortSignal): Promise<RetrievedFile> {
 	const dir = path.join(filesRoot, "retrieved", "web");
 	const legacyMeta = path.join(dir, key + ".json");
-	const { meta } = cacheTarget("", legacyMeta);
+	const { meta, sidecars } = await cacheTargets(legacyMeta);
 	const lookup = async (): Promise<RetrievedFile | undefined> => {
-		for (const sidecar of [meta, legacyMeta]) {
+		for (const sidecar of sidecars) {
 			try {
 				const cached = JSON.parse(await fs.readFile(sidecar, "utf8")) as Omit<RetrievedFile, "cached">;
 				if (await exists(path.join(filesRoot, cached.path))) return { ...cached, cached: true };
@@ -417,14 +423,14 @@ export async function handleRetrieve(body: unknown, deps: RetrievalDeps): Promis
 			const request = normalizeSectionRequest(input, tools.maxSectionSeconds);
 			if (!request.ok) return { status: 400, body: { error: request.error } };
 			if (isPlaylistOnly(request.value.url)) return { status: 400, body: { error: "this is a playlist link; use the link of one video" } };
-			await assertPublicUrl(request.value.url, deps.env);
+			await assertPublicUrl(request.value.url, deps.env, undefined, deps.signal);
 			return { status: 200, body: await fetchSection(request.value, { ...deps, tools }) };
 		}
 		if (input.kind === "frame") {
 			const request = normalizeFrameRequest(input);
 			if (!request.ok) return { status: 400, body: { error: request.error } };
 			if (isPlaylistOnly(request.value.url)) return { status: 400, body: { error: "this is a playlist link; use the link of one video" } };
-			await assertPublicUrl(request.value.url, deps.env);
+			await assertPublicUrl(request.value.url, deps.env, undefined, deps.signal);
 			return { status: 200, body: await fetchFrame(request.value, { ...deps, tools }) };
 		}
 		if (input.kind === "file") {

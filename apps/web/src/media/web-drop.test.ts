@@ -122,6 +122,20 @@ describe("server fetch of a web file", () => {
 		expect(sent).toBeLessThan(110 * chunk);
 	});
 
+	test.each(["media", "sidecar"])("recovers a cache entry missing its %s", async (missing) => {
+		const fetchImpl = fake("image/png", PNG);
+		const url = "https://example.com/recover.png";
+		const deps = { filesRoot: root, fetchImpl, env: LAN };
+		const first = await fetchWebFile(url, deps);
+		const file = path.join(root, first.path);
+		await fs.rm(missing === "media" ? file : file.replace(/\.png$/, ".json"));
+		const repaired = await fetchWebFile(url, deps);
+		expect(repaired.cached).toBe(false);
+		expect(repaired.path).not.toBe(first.path);
+		expect((await fetchWebFile(url, deps)).path).toBe(repaired.path);
+		expect(calls).toBe(2);
+	});
+
 	test("two drops of the same link at once fetch it once", async () => {
 		const fetchImpl = fake("image/png", PNG);
 		const [a, b] = await Promise.all([

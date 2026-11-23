@@ -15,13 +15,15 @@ export async function runRetrievalCli(
 	const timer = timeout === undefined ? undefined : setTimeout(cancel, timeout);
 	process.on("SIGINT", cancel);
 	process.on("SIGTERM", cancel);
+	let status: number;
 	try {
 		const result = await work(controller.signal);
 		console.log(JSON.stringify(result.body, null, 1));
-		process.exitCode = result.status === 200 ? 0 : 1;
+		status = result.status;
 	} finally {
 		clearTimeout(timer);
 		process.removeListener("SIGINT", cancel);
 		process.removeListener("SIGTERM", cancel);
 	}
+	process.exit(status === 200 ? 0 : 1);
 }

@@ -224,6 +224,16 @@ describe("network policy and settings", () => {
 		for (const ip of ["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.10", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:192.168.0.1"]) expect(isPrivateAddress(ip)).toBe(true);
 		for (const ip of ["8.8.8.8", "142.250.1.1", "2606:4700::1111"]) expect(isPrivateAddress(ip)).toBe(false);
 	});
+	test("cancellation interrupts a pending host lookup", async () => {
+		const controller = new AbortController();
+		const resolve = (() => new Promise((_, reject) => {
+			setTimeout(() => reject(new Error("DNS finished late")), 25);
+		})) as never;
+		const result = assertPublicUrl("https://example.com/media", {}, resolve, controller.signal);
+		controller.abort();
+		await expect(result).rejects.toThrow(/cancelled during URL lookup/);
+	});
+
 	test("links resolving to this machine or the LAN are refused unless allowed", async () => {
 		const resolve = (async (host: string) => (host === "evil.example" ? [{ address: "127.0.0.1", family: 4 }] : [{ address: "93.184.216.34", family: 4 }])) as never;
 		await expect(assertPublicUrl("https://evil.example/x", {}, resolve)).rejects.toThrow("local network");

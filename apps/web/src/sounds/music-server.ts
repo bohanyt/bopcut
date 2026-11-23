@@ -6,7 +6,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { RetrievalError, defaultRunner, runTool, runToolOutput, toolsFromEnv } from "@/retrieval/server";
 import { isHttpUrl } from "@/retrieval/time";
-import { Cancelled, cacheTarget, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "@/retrieval/jobs";
+import { Cancelled, cacheTargets, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "@/retrieval/jobs";
 import { assertPublicUrl } from "@/retrieval/net";
 import { MUSIC_SOURCES, type MusicFile, type MusicResult, type MusicSource } from "./music-types";
 import { type LibraryKind, type SfxDeps, clearLibraryIndex, getLibrary, searchLibrary, words } from "./sfx-server";
@@ -94,17 +94,18 @@ function getOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
 
 async function fetchOnline(url: string, deps: MusicDeps, scratch: string, signal: AbortSignal): Promise<MusicFile> {
 	if (!isHttpUrl(url)) throw new RetrievalError("an online song needs an http(s) link");
-	await assertPublicUrl(url, deps.env);
+	await assertPublicUrl(url, deps.env, undefined, signal);
 	const env = deps.env ?? process.env;
 	const tools = deps.tools ?? toolsFromEnv(env);
 	const runner = deps.runner ?? defaultRunner;
 	const dir = path.join(deps.filesRoot, MUSIC_LIBRARY.folder, "online");
 	const key = createHash("sha1").update(url).digest("hex").slice(0, 12);
-	const legacyMedia = path.join(dir, key + ".m4a");
 	const legacyMeta = path.join(dir, key + ".json");
-	const { media, meta } = cacheTarget(legacyMedia, legacyMeta);
+	const { meta, sidecars } = await cacheTargets(legacyMeta);
+	const media = path.join(path.dirname(meta), key + ".m4a");
 	const lookup = async (): Promise<MusicFile | undefined> => {
-		for (const [file, sidecar] of [[media, meta], [legacyMedia, legacyMeta]]) {
+		for (const sidecar of sidecars) {
+			const file = path.join(path.dirname(sidecar), key + ".m4a");
 			if (!(await exists(file))) continue;
 			try {
 				const saved = JSON.parse(await fs.readFile(sidecar, "utf8")) as { name: string; pageUrl?: string; uploader?: string };

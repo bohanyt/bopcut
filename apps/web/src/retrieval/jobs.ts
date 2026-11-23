@@ -51,9 +51,21 @@ export async function withScratch<T>(
 	}
 }
 
-export function cacheTarget(legacyFile: string, legacyMeta: string) {
-	const dir = legacyMeta.replace(/\.json$/, ".asset");
-	return { media: path.join(dir, path.basename(legacyFile)), meta: path.join(dir, path.basename(legacyMeta)) };
+/** Existing generations keep their paths. A repair or new entry commits into the first unused slot. */
+export async function cacheTargets(legacyMeta: string) {
+	const base = legacyMeta.replace(/\.json$/, ".asset");
+	const name = path.basename(legacyMeta);
+	const sidecars = [legacyMeta];
+	for (let generation = 0; ; generation++) {
+		const dir = generation ? base + "-" + generation : base;
+		const meta = path.join(dir, name);
+		sidecars.unshift(meta);
+		const exists = await fs.lstat(dir).then(() => true, (error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return false;
+			throw error;
+		});
+		if (!exists) return { meta, sidecars };
+	}
 }
 
 export async function reusePublished<T>(lookup: () => Promise<T | undefined>): Promise<T> {
@@ -85,7 +97,7 @@ export async function publishMedia(
 			return true;
 		} catch (error) {
 			checkCancelled(signal, "publication");
-			if (await fs.stat(metadata.file).then((stat) => stat.isFile(), () => false)) return false;
+			if (await fs.stat(destination).then((stat) => stat.isDirectory(), () => false)) return false;
 			throw error;
 		}
 	} catch (error) {

@@ -4,7 +4,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultRunner } from "./server";
-import { cacheTarget, publishMedia, sharedJob, withScratch } from "./jobs";
+import { cacheTargets, publishMedia, sharedJob, withScratch } from "./jobs";
 import { ownedJobName } from "@/agent/job-scratch";
 
 let root: string;
@@ -42,7 +42,8 @@ test("interrupted publication preserves the previous media", async () => {
 	const file = path.join(root, "cached.mp4");
 	await writeFile(file, "old");
 	const controller = new AbortController();
-	const { media, meta } = cacheTarget(file, path.join(root, "cached.json"));
+	const { meta } = await cacheTargets(path.join(root, "cached.json"));
+	const media = path.join(path.dirname(meta), path.basename(file));
 	await expect(withScratch(root, controller.signal, async (scratch, signal) => {
 		const staged = path.join(scratch, "media");
 		await writeFile(staged, "new");
@@ -96,7 +97,8 @@ test("configured tools get a private temp folder that is removed when they exit"
 });
 
 test("competing publishers commit one matching pair without replacing it", async () => {
-	const { media, meta } = cacheTarget(path.join(root, "video.mp4"), path.join(root, "video.json"));
+	const { meta } = await cacheTargets(path.join(root, "video.json"));
+	const media = path.join(path.dirname(meta), "video.mp4");
 	const results = await Promise.all(["first", "second"].map((value) => withScratch(root, undefined, async (scratch, signal) => {
 		const source = path.join(scratch, "video.mp4");
 		await writeFile(source, value);

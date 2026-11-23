@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { type Runner, type RetrievalTools, RetrievalError, defaultRunner, runToolOutput, toolsFromEnv } from "@/retrieval/server";
-import { Cancelled, cacheTarget, checkCancelled, publishMedia, reusePublished, withScratch } from "@/retrieval/jobs";
+import { Cancelled, cacheTargets, checkCancelled, publishMedia, reusePublished, withScratch } from "@/retrieval/jobs";
 import { fetchPublic, readCapped } from "@/retrieval/net";
 import { SFX_SOURCES, type SfxFile, type SfxResult, type SfxSource } from "./sfx-types";
 
@@ -301,9 +301,9 @@ async function getMyinstants(ref: string, deps: SfxDeps, scratch: string, signal
 	// The file name plus a hash of the whole reference: two sounds with the same file name never share a cache entry.
 	const base = `${safeStem(decodeURIComponent(path.posix.basename(ref)).replace(AUDIO_EXT, ""))}-${createHash("sha1").update(ref).digest("hex").slice(0, 6)}`;
 	const legacyMeta = path.join(dir, base + ".json");
-	const { meta } = cacheTarget("", legacyMeta);
+	const { meta, sidecars } = await cacheTargets(legacyMeta);
 	const lookup = async (): Promise<SfxFile | undefined> => {
-		for (const sidecar of [meta, legacyMeta]) {
+		for (const sidecar of sidecars) {
 			for (const ext of [".m4a", path.extname(ref).toLowerCase()]) {
 				const file = path.join(path.dirname(sidecar), base + ext);
 				if (!(await exists(file))) continue;

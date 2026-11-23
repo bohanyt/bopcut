@@ -10,16 +10,40 @@ type Network = { fetchImpl?: typeof fetch; env?: Record<string, string | undefin
 const chunkSize = 512 * 1024;
 const seekError = () => new RetrievalError("the selected stream is not seekable over HTTP; use a seekable file or a local copy");
 
+/** yt-dlp emits applicable cookies as pairs followed by their individual attributes. */
+function scopedCookies(raw: string, source: URL) {
+	type Cookie = { pair: string; domain?: string; path?: string; secure?: boolean; expires?: number };
+	const cookies: Cookie[] = [];
+	let cookie: Cookie | undefined;
+	for (const part of raw.split(/;\s*/)) {
+		const equals = part.indexOf("=");
+		const key = (equals < 0 ? part : part.slice(0, equals)).toLowerCase();
+		const value = part.slice(equals + 1);
+		if (!part || key === "version") continue;
+		if (key === "domain" && cookie) cookie.domain = value.toLowerCase();
+		else if (key === "path" && cookie) cookie.path = value;
+		else if (key === "expires" && cookie) cookie.expires = Number(value);
+		else if (key === "secure" && cookie && equals < 0) cookie.secure = true;
+		else if (equals >= 0) {
+			cookie = { pair: part };
+			cookies.push(cookie);
+		}
+	}
+	return (target: URL) => cookies.filter(({ domain, path, secure, expires }) => {
+		if (target.origin !== source.origin || (secure && target.protocol !== "https:")) return false;
+		if (expires !== undefined && (!Number.isFinite(expires) || expires * 1000 <= Date.now())) return false;
+		if (domain && target.hostname !== domain.replace(/^\./, "") && !target.hostname.endsWith("." + domain.replace(/^\./, ""))) return false;
+		if (!path) return target.pathname === source.pathname;
+		return target.pathname === path || target.pathname.startsWith(path.endsWith("/") ? path : path + "/");
+	}).map(({ pair }) => pair).join("; ");
+}
+
 async function fetchRange(stream: Stream, start: number, end: number, network: Network) {
 	const headers = new Headers(stream.http_headers);
-	// yt-dlp lists only cookies that apply to this stream URL, with attributes between pairs.
-	if (stream.cookies) {
-		const pairs = stream.cookies.split(/;\s*/).filter((part) => /^[^=]+=/.test(part) && !/^(domain|path|expires|version)=/i.test(part));
-		if (pairs.length) headers.set("Cookie", pairs.join("; "));
-	}
 	headers.set("Accept-Encoding", "identity");
 	headers.set("Range", "bytes=" + start + "-" + end);
-	const res = await fetchPublic(stream.url!, { ...network, headers });
+	const cookieForUrl = stream.cookies ? scopedCookies(stream.cookies, new URL(stream.url!)) : undefined;
+	const res = await fetchPublic(stream.url!, { ...network, headers, cookieForUrl });
 	const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(res.headers.get("content-range") ?? "");
 	const size = Number(match?.[3]);
 	const valid = res.status === 206 && Number(match?.[1]) === start && Number(match?.[2]) === end &&
