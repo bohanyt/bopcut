@@ -235,6 +235,27 @@ test("yt-dlp supplies the cookie file resolved from a configured alias to the pr
 	await verifyCookieCopy(() => {}, true);
 }, 10_000);
 
+test("private cookie copies stay outside the files root when the temp folder is inside it", async () => {
+	const names = ["TMPDIR", "TMP", "TEMP", "HOME", "USERPROFILE"];
+	const saved = names.map((name) => process.env[name]);
+	const inside = path.join(root, "files", "tmp");
+	const home = path.join(root, "home");
+	await mkdir(inside, { recursive: true });
+	await mkdir(home, { recursive: true });
+	process.env.TMPDIR = process.env.TMP = process.env.TEMP = inside;
+	process.env.HOME = process.env.USERPROFILE = home;
+	try {
+		await verifyCookieCopy((copy) => {
+			expect(path.relative(inside, copy)).toMatch(/^\.\./);
+		});
+	} finally {
+		names.forEach((name, i) => {
+			if (saved[i] === undefined) delete process.env[name];
+			else process.env[name] = saved[i];
+		});
+	}
+}, 15_000);
+
 test.skipIf(process.platform !== "win32")("the Windows cookie copy has only the current user in its ACL", async () => {
 	await verifyCookieCopy((copy) => {
 		const shell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");

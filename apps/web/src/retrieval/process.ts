@@ -61,12 +61,12 @@ const unixSupervisor = String.raw `
 	process.stdin.on("error", stop);
 `;
 
-export function runProcess(command: string, args: string[], signal?: AbortSignal, scratch?: string) {
-	return withToolScratch(signal, scratch, (temp, activeSignal) => supervise(command, args, activeSignal, temp));
+export function runProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string) {
+	return withToolScratch(signal, filesRoot, (temp, activeSignal) => supervise(command, args, activeSignal, temp));
 }
 
-export function runYtDlpProcess(command: string, args: string[], signal?: AbortSignal, scratch?: string) {
-	return withToolScratch(signal, scratch, async (temp, activeSignal) => {
+export function runYtDlpProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string) {
+	return withToolScratch(signal, filesRoot, async (temp, activeSignal) => {
 		const env: Record<string, string> = {
 			YTDLP_NO_PLUGINS: "",
 			BOPENCUT_TOOL_ORIGINAL_TEMP: JSON.stringify({
@@ -86,11 +86,12 @@ export function runYtDlpProcess(command: string, args: string[], signal?: AbortS
 	});
 }
 
+// Tool scratch holds private copies (such as cookies), so it must lie outside the files root, which is served.
 async function withToolScratch<T>(
-	signal: AbortSignal | undefined, scratch: string | undefined,
+	signal: AbortSignal | undefined, filesRoot: string | undefined,
 	work: (temp: string, signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-	const assets = path.resolve(scratch ? path.dirname(path.dirname(scratch)) : process.env.AGENT_FILES_ROOT ??
+	const assets = path.resolve(filesRoot ?? process.env.AGENT_FILES_ROOT ??
 		process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 	const root = await fs.realpath(assets).catch(() => assets);
 	const uid = process.getuid?.();

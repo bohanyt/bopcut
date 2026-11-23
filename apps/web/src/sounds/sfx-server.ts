@@ -275,10 +275,10 @@ async function normalizeInto(input: string, output: string, deps: SfxDeps): Prom
 	const tools = deps.tools ?? toolsFromEnv(env);
 	const runner = deps.runner ?? defaultRunner;
 	try {
-		const probe = await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-nostats", "-i", input, "-af", "volumedetect", "-f", "null", "-"], "ffmpeg", deps.signal, path.dirname(input));
+		const probe = await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-nostats", "-i", input, "-af", "volumedetect", "-f", "null", "-"], "ffmpeg", deps.signal, deps.filesRoot);
 		const max = /max_volume:\s*(-?[\d.]+) dB/.exec(probe.stderr);
 		const gain = max ? Math.min(30, -1 - Number(max[1])) : 0;
-		await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", input, "-vn", "-af", `volume=${gain.toFixed(2)}dB`, "-c:a", "aac", "-b:a", "192k", output], "ffmpeg", deps.signal, path.dirname(input));
+		await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", input, "-vn", "-af", `volume=${gain.toFixed(2)}dB`, "-c:a", "aac", "-b:a", "192k", output], "ffmpeg", deps.signal, deps.filesRoot);
 		return true;
 	} catch (error) {
 		if (error instanceof RetrievalError && /not found/.test(error.message)) return false;

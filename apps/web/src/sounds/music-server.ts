@@ -27,7 +27,7 @@ export async function searchOnline(query: string, deps: MusicDeps, limit = 8): P
 	const env = deps.env ?? process.env;
 	const tools = deps.tools ?? toolsFromEnv(env);
 	const args = [...ytDlpJobArgs(), "--skip-download", "--flat-playlist", "-J", "--no-warnings", "--", `ytsearch${Math.min(20, limit + 4)}:${query.trim()}`];
-	const stdout = await runTool(deps.runner ?? defaultRunner, tools.ytdlp, args, "yt-dlp", deps.signal);
+	const stdout = await runTool(deps.runner ?? defaultRunner, tools.ytdlp, args, "yt-dlp", deps.signal, deps.filesRoot);
 	let entries: FlatEntry[] = [];
 	try {
 		entries = (JSON.parse(stdout) as { entries?: FlatEntry[] }).entries ?? [];
@@ -122,7 +122,7 @@ async function fetchOnline(url: string, deps: MusicDeps, signal: AbortSignal): P
 		const [command, ...rest] = tools.ffmpeg;
 		if (rest.length === 0 && /[\\/]/.test(command)) args.push("--ffmpeg-location", command);
 		args.push("-o", path.join(scratch, "song.%(ext)s"), "--", url);
-		const stdout = await runTool(runner, tools.ytdlp, args, "yt-dlp", signal, scratch);
+		const stdout = await runTool(runner, tools.ytdlp, args, "yt-dlp", signal, deps.filesRoot);
 		const line = stdout.split(/\r?\n/).reverse().find((l) => l.trim().startsWith("{"));
 		const info = line ? (JSON.parse(line) as { title?: string; uploader?: string; channel?: string; webpage_url?: string; duration?: number }) : undefined;
 		let staged = path.join(scratch, "song.m4a");
@@ -130,7 +130,7 @@ async function fetchOnline(url: string, deps: MusicDeps, signal: AbortSignal): P
 		const target = loudnessTarget(env);
 		if (target !== null) {
 			const normalized = path.join(scratch, "normalized.m4a");
-			await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", staged, "-vn", "-af", `loudnorm=I=${target}:TP=-1.5:LRA=11`, "-ar", "48000", "-c:a", "aac", "-b:a", "192k", normalized], "ffmpeg", signal, scratch);
+			await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", staged, "-vn", "-af", `loudnorm=I=${target}:TP=-1.5:LRA=11`, "-ar", "48000", "-c:a", "aac", "-b:a", "192k", normalized], "ffmpeg", signal, deps.filesRoot);
 			staged = normalized;
 		}
 		const result = { name: info.title ?? "song", uploader: info.uploader || info.channel, pageUrl: info.webpage_url || url, duration: info.duration, fetchedAt: new Date().toISOString() };

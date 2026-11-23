@@ -75,7 +75,8 @@ export function encoderArgs(encoder: string): string[] {
 	return ["-c:v", encoder, "-b:v", "12M"];
 }
 
-export type Runner = (command: string, args: string[], signal?: AbortSignal, scratch?: string) => Promise<{ stdout: string; stderr: string }>;
+/** `filesRoot` is the caller's files root: private tool files must never be written inside it. */
+export type Runner = (command: string, args: string[], signal?: AbortSignal, filesRoot?: string) => Promise<{ stdout: string; stderr: string }>;
 export const defaultRunner: Runner = runProcess;
 
 /** Keep the user's extractor settings while overriding side effects and job paths. */
@@ -88,16 +89,16 @@ export function ytDlpJobArgs(scratch?: string) {
 	];
 }
 
-export async function runTool(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, scratch?: string): Promise<string> {
-	return (await runToolOutput(runner, tool, args, label, signal, scratch)).stdout;
+export async function runTool(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, filesRoot?: string): Promise<string> {
+	return (await runToolOutput(runner, tool, args, label, signal, filesRoot)).stdout;
 }
 
 /** Runs a configured tool; missing tools and failures become a RetrievalError with a short message. */
-export async function runToolOutput(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, scratch?: string): Promise<{ stdout: string; stderr: string }> {
+export async function runToolOutput(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, filesRoot?: string): Promise<{ stdout: string; stderr: string }> {
 	try {
 		checkCancelled(signal, label);
 		const run = label === "yt-dlp" && runner === defaultRunner ? runYtDlpProcess : runner;
-		const output = await run(tool[0], [...tool.slice(1), ...args], signal, scratch);
+		const output = await run(tool[0], [...tool.slice(1), ...args], signal, filesRoot);
 		checkCancelled(signal, label);
 		return output;
 	} catch (error) {
@@ -247,7 +248,7 @@ async function download(
 	const stem = "section";
 	const output = path.join(dir, stem + ".%(ext)s");
 	const args = downloadArgs({ url, start, end, height: request.height ?? tools.defaultHeight, audioOnly, tools, output });
-	const info = parseInfo(await runTool(runner, tools.ytdlp, [...ytDlpJobArgs(dir), ...args], "yt-dlp", signal, dir));
+	const info = parseInfo(await runTool(runner, tools.ytdlp, [...ytDlpJobArgs(dir), ...args], "yt-dlp", signal, deps.filesRoot));
 	if (info?.is_live) throw new RetrievalError("this link is a live stream that is still running; use it once the replay is available");
 	const files = await fs.readdir(dir);
 	const expected = stem + (audioOnly ? ".m4a" : ".mp4");
@@ -311,7 +312,7 @@ export async function fetchFrame(request: FrameRequest, deps: RetrievalDeps): Pr
 		const { file: video, info } = await download({ url, start: time, end: time + 1, height: 720 }, scratch, signal, deps);
 		const file = path.join(scratch, "still.jpg");
 		await runTool(deps.runner ?? defaultRunner, (deps.tools ?? toolsFromEnv(deps.env)).ffmpeg,
-			["-hide_banner", "-loglevel", "error", "-y", "-i", video, "-frames:v", "1", "-vf", "scale=" + width + ":-2", "-q:v", "3", file], "ffmpeg", signal, scratch);
+			["-hide_banner", "-loglevel", "error", "-y", "-i", video, "-frames:v", "1", "-vf", "scale=" + width + ":-2", "-q:v", "3", file], "ffmpeg", signal, deps.filesRoot);
 		return { file, result: { type: "image", name: (info.title ?? "frame") + " " + formatTime(time), source: sourceInfo(info, url, time, time) } };
 	});
 }
