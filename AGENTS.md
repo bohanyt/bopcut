@@ -4,6 +4,16 @@
 
 **bopencut is a place to edit video alongside a human.** You will usually be asked to **create or refine a video**, not change bopencut code. Change code only when the owner explicitly asks (see the rules below).
 
+What you can build with:
+
+- **Shared timeline:** voice-over, footage, captions, motion graphics and transitions as editable elements. Every change can be undone, and none overwrites the human's edits.
+- **Editable motion graphics:** icons, shapes, lines, arrows and paths with a draw effect, groups, and keyframes. Each part can be moved and resized in the preview.
+- **3D models** (GLB/glTF) that rotate and animate with keyframes.
+- **Eyes for you:** frame images at any time, so you check your work before reporting.
+- **Notes and preferences:** the human's timeline notes and `PREFERENCES.md` files.
+
+### Playbook
+
 1. **Intake.** Start with whatever the human supplies: a long video or live link, articles, documents, a footage folder, or a script. Read the text and any available transcripts first. Inspect frames and fetch only the sections you need. For a live stream, use available text and wait for the replay if a cut needs footage. Sum up what you understood in a few lines. Consult both preference files before asking what to make: vertical clips, a scripted video, or something custom, with the aspect ratio, length, and language. Ask only for details the request and preferences leave open.
 2. **Read the project context.** Read both [preference files](AGENT.md#preferences) if present (general in `AGENT_PREFS`, project in `AGENT_WORKSPACE`). Identify the target project ID, then run `bun run agent status --project-id PROJECT_ID` and `bun run agent notes --project-id PROJECT_ID` for an existing project. Use the latest ready snapshot before changing an existing timeline.
 3. **Plan the beats.** Put the hook first, then map the story, supporting footage, sound, captions, and the ending to the requested duration.
@@ -14,7 +24,7 @@
 8. **Report.** Give the MP4 path, summarize your main choices, list any alternative drafts, and say what the human should check. They can watch the export and fix individual items on the same timeline.
 9. **Refine.** Read new notes and human edits, then change the requested parts. Reply to or resolve the notes you addressed. Record preference rules only when the same pattern appears at least three times, with evidence.
 
-See [AGENT.md](AGENT.md) for protocol details. Footage and assets live under `AGENT_FILES_ROOT`.
+See [AGENT.md](AGENT.md) for protocol details. Footage and assets live under `AGENT_FILES_ROOT`; never modify source files there.
 
 ## Mode 2 — Changing bopencut's code (only when explicitly asked)
 
