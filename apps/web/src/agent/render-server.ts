@@ -5,7 +5,7 @@ import { atomicWrite, readJson } from "@/services/storage/server/files";
 import { CLAIM_MS, handleExportFile } from "./export-server";
 import { parseExportRequest } from "./export";
 import { parseFrameInput } from "./render-input";
-import { renderTimeoutMessage, waitingForRender } from "./render-timeout";
+import { renderTimeoutMessage, uploadReportInterval, waitingForRender } from "./render-timeout";
 import { isForeignOrigin } from "./origin";
 import { profileDirectory, recordOutput, recoverRenderJobs, removeRenderJob, renderJobDir, rollbackOutput } from "./render-output";
 
@@ -19,7 +19,7 @@ const presenceMs = 6000;
 type Job = {
 	kind: Kind; rev: string; projectId: string; token: string; launchKey: string;
 	request: Record<string, unknown>; scratch: string; signal: AbortSignal;
-	owner?: string; offered: boolean; finishing: boolean;
+	owner?: string; offered: boolean; finishing: boolean; timeoutMs: number;
 	framesPromoted: boolean;
 	lease: AbortController;
 	writes: Set<Promise<Response>>;
@@ -126,7 +126,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			}
 		};
 		const job: Job = {
-			kind, projectId, rev, request, scratch, writes, signal: controller.signal,
+			kind, projectId, rev, request, scratch, writes, timeoutMs, signal: controller.signal,
 			token: randomUUID(), launchKey: randomUUID(), offered: false, finishing: false, lease: new AbortController(),
 			framesPromoted: false,
 			send(event) {
@@ -293,11 +293,16 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 		if (job.kind === "export" && action === "export-file" && url.searchParams.get("rev") === job.rev && url.searchParams.get("projectId") === job.projectId) {
 			job.finishing = true;
 			reportStage("uploading video");
+			let lastUploadReport = Date.now();
 			try {
 				await fs.mkdir(job.scratch, { recursive: true });
 				return await handleExportFile(req, workspace, {
 					signal, temp: path.join(job.scratch, "video.part"),
-					onUpload: (bytes) => job.reportStage(`uploading video (${bytes} bytes)`),
+					onUpload: (bytes) => {
+						if (Date.now() - lastUploadReport < uploadReportInterval(job.timeoutMs)) return;
+						lastUploadReport = Date.now();
+						job.reportStage(`uploading video (${bytes} bytes)`);
+					},
 					beforePublish: (target, source) => {
 						job.reportStage("saving video");
 						return recordOutput(workspace, job.scratch, target, source);
