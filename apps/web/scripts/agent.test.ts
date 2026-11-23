@@ -1,5 +1,60 @@
 import { expect, test } from "bun:test";
+import { mkdir, mkdtemp, readdir, rmdir, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { parseArgs } from "./agent";
+
+test("transcript CLI parses its source, language, range, timeout and project", () => {
+	expect(parseArgs(["transcript", "https://example.com/video", "--lang", "es", "--range", "1:02-1:03.5",
+		"--timeout", "12", "--project-id", "demo"])).toMatchObject({
+		command: "transcript", projectId: "demo", timeoutMs: 12000,
+		request: { url: "https://example.com/video", language: "es", range: { start: 62, end: 63.5 } },
+	});
+	expect(() => parseArgs(["transcript"])).toThrow("transcript <url>");
+	expect(() => parseArgs(["transcript", "file:///example"])).toThrow("http(s)");
+	expect(() => parseArgs(["transcript", "https://example.com/video", "--range", "3-2"])).toThrow("--range");
+	expect(() => parseArgs(["transcript", "https://example.com/video", "--lang", ".*"])).toThrow("--lang");
+});
+
+test("transcript CLI leaves its workspace and tool scratch empty", async () => {
+	const root = await mkdtemp(path.join(tmpdir(), "transcript-cli-"));
+	const workspace = path.join(root, "workspace");
+	const fixture = path.join(root, "fake-captions.js");
+	await mkdir(workspace);
+	await writeFile(fixture, `
+		const { writeFileSync, readFileSync } = require("node:fs");
+		const path = require("node:path");
+		const args = process.argv.slice(2);
+		const info = args.indexOf("--load-info-json");
+		if (info < 0) console.log(JSON.stringify({
+			id: "demo", extractor_key: "Example", subtitles: { en: [{ ext: "vtt", data: "fixture" }] },
+		}));
+		else {
+			const file = args[info + 1];
+			JSON.parse(readFileSync(file, "utf8"));
+			writeFileSync(path.join(path.dirname(file), "captions.en.vtt"),
+				"WEBVTT\\n\\n00:01.000 --> 00:02.000\\nExample caption\\n");
+		}
+	`);
+	const jobs = path.join(root, ".bopencut-tool-jobs" + (process.getuid ? "-" + process.getuid() : ""), ".retrieval-jobs");
+	try {
+		const result = Bun.spawnSync([process.execPath, path.join(import.meta.dir, "agent.ts"), "transcript",
+			"https://example.com/video", "--timeout", "8"], { timeout: 10_000, env: { ...process.env,
+			AGENT_WORKSPACE: workspace, AGENT_FILES_ROOT: workspace, BOPENCUT_ALLOW_PRIVATE_URLS: "1",
+			BOPENCUT_YTDLP: '"' + process.execPath + '" "' + fixture + '"', TMPDIR: root, TMP: root, TEMP: root,
+		} });
+		expect(result.exitCode).toBe(0);
+		expect(JSON.parse(result.stdout.toString()).cues).toEqual([{ start: 1, end: 2, text: "Example caption" }]);
+		expect(await readdir(workspace)).toEqual([]);
+		expect(await readdir(jobs)).toEqual([]);
+	} finally {
+		await unlink(fixture);
+		await rmdir(workspace);
+		await rmdir(jobs);
+		await rmdir(path.dirname(jobs));
+		await rmdir(root);
+	}
+}, 12_000);
 
 test("the read-only commands share project and timeout options", () => {
 	for (const command of ["status", "selection", "notes"] as const) {

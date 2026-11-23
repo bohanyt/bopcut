@@ -89,16 +89,16 @@ export function ytDlpJobArgs(scratch?: string) {
 	];
 }
 
-export async function runTool(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, filesRoot?: string): Promise<string> {
-	return (await runToolOutput(runner, tool, args, label, signal, filesRoot)).stdout;
+export async function runTool(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, filesRoot?: string, workspace?: string): Promise<string> {
+	return (await runToolOutput(runner, tool, args, label, signal, filesRoot, workspace)).stdout;
 }
 
 /** Runs a configured tool; missing tools and failures become a RetrievalError with a short message. */
-export async function runToolOutput(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, filesRoot?: string): Promise<{ stdout: string; stderr: string }> {
+export async function runToolOutput(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, filesRoot?: string, workspace?: string): Promise<{ stdout: string; stderr: string }> {
 	try {
 		checkCancelled(signal, label);
 		const run = label === "yt-dlp" && runner === defaultRunner ? runYtDlpProcess : runner;
-		const output = await run(tool[0], [...tool.slice(1), ...args], signal, filesRoot);
+		const output = await run(tool[0], [...tool.slice(1), ...args], signal, filesRoot, workspace);
 		checkCancelled(signal, label);
 		return output;
 	} catch (error) {

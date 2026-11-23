@@ -29,6 +29,15 @@ Status and notes default to the last project that synced. Use `--project-id ID` 
 
 Render commands default to a 600-second timeout. They print progress to stderr and the result JSON to stdout. Use `--project-id ID` to choose the project. For export, use `--quality low|medium|high|very_high` and `--fps N` to override the defaults below. For frames, pass comma-separated seconds to `--times`, or use one or more `--element ID` flags to capture the start of a root timeline element by its ID or agent ID. Both commands accept `--allow-missing`.
 
+Run `bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]` from the repository root. It works with the editor and server closed. Each run fetches captions from the source using the section retrieval settings for yt-dlp, cookies and proxy. The default timeout is 30 seconds. It writes progress to stderr and JSON to stdout.
+
+```text
+{source:{id,pageUrl,title?,duration?},language,origin:"creator"|"auto",
+ coverage:[{start,end}],cues:[{text,start,end,words?:[{text,start,end}]}],warnings}
+```
+
+Times are seconds in the original video. A range returns overlapping cues with their full source times. The command picks the original language when known, or the first available track, and prefers creator captions for the selected language. Automatic captions use JSON3 when offered and VTT otherwise. Repeated lines and sound-effect cues are kept. Word times are included when the caption track supplies them. Automatic captions can be off by a few seconds, so verify openings with frames or audio before cutting. If captions are unavailable, try a different language or use manual ranges. Speech-to-text requires a configured command in a later release.
+
 Use the file protocol below for drafts, changes, historical frames, and comparisons.
 
 ## Agent workspace (`apps/web/.env.local`)

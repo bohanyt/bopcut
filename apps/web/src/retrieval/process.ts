@@ -65,7 +65,7 @@ export function runProcess(command: string, args: string[], signal?: AbortSignal
 	return withToolScratch(signal, filesRoot, (temp, activeSignal) => supervise(command, args, activeSignal, temp));
 }
 
-export function runYtDlpProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string) {
+export function runYtDlpProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string, workspace?: string) {
 	return withToolScratch(signal, filesRoot, async (temp, activeSignal) => {
 		const env: Record<string, string> = {
 			YTDLP_NO_PLUGINS: "",
@@ -83,23 +83,27 @@ export function runYtDlpProcess(command: string, args: string[], signal?: AbortS
 		}
 		return runWithPrivateCookies(args, temp, activeSignal,
 			(toolArgs) => supervise(command, toolArgs, activeSignal, temp, env));
-	});
+	}, workspace);
 }
 
 // Tool scratch holds private copies (such as cookies), so it must lie outside the files root, which is served.
-async function withToolScratch<T>(
+export async function withToolScratch<T>(
 	signal: AbortSignal | undefined, filesRoot: string | undefined,
 	work: (temp: string, signal: AbortSignal) => Promise<T>,
+	workspace?: string,
 ): Promise<T> {
 	const assets = path.resolve(filesRoot ?? process.env.AGENT_FILES_ROOT ??
 		process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
-	const root = await fs.realpath(assets).catch(() => assets);
+	const roots = await Promise.all([assets, ...(workspace ? [path.resolve(workspace)] : [])]
+		.map((root) => fs.realpath(root).catch(() => root)));
 	const uid = process.getuid?.();
 	for (const base of [tmpdir(), homedir()]) {
 		const real = await fs.realpath(base).catch(() => path.resolve(base));
 		const privateRoot = path.join(real, ".bopencut-tool-jobs" + (uid === undefined ? "" : "-" + uid));
-		const relative = path.relative(root, privateRoot);
-		if (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative)) continue;
+		if (roots.some((root) => {
+			const relative = path.relative(root, privateRoot);
+			return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+		})) continue;
 		const stat = await fs.mkdir(privateRoot, { recursive: true, mode: 0o700 })
 			.then(() => fs.lstat(privateRoot)).catch(() => undefined);
 		if (!stat?.isDirectory() || (uid !== undefined && (stat.uid !== uid || (stat.mode & 0o077) !== 0))) continue;
