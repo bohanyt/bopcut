@@ -4,9 +4,13 @@ export type Cue = Word & { words?: Word[] };
 type Segment = { utf8: string; tOffsetMs?: number };
 const clean = (text: string) => text.replace(/\s+/g, " ").trim();
 const noise = /^(?:\s|\[(?:music|applause|laughter|noise|silence|inaudible|cheering)\]|[♪♫♬♩])+$/i;
+const anchors = new WeakMap<Cue, (number | undefined)[]>();
 
 function attachWords(cue: Cue, texts: string[], starts: number[]) {
-	if (texts.join(" ") !== cue.text || !texts.every((text, i) =>
+	if (texts.join(" ") !== cue.text) return cue;
+	// Keep segment starts for deduplication when the track times a group of words together.
+	anchors.set(cue, texts.flatMap((text, i) => text.split(" ").map((_, word) => word || !Number.isFinite(starts[i]) ? undefined : starts[i])));
+	if (!texts.every((text, i) =>
 		text && !/\s/.test(text) && starts[i] >= (starts[i - 1] ?? cue.start) && starts[i] < cue.end)) return cue;
 	cue.words = texts.map((text, i) => ({ text, start: starts[i], end: starts[i + 1] ?? cue.end }));
 	return cue;
@@ -62,9 +66,12 @@ function overlap(previous: Cue, next: Cue, prefix: string[], suffix: string[], f
 	if (next.start >= previous.end && !(echo && next.start - previous.end <= 0.05)) return 0;
 	for (let count = Math.min(suffix.length, prefix.length); count > 0; count--) {
 		if (prefix.slice(0, count).join(" ") !== suffix.slice(-count).join(" ")) continue;
-		if (previous.words && next.words) {
-			const starts = previous.words.slice(-count);
-			if (next.words.slice(0, count).some((word, i) => Math.abs(word.start - starts[i].start) > 0.01)) continue;
+		const before = anchors.get(previous)?.slice(-count);
+		if (before && anchors.get(next)?.slice(0, count).some((start, i) => {
+			const prior = before[i];
+			return start !== undefined && prior !== undefined && Math.abs(start - prior) > 0.01;
+		})) {
+			continue;
 		}
 		return count;
 	}

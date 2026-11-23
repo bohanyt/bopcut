@@ -48,9 +48,9 @@ beforeEach(async () => {
 });
 afterEach(async () => { await rm(workspace, { recursive: true, force: true }); });
 
-const get = (options: Partial<Parameters<typeof getTranscript>[0]> = {}, signal?: AbortSignal, run = runner) =>
+const get = (options: Partial<Parameters<typeof getTranscript>[0]> = {}, signal?: AbortSignal, run = runner, allowPrivate = "1") =>
 	getTranscript({ url, ...options }, { workspace, runner: run, signal,
-		env: { BOPENCUT_ALLOW_PRIVATE_URLS: "1", BOPENCUT_YTDLP: "fixture --proxy proxy", BOPENCUT_YTDLP_COOKIES_FROM_BROWSER: "firefox" } });
+		env: { BOPENCUT_ALLOW_PRIVATE_URLS: allowPrivate, BOPENCUT_YTDLP: "fixture --proxy proxy", BOPENCUT_YTDLP_COOKIES_FROM_BROWSER: "firefox" } });
 
 test("creator beats auto, original language beats track order, and --lang selects a VTT track", async () => {
 	metadata.language = "es";
@@ -81,6 +81,11 @@ test("overlapping automatic cues preserve repeated words spoken at different tim
 		tStartMs, dDurationMs: 2000, segs: [{ utf8: "No.", tOffsetMs: 0 }],
 	})) });
 	expect((await get()).cues.map((cue) => [cue.text, cue.words?.[0].start])).toEqual([["No.", 0], ["No.", 1]]);
+	captionData = JSON.stringify({ events: [
+		{ tStartMs: 0, dDurationMs: 3000, segs: [{ utf8: "I said", tOffsetMs: 0 }, { utf8: " no.", tOffsetMs: 1000 }] },
+		{ tStartMs: 2000, dDurationMs: 2000, segs: [{ utf8: "no.", tOffsetMs: 0 }] },
+	] });
+	expect((await get({ refresh: true })).cues.map((cue) => cue.text)).toEqual(["I said no.", "no."]);
 });
 
 test("ranges overlap half-open edges and preserve full cue times", async () => {
@@ -101,6 +106,8 @@ test("creator VTT is tried if JSON3 is unusable and keeps inline word times", as
 	expect(result.cues).toEqual([{ text: "Say hello", start: 1, end: 3,
 		words: [{ text: "Say", start: 1, end: 1.5 }, { text: "hello", start: 1.5, end: 3 }] }]);
 	expect(result.origin).toBe("creator");
+	metadata.subtitles = { en: [{ ext: "json3", url: "http://127.0.0.1/track" }, ...captions.es] };
+	expect((await get({ url: "https://192.0.2.1/video", refresh: true }, undefined, run, "0")).cues).toEqual(result.cues);
 });
 
 test("rolling VTT skips brief adjacent echo cues and keeps repeated speech at later times", async () => {

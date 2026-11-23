@@ -111,7 +111,6 @@ function readCaptionTrack(
 ) {
 	const { format, key, origin } = track;
 	return withToolScratch(signal, deps.filesRoot ?? deps.workspace, async (scratch, activeSignal) => {
-		if (format.url) await assertPublicUrl(format.url, deps.env, undefined, activeSignal);
 		const infoFile = path.join(scratch, "track.json");
 		// Keep only the selected caption. A failed info-file load cannot retry the video page.
 		await fs.writeFile(infoFile, JSON.stringify({ id: info.id, title: info.title ?? info.id, ext: "mp4",
@@ -120,6 +119,7 @@ function readCaptionTrack(
 		const flags = [origin === "creator" ? "--write-subs" : "--write-auto-subs", "--load-info-json", infoFile,
 			"--sub-langs", "all", "--sub-format", format.ext, "--no-simulate", "-o", template, "-o", "subtitle:" + template];
 		try {
+			if (format.url) await assertPublicUrl(format.url, deps.env, undefined, activeSignal);
 			await run(flags, activeSignal);
 			const file = path.join(scratch, `captions.${key}.${format.ext}`);
 			if ((await fs.stat(file)).size > 32 * 1024 * 1024) return;
