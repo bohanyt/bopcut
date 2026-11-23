@@ -13,7 +13,7 @@ import { Model3dNode } from "./nodes/model3d-node";
 import { isModelFile } from "@/media/media-utils";
 import { ImageNode } from "./nodes/image-node";
 import { TextNode } from "./nodes/text-node";
-import { StickerNode } from "./nodes/sticker-node";
+import { StickerNode, loadStickerSource } from "./nodes/sticker-node";
 import { GraphicNode } from "./nodes/graphic-node";
 import { ColorNode } from "./nodes/color-node";
 import { BlurBackgroundNode } from "./nodes/blur-background-node";
@@ -353,6 +353,18 @@ export type BuildSceneParams = {
 	/** All project scenes, so compound clips can find their nested scene. */
 	scenes?: TScene[];
 };
+
+/** Start sticker loads before playback can reach them, once per installed preview tree. */
+export function preloadPreviewStickers(root: RootNode): void {
+	for (const child of root.children) {
+		if (child instanceof CompoundNode) {
+			preloadPreviewStickers(child.params.content);
+		} else if (child instanceof StickerNode) {
+			// Resolution will use the same cached promise and handle any failure when visible.
+			void loadStickerSource({ stickerId: child.params.stickerId }).catch(() => {});
+		}
+	}
+}
 
 export function buildScene({
 	canvasSize,

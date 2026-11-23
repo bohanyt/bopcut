@@ -1,6 +1,8 @@
 import { expect, mock, test } from "bun:test";
 import { Canvas } from "@napi-rs/canvas";
 import { computeAgentDraft, type DraftOp } from "@/agent/draft";
+import type { EditorCore } from "@/core";
+import { RendererManager } from "@/core/managers/renderer-manager";
 import { registerDefaultEffects } from "@/effects";
 import type { MediaAsset } from "@/media/types";
 import { createPreviewFrameScheduler } from "@/preview/frame-scheduler";
@@ -15,6 +17,7 @@ import { ColorNode } from "./nodes/color-node";
 import { CompoundNode } from "./nodes/compound-node";
 import { EffectLayerNode } from "./nodes/effect-layer-node";
 import { RootNode } from "./nodes/root-node";
+import { StickerNode } from "./nodes/sticker-node";
 import { VideoNode } from "./nodes/video-node";
 import { resolveRenderTree } from "./resolve";
 import { buildScene } from "./scene-builder";
@@ -198,6 +201,44 @@ test("nested compounds render at each trimmed local time and release prior video
 			expect(visible.resolved).toBeNull();
 			expect(inner.resolved).toBeNull();
 			expect((await render(root, t(1))).textures).toHaveLength(3);
+		} finally {
+			restore();
+		}
+	}));
+
+test("installing a preview tree starts loading its off-time nested stickers", () =>
+	withRenderer(async ({ render, renderer }) => {
+		const requests: string[] = [];
+		let finishLoad: (() => void) | undefined;
+		class PreviewImage {
+			naturalWidth = 200;
+			naturalHeight = 200;
+			width = this.naturalWidth;
+			height = this.naturalHeight;
+			onload?: () => void;
+			set src(url: string) {
+				requests.push(url);
+				finishLoad = this.onload;
+			}
+		}
+		const restore = patchProperties(globalThis, { Image: PreviewImage as unknown as typeof Image });
+		try {
+			const sticker = new StickerNode({
+				...placement, stickerId: "flags:ID", timeOffset: t(1), duration: t(0.1),
+			});
+			const content = new RootNode({ duration: t(2) }).add(sticker);
+			const compound = new CompoundNode({
+				...placement, content, timeOffset: t(5), duration: t(2),
+			});
+			const root = new RootNode({ duration: t(7) }).add(compound);
+			const preview = new RendererManager({} as EditorCore);
+			preview.setRenderTree({ renderTree: root });
+			expect(requests).toHaveLength(1);
+			expect((await render(root, 0)).textures).toEqual([]);
+			finishLoad?.();
+			await resolveRenderTree({ node: root, renderer, time: t(6) });
+			expect(sticker.resolved?.source).toBeInstanceOf(PreviewImage);
+			expect(requests).toHaveLength(1);
 		} finally {
 			restore();
 		}

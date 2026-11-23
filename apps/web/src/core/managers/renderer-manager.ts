@@ -4,7 +4,7 @@ import type { ExportOptions, ExportResult } from "@/export";
 import { getExportFailure } from "@/export/failure";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { SceneExporter } from "@/services/renderer/scene-exporter";
-import { buildScene, collectVisibleMedia } from "@/services/renderer/scene-builder";
+import { buildScene, collectVisibleMedia, preloadPreviewStickers } from "@/services/renderer/scene-builder";
 import { collectAudibleCandidates } from "@/media/audio";
 import { mixTimelineAudio } from "@/media/audio-mixdown";
 import type { MediaLoadFailure, MediaType } from "@/media/types";
@@ -34,6 +34,7 @@ export class RendererManager {
 	constructor(private editor: EditorCore) {}
 
 	setRenderTree({ renderTree }: { renderTree: RootNode | null }): void {
+		if (renderTree && renderTree !== this.renderTree) preloadPreviewStickers(renderTree);
 		this.renderTree = renderTree;
 		this.notify();
 	}
