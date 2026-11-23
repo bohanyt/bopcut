@@ -2,7 +2,7 @@
 
 # bopencut — one timeline for you and your agent
 
-**bopencut** is a web video editor where **you and an agent edit the same timeline**. The agent drafts a video from a script. You move, trim, and arrange clips in an interface like CapCut, then ask the agent to refine the parts you point out. You can undo every agent change, and your edits are preserved.
+**bopencut** is a web video editor where **you and an agent edit the same timeline**. The agent reads your sources and drafts the video you ask for. You move, trim, and arrange clips in an interface like CapCut, then ask the agent to refine the parts you point out. You can undo every agent change, and your edits are preserved.
 
 > bopencut is a fork of **OpenCut (classic)** by the [OpenCut](https://github.com/opencut-app/opencut-classic) team under the MIT license (see [`LICENSE`](LICENSE)). The underlying editor is entirely their work. The original OpenCut README is at [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
 
@@ -30,14 +30,17 @@
 
 ## Running
 
-Install [Bun](https://bun.sh). Put `ffmpeg` on your PATH for GIF-to-video conversion. Install [yt-dlp](https://github.com/yt-dlp/yt-dlp) to fetch clips from links. See `AGENT.md` for its configuration. No account, database, or Docker is required.
+Install [Bun](https://bun.sh) and run this from the repository root:
 
-```
-bun install
-cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
+```sh
+bun run start:local
 ```
 
-Open `http://127.0.0.1:3000/projects`.
+On first setup, choose a footage folder and, optionally, a data folder. Press Enter to use the defaults below. The command installs dependencies when needed, saves your folder choices in `apps/web/.env.local`, and starts the editor at `http://127.0.0.1:3000/projects`. Press Ctrl+C to stop it.
+
+For unattended setup, run `bun run start:local --footage <dir> --data <dir> --yes`. With `--yes`, existing values are kept. Use `--port <number>` to change the local port.
+
+`ffmpeg` and [yt-dlp](https://github.com/yt-dlp/yt-dlp) are optional. The command reports which features need them. See [AGENT.md](AGENT.md#media-from-links-sections-not-whole-videos) for tool settings. No account, database, or Docker is required.
 
 Use the **EN / ID** button in the header to choose English or Bahasa Indonesia. The app remembers your choice in that browser.
 
@@ -53,7 +56,7 @@ Use the **EN / ID** button in the header to choose English or Bahasa Indonesia. 
 
 ## Using bopencut with a local agent
 
-Run bopencut, open your local coding agent in a terminal or editor in the repo, and ask it to **"read `AGENTS.md`, then help me edit this video."** `AGENTS.md` explains the shared editing workflow, which features are available, and how you review the preview before rendering. Keep footage and assets in a separate folder and point `AGENT_FILES_ROOT` to it.
+Run bopencut, open your coding agent in the repository, and ask it to **"read `AGENTS.md`, then help me make a video from these sources."** Share links, articles, documents, or a footage folder. A script is optional. The agent summarizes what it understood, asks what to make, and uses the shared timeline to draft, check, and export your video.
 
 ## Documentation
 

@@ -1,25 +1,25 @@
 [Read in English](README.en.md)
 
-# bopencut — satu timeline untuk kamu dan AI
+# bopencut — satu timeline untuk kamu dan agenmu
 
-**bopencut** adalah editor video web tempat **manusia dan AI mengedit timeline yang sama**. AI menyusun draf video dari skrip; kamu menggeser, memotong, dan menata di UI seperti CapCut; lalu AI merapikan bagian yang kamu tunjuk. Semua perubahan AI bisa di-Undo, dan editanmu tidak tertimpa.
+**bopencut** adalah editor video web tempat **kamu dan agen mengedit timeline yang sama**. Agen membaca sumbermu dan menyusun draf video yang kamu minta; kamu menggeser, memotong, dan menata di UI seperti CapCut; lalu agen merapikan bagian yang kamu tunjuk. Semua perubahan agen bisa di-Undo, dan editanmu tidak tertimpa.
 
 > bopencut adalah fork dari **OpenCut (classic)** buatan tim [OpenCut](https://github.com/opencut-app/opencut-classic), lisensi MIT (lihat [`LICENSE`](LICENSE)). Editor dasarnya sepenuhnya karya mereka. README asli OpenCut: [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
 
 ## Yang bisa dilakukan
 
-**Kerja bareng AI**
-- **AI tahu isi timeline:** setiap perubahan ditulis ke folder kerja sebagai JSON (trek, item, waktu, posisi, catatan).
-- **AI ikut mengedit:** AI mengirim draf per item (tambah, ubah, hapus). Editor menerapkannya dalam ±2 detik sebagai **satu langkah Undo**, dan item yang diubah langsung terpilih.
-- **Catatan dua arah:** tandai rentang waktu atau item dengan catatan; AI bisa membaca, membalas, dan menandai selesai.
-- **AI melihat frame:** AI bisa meminta gambar frame pada detik mana pun.
-- **Ambil potongan video dari link:** cukup link + waktu mulai/selesai (misalnya 20 detik dari live 3 jam). Yang diunduh hanya bagian itu, lewat yt-dlp, dengan potongan yang pas di frame. Bisa dari draf AI, dari CLI, atau dari tombol link di panel Assets.
-- **Sound effect tinggal sebut nama:** cari di folder SFX-mu sendiri dan di Myinstants (tanpa akun). Bisa dari tab Library di panel Sounds, atau AI cukup menulis `sfx: "vine boom"` di draf. Suara yang pernah diambil tersimpan dan ikut jadi library.
-- **Lagu tinggal sebut judul:** dari folder musikmu atau dicari online (hanya suaranya, lewat yt-dlp), langsung dinormalisasi kerasnya. AI juga bisa membuat musik otomatis mengecil saat ada suara bicara (*ducking*), sebagai keyframe volume yang tetap bisa kamu geser.
+**Kerja bareng agen**
+- **Agen tahu isi timeline:** setiap perubahan ditulis ke folder kerja sebagai JSON (trek, item, waktu, posisi, catatan).
+- **Agen ikut mengedit:** agen mengirim draf per item (tambah, ubah, hapus). Editor menerapkannya dalam ±2 detik sebagai **satu langkah Undo**, dan item yang diubah langsung terpilih.
+- **Catatan dua arah:** tandai rentang waktu atau item dengan catatan; agen bisa membaca, membalas, dan menandai selesai.
+- **Agen melihat frame:** agen bisa meminta gambar frame pada detik mana pun.
+- **Ambil potongan video dari link:** cukup link + waktu mulai/selesai (misalnya 20 detik dari live 3 jam). Yang diunduh hanya bagian itu, lewat yt-dlp, dengan potongan yang pas di frame. Bisa dari draf agen, dari CLI, atau dari tombol link di panel Assets.
+- **Sound effect tinggal sebut nama:** cari di folder SFX-mu sendiri dan di Myinstants (tanpa akun). Bisa dari tab Library di panel Sounds, atau agen cukup menulis `sfx: "vine boom"` di draf. Suara yang pernah diambil tersimpan dan ikut jadi library.
+- **Lagu tinggal sebut judul:** dari folder musikmu atau dicari online (hanya suaranya, lewat yt-dlp), langsung dinormalisasi kerasnya. Agen juga bisa membuat musik otomatis mengecil saat ada suara bicara (*ducking*), sebagai keyframe volume yang tetap bisa kamu geser.
 - **Camera shake:** getaran kamera di atas posisi/zoom milikmu sendiri, dari goyang tangan halus sampai hentakan yang meredam (intensitas bisa di-keyframe).
 - **Caption bergaya:** satu elemen per frasa dengan timing per kata, outline dua lapis, glow/bayangan, warna untuk kata penting, sorotan kata yang sedang diucapkan, dan mode kata muncul satu per satu (fade/pop). Gaya bisa disimpan sebagai preset milikmu sendiri.
 - **Drag-drop gambar dari browser:** seret gambar dari Google Images atau halaman web mana pun ke panel Assets atau timeline (seperti di Photopea), atau tempel link gambar.
-- **AI belajar seleramu:** editanmu pada item buatan AI dicatat dan diringkas menjadi kandidat aturan selera.
+- **Agen belajar seleramu:** editanmu pada item buatan agen dicatat dan diringkas menjadi kandidat aturan selera.
 
 **Editor**
 - Proyek dan media disimpan **di folder, bukan di browser**, jadi bisa dibuka dari browser mana pun di laptop yang sama.
@@ -30,14 +30,17 @@
 
 ## Menjalankan
 
-Butuh [Bun](https://bun.sh); `ffmpeg` di PATH dipakai untuk mengubah GIF menjadi video. Untuk mengambil potongan video dari link, pasang juga [yt-dlp](https://github.com/yt-dlp/yt-dlp) (pengaturannya ada di `AGENT.md`). Tidak perlu akun, database, atau Docker.
+Pasang [Bun](https://bun.sh), lalu jalankan perintah ini dari folder utama repo:
 
-```
-bun install
-cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
+```sh
+bun run start:local
 ```
 
-Buka `http://127.0.0.1:3000/projects`.
+Saat penyiapan pertama, pilih folder footage dan, jika perlu, folder data. Tekan Enter untuk memakai lokasi bawaan di bawah. Perintah ini memasang dependensi jika diperlukan, menyimpan pilihan folder ke `apps/web/.env.local`, dan menjalankan editor di `http://127.0.0.1:3000/projects`. Tekan Ctrl+C untuk menghentikannya.
+
+Untuk penyiapan tanpa pertanyaan, jalankan `bun run start:local --footage <dir> --data <dir> --yes`. Opsi `--yes` mempertahankan nilai yang sudah ada. Pakai `--port <nomor>` untuk mengganti port lokal.
+
+`ffmpeg` dan [yt-dlp](https://github.com/yt-dlp/yt-dlp) bersifat opsional. Perintah ini memberi tahu fitur mana yang membutuhkannya. Lihat [AGENT.md](AGENT.md#media-from-links-sections-not-whole-videos) untuk pengaturannya. Tidak perlu akun, database, atau Docker.
 
 Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa Indonesia. Pilihanmu akan diingat di browser itu.
 
@@ -51,15 +54,15 @@ Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa In
 
 `BOPENCUT_DATA` menunjuk ke folder induk `projects/`. `workspace/` tidak masuk Git. Kalau memakai folder lain, pastikan folder itu juga tidak dikomit. Project lama yang masih tersimpan di browser, beserta medianya, disalin otomatis ke folder saat halaman Projects memuat daftar project (sebelum project mana pun dibuka), tanpa menghapus aslinya.
 
-## Memakai bopencut dengan AI lokal
+## Memakai bopencut dengan agen lokal
 
-Jalankan bopencut, lalu buka AI lokalmu (agen coding di terminal atau editor) di folder repo ini dan minta: **"baca `AGENTS.md`, lalu bantu aku mengerjakan video ini"**. `AGENTS.md` menjelaskan ke AI bahwa bopencut adalah tempat mengedit video bersama, fitur apa saja yang tersedia, dan bahwa kamu mengecek hasilnya lewat preview tanpa perlu render. Taruh footage dan asetmu di folder terpisah, lalu arahkan `AGENT_FILES_ROOT` ke sana.
+Jalankan bopencut, buka agen coding di folder repo, lalu minta **"baca `AGENTS.md`, lalu bantu aku membuat video dari sumber-sumber ini."** Berikan tautan, artikel, dokumen, atau folder footage. Skrip boleh disertakan. Agen merangkum isi sumber, bertanya video apa yang ingin dibuat, lalu menyusun draf, memeriksa hasilnya, dan mengekspor video dari timeline bersama.
 
 ## Dokumen
 
 - [GOAL.md](GOAL.md): tujuan, alur kerja, dan tahapan.
 - [AGENT.md](AGENT.md): protokol folder kerja agen (format bundle, draf, catatan, frame, selera).
-- [AGENTS.md](AGENTS.md): titik masuk untuk AI (cara kerja di bopencut, dan aturan kalau mengubah kodenya).
+- [AGENTS.md](AGENTS.md): titik masuk untuk agen (cara kerja di bopencut, dan aturan kalau mengubah kodenya).
 
 ## Lisensi
 

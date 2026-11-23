@@ -7,21 +7,11 @@
 //
 // Prints JSON. Settings come from the environment or apps/web/.env.local (AGENT_FILES_ROOT,
 // BOPENCUT_SFX_DIRS, BOPENCUT_SFX_NORMALIZE, BOPENCUT_FFMPEG; see AGENT.md).
-import { existsSync, readFileSync } from "node:fs";
+import { loadEnvLocal } from "./local-env";
 import path from "node:path";
 import { handleSfx } from "../src/sounds/sfx-server";
 
 const webDir = path.resolve(import.meta.dir, "..");
-
-function loadEnvLocal(file: string) {
-	if (!existsSync(file)) return;
-	for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
-		const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-		if (!m || line.trim().startsWith("#")) continue;
-		const value = m[2].replace(/^(['"])(.*)\1$/, "$2");
-		if (process.env[m[1]] === undefined) process.env[m[1]] = value;
-	}
-}
 
 function usage(message?: string): never {
 	if (message) console.error(message);
