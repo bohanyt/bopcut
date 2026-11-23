@@ -2,33 +2,42 @@ export type Span = { start: number; end: number };
 type Word = Span & { text: string };
 export type Cue = Word & { words?: Word[] };
 type Segment = { utf8: string; tOffsetMs?: number };
-const clean = (text: string) => text.replace(/\s+/g, " ").trim();
+type CaptionEvent = { tStartMs: number; dDurationMs: number; segs?: Segment[]; aAppend?: number };
+type Counts = { empty: number; invalid: number; untimed: number };
 const noise = /^(?:\s|\[(?:music|applause|laughter|noise|silence|inaudible|cheering)\]|[♪♫♬♩])+$/i;
-const anchors = new WeakMap<Cue, (number | undefined)[]>();
 
-function attachWords(cue: Cue, texts: string[], starts: number[]) {
-	if (texts.join(" ") !== cue.text) return cue;
-	// Keep segment starts for deduplication when the track times a group of words together.
-	anchors.set(cue, texts.flatMap((text, i) => text.split(" ").map((_, word) =>
-		!word && starts[i] >= cue.start && starts[i] < cue.end ? starts[i] : undefined)));
-	if (!texts.every((text, i) =>
-		text && !/\s/.test(text) && starts[i] >= (starts[i - 1] ?? cue.start) && starts[i] < cue.end)) return cue;
-	cue.words = texts.map((text, i) => ({ text, start: starts[i], end: starts[i + 1] ?? cue.end }));
-	return cue;
+function addWords(cue: Cue, parts: { text: string; start: number }[], counts: Counts) {
+	const words = parts.filter(({ text }) => text);
+	if (words.some(({ start }, i) => !Number.isFinite(start) || start < (words[i - 1]?.start ?? cue.start) || start > cue.end)) {
+		counts.untimed++;
+	} else if (words.length) {
+		cue.words = words.map((word, i) => ({ ...word, end: words[i + 1]?.start ?? cue.end }));
+	}
 }
 
-function jsonCues(data: string): Cue[] {
+function jsonCues(data: string, auto: boolean, counts: Counts): Cue[] {
 	const events = JSON.parse(data)?.events;
 	if (!Array.isArray(events)) return [];
-	return events.flatMap((event) => {
+	const timed = (events as CaptionEvent[]).flatMap((event) => {
 		if (!Array.isArray(event?.segs)) return [];
-		const segments = (event.segs as Segment[]).filter((s) => typeof s?.utf8 === "string");
-		const { tStartMs: time, dDurationMs: duration } = event;
-		const cue: Cue = { start: time / 1000, end: (time + duration) / 1000, text: clean(segments.map((s) => s.utf8).join("")) };
-		const spoken = segments.filter((s) => clean(s.utf8));
-		if (spoken.some((s) => typeof s.tOffsetMs === "number")) {
-			attachWords(cue, spoken.map((s) => clean(s.utf8)),
-				spoken.map((s, i) => (time + (s.tOffsetMs ?? (i === 0 ? 0 : NaN))) / 1000));
+		const segments = event.segs.filter((segment) => typeof segment?.utf8 === "string");
+		const text = segments.map(({ utf8 }) => utf8).join("");
+		if (auto && event.aAppend === 1 && !text.trim()) return [];
+		const { tStartMs, dDurationMs } = event;
+		if (!Number.isFinite(tStartMs) || !Number.isFinite(dDurationMs) || tStartMs < 0 || dDurationMs < 0) {
+			if (text.trim()) counts.invalid++;
+			else counts.empty++;
+			return [];
+		}
+		return [{ start: tStartMs / 1000, end: (tStartMs + dDurationMs) / 1000, tStartMs, text, segments }];
+	}).sort((a, b) => a.start - b.start);
+	return timed.flatMap(({ start, end, tStartMs, text, segments }, i) => {
+		if (!text.trim()) { counts.empty++; return []; }
+		const cue = { start, end: auto ? Math.min(end, timed[i + 1]?.start ?? end) : end, text };
+		if (segments.every(({ tOffsetMs }) => typeof tOffsetMs === "number")) {
+			addWords(cue, segments.map(({ utf8, tOffsetMs }) => ({
+				text: utf8.trim(), start: (tStartMs + tOffsetMs!) / 1000,
+			})), counts);
 		}
 		return [cue];
 	});
@@ -36,72 +45,53 @@ function jsonCues(data: string): Cue[] {
 
 const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", nbsp: " ", lrm: "\u200e", rlm: "\u200f", quot: '"', apos: "'" };
 const timestamp = "(?:\\d{2,}:)?[0-5]\\d:[0-5]\\d\\.\\d{3}";
-const timing = new RegExp(`^(${timestamp})[ \t]+-->[ \t]+(${timestamp})(?:[ \t].*)?$`);
-const inlineTime = new RegExp(`<(${timestamp})>`, "g");
+const timing = new RegExp("^(" + timestamp + ")[ \\t]+-->[ \\t]+(" + timestamp + ")(?:[ \\t].*)?$");
+const inlineTime = new RegExp("<(" + timestamp + ")>", "g");
 const vttSeconds = (s: string) => s.split(":").reduce((seconds, part) => seconds * 60 + Number(part), 0);
 const vttText = (text: string) => text.replace(/<[^>]*>/g, "")
-	.replace(/&([a-z]+);/g, (entity, name: string) => entities[name] ?? entity);
+	.replace(/&([a-z]+);/g, (entity, name: string) => Object.hasOwn(entities, name) ? entities[name] : entity);
 
-function vttCues(data: string): Cue[] {
-	if (!/^\uFEFF?WEBVTT(?:[ \t]|\r?\n|$)/.test(data)) return [];
-	return data.split(/\r?\n[ \t]*\r?\n/).slice(1).flatMap((block) => {
-		const lines = block.trim().split(/\r?\n/);
-		if (/^(NOTE|STYLE|REGION)(?:\s|$)/.test(lines[0])) return [];
-		const index = lines[0].includes("-->") ? 0 : 1;
-		const match = timing.exec(lines[index] ?? "");
-		if (!match) return [];
+function vttCues(data: string, counts: Counts): Cue[] {
+	if (!/^\uFEFF?WEBVTT(?:[ \t]|\r|\n|$)/.test(data)) return [];
+	return data.replace(/\r\n?/g, "\n").split(/\n(?:[ \t]*\n)+/).slice(1).flatMap((block) => {
+		const lines = block.split("\n");
+		if (/^NOTE(?:\s|$)/.test(lines[0])) return [];
+		const index = lines[0].includes("-->") ? 0 : lines[1]?.includes("-->") ? 1 : -1;
+		if (index < 0 && /^(STYLE|REGION)[ \t]*$/.test(lines[0])) return [];
 		const raw = lines.slice(index + 1).join("\n");
-		const cue = { start: vttSeconds(match[1]), end: vttSeconds(match[2]), text: clean(vttText(raw)) };
+		const text = vttText(raw).trim();
+		const match = timing.exec(lines[index] ?? "");
+		if (!match) {
+			if (text) counts.invalid++;
+			return [];
+		}
+		if (!text) { counts.empty++; return []; }
+		const cue = { start: vttSeconds(match[1]), end: vttSeconds(match[2]), text };
+		if (!Number.isFinite(cue.end) || cue.end <= cue.start) { counts.invalid++; return []; }
 		const pieces = raw.split(inlineTime);
-		if (pieces.length === 1) return [cue];
-		const chunks = pieces.filter((_, i) => i % 2 === 0).map((part) => clean(vttText(part)));
-		const starts = [cue.start, ...pieces.filter((_, i) => i % 2 === 1).map(vttSeconds)];
-		if (!chunks[0]) { chunks.shift(); starts.shift(); }
-		return [attachWords(cue, chunks, starts)];
+		if (pieces.length > 1) {
+			addWords(cue, pieces.flatMap((piece, i) => i % 2 ? [] : [{
+				text: vttText(piece).trim(), start: i === 0 ? cue.start : vttSeconds(pieces[i - 1]),
+			}]), counts);
+		}
+		return [cue];
 	});
 }
 
-function overlap(previous: Cue, next: Cue, prefix: string[], suffix: string[], format: "json3" | "vtt") {
-	// Rolling VTT can insert a near-zero-length echo between two adjacent display windows.
-	const echo = format === "vtt" && Math.min(previous.end - previous.start, next.end - next.start) <= 0.05;
-	if (next.start >= previous.end && !(echo && next.start - previous.end <= 0.05)) return 0;
-	for (let count = Math.min(suffix.length, prefix.length); count > 0; count--) {
-		if (prefix.slice(0, count).join(" ") !== suffix.slice(-count).join(" ")) continue;
-		const before = anchors.get(previous)?.slice(-count);
-		const after = anchors.get(next);
-		if (format === "json3" && (!before || !after || (count < prefix.length && after[count] === undefined))) continue;
-		if (before && after && before.some((prior, i) => {
-			const start = after[i];
-			return start === undefined || prior === undefined ? format === "json3" : Math.abs(start - prior) > 0.01;
-		})) continue;
-		return count;
-	}
-	return 0;
-}
-
 export function parseCaptions(data: string, format: "json3" | "vtt", auto: boolean, duration?: number) {
-	const cues: Cue[] = [];
+	const counts: Counts = { empty: 0, invalid: 0, untimed: 0 };
+	const cues = format === "json3" ? jsonCues(data, auto, counts) : vttCues(data, counts);
 	const warnings: string[] = [];
-	let dropped = 0, badTimes = 0;
-	let previous: Cue | undefined;
-	for (const cue of (format === "json3" ? jsonCues(data) : vttCues(data)).sort((a, b) => a.start - b.start)) {
-		if (!cue.text || noise.test(cue.text)) { dropped++; continue; }
-		if (!Number.isFinite(cue.start) || !Number.isFinite(cue.end) || cue.start < 0 || cue.end <= cue.start) {
-			badTimes++;
-			continue;
-		}
-		if (duration !== undefined && cue.end > duration) badTimes++;
-		const tokens = cue.text.split(" ");
-		const count = auto && previous ? overlap(previous, cue, tokens, previous.text.split(" "), format) : 0;
-		previous = cue;
-		if (count === tokens.length) continue;
-		if (!count) { cues.push(cue); continue; }
-		const words = cue.words?.slice(count);
-		const start = anchors.get(cue)?.[count] ?? cue.start;
-		cues.push({ ...cue, text: tokens.slice(count).join(" "), start, ...(words && { words }) });
+	const sound = cues.filter((cue) => noise.test(cue.text)).length;
+	const outOfRange = duration === undefined ? 0 : cues.filter((cue) => cue.end > duration).length;
+	if (counts.empty) warnings.push("Dropped " + counts.empty + " empty caption cues.");
+	if (counts.invalid) warnings.push("Dropped " + counts.invalid + " caption cues with invalid timing.");
+	if (counts.untimed) warnings.push("Omitted invalid word times in " + counts.untimed + " caption cues.");
+	if (sound) warnings.push("Kept " + sound + " music or sound-effect-only caption cues.");
+	if (outOfRange) warnings.push("Found " + outOfRange + " caption cues outside the video duration.");
+	if (auto && cues.length) {
+		if (format === "vtt") warnings.push("automatic VTT captions can repeat lines");
+		warnings.push("Auto caption timings can be off by a few seconds; verify openings with frames or audio before cutting.");
 	}
-	if (dropped) warnings.push(`Dropped ${dropped} empty or noise-only caption cues.`);
-	if (badTimes) warnings.push(`Found ${badTimes} caption cues with invalid or out-of-range times.`);
-	if (auto) warnings.push("Auto caption timings can be off by a few seconds; verify openings with frames or audio before cutting.");
 	return { cues, warnings };
 }

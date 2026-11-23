@@ -16,13 +16,18 @@ import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
 import { handleExportFile, handleExportResult } from "@/agent/export-server";
 import { handleCli } from "@/agent/cli-api";
-import { agentAssetPath } from "@/agent/inside";
 import { renderPresence, renderRequest, renderWorker } from "@/agent/render-server";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 const FILES_ROOT = path.resolve(process.env.AGENT_FILES_ROOT ?? WORKSPACE);
 const TYPES: Record<string, string> = { ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".avif": "image/avif", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac", ".aac": "audio/aac", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".json": "application/json" };
 const json = (data: Buffer | string) => new Response(typeof data === "string" ? data : new Uint8Array(data), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+
+function inside(rel: string) {
+	const full = path.resolve(FILES_ROOT, rel);
+	if (!full.startsWith(FILES_ROOT + path.sep)) throw new Error("Path outside AGENT_FILES_ROOT");
+	return full;
+}
 
 // Unique temp file, rename retried on transient Windows locks, writes to one file queued.
 const writeAtomic = atomicWrite;
@@ -40,8 +45,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 	try {
 		if (slug[0] === "bundle") return json(await fs.readFile(path.join(WORKSPACE, "bundle", "bundle.json")));
 		if (slug[0] === "file") {
-			const { file, ext } = await agentAssetPath(FILES_ROOT, WORKSPACE, new URL(req.url).searchParams.get("p") ?? "");
-			return new Response(new Uint8Array(await fs.readFile(file)), { headers: { "Content-Type": TYPES[ext] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
+			const full = inside(new URL(req.url).searchParams.get("p") ?? "");
+			return new Response(new Uint8Array(await fs.readFile(full)), { headers: { "Content-Type": TYPES[path.extname(full).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
 		}
 		if (slug[0] === "sfx-file" || slug[0] === "music-file") {
 			// Preview of a sound or song in one of the library folders (BOPENCUT_SFX_DIRS / BOPENCUT_MUSIC_DIRS may be outside AGENT_FILES_ROOT).

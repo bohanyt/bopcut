@@ -10,7 +10,7 @@ import { loadEnvLocal } from "./retrieval-cli";
 const commands = ["status", "selection", "notes", "export", "frames", "transcript"] as const;
 type Command = typeof commands[number];
 const usage = "Use: bun run agent <status|selection|notes|export|frames|transcript> [--project-id ID] [--timeout SECONDS]";
-const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--refresh] [--timeout S] [--project-id ID]";
+const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
 
 export function parseArgs(args: string[]) {
 	const [command, ...rest] = args;
@@ -24,7 +24,7 @@ export function parseArgs(args: string[]) {
 		args: rest, allowPositionals: transcript,
 		options: {
 			"project-id": { type: "string" }, timeout: { type: "string" },
-			...(transcript && { lang: { type: "string" }, range: { type: "string" }, refresh: { type: "boolean" } }),
+			...(transcript && { lang: { type: "string" }, range: { type: "string" } }),
 			...(!transcript && { url: { type: "string" } }),
 			...(render && { "allow-missing": { type: "boolean" } }),
 			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
@@ -51,7 +51,7 @@ export function parseArgs(args: string[]) {
 			}
 			range = { start, end };
 		}
-		const request: TranscriptRequest = { url, language, range, refresh: values.refresh === true };
+		const request: TranscriptRequest = { url, language, range };
 		return { command: "transcript" as const, projectId, timeoutMs, request };
 	}
 	const server = typeof values.url === "string" ? values.url : process.env.BOPENCUT_URL;
