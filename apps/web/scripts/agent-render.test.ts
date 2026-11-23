@@ -1,4 +1,7 @@
 import { expect, mock, spyOn, test } from "bun:test";
+import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { main, parseArgs, renderFailed } from "./agent";
 import { launchBrowser, type RunningBrowser } from "./agent-browser";
 import { runRender } from "./agent-render";
@@ -18,6 +21,22 @@ test("refuses an invalid GPU mode before starting the hidden browser", () => {
 	expect(() => launchBrowser("http://localhost/worker", "profile", { start, env: { BOPENCUT_RENDER_GPU: "auto" } }))
 		.toThrow("Set BOPENCUT_RENDER_GPU to high-performance or low-power.");
 	expect(start).not.toHaveBeenCalled();
+});
+
+test("reads the GPU override from a dotenv file and prefers the CLI environment", () => {
+	const directory = mkdtempSync(path.join(tmpdir(), "agent-render-gpu-"));
+	const envFile = path.join(directory, ".env.local");
+	writeFileSync(envFile, "BOPENCUT_RENDER_GPU=low-power # bypass the broken driver\n");
+	try {
+		const start = mock((_args: string[]): RunningBrowser => ({ exited: Promise.resolve(), stop: async () => {} }));
+		launchBrowser("http://localhost/worker", "profile", { start, env: {}, envFile });
+		expect(start.mock.lastCall![0]).not.toContain("--force_high_performance_gpu");
+		launchBrowser("http://localhost/worker", "profile", { start, env: { BOPENCUT_RENDER_GPU: "high-performance" }, envFile });
+		expect(start.mock.lastCall![0]).toContain("--force_high_performance_gpu");
+	} finally {
+		unlinkSync(envFile);
+		rmdirSync(directory);
+	}
 });
 
 test("reports only known adapter vendors and handles missing adapter information", () => {

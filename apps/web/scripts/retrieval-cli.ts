@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 
-export function loadEnvLocal(file: string, only?: string) {
+export function loadEnvLocal(file: string) {
 	if (!existsSync(file)) return;
 	for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
 		const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-		if (!m || (only !== undefined && m[1] !== only)) continue;
+		if (!m || line.trim().startsWith("#")) continue;
 		const value = m[2].replace(/^(['"])(.*)\1$/, "$2");
 		if (process.env[m[1]] === undefined) process.env[m[1]] = value;
 	}

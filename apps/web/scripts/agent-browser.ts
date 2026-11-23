@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { loadEnvLocal } from "./retrieval-cli";
+import { parseEnv } from "node:util";
 
 export type RunningBrowser = { exited: Promise<unknown>; stop(): Promise<void> };
 
@@ -50,14 +50,20 @@ function startBrowser(args: string[]): RunningBrowser {
 	};
 }
 
-export function launchBrowser(url: string, profile: string, { start = startBrowser, env = process.env }: {
+export function launchBrowser(url: string, profile: string, {
+	start = startBrowser,
+	env = process.env,
+	envFile = env === process.env ? path.resolve(import.meta.dir, "../.env.local") : undefined,
+}: {
 	start?: typeof startBrowser;
 	env?: Record<string, string | undefined>;
+	envFile?: string;
 } = {}): RunningBrowser {
-	if (env === process.env && env.BOPENCUT_RENDER_GPU === undefined) {
-		loadEnvLocal(path.resolve(import.meta.dir, "../.env.local"), "BOPENCUT_RENDER_GPU");
+	let gpu = env.BOPENCUT_RENDER_GPU;
+	if (gpu === undefined && envFile && existsSync(envFile)) {
+		gpu = parseEnv(readFileSync(envFile, "utf8")).BOPENCUT_RENDER_GPU;
 	}
-	const gpu = env.BOPENCUT_RENDER_GPU ?? "high-performance";
+	gpu ??= "high-performance";
 	if (gpu !== "high-performance" && gpu !== "low-power") {
 		throw new Error("Set BOPENCUT_RENDER_GPU to high-performance or low-power.");
 	}
