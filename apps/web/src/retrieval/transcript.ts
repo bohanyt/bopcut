@@ -180,7 +180,9 @@ export async function getTranscript(request: TranscriptRequest, deps: Deps) {
 		};
 		const preferred = chooseTracks(info)[0];
 		for (const track of chooseTracks(info, language)) {
-			const file = `${source.id}.${track.key}.${track.origin}.json`;
+			// Escape uppercase so case-sensitive source IDs stay distinct on Windows.
+			const file = `${source.id}.${track.key}`.replace(/[A-Z]/g, (c) => "%" + c.charCodeAt(0).toString(16))
+				+ `.${track.origin}.json`;
 			const revision = track.format.revision ?? track.format.last_modified;
 			const aliases = new Set([alias, aliasFile(source.pageUrl, language)]);
 			if (!language) {

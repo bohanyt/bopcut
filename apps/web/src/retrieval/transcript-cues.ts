@@ -9,7 +9,8 @@ const anchors = new WeakMap<Cue, (number | undefined)[]>();
 function attachWords(cue: Cue, texts: string[], starts: number[]) {
 	if (texts.join(" ") !== cue.text) return cue;
 	// Keep segment starts for deduplication when the track times a group of words together.
-	anchors.set(cue, texts.flatMap((text, i) => text.split(" ").map((_, word) => word || !Number.isFinite(starts[i]) ? undefined : starts[i])));
+	anchors.set(cue, texts.flatMap((text, i) => text.split(" ").map((_, word) =>
+		!word && starts[i] >= cue.start && starts[i] < cue.end ? starts[i] : undefined)));
 	if (!texts.every((text, i) =>
 		text && !/\s/.test(text) && starts[i] >= (starts[i - 1] ?? cue.start) && starts[i] < cue.end)) return cue;
 	cue.words = texts.map((text, i) => ({ text, start: starts[i], end: starts[i + 1] ?? cue.end }));
@@ -67,12 +68,12 @@ function overlap(previous: Cue, next: Cue, prefix: string[], suffix: string[], f
 	for (let count = Math.min(suffix.length, prefix.length); count > 0; count--) {
 		if (prefix.slice(0, count).join(" ") !== suffix.slice(-count).join(" ")) continue;
 		const before = anchors.get(previous)?.slice(-count);
-		if (before && anchors.get(next)?.slice(0, count).some((start, i) => {
-			const prior = before[i];
-			return start !== undefined && prior !== undefined && Math.abs(start - prior) > 0.01;
-		})) {
-			continue;
-		}
+		const after = anchors.get(next);
+		if (format === "json3" && (!before || !after || (count < prefix.length && after[count] === undefined))) continue;
+		if (before && after && before.some((prior, i) => {
+			const start = after[i];
+			return start === undefined || prior === undefined ? format === "json3" : Math.abs(start - prior) > 0.01;
+		})) continue;
 		return count;
 	}
 	return 0;
@@ -96,7 +97,8 @@ export function parseCaptions(data: string, format: "json3" | "vtt", auto: boole
 		if (count === tokens.length) continue;
 		if (!count) { cues.push(cue); continue; }
 		const words = cue.words?.slice(count);
-		cues.push({ ...cue, text: tokens.slice(count).join(" "), ...(words && { words, start: words[0].start }) });
+		const start = anchors.get(cue)?.[count] ?? cue.start;
+		cues.push({ ...cue, text: tokens.slice(count).join(" "), start, ...(words && { words }) });
 	}
 	if (dropped) warnings.push(`Dropped ${dropped} empty or noise-only caption cues.`);
 	if (badTimes) warnings.push(`Found ${badTimes} caption cues with invalid or out-of-range times.`);

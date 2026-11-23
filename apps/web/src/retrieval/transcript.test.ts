@@ -86,6 +86,14 @@ test("overlapping automatic cues preserve repeated words spoken at different tim
 		{ tStartMs: 2000, dDurationMs: 2000, segs: [{ utf8: "no.", tOffsetMs: 0 }] },
 	] });
 	expect((await get({ refresh: true })).cues.map((cue) => cue.text)).toEqual(["I said no.", "no."]);
+	captionData = JSON.stringify({ events: [
+		{ tStartMs: 0, dDurationMs: 4000, segs: [{ utf8: "I said no", tOffsetMs: 0 }, { utf8: " no", tOffsetMs: 2000 }] },
+		{ tStartMs: 3000, dDurationMs: 3000, segs: [{ utf8: "no no", tOffsetMs: 0 }] },
+		{ tStartMs: 7000, dDurationMs: 2000, segs: [{ utf8: "go", tOffsetMs: 0 }] },
+		{ tStartMs: 7000, dDurationMs: 5000, segs: [{ utf8: "go", tOffsetMs: 0 }, { utf8: " right now", tOffsetMs: 3000 }] },
+	] });
+	expect((await get({ refresh: true })).cues.map(({ text, start }) => [text, start]))
+		.toEqual([["I said no no", 0], ["no no", 3], ["go", 7], ["right now", 10]]);
 });
 
 test("ranges overlap half-open edges and preserve full cue times", async () => {
@@ -146,6 +154,16 @@ test("explicit automatic original captions cannot replace the plain language ali
 	expect((await get({ language: "en-orig" })).origin).toBe("auto");
 	expect(await get({ language: "en" })).toMatchObject({ origin: "creator", cached: true });
 	expect(calls).toHaveLength(4);
+});
+
+test("video IDs differing by case have distinct filenames on every filesystem", async () => {
+	await get();
+	metadata.id = "Example_id1";
+	metadata.webpage_url = url.replace("example_id1", "Example_id1");
+	await get({ url: String(metadata.webpage_url) });
+	const tracks = (await readdir(cache)).filter((name) => name.endsWith(".en.creator.json"));
+	expect(new Set(tracks.map((name) => name.toLowerCase())).size).toBe(2);
+	expect((await get()).cached).toBe(true);
 });
 
 test("live streams and unavailable captions leave no cache entry", async () => {
