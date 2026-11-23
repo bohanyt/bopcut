@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { RetrievalError, defaultRunner, runTool, runToolOutput, toolsFromEnv } from "@/retrieval/server";
+import { RetrievalError, defaultRunner, runTool, runToolOutput, toolsFromEnv, ytDlpJobArgs } from "@/retrieval/server";
 import { isHttpUrl } from "@/retrieval/time";
 import { Cancelled, cacheTargets, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "@/retrieval/jobs";
 import { assertPublicUrl } from "@/retrieval/net";
@@ -26,7 +26,7 @@ type FlatEntry = { id?: string; title?: string; url?: string; webpage_url?: stri
 export async function searchOnline(query: string, deps: MusicDeps, limit = 8): Promise<MusicResult[]> {
 	const env = deps.env ?? process.env;
 	const tools = deps.tools ?? toolsFromEnv(env);
-	const args = ["--ignore-config", "--skip-download", "--flat-playlist", "-J", "--no-warnings", "--", `ytsearch${Math.min(20, limit + 4)}:${query.trim()}`];
+	const args = [...ytDlpJobArgs(), "--skip-download", "--flat-playlist", "-J", "--no-warnings", "--", `ytsearch${Math.min(20, limit + 4)}:${query.trim()}`];
 	const stdout = await runTool(deps.runner ?? defaultRunner, tools.ytdlp, args, "yt-dlp", deps.signal);
 	let entries: FlatEntry[] = [];
 	try {
@@ -117,7 +117,7 @@ async function fetchOnline(url: string, deps: MusicDeps, scratch: string, signal
 	};
 	const cached = await lookup();
 	if (cached) return cached;
-	const args = ["--ignore-config", "--no-cache-dir", "--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", `!is_live & duration <= ${maxSeconds(env)}`, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"];
+	const args = [...ytDlpJobArgs(scratch), "--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", `!is_live & duration <= ${maxSeconds(env)}`, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"];
 	if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
 	const [command, ...rest] = tools.ffmpeg;
 	if (rest.length === 0 && /[\\/]/.test(command)) args.push("--ffmpeg-location", command);

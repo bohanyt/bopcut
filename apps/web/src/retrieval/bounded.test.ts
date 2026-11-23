@@ -55,6 +55,10 @@ test.each([60, 10_800])("a one-second seek transfers only a small part of a %s-s
 	const runner: Runner = (command, args, signal, cwd) => command === "yt-dlp"
 		? Promise.resolve({ stdout: JSON.stringify({ url, protocol: "http", duration }), stderr: "" })
 		: defaultRunner(command, args, signal, cwd);
+	const proxy = process.env.http_proxy;
+	const bypass = process.env.no_proxy;
+	process.env.http_proxy = "http://127.0.0.1:1";
+	process.env.no_proxy = "";
 	try {
 		const result = await fetchSection({ url, start: startTime, end: startTime + 1, audioOnly: true }, { filesRoot: root, env, runner, fetchImpl });
 		expect(result.type).toBe("audio");
@@ -62,12 +66,16 @@ test.each([60, 10_800])("a one-second seek transfers only a small part of a %s-s
 		expect(ranges.some(([start]) => start === startTime * 16_000 + 44)).toBe(true);
 		expect(ranges.reduce((bytes, [start, end]) => bytes + end - start + 1, 0)).toBeLessThan(9 * 16_000 + 64); // Allow one extra read and the range probe across demuxer versions.
 	} finally {
+		if (proxy === undefined) delete process.env.http_proxy;
+		else process.env.http_proxy = proxy;
+		if (bypass === undefined) delete process.env.no_proxy;
+		else process.env.no_proxy = bypass;
 		await rm(root, { recursive: true, force: true });
 	}
 }, 15_000);
 
 test.each([
-	["same host", "https://video.example.com/private/other", "session=fixture; host=only; secure=yes"],
+	["same host", "https://video.example.com/private/other", "session=fixture; secure=yes; host=only"],
 	["sibling host", "https://cdn.example.com/private/other", "session=fixture; secure=yes"],
 	["insecure sibling", "http://cdn.example.com/private/other", "session=fixture"],
 	["path mismatch", "https://video.example.com/private-other", "host=only"],
@@ -90,5 +98,29 @@ test.each([
 			"unrelated=no; Domain=.example.net; Path=/",
 		].join("; "),
 	}], 1000, 1, { fetchImpl, env, signal: new AbortController().signal }, async () => {});
-	expect(seen).toEqual(["session=fixture; host=only; secure=yes", expected]);
+	expect(seen).toEqual(["session=fixture; secure=yes; host=only", expected]);
+});
+
+test("redirect cookies are kept across reads of the same stream", async () => {
+	const seen: (string | null)[] = [];
+	const fetchImpl = Object.assign(async (_u: string | URL | Request, init?: RequestInit) => {
+		const headers = new Headers(init?.headers);
+		seen.push(headers.get("cookie"));
+		if (seen.length === 1) {
+			const redirect = new Headers({ location: "https://cdn.example.com/private/media" });
+			redirect.append("Set-Cookie", "session=fixture; Domain=example.com; Path=/private; Secure; HttpOnly");
+			redirect.append("Set-Cookie", "host=only; Path=/");
+			return new Response(null, { status: 302, headers: redirect });
+		}
+		if (seen.length === 3) return new Response(null, { status: 302, headers: { location: "https://elsewhere.example.net/media" } });
+		return new Response(new Uint8Array(1), { status: 206, headers: { "Content-Range": "bytes 0-0/1000000" } });
+	}, { preconnect: fetch.preconnect });
+	await withSectionInputs([{
+		url: "https://video.example.com/private/video", protocol: "https",
+	}], 1000, 1, { fetchImpl, env, signal: new AbortController().signal }, async ([input]) => {
+		const response = await fetch(input, { headers: { Range: "bytes=0-0" } });
+		expect(response.status).toBe(206);
+		await response.arrayBuffer();
+	});
+	expect(seen).toEqual([null, "session=fixture", "session=fixture; host=only", null]);
 });

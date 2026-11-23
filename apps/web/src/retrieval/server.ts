@@ -79,6 +79,16 @@ export function encoderArgs(encoder: string): string[] {
 export type Runner = (command: string, args: string[], signal?: AbortSignal, scratch?: string) => Promise<{ stdout: string; stderr: string }>;
 export const defaultRunner: Runner = runProcess;
 
+/** Keep the user's extractor settings while overriding side effects and job paths. */
+export function ytDlpJobArgs(scratch?: string) {
+	return [
+		"--no-cache-dir", "--no-download-archive", "--no-exec", "--no-exec-before-download",
+		"--no-write-description", "--no-write-info-json", "--no-write-subs", "--no-write-auto-subs",
+		"--no-write-thumbnail", "--no-split-chapters", "--no-check-formats",
+		...(scratch ? ["-P", "home:" + scratch, "-P", "temp:" + scratch] : []),
+	];
+}
+
 export async function runTool(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, scratch?: string): Promise<string> {
 	return (await runToolOutput(runner, tool, args, label, signal, scratch)).stdout;
 }
@@ -216,7 +226,7 @@ async function download(
 	const { start, end, url, audioOnly } = request;
 	const { tools = toolsFromEnv(deps.env), runner = defaultRunner } = deps;
 	const cwd = path.dirname(output);
-	const args = ["--ignore-config", "--no-cache-dir", "--no-playlist", "--playlist-items", "1", "--no-warnings", "--skip-download", "-j",
+	const args = [...ytDlpJobArgs(cwd), "--no-playlist", "--playlist-items", "1", "--no-warnings", "--skip-download", "-j",
 		"-f", formatSelector(request.height ?? tools.defaultHeight, audioOnly)];
 	if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
 	const info = parseInfo(await runTool(runner, tools.ytdlp, [...args, "--", url], "yt-dlp", signal, cwd));
@@ -224,7 +234,7 @@ async function download(
 	if (!info) throw new RetrievalError("nothing was downloaded (an unsupported link)");
 	if (info.duration && start >= info.duration) throw new RetrievalError("start is outside the source; choose an earlier time");
 	await withSectionInputs(info.requested_formats ?? [info], info.duration, end - start, { ...deps, signal }, async (inputs) => {
-		const read = inputs.flatMap((input) => ["-protocol_whitelist", "http,tcp",
+		const read = inputs.flatMap((input) => ["-protocol_whitelist", "http,tcp", "-http_proxy", "",
 			"-format_whitelist", "mov,matroska,webm,wav,mp3,aac,ogg,flac,mpegts,avi,flv,mpeg", "-analyzeduration", "1000000", "-probesize", "32768", "-seekable", "1", "-reconnect", "1", "-reconnect_delay_max", "0", "-ss", String(start), "-i", input]);
 		const maps = audioOnly ? ["-map", "0:a:0", "-vn"] : ["-map", "0:v:0", "-map", (inputs.length === 2 ? "1" : "0") + ":a:0?"];
 		const encode = audioOnly ? [] : [...encoderArgs(tools.videoEncoder), "-pix_fmt", "yuv420p"];

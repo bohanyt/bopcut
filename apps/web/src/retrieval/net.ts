@@ -3,6 +3,7 @@
 // network. BOPENCUT_ALLOW_PRIVATE_URLS=1 lifts this for people who fetch from their own LAN.
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import type { CookieJar } from "tough-cookie";
 import { isHttpUrl } from "./time";
 import { RetrievalError } from "./server-errors";
 import { Cancelled, checkCancelled } from "./jobs";
@@ -75,8 +76,8 @@ export async function assertPublicUrl(url: string, env: Record<string, string | 
  * fetch that follows at most `maxRedirects` redirects itself, checking every hop with assertPublicUrl,
  * with a timeout. Use readCapped on the response to bound its size.
  */
-export async function fetchPublic(url: string, init: RequestInit & { fetchImpl?: typeof fetch; env?: Record<string, string | undefined>; timeoutMs?: number; maxRedirects?: number; cookieForUrl?: (url: URL) => string } = {}): Promise<Response> {
-	const { fetchImpl = fetch, env, timeoutMs = 30_000, maxRedirects = 5, signal, cookieForUrl, ...rest } = init;
+export async function fetchPublic(url: string, init: RequestInit & { fetchImpl?: typeof fetch; env?: Record<string, string | undefined>; timeoutMs?: number; maxRedirects?: number; cookieJar?: CookieJar } = {}): Promise<Response> {
+	const { fetchImpl = fetch, env, timeoutMs = 30_000, maxRedirects = 5, signal, cookieJar, ...rest } = init;
 	const timeout = AbortSignal.timeout(timeoutMs);
 	const deadline = signal ? AbortSignal.any([timeout, signal]) : timeout;
 	let current = url;
@@ -86,12 +87,12 @@ export async function fetchPublic(url: string, init: RequestInit & { fetchImpl?:
 		if (!isHttpUrl(current)) throw new RetrievalError("url must be an http(s) link");
 		await assertPublicUrl(current, env, undefined, deadline);
 		const hopHeaders = new Headers(headers);
-		if (cookieForUrl) {
-			hopHeaders.delete("cookie");
-			const cookie = cookieForUrl(new URL(current));
-			if (cookie) hopHeaders.set("cookie", cookie);
-		}
+		const cookie = cookieJar?.getCookieStringSync(current);
+		if (cookie) hopHeaders.set("cookie", cookie);
 		const res = await fetchImpl(current, { ...rest, headers: hopHeaders, redirect: "manual", signal: deadline, cache: "no-store" });
+		if (cookieJar) {
+			for (const value of res.headers.getSetCookie()) cookieJar.setCookieSync(value, current, { ignoreError: true });
+		}
 		if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
 			await res.body?.cancel().catch(() => {});
 			const next = new URL(res.headers.get("location") as string, current);

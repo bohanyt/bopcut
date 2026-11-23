@@ -139,6 +139,8 @@ describe("fetching", () => {
 		const call = calls[0];
 		expect(call.command).toBe("python");
 		expect(call.args.slice(0, 2)).toEqual(["-m", "yt_dlp"]);
+		expect(call.args).not.toContain("--ignore-config");
+		expect(call.args).toContain("--no-write-info-json");
 		expect(call.args).toContain("--cookies-from-browser");
 		expect(call.args.slice(-2)).toEqual(["--", "https://www.youtube.com/watch?v=abc"]);
 		const left = await fs.readdir(path.join(root, "retrieved"));

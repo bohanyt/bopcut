@@ -134,6 +134,8 @@ describe("music", () => {
 		expect(first).toMatchObject({ name: "Nocturne Op. 9 No. 2", uploader: "Pianist", cached: false });
 		expect(first.path).toMatch(/^music\/online\/[0-9a-f]{12}\.asset\/[0-9a-f]{12}\.m4a$/);
 		const download = calls.find((c) => c.includes("-x")) as string[];
+		expect(download).not.toContain("--ignore-config");
+		expect(download).toContain("--no-write-info-json");
 		expect(download.join(" ")).toContain("--match-filter !is_live & duration <= 900");
 		expect(calls.at(-1)?.join(" ")).toContain("loudnorm=I=-16");
 		expect((await fs.readdir(path.dirname(path.join(root, first.path)))).sort()).toEqual([path.basename(first.path), path.basename(first.path).replace(".m4a", ".json")].sort());
