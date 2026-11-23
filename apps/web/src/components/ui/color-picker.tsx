@@ -87,6 +87,7 @@ function ColorPickerContent({
 }: ColorPickerContentProps) {
 	const { t } = useI18n();
 	const drag = useRef<{ target: HTMLButtonElement; cancel: () => void } | null>(null);
+	const inputRef = useRef<HTMLInputElement>(null);
 	const [internalHue, setInternalHue] = useState(0);
 	const [inputValue, setInputValue] = useState(value);
 	const [colorFormat, setColorFormat] = useState<ColorFormat>("hex");
@@ -237,7 +238,13 @@ function ColorPickerContent({
 				event.preventDefault();
 			}}
 			onInteractOutside={(event) => {
-				if (drag.current) event.preventDefault();
+				if (drag.current) {
+					event.preventDefault();
+					return;
+				}
+				// Pointer-down can dismiss the popover before the browser blurs the input.
+				const input = inputRef.current;
+				if (input && input.ownerDocument.activeElement === input) input.blur();
 			}}
 		>
 			<header className="border-b flex justify-between items-center pb-2 px-2">
@@ -340,6 +347,7 @@ function ColorPickerContent({
 					</Select>
 
 					<Input
+						ref={inputRef}
 						className={cn(
 							"h-7 rounded-sm p-2.5",
 							colorFormat === "hex" && "uppercase",
