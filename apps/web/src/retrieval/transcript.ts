@@ -117,7 +117,8 @@ export async function getTranscript(request: TranscriptRequest, deps: Deps) {
 		warnings.push(...parsed.warnings);
 		if (!parsed.cues.length) continue;
 		const end = source.duration ?? parsed.cues.reduce((last, cue) => Math.max(last, cue.end), 0);
-		const cues = range ? parsed.cues.filter((cue) => cue.start < range.end && cue.end > range.start) : parsed.cues;
+		const cues = range ? parsed.cues.filter((cue) => cue.start < range.end &&
+			(cue.end > range.start || (cue.start === cue.end && cue.start === range.start))) : parsed.cues;
 		return { source, language: track.language, origin: track.origin, coverage: [{ start: 0, end }], cues, warnings };
 	}
 	throw new RetrievalError([unavailable, ...warnings].join(" "));

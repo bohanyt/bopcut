@@ -13,7 +13,7 @@ const captions = { en: [json3], es: [vttFormat] };
 const timed = JSON.stringify({ events: [
 	{ tStartMs: 1000, dDurationMs: 3300, segs: [{ utf8: "We go", tOffsetMs: 200 }, { utf8: " now", tOffsetMs: 950 }] },
 	{ tStartMs: 1800, dDurationMs: 300, aAppend: 1, segs: [{ utf8: "\n" }] },
-	{ tStartMs: 3500, dDurationMs: 1500, segs: [{ utf8: "We go", tOffsetMs: 0 }, { utf8: " again" }] },
+	{ tStartMs: 3500, dDurationMs: 1500, segs: [{ utf8: "We go" }, { utf8: " again", tOffsetMs: 500 }] },
 	{ tStartMs: 5000, dDurationMs: 500, segs: [{ utf8: "[Music] ♪" }] },
 	{ tStartMs: 5500, dDurationMs: 500, segs: [{ utf8: " " }] },
 	{ tStartMs: 6000, dDurationMs: 500, segs: [{ utf8: "[Laughter] Keep going" }] },
@@ -100,6 +100,17 @@ test("ranges overlap half-open edges and preserve full cue times", async () => {
 	const result = await get({ range: { start: 4.3, end: 5 } });
 	expect(result.cues).toEqual([{ text: "We go again", start: 3.5, end: 5 }]);
 	expect((await get({ range: { start: 11, end: 12 } })).cues).toEqual([]);
+});
+
+test("a capped cue at the start of a range retains its text", async () => {
+	metadata.subtitles = {};
+	captionData = JSON.stringify({ events: ["First", "Second"].map((utf8) => ({
+		tStartMs: 5000, dDurationMs: 2000, segs: [{ utf8 }],
+	})) });
+	expect((await get({ range: { start: 5, end: 6 } })).cues).toEqual([
+		{ start: 5, end: 5, text: "First" }, { start: 5, end: 7, text: "Second" },
+	]);
+	expect((await get({ range: { start: 4, end: 5 } })).cues).toEqual([]);
 });
 
 test("creator VTT is tried if JSON3 is unusable and keeps inline word times", async () => {
