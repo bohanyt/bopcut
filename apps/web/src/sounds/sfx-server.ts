@@ -320,7 +320,7 @@ async function getMyinstants(ref: string, deps: SfxDeps, label: SfxLabel = {}): 
 	const cached = await lookup();
 	checkCancelled(deps.signal, "sound lookup");
 	if (cached) return cached;
-	return withScratch(path.resolve(deps.filesRoot), deps.signal, async (scratch, signal) => {
+	return withScratch(dir, deps.signal, async (scratch, signal) => {
 		const res = await fetchPublic(MYINSTANTS + ref, { headers: { "User-Agent": USER_AGENT }, fetchImpl: deps.fetchImpl, env: deps.env, timeoutMs: 30_000, signal });
 		if (!res.ok) {
 			await res.body?.cancel();
@@ -360,7 +360,7 @@ export async function getLibrary(ref: string, deps: SfxDeps, kind: LibraryKind =
 	const hash = createHash("sha1").update(`${file}|${stat.size}|${stat.mtimeMs}`).digest("hex").slice(0, 8);
 	const copy = path.join(filesRoot, kind.folder, "library", `${hash}-${safeFileName(path.basename(file))}`);
 	if (await exists(copy)) return { path: toPosix(path.relative(filesRoot, copy)), name, source: "library", cached: true };
-	return withScratch(filesRoot, deps.signal, async (scratch, signal) => {
+	return withScratch(path.dirname(copy), deps.signal, async (scratch, signal) => {
 		const part = path.join(scratch, "library");
 		await fs.copyFile(file, part);
 		await publishMedia(part, copy, signal);

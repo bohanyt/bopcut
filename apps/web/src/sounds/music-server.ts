@@ -116,7 +116,7 @@ async function fetchOnline(url: string, deps: MusicDeps, signal: AbortSignal): P
 	};
 	const cached = await lookup();
 	if (cached) return cached;
-	return withScratch(deps.filesRoot, signal, async (scratch, signal) => {
+	return withScratch(dir, signal, async (scratch, signal) => {
 		const args = [...ytDlpJobArgs(scratch), "--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", `!is_live & duration <= ${maxSeconds(env)}`, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"];
 		if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
 		const [command, ...rest] = tools.ffmpeg;

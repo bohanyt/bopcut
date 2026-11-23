@@ -275,7 +275,7 @@ function cachedDownload(
 		};
 		const cached = await lookup();
 		if (cached) return cached;
-		return withScratch(root, signal, async (scratch) => {
+		return withScratch(path.join(root, directory), signal, async (scratch) => {
 			const { file, result } = await work(scratch, signal);
 			const saved = { ...result, path: toPosix(path.relative(root, media)) };
 			if (!(await publishMedia(file, media, signal, { file: meta, value: saved }))) return reusePublished(lookup);
@@ -387,7 +387,7 @@ async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl 
 	};
 	const cached = await lookup();
 	if (cached) return cached;
-	return withScratch(filesRoot, signal, async (scratch, signal) => {
+	return withScratch(dir, signal, async (scratch, signal) => {
 		let res: Response;
 		let bytes: Buffer;
 		try {

@@ -220,7 +220,7 @@ async function verifyCookieCopy(verify: (copy: string) => void, useAlias = false
 		expect(await readFile(original)).toEqual(contents);
 		expect(path.relative(filesRoot, copy)).toMatch(/^\.\./);
 		await expect(readFile(copy)).rejects.toMatchObject({ code: "ENOENT" });
-		expect(await readdir(path.join(filesRoot, ".retrieval-jobs"))).toEqual([]);
+		expect(await readdir(path.join(filesRoot, "retrieved", ".retrieval-jobs"))).toEqual([]);
 	} finally {
 		controller.abort();
 		await job.catch(() => {});

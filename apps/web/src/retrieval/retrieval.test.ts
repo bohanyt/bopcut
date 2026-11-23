@@ -146,6 +146,20 @@ describe("fetching", () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	test("job scratch stays inside the cache folder, so only that folder has to be writable", async () => {
+		const outputs: string[] = [];
+		const recording: Runner = (command, args, ...rest) => {
+			outputs.push(args.includes("-o") ? args[args.indexOf("-o") + 1] : args.at(-1) as string);
+			return runner(command, args, ...rest);
+		};
+		await fetchSection({ url: "https://www.youtube.com/watch?v=abc", start: 754, end: 774 }, { filesRoot: root, tools, runner: recording, env: LAN });
+		await fetchFrame({ url: "https://www.youtube.com/watch?v=abc", time: 5 }, { filesRoot: root, tools, runner: recording, env: LAN });
+		expect(outputs.length).toBeGreaterThan(2);
+		for (const output of outputs) expect(path.relative(path.join(root, "retrieved"), output).startsWith("..")).toBe(false);
+		// Nothing is written directly under the files root: it may be read-only while its cache folder is not.
+		expect((await fs.readdir(root)).filter((name) => name.startsWith("."))).toEqual([]);
+	});
+
 	test("a section is fetched once, saved with its source, and served from the cache after", async () => {
 		const first = await fetchSection({ url: "https://www.youtube.com/watch?v=abc", start: 754, end: 774 }, { filesRoot: root, tools, runner, env: LAN });
 		expect(first.cached).toBe(false);
@@ -231,7 +245,7 @@ describe("fetching", () => {
 		expect(r2.status).toBe(502);
 		expect(JSON.stringify(r2.body)).toContain("403");
 		expect(JSON.stringify(r2.body)).not.toContain("size=");
-		expect((await fs.readdir(path.join(root, ".retrieval-jobs"))).length).toBe(0);
+		expect((await fs.readdir(path.join(root, "retrieved", ".retrieval-jobs"))).length).toBe(0);
 	});
 
 	test("bad requests are 400 and run nothing", async () => {
