@@ -48,8 +48,8 @@ beforeEach(async () => {
 });
 afterEach(async () => { await rmdir(workspace); });
 
-const get = (options: Partial<Parameters<typeof getTranscript>[0]> = {}, signal?: AbortSignal, run = runner, allowPrivate = "1") =>
-	getTranscript({ url, ...options }, { workspace, runner: run, signal,
+const get = (options: Partial<Parameters<typeof getTranscript>[0]> = {}, signal?: AbortSignal, run = runner, allowPrivate = "1", resolve?: Parameters<typeof getTranscript>[1]["resolve"]) =>
+	getTranscript({ url, ...options }, { workspace, runner: run, signal, resolve,
 		env: { BOPENCUT_ALLOW_PRIVATE_URLS: allowPrivate, BOPENCUT_YTDLP: "fixture --proxy proxy", BOPENCUT_YTDLP_COOKIES_FROM_BROWSER: "firefox" } });
 
 test("creator beats auto, original language beats track order, and --lang selects a VTT track", async () => {
@@ -68,6 +68,29 @@ test("an explicit original automatic track reports the plain language code", asy
 	metadata.automatic_captions = { "en-orig": [json3] };
 	expect(await get({ language: "EN" })).toMatchObject({ origin: "creator", language: "en" });
 	expect(await get({ language: "en-orig" })).toMatchObject({ origin: "auto", language: "en" });
+});
+
+test("an explicit original track beats a generic language field", async () => {
+	metadata.language = "es";
+	metadata.subtitles = {};
+	metadata.automatic_captions = { es: [json3], "en-orig": [json3] };
+	expect(await get()).toMatchObject({ origin: "auto", language: "en" });
+});
+
+test("a caption host that only the proxy can resolve is read, and a private one is refused", async () => {
+	const publicPage = "https://93.184.216.34/watch";
+	// No real DNS: only the local machine fails to resolve the caption host.
+	const resolve = (async (host: string) => {
+		if (host === "captions.example") throw Object.assign(new Error("not found"), { code: "ENOTFOUND" });
+		return [{ address: "93.184.216.34", family: 4 }];
+	}) as unknown as Parameters<typeof getTranscript>[1]["resolve"];
+	metadata.webpage_url = publicPage;
+	metadata.automatic_captions = {};
+	metadata.subtitles = { en: [{ ext: "vtt", url: "https://captions.example/en.vtt" }] };
+	expect(await get({ url: publicPage }, undefined, runner, "", resolve)).toMatchObject({ origin: "creator", language: "en",
+		cues: [{ text: "Uno & dos", start: 1, end: 2 }] });
+	metadata.subtitles = { en: [{ ext: "vtt", url: "https://127.0.0.1/en.vtt" }] };
+	await expect(get({ url: publicPage }, undefined, runner, "", resolve)).rejects.toThrow("captions unavailable");
 });
 
 test("automatic JSON3 ignores append events and uses offsets and the next cue boundary", async () => {
