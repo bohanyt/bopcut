@@ -4,7 +4,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { isHttpUrl } from "./time";
-import { RetrievalError, UnresolvedHostError } from "./server-errors";
+import { RetrievalError } from "./server-errors";
 import { Cancelled, checkCancelled } from "./jobs";
 
 function ipv4Private(ip: string): boolean {
@@ -64,7 +64,7 @@ export async function assertPublicUrl(url: string, env: Record<string, string | 
 		}
 	})().catch((error: unknown) => {
 		if (error instanceof Cancelled) throw error;
-		throw new UnresolvedHostError("the link's host could not be resolved: " + host);
+		throw new RetrievalError("the link's host could not be resolved: " + host);
 	});
 	if (addresses.some((a) => isPrivateAddress(a.address))) {
 		throw new RetrievalError("links to this machine or the local network are not fetched (set BOPENCUT_ALLOW_PRIVATE_URLS=1 to allow)");

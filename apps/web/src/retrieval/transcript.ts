@@ -4,7 +4,7 @@ import { Cancelled, checkCancelled } from "./jobs";
 import { assertPublicUrl } from "./net";
 import { withToolScratch } from "./process";
 import { defaultRunner, runTool, toolsFromEnv, ytDlpJobArgs, type Probe, type Runner } from "./server";
-import { RetrievalError, UnresolvedHostError } from "./server-errors";
+import { RetrievalError } from "./server-errors";
 import { isHttpUrl } from "./time";
 import { parseCaptions, type Span } from "./transcript-cues";
 
@@ -19,7 +19,6 @@ type Track = { origin: Origin; key: string; language: string; format: Format };
 type Deps = {
 	workspace: string; filesRoot?: string; runner?: Runner; signal?: AbortSignal;
 	env?: Record<string, string | undefined>; progress?: (stage: string) => void;
-	resolve?: Parameters<typeof assertPublicUrl>[2];
 };
 
 export const captionLanguage = /^[a-z\d][a-z\d_-]{0,63}$/i;
@@ -62,10 +61,7 @@ function readCaptionTrack(
 		const flags = [origin === "creator" ? "--write-subs" : "--write-auto-subs", "--load-info-json", infoFile,
 			"--sub-langs", "all", "--sub-format", format.ext, "--no-simulate", "-o", template, "-o", "subtitle:" + template];
 		try {
-			// A caption host may resolve only through yt-dlp's configured proxy. Private addresses stay refused.
-			if (format.url) await assertPublicUrl(format.url, deps.env, deps.resolve, activeSignal).catch((error: unknown) => {
-				if (!(error instanceof UnresolvedHostError)) throw error;
-			});
+			if (format.url) await assertPublicUrl(format.url, deps.env, undefined, activeSignal);
 			await run(flags, activeSignal);
 			const file = path.join(scratch, `captions.${key}.${format.ext}`);
 			if ((await fs.stat(file)).size > 32 * 1024 * 1024) return;
@@ -86,7 +82,7 @@ export async function getTranscript(request: TranscriptRequest, deps: Deps) {
 	}
 	checkCancelled(deps.signal, "transcript");
 	const signal = deps.signal;
-	await assertPublicUrl(url, deps.env, deps.resolve, signal);
+	await assertPublicUrl(url, deps.env, undefined, signal);
 	const { ytdlp, cookiesFromBrowser } = toolsFromEnv(deps.env);
 	const filesRoot = deps.filesRoot ?? deps.workspace;
 	const base = [
