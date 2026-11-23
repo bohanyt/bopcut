@@ -133,6 +133,7 @@ async function writeExportBody(temp: string, body: ReadableStream<Uint8Array>, m
 		const file = await fs.open(temp, "wx");
 		try {
 			let bytes = 0;
+			let lastReport = Date.now();
 			for (;;) {
 				signal?.throwIfAborted();
 				const { done, value: chunk } = await reader.read();
@@ -146,7 +147,10 @@ async function writeExportBody(temp: string, body: ReadableStream<Uint8Array>, m
 					offset += bytesWritten;
 					bytes += bytesWritten;
 				}
-				onUpload?.(bytes);
+				if (onUpload && Date.now() - lastReport >= 2000) {
+					lastReport = Date.now();
+					onUpload(bytes);
+				}
 			}
 		} finally {
 			await file.close();

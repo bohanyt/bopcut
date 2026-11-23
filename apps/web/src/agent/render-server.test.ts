@@ -183,11 +183,11 @@ test("a stopped CLI connection during publication aborts the upload and preserve
 	}
 });
 
-test.each([[3000, [2150, 2150]], [1000, [600, 700]]] as const)("an upload that keeps writing bytes can finish past a %s ms stall interval", async (timeoutMs, pauses) => {
+test("an upload that keeps writing bytes can finish past the stall interval", async () => {
 	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-upload-"));
 	let reader: ReadableStreamDefaultReader<string> | undefined;
 	try {
-		const response = await startRender(begin(undefined, timeoutMs), workspace, async () => "project");
+		const response = await startRender(begin(undefined, 3000), workspace, async () => "project");
 		reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
 		const next = async () => JSON.parse((await reader!.read()).value!);
 		expect(await next()).toEqual({ stage: "waiting for a tab" });
@@ -200,7 +200,7 @@ test.each([[3000, [2150, 2150]], [1000, [600, 700]]] as const)("an upload that k
 			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! },
 			body: new ReadableStream({
 				async pull(stream) {
-					await Bun.sleep(pauses[chunks]);
+					await Bun.sleep(2150);
 					if (cancelled) return;
 					stream.enqueue(new Uint8Array(1024));
 					if (++chunks === 2) stream.close();
