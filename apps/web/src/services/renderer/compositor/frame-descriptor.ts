@@ -94,11 +94,11 @@ async function collectNode({
 }): Promise<void> {
 	signal?.throwIfAborted();
 	if (node instanceof RootNode) {
-		for (let index = 0; index < node.children.length; index++) {
+		for (const child of node.activeChildren) {
 			await collectNode({
-				node: node.children[index],
+				node: child.node,
 				renderer,
-				path: `${path}:${index}`,
+				path: `${path}:${child.index}`,
 				items,
 				textures,
 				signal,

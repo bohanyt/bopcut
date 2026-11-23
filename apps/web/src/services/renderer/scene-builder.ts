@@ -106,13 +106,13 @@ function buildCompoundNode({
 		return null;
 	}
 
-	const content = new RootNode({ duration: element.sourceDuration ?? element.duration });
-	for (const node of buildTrackNodes({
-		tracks: getVisualTracksBottomToTop(scene.tracks),
-		context: { ...context, sceneStack: [...context.sceneStack, scene.id] },
-	})) {
-		content.add(node);
-	}
+	const content = new RootNode(
+		{ duration: element.sourceDuration ?? element.duration },
+		buildTrackNodes({
+			tracks: getVisualTracksBottomToTop(scene.tracks),
+			context: { ...context, sceneStack: [...context.sceneStack, scene.id] },
+		}),
+	);
 
 	return new CompoundNode({
 		content,
@@ -363,7 +363,6 @@ export function buildScene({
 	isPreview,
 	scenes = [],
 }: BuildSceneParams) {
-	const rootNode = new RootNode({ duration });
 	const mediaMap = new Map(mediaAssets.map((m) => [m.id, m]));
 	const mainTrack = tracks.main.hidden ? undefined : tracks.main;
 
@@ -380,19 +379,13 @@ export function buildScene({
 				background.blurIntensity ?? DEFAULT_BACKGROUND_BLUR_INTENSITY,
 			scenes,
 		});
-		for (const node of blurNodes) {
-			rootNode.add(node);
-		}
+		return new RootNode({ duration }, [...blurNodes, ...allNodes]);
 	} else if (
 		background.type === "color" &&
 		background.color !== "transparent"
 	) {
-		rootNode.add(new ColorNode({ color: background.color }));
+		return new RootNode({ duration }, [new ColorNode({ color: background.color }), ...allNodes]);
 	}
 
-	for (const node of allNodes) {
-		rootNode.add(node);
-	}
-
-	return rootNode;
+	return new RootNode({ duration }, allNodes);
 }

@@ -45,6 +45,8 @@ import { model3dParams } from "@/params/registry";
 import { resolveAnimationPathValueAtTime } from "@/animation";
 import { ImageNode, loadImageSource } from "./nodes/image-node";
 import { getRendererLimits } from "./renderer-device";
+import { RootNode } from "./nodes/root-node";
+import { EFFECT_TIME_EPSILON } from "./scene-visibility";
 import { StickerNode, loadStickerSource } from "./nodes/sticker-node";
 import { TextNode, type ResolvedTextNodeState } from "./nodes/text-node";
 import { VideoNode } from "./nodes/video-node";
@@ -105,19 +107,21 @@ async function resolveNode({
 		node.resolved = resolveEffectLayerNode({ node, context });
 	}
 
-	const pending: Promise<void>[] = [];
-	for (const child of node.children) {
-		// A caption track can contain hundreds of phrases, but only the visible ones
-		// need asynchronous traversal. Clear the previous frame before skipping it.
-		if (
-			child instanceof TextNode &&
-			(context.time < child.params.startTime ||
-				context.time >= child.params.startTime + child.params.duration)
-		) {
-			child.resolved = null;
-			continue;
+	let pending: Promise<void>[];
+	if (node instanceof RootNode) {
+		const children = node.childrenAt(context.time);
+		const previous = node.activeChildren;
+		if (previous !== children && previous.length > 0) {
+			const active = new Set(children.map((child) => child.node));
+			for (const child of previous) {
+				if (!active.has(child.node)) clearResolvedNode(child.node);
+			}
 		}
-		pending.push(resolveNode({ node: child, context }));
+		node.activeChildren = children;
+		pending = children.map((child) => resolveNode({ node: child.node, context }));
+	} else {
+		if (node.children.length === 0) return;
+		pending = node.children.map((child) => resolveNode({ node: child, context }));
 	}
 	if (!pending.length) return;
 	// Finish all reads before the renderer can recycle frame surfaces, even when one fails.
@@ -264,15 +268,15 @@ function withPresetBlur(groups: EffectPass[][], preset: PresetLayer, width: numb
 	return passes.length ? [...groups, passes] : groups;
 }
 
-function clearCompoundVideoFrames(node: AnyBaseNode): void {
-	if (node instanceof VideoNode || (node instanceof BlurBackgroundNode && node.params.mediaType === "video")) {
-		node.resolved = null;
+function clearResolvedNode(node: AnyBaseNode): void {
+	node.resolved = null;
+	if (node instanceof CompoundNode) clearResolvedNode(node.params.content);
+	if (node instanceof RootNode) {
+		for (const child of node.activeChildren) clearResolvedNode(child.node);
+		node.activeChildren = [];
+	} else {
+		for (const child of node.children) clearResolvedNode(child);
 	}
-	if (node instanceof CompoundNode && node.resolved) {
-		node.resolved = null;
-		clearCompoundVideoFrames(node.params.content);
-	}
-	for (const child of node.children) clearCompoundVideoFrames(child);
 }
 
 // The nested scene is resolved at its own local time: t - startTime + trimStart.
@@ -291,7 +295,7 @@ async function resolveCompoundNode({
 		sourceHeight: context.renderer.height,
 	});
 	if (!node.resolved) {
-		if (wasVisible) clearCompoundVideoFrames(node.params.content);
+		if (wasVisible) clearResolvedNode(node.params.content);
 		return;
 	}
 
@@ -447,6 +451,8 @@ async function resolveStickerNode({
 	node: StickerNode;
 	context: ResolveContext;
 }): Promise<ResolvedVisualSourceNodeState | null> {
+	const placement = resolveVisualPlacement(node.params, context);
+	if (!placement) return null;
 	const source = await waitWithAbort(loadStickerSource({ stickerId: node.params.stickerId }), context.signal);
 	const sourceWidth = node.params.intrinsicWidth ?? source.width;
 	const sourceHeight = node.params.intrinsicHeight ?? source.height;
@@ -455,6 +461,7 @@ async function resolveStickerNode({
 		context,
 		sourceWidth,
 		sourceHeight,
+		placement,
 	});
 	if (!visualState) {
 		return null;
@@ -661,8 +668,8 @@ function resolveEffectLayerNode({
 }): ResolvedEffectLayerNodeState | null {
 	const time = context.time;
 	if (
-		time < node.params.timeOffset - 1e-6 ||
-		time >= node.params.timeOffset + node.params.duration + 1e-6
+		time < node.params.timeOffset - EFFECT_TIME_EPSILON ||
+		time >= node.params.timeOffset + node.params.duration + EFFECT_TIME_EPSILON
 	) {
 		return null;
 	}
