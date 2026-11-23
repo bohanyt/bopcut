@@ -30,7 +30,7 @@ function httpLink(url: unknown): url is string {
 
 function chooseTracks(info: Metadata, language?: string) {
 	// An explicit original-track marker says more than the generic language fields.
-	const original = (Object.keys(info.automatic_captions ?? {}).find((key) => key.endsWith("-orig"))?.slice(0, -5) ??
+	const original = (Object.keys(info.automatic_captions ?? {}).find((key) => key.endsWith("-orig") && captionLanguage.test(key.slice(0, -5)))?.slice(0, -5) ??
 		info.original_language ?? info.language)?.toLowerCase();
 	const tracks = (["creator", "auto"] as const).flatMap((origin) =>
 		Object.entries((origin === "creator" ? info.subtitles : info.automatic_captions) ?? {}).flatMap(([key, formats]) => {

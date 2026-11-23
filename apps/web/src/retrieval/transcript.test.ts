@@ -75,6 +75,9 @@ test("an explicit original track beats a generic language field", async () => {
 	metadata.subtitles = {};
 	metadata.automatic_captions = { es: [json3], "en-orig": [json3] };
 	expect(await get()).toMatchObject({ origin: "auto", language: "en" });
+	// A marker without a usable base language must not override the metadata.
+	metadata.automatic_captions = { en: [json3], es: [json3], "-orig": [json3] };
+	expect(await get()).toMatchObject({ origin: "auto", language: "es" });
 });
 
 test("automatic JSON3 ignores append events and uses offsets and the next cue boundary", async () => {
