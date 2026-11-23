@@ -13,7 +13,10 @@ type Command = typeof commands[number];
 const usage = "Use: bun run agent <status|selection|notes|export|frames|transcript> [--project-id ID] [--timeout SECONDS]";
 const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
 
-export function parseArgs(args: string[]) {
+/** Renders report progress at most every two seconds, so a shorter stall limit would stop a working job. */
+export const minRenderTimeout = 10;
+
+export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 	const [command, ...rest] = args;
 	if (!commands.some((supported) => supported === command)) throw new Error(usage);
 	if (command === "frames" && rest.some((arg) => /^--(?:state|compare)(?:=|$)/.test(arg))) {
@@ -34,6 +37,7 @@ export function parseArgs(args: string[]) {
 	});
 	const seconds = Number(values.timeout ?? (render ? 600 : 30));
 	if (!Number.isFinite(seconds) || seconds < 0.001 || seconds > 86400) throw new Error("Set --timeout to a positive number of seconds, up to 86400.");
+	if (render && seconds < minRenderSeconds) throw new Error(`Set --timeout to at least ${minRenderSeconds} seconds for export and frames.`);
 	const projectId = values["project-id"];
 	if (projectId !== undefined && !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) throw new Error("Pass a valid project ID to --project-id.");
 	const timeoutMs = Math.round(seconds * 1000);
@@ -104,8 +108,8 @@ async function transcriptCommand(request: TranscriptRequest, timeoutMs: number) 
 	}
 }
 
-export async function main(args: string[]) {
-	const options = parseArgs(args);
+export async function main(args: string[], minRenderSeconds = minRenderTimeout) {
+	const options = parseArgs(args, minRenderSeconds);
 	if (options.command === "transcript") return transcriptCommand(options.request, options.timeoutMs);
 	const { command, projectId, timeoutMs, origin, request } = options;
 	const target = new URL(`/api/agent/cli/${request ? "render" : command}`, origin);

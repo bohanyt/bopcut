@@ -20,7 +20,9 @@ test("fails a frame command when all requested frames have errors", () => {
 test("render timeouts keep the default and supported range", () => {
 	for (const args of [["export"], ["frames", "--times", "0"]]) {
 		expect(parseArgs(args).timeoutMs).toBe(600_000);
-		expect(parseArgs([...args, "--timeout", "0.001"]).timeoutMs).toBe(1);
+		expect(parseArgs([...args, "--timeout", "10"]).timeoutMs).toBe(10_000);
+		expect(parseArgs([...args, "--timeout", "0.001"], 0).timeoutMs).toBe(1);
+		expect(() => parseArgs([...args, "--timeout", "9.9"])).toThrow("at least 10 seconds");
 		expect(parseArgs([...args, "--timeout", "86400"]).timeoutMs).toBe(86_400_000);
 		expect(() => parseArgs([...args, "--timeout", "86401"])).toThrow("--timeout");
 	}
@@ -41,7 +43,7 @@ test.each(["export", "frames"])("%s runs past its timeout when the stage changes
 	})));
 	try {
 		const args = command === "frames" ? [command, "--times", "0"] : [command];
-		expect(await main([...args, "--timeout", "0.3"])).toEqual(result);
+		expect(await main([...args, "--timeout", "0.3"], 0)).toEqual(result);
 	} finally {
 		fetchRender.mockRestore();
 	}
@@ -60,7 +62,7 @@ test("a repeated stage cannot keep a stalled CLI render alive", async () => {
 		cancel() { cancelled = true; },
 	})));
 	try {
-		await expect(main(["export", "--timeout", "0.25"])).rejects.toThrow(
+		await expect(main(["export", "--timeout", "0.25"], 0)).rejects.toThrow(
 			"Timed out after 0.25 s without progress while encoding 42%. Increase --timeout and retry.",
 		);
 		expect(sends).toBeGreaterThan(1);
@@ -79,7 +81,7 @@ test("the CLI bounds the initial connection and suggests opening the editor", as
 	};
 	const fetchRender = spyOn(globalThis, "fetch").mockImplementation(Object.assign(connect, { preconnect: fetch.preconnect }));
 	try {
-		await expect(main(["export", "--timeout", "0.04"])).rejects.toThrow(
+		await expect(main(["export", "--timeout", "0.04"], 0)).rejects.toThrow(
 			"Timed out after 0.04 s without progress while waiting for a tab. Open the editor and retry, or increase --timeout.",
 		);
 	} finally {
