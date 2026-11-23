@@ -36,7 +36,6 @@ export function useKeybindingsListener() {
 			const boundAction = binding ? keybindings.get(binding) : undefined;
 
 			if (normalizedKey === "escape" && isTextInput) {
-				activeElement.blur();
 				return;
 			}
 
@@ -75,10 +74,35 @@ export function useKeybindingsListener() {
 			}
 		};
 
+		// Let the focused field handle Escape before falling back to blur.
+		const handleEscape = (ev: KeyboardEvent) => {
+			if (
+				(ev.key ?? "").toLowerCase() !== "escape" ||
+				ev.defaultPrevented ||
+				overlayDepth > 0 ||
+				isLoadingProject ||
+				isRecording
+			) {
+				return;
+			}
+
+			const focused = document.activeElement;
+			if (
+				focused instanceof HTMLElement &&
+				ev.target instanceof Node &&
+				focused.contains(ev.target) &&
+				isTypableDOMElement({ element: focused })
+			) {
+				focused.blur();
+			}
+		};
+
 		document.addEventListener("keydown", handleKeyDown, eventOptions);
+		document.addEventListener("keydown", handleEscape);
 
 		return () => {
 			document.removeEventListener("keydown", handleKeyDown, eventOptions);
+			document.removeEventListener("keydown", handleEscape);
 		};
 	}, [
 		keybindings,
