@@ -87,7 +87,7 @@ export function runYtDlpProcess(command: string, args: string[], signal?: AbortS
 }
 
 // Tool scratch holds private copies (such as cookies), so it must lie outside the files root, which is served.
-async function withToolScratch<T>(
+export async function withToolScratch<T>(
 	signal: AbortSignal | undefined, filesRoot: string | undefined,
 	work: (temp: string, signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
