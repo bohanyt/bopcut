@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { type Probe, type Runner, downloadArgs, encoderArgs, fetchFrame, fetchSection, formatSelector, handleRetrieve, splitCommand, toolsFromEnv } from "./server";
+import { type Probe, type Runner, encoderArgs, fetchFrame, fetchSection, formatSelector, handleRetrieve, splitCommand, toolsFromEnv } from "./server";
 import { formatTime, linkAt, normalizeFrameRequest, normalizeSectionRequest, parseTime, timeFromUrl } from "./time";
 import { assertPublicUrl, isPrivateAddress } from "./net";
 import { commandFromSetting, isPlaylistOnly } from "./server";
@@ -98,52 +98,26 @@ describe("tools", () => {
 	});
 });
 
-describe("yt-dlp arguments", () => {
-	const tools = { ...toolsFromEnv({}), ffmpeg: ["/opt/ffmpeg/bin/ffmpeg"], videoEncoder: "h264_nvenc", cookiesFromBrowser: "firefox" };
-	test("a video section with frame-accurate cuts", () => {
-		const args = downloadArgs({ url: "https://example.com/v", start: 10, end: 30.5, height: 1080, tools, output: "out/key.part.%(ext)s" });
-		const joined = args.join(" ");
-		expect(joined).toContain("--download-sections *10.000-30.500");
-		expect(joined).toContain("--force-keyframes-at-cuts");
-		expect(joined).toContain("ffmpeg_o:-c:v h264_nvenc -preset p5 -cq 21 -pix_fmt yuv420p -c:a aac -b:a 192k");
-		expect(joined).toContain("--merge-output-format mp4");
-		expect(joined).toContain("--cookies-from-browser firefox");
-		expect(joined).toContain("--ffmpeg-location /opt/ffmpeg/bin/ffmpeg");
-		expect(joined).toContain("--match-filter !is_live");
-		expect(args.slice(-4)).toEqual(["-o", "out/key.part.%(ext)s", "--", "https://example.com/v"]);
-	});
-	test("audio only is extracted to m4a; ffmpeg on PATH needs no location", () => {
-		const args = downloadArgs({ url: "https://example.com/v", start: 1, end: 2, height: 1080, audioOnly: true, tools: { ...tools, ffmpeg: ["ffmpeg"], cookiesFromBrowser: undefined }, output: "o.%(ext)s" });
-		expect(args.join(" ")).toContain("-x --audio-format m4a");
-		expect(args).not.toContain("--force-keyframes-at-cuts");
-		expect(args).not.toContain("--ffmpeg-location");
-		expect(args).not.toContain("--cookies-from-browser");
-	});
-	test("format selection prefers H.264 + AAC up to the height", () => {
-		expect(formatSelector(720).startsWith("bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]")).toBe(true);
-		expect(formatSelector(720, true)).toBe("ba[ext=m4a]/ba/b");
-	});
+test("format selection prefers H.264 + AAC over other HTTP formats", () => {
+	expect(formatSelector(720)).toContain("[height<=720][vcodec^=avc1]");
+	expect(formatSelector(720, true)).toBe("ba[protocol^=http][protocol!*=segments][ext=m4a]/ba[protocol^=http][protocol!*=segments]/b[protocol^=http][protocol!*=segments]");
 });
 
 describe("fetching", () => {
 	let root: string;
 	let calls: { command: string; args: string[] }[];
-	const info: Probe = { title: "Long stream", uploader: "Someone", id: "abc", extractor_key: "Youtube", webpage_url: "https://www.youtube.com/watch?v=abc" };
-	/** Fake yt-dlp/ffmpeg: yt-dlp prints the info JSON and writes the merged file; ffmpeg writes its last argument. */
-	const fake =
-		(printed: Probe | null, produce = true): Runner =>
-		async (command, args) => {
-			calls.push({ command, args });
-			const o = args.indexOf("-o");
-			if (o >= 0) {
-				const template = args[o + 1] as string;
-				if (produce) await fs.writeFile(template.replace("%(ext)s", args.includes("-x") ? "m4a" : "mp4"), "media");
-				return { stdout: printed ? `[info] something\n${JSON.stringify(printed)}\n` : "", stderr: "" };
-			}
-			await fs.writeFile(args.at(-1) as string, "jpeg");
-			return { stdout: "", stderr: "" };
-		};
+	const info: Probe = { title: "Long stream", uploader: "Someone", id: "abc", extractor_key: "Youtube", webpage_url: "https://www.youtube.com/watch?v=abc", url: "https://example.com/media", protocol: "https" };
+	const fake = (printed: Probe | null): Runner => async (command, args) => {
+		calls.push({ command, args });
+		if (args.includes("--skip-download")) return { stdout: printed ? JSON.stringify(printed) : "", stderr: "" };
+		await fs.writeFile(args.at(-1) as string, args.includes("-frames:v") ? "jpeg" : "media");
+		return { stdout: "", stderr: "" };
+	};
 	const runner = fake(info);
+	const network = {
+		env: LAN,
+		fetchImpl: Object.assign(async () => new Response(null, { status: 206, headers: { "Content-Range": "bytes 0-0/6000000" } }), { preconnect: fetch.preconnect }),
+	};
 	const tools = { ...toolsFromEnv({}), ytdlp: ["python", "-m", "yt_dlp"], cookiesFromBrowser: "firefox" };
 
 	beforeEach(async () => {
@@ -155,7 +129,7 @@ describe("fetching", () => {
 	});
 
 	test("a section is fetched once, saved with its source, and served from the cache after", async () => {
-		const first = await fetchSection({ url: "https://www.youtube.com/watch?v=abc", start: 754, end: 774 }, { filesRoot: root, tools, runner });
+		const first = await fetchSection({ url: "https://www.youtube.com/watch?v=abc", start: 754, end: 774 }, { filesRoot: root, tools, runner, ...network });
 		expect(first.cached).toBe(false);
 		expect(first.type).toBe("video");
 		expect(first.path).toMatch(/^retrieved\/[0-9a-f]{16}\.mp4$/);
@@ -170,41 +144,50 @@ describe("fetching", () => {
 		const left = await fs.readdir(path.join(root, "retrieved"));
 		expect(left.some((f) => f.includes(".part"))).toBe(false);
 
-		const second = await fetchSection({ url: "https://www.youtube.com/watch?v=abc", start: 754, end: 774 }, { filesRoot: root, tools, runner });
+		const second = await fetchSection({ url: "https://www.youtube.com/watch?v=abc", start: 754, end: 774 }, { filesRoot: root, tools, runner, ...network });
 		expect(second.cached).toBe(true);
 		expect(second.path).toBe(first.path);
-		expect(calls).toHaveLength(1);
+		expect(calls).toHaveLength(2);
 	});
 
 	test("concurrent identical requests share one fetch", async () => {
 		const request = { url: "https://example.com/v", start: 0, end: 3 };
-		const [a, b] = await Promise.all([fetchSection(request, { filesRoot: root, tools, runner }), fetchSection(request, { filesRoot: root, tools, runner })]);
+		const [a, b] = await Promise.all([fetchSection(request, { filesRoot: root, tools, runner, ...network }), fetchSection(request, { filesRoot: root, tools, runner, ...network })]);
 		expect(a.path).toBe(b.path);
-		expect(calls).toHaveLength(1);
+		expect(calls).toHaveLength(2);
+	});
+
+	test("two roots never share an in-flight section", async () => {
+		const request = { url: "https://example.com/v", start: 0, end: 3 };
+		const other = path.join(root, "other");
+		const results = await Promise.all([root, other].map((filesRoot) => fetchSection(request, { filesRoot, tools, runner, ...network })));
+		await expect(fs.readFile(path.join(root, results[0].path), "utf8")).resolves.toBe("media");
+		await expect(fs.readFile(path.join(other, results[1].path), "utf8")).resolves.toBe("media");
+		expect(calls).toHaveLength(4);
 	});
 
 	test("audio only is saved as m4a", async () => {
-		const r = await fetchSection({ url: "https://example.com/v", start: 0, end: 3, audioOnly: true }, { filesRoot: root, tools, runner });
+		const r = await fetchSection({ url: "https://example.com/v", start: 0, end: 3, audioOnly: true }, { filesRoot: root, tools, runner, ...network });
 		expect(r.type).toBe("audio");
 		expect(r.path.endsWith(".m4a")).toBe(true);
 	});
 
 	test("a frame is grabbed as JPEG and its one-second download is removed", async () => {
-		const r = await fetchFrame({ url: "https://example.com/v", time: 5 }, { filesRoot: root, tools, runner });
+		const r = await fetchFrame({ url: "https://example.com/v", time: 5 }, { filesRoot: root, tools, runner, ...network });
 		expect(r.type).toBe("image");
 		expect(r.path).toMatch(/^retrieved\/frames\/[0-9a-f]{16}\.jpg$/);
-		expect(calls[0].args.join(" ")).toContain("--download-sections *5.000-6.000");
-		expect(calls[1].args).toContain("-frames:v");
+		expect(calls[1].args.join(" ")).toContain("-ss 5");
+		expect(calls[2].args).toContain("-frames:v");
 		const name = r.path.split("/").pop() as string;
 		const left = await fs.readdir(path.join(root, "retrieved", "frames"));
 		expect(left.sort()).toEqual([name, name.replace(".jpg", ".json")].sort());
 	});
 
 	test("live streams that are still running are refused", async () => {
-		const live = await handleRetrieve({ kind: "section", url: "https://example.com/live", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: fake({ ...info, is_live: true }, false) });
+		const live = await handleRetrieve({ kind: "section", url: "https://example.com/live", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: fake({ ...info, is_live: true }) });
 		expect(live.status).toBe(502);
 		expect(JSON.stringify(live.body)).toContain("live stream");
-		const skipped = await handleRetrieve({ kind: "section", url: "https://example.com/live2", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: fake(null, false) });
+		const skipped = await handleRetrieve({ kind: "section", url: "https://example.com/live2", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: fake(null) });
 		expect(skipped.status).toBe(502);
 		expect(JSON.stringify(skipped.body)).toContain("nothing was downloaded");
 	});
@@ -217,22 +200,21 @@ describe("fetching", () => {
 		expect(r1.status).toBe(502);
 		expect(JSON.stringify(r1.body)).toContain("BOPENCUT_YTDLP");
 
-		const failing: Runner = async (_command, args) => {
-			const o = args.indexOf("-o");
-			await fs.writeFile((args[o + 1] as string).replace("%(ext)s", "f399.mp4.part"), "half");
+		const failing: Runner = async (_command, _args, _signal, cwd) => {
+			await fs.writeFile(path.join(cwd!, "partial"), "half");
 			throw Object.assign(new Error("exit 1"), { stderr: "size=  1KiB time=00:00:01\nERROR: Server returned 403 Forbidden" });
 		};
 		const r2 = await handleRetrieve({ kind: "section", url: "https://example.com/v", start: 0, end: 5 }, { filesRoot: root, tools, env: LAN, runner: failing });
 		expect(r2.status).toBe(502);
 		expect(JSON.stringify(r2.body)).toContain("403");
 		expect(JSON.stringify(r2.body)).not.toContain("size=");
-		expect((await fs.readdir(path.join(root, "retrieved"))).length).toBe(0);
+		expect((await fs.readdir(path.join(root, ".retrieval-jobs"))).length).toBe(0);
 	});
 
 	test("bad requests are 400 and run nothing", async () => {
-		expect((await handleRetrieve({ kind: "section", url: "https://example.com/v" }, { filesRoot: root, tools, runner })).status).toBe(400);
-		expect((await handleRetrieve({ kind: "other" }, { filesRoot: root, tools, runner })).status).toBe(400);
-		expect((await handleRetrieve(null, { filesRoot: root, tools, runner })).status).toBe(400);
+		expect((await handleRetrieve({ kind: "section", url: "https://example.com/v" }, { filesRoot: root, tools, runner, ...network })).status).toBe(400);
+		expect((await handleRetrieve({ kind: "other" }, { filesRoot: root, tools, runner, ...network })).status).toBe(400);
+		expect((await handleRetrieve(null, { filesRoot: root, tools, runner, ...network })).status).toBe(400);
 		expect(calls).toHaveLength(0);
 	});
 });

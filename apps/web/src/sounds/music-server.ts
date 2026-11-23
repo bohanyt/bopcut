@@ -6,6 +6,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { RetrievalError, defaultRunner, runTool, runToolOutput, toolsFromEnv } from "@/retrieval/server";
 import { isHttpUrl } from "@/retrieval/time";
+import { Cancelled, checkCancelled, publishMedia, sharedJob, withScratch } from "@/retrieval/jobs";
 import { assertPublicUrl } from "@/retrieval/net";
 import { MUSIC_SOURCES, type MusicFile, type MusicResult, type MusicSource } from "./music-types";
 import { type LibraryKind, type SfxDeps, clearLibraryIndex, getLibrary, searchLibrary, words } from "./sfx-server";
@@ -25,8 +26,8 @@ type FlatEntry = { id?: string; title?: string; url?: string; webpage_url?: stri
 export async function searchOnline(query: string, deps: MusicDeps, limit = 8): Promise<MusicResult[]> {
 	const env = deps.env ?? process.env;
 	const tools = deps.tools ?? toolsFromEnv(env);
-	const args = ["--flat-playlist", "-J", "--no-warnings", "--", `ytsearch${Math.min(20, limit + 4)}:${query.trim()}`];
-	const stdout = await runTool(deps.runner ?? defaultRunner, tools.ytdlp, args, "yt-dlp");
+	const args = ["--ignore-config", "--skip-download", "--flat-playlist", "-J", "--no-warnings", "--", `ytsearch${Math.min(20, limit + 4)}:${query.trim()}`];
+	const stdout = await runTool(deps.runner ?? defaultRunner, tools.ytdlp, args, "yt-dlp", deps.signal);
 	let entries: FlatEntry[] = [];
 	try {
 		entries = (JSON.parse(stdout) as { entries?: FlatEntry[] }).entries ?? [];
@@ -55,6 +56,7 @@ export async function searchMusic(query: string, sources: readonly MusicSource[]
 			if (source === "library") results.push(...(await searchLibrary(query, deps, limit, MUSIC_LIBRARY)).map((r) => ({ ...r, source: "library" as const })));
 			else results.push(...(await searchOnline(query, deps, Math.min(limit, 8))));
 		} catch (error) {
+			checkCancelled(deps.signal, "music search");
 			errors.push({ source, error: error instanceof Error ? error.message : String(error) });
 		}
 	}
@@ -81,19 +83,16 @@ function loudnessTarget(env: Record<string, string | undefined>): number | null 
 	return Number.isFinite(n) && n >= -70 && n <= -5 ? n : -16;
 }
 
-const onlineInFlight = new Map<string, Promise<MusicFile>>();
+const onlineJob = sharedJob<MusicFile>();
 
-/** An online song, sound only, into `<filesRoot>/music/online/`; cached by link; one fetch per link at a time. */
+/** An online song, sound only, into the files root. Concurrent callers share the download. */
 function getOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
-	const key = `${deps.filesRoot}|${url}`;
-	const running = onlineInFlight.get(key);
-	if (running) return running;
-	const promise = fetchOnline(url, deps).finally(() => onlineInFlight.delete(key));
-	onlineInFlight.set(key, promise);
-	return promise;
+	const root = path.resolve(deps.filesRoot);
+	return onlineJob(root + "|" + url, deps.signal, (signal) => withScratch(root, signal,
+		(scratch) => fetchOnline(url, { ...deps, filesRoot: root }, scratch, signal)));
 }
 
-async function fetchOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
+async function fetchOnline(url: string, deps: MusicDeps, scratch: string, signal: AbortSignal): Promise<MusicFile> {
 	if (!isHttpUrl(url)) throw new RetrievalError("an online song needs an http(s) link");
 	await assertPublicUrl(url, deps.env);
 	const env = deps.env ?? process.env;
@@ -111,40 +110,26 @@ async function fetchOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
 			// unreadable sidecar: fetch again
 		}
 	}
-	await fs.mkdir(dir, { recursive: true });
-	// A stem unique to this attempt: another process fetching the same song never touches these files.
-	const stem = `${key}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.part`;
-	const clean = async () => {
-		for (const f of await fs.readdir(dir)) if (f.startsWith(stem)) await fs.rm(path.join(dir, f), { force: true });
-	};
-	await clean();
-	try {
-		const args = ["--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", `!is_live & duration <= ${maxSeconds(env)}`, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"];
-		if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
-		const [command, ...rest] = tools.ffmpeg;
-		if (rest.length === 0 && /[\\/]/.test(command)) args.push("--ffmpeg-location", command);
-		args.push("-o", path.join(dir, `${stem}.%(ext)s`), "--", url);
-		const stdout = await runTool(runner, tools.ytdlp, args, "yt-dlp");
-		const line = stdout.split(/\r?\n/).reverse().find((l) => l.trim().startsWith("{"));
-		const info = line ? (JSON.parse(line) as { title?: string; uploader?: string; channel?: string; webpage_url?: string; duration?: number }) : undefined;
-		const downloaded = path.join(dir, `${stem}.m4a`);
-		if (!info || !(await exists(downloaded))) throw new RetrievalError(`nothing was downloaded (longer than ${maxSeconds(env)} s, a live stream, or an unsupported link)`);
-		const target = loudnessTarget(env);
-		if (target === null) await fs.rename(downloaded, media);
-		else {
-			const normalized = path.join(dir, `${stem}.norm.m4a`);
-			await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", downloaded, "-vn", "-af", `loudnorm=I=${target}:TP=-1.5:LRA=11`, "-ar", "48000", "-c:a", "aac", "-b:a", "192k", normalized], "ffmpeg");
-			await fs.rename(normalized, media);
-		}
-		const result = { name: info.title ?? "song", uploader: info.uploader || info.channel, pageUrl: info.webpage_url || url, duration: info.duration, fetchedAt: new Date().toISOString() };
-		const metaTmp = path.join(dir, `${stem}.json.tmp`);
-		await fs.writeFile(metaTmp, JSON.stringify(result, null, 1));
-		await fs.rename(metaTmp, meta);
-		clearLibraryIndex();
-		return { path: toPosix(path.relative(deps.filesRoot, media)), name: result.name, source: "online", pageUrl: result.pageUrl, uploader: result.uploader, cached: false };
-	} finally {
-		await clean();
+	const args = ["--ignore-config", "--no-cache-dir", "--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", `!is_live & duration <= ${maxSeconds(env)}`, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"];
+	if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
+	const [command, ...rest] = tools.ffmpeg;
+	if (rest.length === 0 && /[\\/]/.test(command)) args.push("--ffmpeg-location", command);
+	args.push("-o", path.join(scratch, "song.%(ext)s"), "--", url);
+	const stdout = await runTool(runner, tools.ytdlp, args, "yt-dlp", signal, scratch);
+	const line = stdout.split(/\r?\n/).reverse().find((l) => l.trim().startsWith("{"));
+	const info = line ? (JSON.parse(line) as { title?: string; uploader?: string; channel?: string; webpage_url?: string; duration?: number }) : undefined;
+	let staged = path.join(scratch, "song.m4a");
+	if (!info || !(await exists(staged))) throw new RetrievalError(`nothing was downloaded (longer than ${maxSeconds(env)} s, a live stream, or an unsupported link)`);
+	const target = loudnessTarget(env);
+	if (target !== null) {
+		const normalized = path.join(scratch, "normalized.m4a");
+		await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", staged, "-vn", "-af", `loudnorm=I=${target}:TP=-1.5:LRA=11`, "-ar", "48000", "-c:a", "aac", "-b:a", "192k", normalized], "ffmpeg", signal, scratch);
+		staged = normalized;
 	}
+	const result = { name: info.title ?? "song", uploader: info.uploader || info.channel, pageUrl: info.webpage_url || url, duration: info.duration, fetchedAt: new Date().toISOString() };
+	await publishMedia(staged, media, signal, { file: meta, value: result });
+	clearLibraryIndex();
+	return { path: toPosix(path.relative(deps.filesRoot, media)), name: result.name, source: "online", pageUrl: result.pageUrl, uploader: result.uploader, cached: false };
 }
 
 export async function getMusic(source: MusicSource, ref: string, deps: MusicDeps): Promise<MusicFile> {
@@ -168,6 +153,7 @@ export async function handleMusic(body: unknown, deps: MusicDeps): Promise<{ sta
 	if (!sources) return { status: 400, body: { error: `sources must be a list of ${MUSIC_SOURCES.join(", ")}` } };
 	const limit = Math.min(50, Math.max(1, Number.isInteger(input.limit) ? (input.limit as number) : 20));
 	try {
+		checkCancelled(deps.signal, "preparation");
 		if (input.kind === "search" || input.kind === "find") {
 			if (typeof input.query !== "string" || !words(input.query).length || input.query.length > 200) return { status: 400, body: { error: "query is required (up to 200 characters)" } };
 			const found = await searchMusic(input.query, sources, deps, input.kind === "find" ? 1 : limit);
@@ -182,7 +168,7 @@ export async function handleMusic(body: unknown, deps: MusicDeps): Promise<{ sta
 		}
 		return { status: 400, body: { error: 'kind must be "search", "get" or "find"' } };
 	} catch (error) {
-		if (error instanceof RetrievalError) return { status: 502, body: { error: error.message } };
+		if (error instanceof RetrievalError) return { status: error instanceof Cancelled ? 499 : 502, body: { error: error.message } };
 		throw error;
 	}
 }

@@ -8,6 +8,7 @@
 // (AGENT_FILES_ROOT, AGENT_WORKSPACE, BOPENCUT_YTDLP, BOPENCUT_FFMPEG, ...; see AGENT.md).
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { retrievalOptions, runRetrievalCli } from "./retrieval-cli";
 import { handleRetrieve } from "../src/retrieval/server";
 
 const webDir = path.resolve(import.meta.dir, "..");
@@ -33,7 +34,8 @@ loadEnvLocal(path.join(webDir, ".env.local"));
 const workspace = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(webDir, "..", "..", "workspace"));
 const filesRoot = path.resolve(process.env.AGENT_FILES_ROOT ?? workspace);
 
-const [kind, url, ...rest] = process.argv.slice(2);
+const { args, timeout } = retrievalOptions(process.argv.slice(2), usage);
+const [kind, url, ...rest] = args;
 if (kind !== "section" && kind !== "frame") usage();
 if (!url) usage("missing <url>");
 
@@ -54,6 +56,4 @@ const body =
 	kind === "section"
 		? { kind, url, start: options.start, end: options.end, duration: options.duration, height: options.height, audioOnly: options.audioOnly }
 		: { kind, url, time: options.at, width: options.width };
-const result = await handleRetrieve(body, { filesRoot });
-console.log(JSON.stringify(result.body, null, 1));
-process.exit(result.status === 200 ? 0 : 1);
+await runRetrievalCli(timeout, (signal) => handleRetrieve(body, { filesRoot, signal }));

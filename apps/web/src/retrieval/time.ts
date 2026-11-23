@@ -101,7 +101,7 @@ export function normalizeSectionRequest(
 	if (Number.isNaN(end) || (duration !== undefined && Number.isNaN(duration))) return { ok: false, error: "end is not a valid time" };
 	if (end <= start) return { ok: false, error: "end must be after start" };
 	if (end - start > maxSeconds) {
-		return { ok: false, error: `section is ${Math.round(end - start)} s; the limit is ${maxSeconds} s (whole videos are not fetched)` };
+		return { ok: false, error: `section is ${Math.round(end - start)} s; the limit is ${maxSeconds} s; request a shorter range` };
 	}
 	let height: number | undefined;
 	if (input.height !== undefined && input.height !== null && input.height !== "") {
