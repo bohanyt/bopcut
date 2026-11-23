@@ -17,7 +17,7 @@ import { ColorNode } from "./nodes/color-node";
 import { CompoundNode } from "./nodes/compound-node";
 import { EffectLayerNode } from "./nodes/effect-layer-node";
 import { RootNode } from "./nodes/root-node";
-import { StickerNode } from "./nodes/sticker-node";
+import { StickerNode, loadStickerSource } from "./nodes/sticker-node";
 import { VideoNode } from "./nodes/video-node";
 import { resolveRenderTree } from "./resolve";
 import { buildScene } from "./scene-builder";
@@ -279,5 +279,35 @@ test("draft timing edits are picked up by the next playback frame", () =>
 			expect(await playbackFrame()).toEqual([]);
 		} finally {
 			scheduler.dispose();
+		}
+	}));
+
+test("a rejected sticker preload can retry on the first visible frame", () =>
+	withRenderer(async ({ render }) => {
+		let requests = 0;
+		class PreviewImage {
+			naturalWidth = 200;
+			naturalHeight = 200;
+			onload?: () => void;
+			onerror?: () => void;
+			set src(_url: string) {
+				if (++requests === 1) this.onerror?.();
+				else this.onload?.();
+			}
+		}
+		const restore = patchProperties(globalThis, { Image: PreviewImage as unknown as typeof Image });
+		try {
+			const stickerId = "flags:JP";
+			const sticker = new StickerNode({ ...placement, stickerId, timeOffset: t(1), duration: t(1) });
+			const root = new RootNode({ duration: t(2) }).add(sticker);
+			const preview = new RendererManager({} as EditorCore);
+			preview.setRenderTree({ renderTree: root });
+			await expect(loadStickerSource({ stickerId })).rejects.toThrow("Failed to load sticker");
+
+			expect((await render(root, t(1))).textures).toHaveLength(1);
+			expect((await render(root, t(1.5))).textures).toHaveLength(1);
+			expect(requests).toBe(2);
+		} finally {
+			restore();
 		}
 	}));

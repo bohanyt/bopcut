@@ -53,6 +53,15 @@ export function loadStickerSource({
 	return promise;
 }
 
+export function preloadStickerSource(stickerId: string): void {
+	if (stickerSourceCache.has(stickerId)) return;
+	const promise = loadStickerSource({ stickerId });
+	// A speculative failure must not prevent the normal load when the sticker becomes visible.
+	void promise.catch(() => {
+		if (stickerSourceCache.get(stickerId) === promise) stickerSourceCache.delete(stickerId);
+	});
+}
+
 export class StickerNode extends VisualNode<
 	StickerNodeParams,
 	ResolvedVisualSourceNodeState
