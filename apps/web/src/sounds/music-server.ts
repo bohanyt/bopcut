@@ -6,7 +6,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { RetrievalError, defaultRunner, runTool, runToolOutput, toolsFromEnv } from "@/retrieval/server";
 import { isHttpUrl } from "@/retrieval/time";
-import { Cancelled, checkCancelled, publishMedia, sharedJob, withScratch } from "@/retrieval/jobs";
+import { Cancelled, cacheTarget, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "@/retrieval/jobs";
 import { assertPublicUrl } from "@/retrieval/net";
 import { MUSIC_SOURCES, type MusicFile, type MusicResult, type MusicSource } from "./music-types";
 import { type LibraryKind, type SfxDeps, clearLibraryIndex, getLibrary, searchLibrary, words } from "./sfx-server";
@@ -100,16 +100,22 @@ async function fetchOnline(url: string, deps: MusicDeps, scratch: string, signal
 	const runner = deps.runner ?? defaultRunner;
 	const dir = path.join(deps.filesRoot, MUSIC_LIBRARY.folder, "online");
 	const key = createHash("sha1").update(url).digest("hex").slice(0, 12);
-	const media = path.join(dir, `${key}.m4a`);
-	const meta = path.join(dir, `${key}.json`);
-	if ((await exists(media)) && (await exists(meta))) {
-		try {
-			const saved = JSON.parse(await fs.readFile(meta, "utf8")) as { name: string; pageUrl?: string; uploader?: string };
-			return { path: toPosix(path.relative(deps.filesRoot, media)), name: saved.name, source: "online", pageUrl: saved.pageUrl, uploader: saved.uploader, cached: true };
-		} catch {
-			// unreadable sidecar: fetch again
+	const legacyMedia = path.join(dir, key + ".m4a");
+	const legacyMeta = path.join(dir, key + ".json");
+	const { media, meta } = cacheTarget(legacyMedia, legacyMeta);
+	const lookup = async (): Promise<MusicFile | undefined> => {
+		for (const [file, sidecar] of [[media, meta], [legacyMedia, legacyMeta]]) {
+			if (!(await exists(file))) continue;
+			try {
+				const saved = JSON.parse(await fs.readFile(sidecar, "utf8")) as { name: string; pageUrl?: string; uploader?: string };
+				return { path: toPosix(path.relative(deps.filesRoot, file)), name: saved.name, source: "online", pageUrl: saved.pageUrl, uploader: saved.uploader, cached: true };
+			} catch {
+				// Missing or unreadable sidecar.
+			}
 		}
-	}
+	};
+	const cached = await lookup();
+	if (cached) return cached;
 	const args = ["--ignore-config", "--no-cache-dir", "--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", `!is_live & duration <= ${maxSeconds(env)}`, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"];
 	if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
 	const [command, ...rest] = tools.ffmpeg;
@@ -127,7 +133,7 @@ async function fetchOnline(url: string, deps: MusicDeps, scratch: string, signal
 		staged = normalized;
 	}
 	const result = { name: info.title ?? "song", uploader: info.uploader || info.channel, pageUrl: info.webpage_url || url, duration: info.duration, fetchedAt: new Date().toISOString() };
-	await publishMedia(staged, media, signal, { file: meta, value: result });
+	if (!(await publishMedia(staged, media, signal, { file: meta, value: result }))) return reusePublished(lookup);
 	clearLibraryIndex();
 	return { path: toPosix(path.relative(deps.filesRoot, media)), name: result.name, source: "online", pageUrl: result.pageUrl, uploader: result.uploader, cached: false };
 }

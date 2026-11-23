@@ -1,7 +1,7 @@
 // Server-side media retrieval: resolve source metadata and encode only the requested section or frame.
 // Node only: used by the agent API route and the retrieve CLI.
 import { runProcess } from "./process";
-import { Cancelled, checkCancelled, publishMedia, sharedJob, withScratch } from "./jobs";
+import { Cancelled, cacheTarget, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "./jobs";
 import { existsSync } from "node:fs";
 import { RetrievalError } from "./server-errors";
 import { assertPublicUrl, fetchPublic, readCapped } from "./net";
@@ -225,7 +225,7 @@ async function download(
 	if (info.duration && start >= info.duration) throw new RetrievalError("start is outside the source; choose an earlier time");
 	await withSectionInputs(info.requested_formats ?? [info], info.duration, end - start, { ...deps, signal }, async (inputs) => {
 		const read = inputs.flatMap((input) => ["-protocol_whitelist", "http,tcp",
-			"-format_whitelist", "mov,matroska,webm,wav,mp3,aac,ogg,flac,mpegts,avi,flv,mpeg", "-seekable", "1", "-reconnect", "1", "-reconnect_delay_max", "0", "-ss", String(start), "-i", input]);
+			"-format_whitelist", "mov,matroska,webm,wav,mp3,aac,ogg,flac,mpegts,avi,flv,mpeg", "-analyzeduration", "1000000", "-probesize", "32768", "-seekable", "1", "-reconnect", "1", "-reconnect_delay_max", "0", "-ss", String(start), "-i", input]);
 		const maps = audioOnly ? ["-map", "0:a:0", "-vn"] : ["-map", "0:v:0", "-map", (inputs.length === 2 ? "1" : "0") + ":a:0?"];
 		const encode = audioOnly ? [] : [...encoderArgs(tools.videoEncoder), "-pix_fmt", "yuv420p"];
 		await runTool(runner, tools.ffmpeg, [
@@ -241,14 +241,16 @@ function cachedDownload(
 	work: (scratch: string, signal: AbortSignal) => Promise<{ file: string; result: Omit<RetrievedFile, "path" | "cached"> }>,
 ): Promise<RetrievedFile> {
 	const root = path.resolve(deps.filesRoot);
-	const media = path.join(root, directory, key + extension);
-	const meta = path.join(root, directory, key + ".json");
+	const legacyMedia = path.join(root, directory, key + extension);
+	const legacyMeta = path.join(root, directory, key + ".json");
+	const { media, meta } = cacheTarget(legacyMedia, legacyMeta);
+	const lookup = async () => await readCached(media, meta) ?? await readCached(legacyMedia, legacyMeta);
 	return once(root + "|" + key, deps.signal, (signal) => withScratch(root, signal, async (scratch) => {
-		const cached = await readCached(media, meta);
+		const cached = await lookup();
 		if (cached) return cached;
 		const { file, result } = await work(scratch, signal);
 		const saved = { ...result, path: toPosix(path.relative(root, media)) };
-		await publishMedia(file, media, signal, { file: meta, value: saved });
+		if (!(await publishMedia(file, media, signal, { file: meta, value: saved }))) return reusePublished(lookup);
 		return { ...saved, cached: false };
 	}));
 }
@@ -344,15 +346,20 @@ export function fetchWebFile(url: string, deps: RetrievalDeps): Promise<Retrieve
 
 async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl = fetch, env }: RetrievalDeps, scratch: string, signal: AbortSignal): Promise<RetrievedFile> {
 	const dir = path.join(filesRoot, "retrieved", "web");
-	const meta = path.join(dir, `${key}.json`);
-	if (await exists(meta)) {
-		try {
-			const cached = JSON.parse(await fs.readFile(meta, "utf8")) as Omit<RetrievedFile, "cached">;
-			if (await exists(path.join(filesRoot, cached.path))) return { ...cached, cached: true };
-		} catch {
-			// unreadable sidecar: fetch again
+	const legacyMeta = path.join(dir, key + ".json");
+	const { meta } = cacheTarget("", legacyMeta);
+	const lookup = async (): Promise<RetrievedFile | undefined> => {
+		for (const sidecar of [meta, legacyMeta]) {
+			try {
+				const cached = JSON.parse(await fs.readFile(sidecar, "utf8")) as Omit<RetrievedFile, "cached">;
+				if (await exists(path.join(filesRoot, cached.path))) return { ...cached, cached: true };
+			} catch {
+				// Missing or unreadable sidecar.
+			}
 		}
-	}
+	};
+	const cached = await lookup();
+	if (cached) return cached;
 	let res: Response;
 	let bytes: Buffer;
 	try {
@@ -380,7 +387,7 @@ async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl 
 		const declared = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
 		throw new RetrievalError(`the link is not a supported image, video or sound (${declared || "unknown type"})`);
 	}
-	const file = path.join(dir, key + kind.ext);
+	const file = path.join(path.dirname(meta), key + kind.ext);
 	const staged = path.join(scratch, "web" + kind.ext);
 	await fs.writeFile(staged, bytes, { signal });
 	let name = "web media";
@@ -396,7 +403,7 @@ async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl 
 		name,
 		source: { url, pageUrl: url, link: url, start: 0, end: 0, fetchedAt: new Date().toISOString() },
 	};
-	await publishMedia(staged, file, signal, { file: meta, value: result });
+	if (!(await publishMedia(staged, file, signal, { file: meta, value: result }))) return reusePublished(lookup);
 	return { ...result, cached: false };
 }
 

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { type Runner, type RetrievalTools, RetrievalError, defaultRunner, runToolOutput, toolsFromEnv } from "@/retrieval/server";
-import { Cancelled, checkCancelled, publishMedia, withScratch } from "@/retrieval/jobs";
+import { Cancelled, cacheTarget, checkCancelled, publishMedia, reusePublished, withScratch } from "@/retrieval/jobs";
 import { fetchPublic, readCapped } from "@/retrieval/net";
 import { SFX_SOURCES, type SfxFile, type SfxResult, type SfxSource } from "./sfx-types";
 
@@ -300,18 +300,24 @@ async function getMyinstants(ref: string, deps: SfxDeps, scratch: string, signal
 	const dir = path.join(deps.filesRoot, "sfx", "myinstants");
 	// The file name plus a hash of the whole reference: two sounds with the same file name never share a cache entry.
 	const base = `${safeStem(decodeURIComponent(path.posix.basename(ref)).replace(AUDIO_EXT, ""))}-${createHash("sha1").update(ref).digest("hex").slice(0, 6)}`;
-	const meta = path.join(dir, `${base}.json`);
-	for (const ext of [".m4a", path.extname(ref).toLowerCase()]) {
-		const file = path.join(dir, base + ext);
-		if ((await exists(file)) && (await exists(meta))) {
-			try {
-				const saved = JSON.parse(await fs.readFile(meta, "utf8")) as { name: string; pageUrl?: string };
-				return { path: toPosix(path.relative(deps.filesRoot, file)), name: saved.name, source: "myinstants", pageUrl: saved.pageUrl, cached: true };
-			} catch {
-				// unreadable sidecar: fetch again
+	const legacyMeta = path.join(dir, base + ".json");
+	const { meta } = cacheTarget("", legacyMeta);
+	const lookup = async (): Promise<SfxFile | undefined> => {
+		for (const sidecar of [meta, legacyMeta]) {
+			for (const ext of [".m4a", path.extname(ref).toLowerCase()]) {
+				const file = path.join(path.dirname(sidecar), base + ext);
+				if (!(await exists(file))) continue;
+				try {
+					const saved = JSON.parse(await fs.readFile(sidecar, "utf8")) as { name: string; pageUrl?: string };
+					return { path: toPosix(path.relative(deps.filesRoot, file)), name: saved.name, source: "myinstants", pageUrl: saved.pageUrl, cached: true };
+				} catch {
+					// Missing or unreadable sidecar.
+				}
 			}
 		}
-	}
+	};
+	const cached = await lookup();
+	if (cached) return cached;
 	const res = await fetchPublic(MYINSTANTS + ref, { headers: { "User-Agent": USER_AGENT }, fetchImpl: deps.fetchImpl, env: deps.env, timeoutMs: 30_000, signal });
 	if (!res.ok) {
 		await res.body?.cancel();
@@ -324,13 +330,13 @@ async function getMyinstants(ref: string, deps: SfxDeps, scratch: string, signal
 	const normalized = path.join(scratch, "normalized.m4a");
 	await fs.writeFile(raw, bytes, { signal });
 	const encoded = await normalizeInto(raw, normalized, { ...deps, signal });
-	const file = path.join(dir, base + (encoded ? ".m4a" : ext));
+	const file = path.join(path.dirname(meta), base + (encoded ? ".m4a" : ext));
 	const given = cleanLabel(label);
 	const name = given.name ?? titleFromFile(decodeURIComponent(path.posix.basename(ref)));
 	const pageUrl = given.pageUrl ?? `${MYINSTANTS}/en/search/?name=${encodeURIComponent(name)}`;
-	await publishMedia(encoded ? normalized : raw, file, signal, {
+	if (!(await publishMedia(encoded ? normalized : raw, file, signal, {
 		file: meta, value: { name, pageUrl, soundUrl: MYINSTANTS + ref, fetchedAt: new Date().toISOString() },
-	});
+	}))) return reusePublished(lookup);
 	clearLibraryIndex();
 	return { path: toPosix(path.relative(deps.filesRoot, file)), name, source: "myinstants", pageUrl, cached: false };
 }

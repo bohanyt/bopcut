@@ -141,10 +141,10 @@ describe("library and downloads", () => {
 
 		const got = (await handleSfx({ kind: "get", source: "myinstants", ref: "/media/sounds/vine-boom.mp3" }, deps)).body as { path: string; cached: boolean; name: string };
 		expect(got).toMatchObject({ cached: false, name: "vine boom" });
-		expect(got.path).toMatch(/^sfx\/myinstants\/vine-boom-[0-9a-f]{6}\.m4a$/);
+		expect(got.path).toMatch(/^sfx\/myinstants\/vine-boom-[0-9a-f]{6}\.asset\/vine-boom-[0-9a-f]{6}\.m4a$/);
 		expect(calls[1].join(" ")).toContain("volume=5.50dB");
 		const stem = path.basename(got.path, ".m4a");
-		expect((await fs.readdir(path.join(root, "sfx", "myinstants"))).sort()).toEqual([`${stem}.json`, `${stem}.m4a`]);
+		expect((await fs.readdir(path.dirname(path.join(root, got.path)))).sort()).toEqual([`${stem}.json`, `${stem}.m4a`]);
 
 		const again = (await handleSfx({ kind: "get", source: "myinstants", ref: "/media/sounds/vine-boom.mp3" }, deps)).body as { cached: boolean };
 		expect(again.cached).toBe(true);
@@ -161,7 +161,7 @@ describe("library and downloads", () => {
 		expect(search.results.map((r) => r.name)).toEqual(["Bruh & friends'", "VINE BOOM SOUND"]);
 		const found = (await handleSfx({ kind: "find", query: "bruh" }, deps)).body as { path: string; name: string; pageUrl: string };
 		expect(found).toMatchObject({ name: "Bruh & friends'", pageUrl: "https://www.myinstants.com/en/instant/bruh-1/" });
-		expect(found.path).toMatch(/^sfx\/myinstants\/bruh-sound-effect_WstdzdM-[0-9a-f]{6}\.m4a$/);
+		expect(found.path).toMatch(/^sfx\/myinstants\/bruh-sound-effect_WstdzdM-[0-9a-f]{6}\.asset\/bruh-sound-effect_WstdzdM-[0-9a-f]{6}\.m4a$/);
 		const later = (await handleSfx({ kind: "search", query: "friends", sources: ["library"] }, deps)).body as { results: { name: string }[] };
 		expect(later.results.map((r) => r.name)).toEqual(["Bruh & friends'"]);
 		const foreign = (await handleSfx({ kind: "get", source: "myinstants", ref: "/media/sounds/vine-boom.mp3", name: "Boom", pageUrl: "https://evil.example/" }, deps)).body as { pageUrl: string; name: string };
@@ -171,7 +171,7 @@ describe("library and downloads", () => {
 
 	test("normalization off keeps the file as downloaded", async () => {
 		const got = (await handleSfx({ kind: "get", source: "myinstants", ref: "/media/sounds/vine-boom.mp3" }, { filesRoot: root, env: { ...env, BOPENCUT_SFX_NORMALIZE: "off" }, fetchImpl, runner })).body as { path: string };
-		expect(got.path).toMatch(/^sfx\/myinstants\/vine-boom-[0-9a-f]{6}\.mp3$/);
+		expect(got.path).toMatch(/^sfx\/myinstants\/vine-boom-[0-9a-f]{6}\.asset\/vine-boom-[0-9a-f]{6}\.mp3$/);
 		expect(calls).toHaveLength(0);
 	});
 

@@ -4,7 +4,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultRunner } from "./server";
-import { publishMedia, sharedJob, withScratch } from "./jobs";
+import { cacheTarget, publishMedia, sharedJob, withScratch } from "./jobs";
 import { ownedJobName } from "@/agent/job-scratch";
 
 let root: string;
@@ -42,13 +42,19 @@ test("interrupted publication preserves the previous media", async () => {
 	const file = path.join(root, "cached.mp4");
 	await writeFile(file, "old");
 	const controller = new AbortController();
+	const { media, meta } = cacheTarget(file, path.join(root, "cached.json"));
 	await expect(withScratch(root, controller.signal, async (scratch, signal) => {
 		const staged = path.join(scratch, "media");
 		await writeFile(staged, "new");
-		controller.abort();
-		await publishMedia(staged, file, signal, { file: path.join(root, "cached.json"), value: {} });
+		const check = signal.throwIfAborted.bind(signal);
+		signal.throwIfAborted = () => {
+			controller.abort();
+			check();
+		};
+		await publishMedia(staged, media, signal, { file: meta, value: {} });
 	})).rejects.toThrow(/cancelled/i);
 	expect(await readFile(file, "utf8")).toBe("old");
+	await expect(readFile(meta, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 	expect(await readdir(path.join(root, ".retrieval-jobs"))).toEqual([]);
 });
 
@@ -79,4 +85,24 @@ test("a new request reclaims abandoned scratch and preserves a live owner's scra
 	await mkdir(path.join(parent, live));
 	await withScratch(root, undefined, async () => {});
 	expect(await readdir(parent)).toEqual([live]);
+});
+
+test("configured tools get a private temp folder that is removed when they exit", async () => {
+	const temp = await withScratch(root, undefined, (scratch, signal) =>
+		defaultRunner(process.execPath, ["-e", "console.log(require('node:os').tmpdir())"], signal, scratch));
+	const folder = temp.stdout.trim();
+	expect(path.relative(root, folder)).toMatch(/^\.\./);
+	await expect(readdir(folder)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("competing publishers commit one matching pair without replacing it", async () => {
+	const { media, meta } = cacheTarget(path.join(root, "video.mp4"), path.join(root, "video.json"));
+	const results = await Promise.all(["first", "second"].map((value) => withScratch(root, undefined, async (scratch, signal) => {
+		const source = path.join(scratch, "video.mp4");
+		await writeFile(source, value);
+		return publishMedia(source, media, signal, { file: meta, value });
+	})));
+	expect(results.filter(Boolean)).toHaveLength(1);
+	const bytes = await readFile(media, "utf8");
+	expect(JSON.parse(await readFile(meta, "utf8"))).toBe(bytes);
 });

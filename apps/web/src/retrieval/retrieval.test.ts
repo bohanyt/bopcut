@@ -132,7 +132,7 @@ describe("fetching", () => {
 		const first = await fetchSection({ url: "https://www.youtube.com/watch?v=abc", start: 754, end: 774 }, { filesRoot: root, tools, runner, ...network });
 		expect(first.cached).toBe(false);
 		expect(first.type).toBe("video");
-		expect(first.path).toMatch(/^retrieved\/[0-9a-f]{16}\.mp4$/);
+		expect(first.path).toMatch(/^retrieved\/[0-9a-f]{16}\.asset\/[0-9a-f]{16}\.mp4$/);
 		expect(first.name).toBe("Long stream 12:34-12:54");
 		expect(first.source).toMatchObject({ link: "https://www.youtube.com/watch?v=abc&t=754s", title: "Long stream", uploader: "Someone", start: 754, end: 774 });
 		expect(await fs.readFile(path.join(root, first.path), "utf8")).toBe("media");
@@ -175,11 +175,11 @@ describe("fetching", () => {
 	test("a frame is grabbed as JPEG and its one-second download is removed", async () => {
 		const r = await fetchFrame({ url: "https://example.com/v", time: 5 }, { filesRoot: root, tools, runner, ...network });
 		expect(r.type).toBe("image");
-		expect(r.path).toMatch(/^retrieved\/frames\/[0-9a-f]{16}\.jpg$/);
+		expect(r.path).toMatch(/^retrieved\/frames\/[0-9a-f]{16}\.asset\/[0-9a-f]{16}\.jpg$/);
 		expect(calls[1].args.join(" ")).toContain("-ss 5");
 		expect(calls[2].args).toContain("-frames:v");
 		const name = r.path.split("/").pop() as string;
-		const left = await fs.readdir(path.join(root, "retrieved", "frames"));
+		const left = await fs.readdir(path.dirname(path.join(root, r.path)));
 		expect(left.sort()).toEqual([name, name.replace(".jpg", ".json")].sort());
 	});
 

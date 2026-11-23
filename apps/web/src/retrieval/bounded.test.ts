@@ -6,7 +6,6 @@ import { defaultRunner, fetchSection, type Runner } from "./server";
 
 const url = "http://127.0.0.1/fixture";
 const env = { BOPENCUT_ALLOW_PRIVATE_URLS: "1" };
-const total = 16_000_044;
 
 test("refuses a source that ignores ranges before starting FFmpeg", async () => {
 	const root = await mkdtemp(path.join(tmpdir(), "section-refusal-"));
@@ -25,7 +24,9 @@ test("refuses a source that ignores ranges before starting FFmpeg", async () => 
 	}
 });
 
-test("FFmpeg seeks into a long fixture without transferring the whole source", async () => {
+test.each([60, 10_800])("a one-second seek transfers only a small part of a %s-second low-bitrate source", async (duration) => {
+	const total = duration * 16_000 + 44;
+	const startTime = Math.floor(duration * 0.8);
 	const root = await mkdtemp(path.join(tmpdir(), "section-range-"));
 	const header = Buffer.alloc(44);
 	header.write("RIFF", 0);
@@ -51,15 +52,14 @@ test("FFmpeg seeks into a long fixture without transferring the whole source", a
 		return new Response(body, { status: 206, headers: { "Content-Range": "bytes " + start + "-" + end + "/" + total } });
 	}, { preconnect: fetch.preconnect });
 	const runner: Runner = (command, args, signal, cwd) => command === "yt-dlp"
-		? Promise.resolve({ stdout: JSON.stringify({ url, protocol: "http", duration: 1000 }), stderr: "" })
+		? Promise.resolve({ stdout: JSON.stringify({ url, protocol: "http", duration }), stderr: "" })
 		: defaultRunner(command, args, signal, cwd);
 	try {
-		const result = await fetchSection({ url, start: 800, end: 845, audioOnly: true }, { filesRoot: root, env, runner, fetchImpl });
+		const result = await fetchSection({ url, start: startTime, end: startTime + 1, audioOnly: true }, { filesRoot: root, env, runner, fetchImpl });
 		expect(result.type).toBe("audio");
 		expect(ranges[0]).toEqual([0, 0]);
-		expect(ranges.some(([start]) => start === 12_800_044)).toBe(true);
-		expect(ranges.some(([start]) => start === 12_800_044 + 512 * 1024)).toBe(true);
-		expect(ranges.reduce((bytes, [start, end]) => bytes + end - start + 1, 0)).toBeLessThan(total / 4);
+		expect(ranges.some(([start]) => start === startTime * 16_000 + 44)).toBe(true);
+		expect(ranges.reduce((bytes, [start, end]) => bytes + end - start + 1, 0)).toBeLessThan(8 * 16_000);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

@@ -56,7 +56,7 @@ describe("server fetch of a web file", () => {
 		const fetchImpl = fake("image/jpeg; charset=binary", JPEG);
 		const first = await fetchWebFile("https://example.com/pics/Cute%20cat.jpg?x=1", { filesRoot: root, fetchImpl, env: LAN });
 		expect(first).toMatchObject({ type: "image", mime: "image/jpeg", name: "Cute cat", cached: false });
-		expect(first.path).toMatch(/^retrieved\/web\/[0-9a-f]{16}\.jpg$/);
+		expect(first.path).toMatch(/^retrieved\/web\/[0-9a-f]{16}\.asset\/[0-9a-f]{16}\.jpg$/);
 		const second = await fetchWebFile("https://example.com/pics/Cute%20cat.jpg?x=1", { filesRoot: root, fetchImpl, env: LAN });
 		expect(second.cached).toBe(true);
 		expect(calls).toBe(1);
@@ -131,7 +131,7 @@ describe("server fetch of a web file", () => {
 		expect(a.path).toBe(b.path);
 		expect(calls).toBe(1);
 		const name = path.basename(a.path);
-		expect((await fs.readdir(path.join(root, "retrieved", "web"))).sort()).toEqual([name.replace(".png", ".json"), name].sort());
+		expect((await fs.readdir(path.dirname(path.join(root, a.path)))).sort()).toEqual([name.replace(".png", ".json"), name].sort());
 	});
 });
 

@@ -51,19 +51,43 @@ export async function withScratch<T>(
 	}
 }
 
-/** Stage metadata before replacing media. The final rename never truncates the old file. */
+export function cacheTarget(legacyFile: string, legacyMeta: string) {
+	const dir = legacyMeta.replace(/\.json$/, ".asset");
+	return { media: path.join(dir, path.basename(legacyFile)), meta: path.join(dir, path.basename(legacyMeta)) };
+}
+
+export async function reusePublished<T>(lookup: () => Promise<T | undefined>): Promise<T> {
+	const cached = await lookup();
+	if (!cached) throw new RetrievalError("the committed cache entry is unavailable; retry the request");
+	return cached;
+}
+
+/** The completed directory is the commit record. An existing winner's directory cannot be replaced. */
 export async function publishMedia(
 	source: string, target: string, signal: AbortSignal, metadata?: { file: string; value: unknown },
-) {
+): Promise<boolean> {
 	checkCancelled(signal, "publication");
-	await fs.mkdir(path.dirname(target), { recursive: true });
 	try {
-		if (metadata) {
-			const sidecar = path.join(path.dirname(source), "metadata.json");
-			await fs.writeFile(sidecar, JSON.stringify(metadata.value, null, 1));
-			await renameWithRetry(sidecar, metadata.file, signal);
+		if (!metadata) {
+			await fs.mkdir(path.dirname(target), { recursive: true });
+			await renameWithRetry(source, target, signal);
+			return true;
 		}
-		await renameWithRetry(source, target, signal);
+		const destination = path.dirname(target);
+		const staged = path.join(path.dirname(source), "publish");
+		await fs.mkdir(staged);
+		await fs.rename(source, path.join(staged, path.basename(target)));
+		await fs.writeFile(path.join(staged, path.basename(metadata.file)), JSON.stringify(metadata.value, null, 1));
+		await fs.mkdir(path.dirname(destination), { recursive: true });
+		try {
+			signal.throwIfAborted();
+			await fs.rename(staged, destination);
+			return true;
+		} catch (error) {
+			checkCancelled(signal, "publication");
+			if (await fs.stat(metadata.file).then((stat) => stat.isFile(), () => false)) return false;
+			throw error;
+		}
 	} catch (error) {
 		checkCancelled(signal, "publication");
 		throw error;

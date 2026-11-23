@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
-import { checkCancelled } from "./jobs";
+import { promises as fs } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import path from "node:path";
+import { checkCancelled, withScratch } from "./jobs";
+import { RetrievalError } from "./server-errors";
 
 // The pipe is closed on cancellation and on owner exit, including a forced server stop.
 // The supervisor stays outside the tool's process group so it can wait for termination.
@@ -37,9 +41,27 @@ const supervisor = String.raw `
 `;
 
 export async function runProcess(command: string, args: string[], signal?: AbortSignal, scratch?: string) {
+	const assets = path.resolve(scratch ? path.dirname(path.dirname(scratch)) : process.env.AGENT_FILES_ROOT ??
+		process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
+	const root = await fs.realpath(assets).catch(() => assets);
+	const uid = process.getuid?.();
+	for (const base of [tmpdir(), homedir()]) {
+		const real = await fs.realpath(base).catch(() => path.resolve(base));
+		const privateRoot = path.join(real, ".bopencut-tool-jobs" + (uid === undefined ? "" : "-" + uid));
+		const relative = path.relative(root, privateRoot);
+		if (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative)) continue;
+		const stat = await fs.mkdir(privateRoot, { recursive: true, mode: 0o700 })
+			.then(() => fs.lstat(privateRoot)).catch(() => undefined);
+		if (!stat?.isDirectory() || (uid !== undefined && (stat.uid !== uid || (stat.mode & 0o077) !== 0))) continue;
+		return withScratch(privateRoot, signal, (temp, activeSignal) => supervise(command, args, activeSignal, temp));
+	}
+	throw new RetrievalError("no private tool temp folder is available outside the files root");
+}
+
+async function supervise(command: string, args: string[], signal: AbortSignal, scratch: string) {
 	checkCancelled(signal, "tool startup");
 	const child = spawn(process.execPath, ["-e", supervisor], {
-		detached: process.platform !== "win32", windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+		detached: true, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
 	});
 	const stop = () => child.stdin.end();
 	signal?.addEventListener("abort", stop, { once: true });

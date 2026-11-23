@@ -37,7 +37,7 @@ export async function withSectionInputs<T>(
 	work: (inputs: string[]) => Promise<T>,
 ): Promise<T> {
 	const sources: {
-		stream: Stream; size: number; remaining: number; last?: { start: number; bytes: Buffer };
+		stream: Stream; size: number; remaining: number; chunk: number; recent: { start: number; bytes: Buffer }[];
 	}[] = [];
 	for (const stream of streams) {
 		if (!isHttpUrl(stream.url) || !/^https?$/.test(stream.protocol ?? "")) throw seekError();
@@ -47,9 +47,12 @@ export async function withSectionInputs<T>(
 			throw new RetrievalError("could not check the stream for byte ranges; retry or use a local copy");
 		});
 		await body.body?.cancel();
-		const estimate = duration && duration > 0 ? size * (seconds + 20) / duration * 2 : (seconds + 20) * 2_000_000;
+		const bytesPerSecond = duration && duration > 0 ? size / duration : 16_384;
+		// A small initial read lets the demuxer seek without fetching seconds of unused media.
+		const chunk = Math.min(chunkSize, Math.max(4096, Math.ceil(bytesPerSecond * Math.min(seconds, 2))));
+		const estimate = duration && duration > 0 ? bytesPerSecond * (seconds + 20) * 2 : (seconds + 20) * 2_000_000;
 		const ceiling = duration ? (duration > seconds + 30 ? size - 2 : 2 * size) : (size > 4 * chunkSize ? size - 2 : 2 * size);
-		sources.push({ stream, size, remaining: Math.min(ceiling, Math.max(4 * chunkSize, Math.ceil(estimate))) });
+		sources.push({ stream, size, chunk, recent: [], remaining: Math.min(ceiling, Math.max(4 * chunkSize, Math.ceil(estimate))) });
 	}
 	checkCancelled(network.signal, "seekability check");
 	let failure: unknown;
@@ -70,17 +73,18 @@ export async function withSectionInputs<T>(
 		const signal = AbortSignal.any([network.signal, controller.signal]);
 		const transfer = (async () => {
 			let bytes: Buffer;
-			const cached = source.last;
-			if (cached && start >= cached.start && start < cached.start + cached.bytes.length) {
+			const cached = source.recent.find((block) => start >= block.start && start < block.start + block.bytes.length);
+			if (cached) {
 				bytes = cached.bytes.subarray(start - cached.start, end + 1 - cached.start);
 			} else {
-				const count = Math.min(chunkSize, end - start + 1, source.remaining);
+				const count = Math.min(source.chunk, end - start + 1, source.remaining);
 				if (count <= 0) throw new RetrievalError("the section exceeded its transfer budget; use a shorter range or a local copy");
 				source.remaining -= count;
 				const { body, size } = await fetchRange(source.stream, start, start + count - 1, { ...network, signal });
 				bytes = await readCapped(body, count);
 				if (bytes.length !== count || size !== source.size) throw seekError();
-				source.last = { start, bytes };
+				source.recent.unshift({ start, bytes });
+				if (source.recent.length > 8) source.recent.pop();
 			}
 			res.writeHead(206, { "Accept-Ranges": "bytes", "Content-Length": bytes.length,
 				"Content-Range": "bytes " + start + "-" + (start + bytes.length - 1) + "/" + source.size, Connection: "close" });
