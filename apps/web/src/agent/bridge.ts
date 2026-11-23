@@ -417,10 +417,7 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 		result = await editor.renderer.exportProject({
 			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
 			onProgress: ({ progress: value, frame }) => progress(value, frame),
-			onStage: reportStage && (async (stage) => {
-				await posting;
-				await reportStage(stage);
-			}),
+			onStage: reportStage,
 			signal: jobSignal ? AbortSignal.any([claimController.signal, jobSignal]) : claimController.signal,
 		});
 	} catch (error) {

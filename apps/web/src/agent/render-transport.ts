@@ -10,6 +10,8 @@ export function renderTransport(response: Response) {
 	const controller = new AbortController();
 	const hidden = response.headers.has("x-bopencut-render-kind");
 	const release = () => controller.abort();
+	let stageSequence = 0;
+	let pendingStage: AbortController | undefined;
 	void fetch(`${endpoint}?action=watch`, { headers: { [tokenHeader]: token }, signal: controller.signal })
 		.then(() => controller.abort(), () => controller.abort());
 	const request: RenderFetch = async (input, init) => {
@@ -19,6 +21,9 @@ export function renderTransport(response: Response) {
 		params.set("action", action);
 		const headers = new Headers(init?.headers);
 		headers.set(tokenHeader, token);
+		if (["stage", "export-result", "export-file", "frame"].includes(action)) {
+			headers.set("x-bopencut-render-stage-sequence", String(++stageSequence));
+		}
 		const url = `${endpoint}?${params}`;
 		const terminal = action === "frames-result" || (hidden && (action === "failure" ||
 			(action === "export-result" && typeof init?.body === "string" && JSON.parse(init.body).status === "error")));
@@ -36,15 +41,14 @@ export function renderTransport(response: Response) {
 		release();
 		return new Response(null, { status: 409 });
 	};
-	const reportStage = async (stage: string) => {
-		try {
-			await request("/api/agent/stage", {
-				method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage }),
-				signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
-			});
-		} catch {
-			// A failed progress report does not take the job away from the worker.
-		}
+	const reportStage = (stage: string) => {
+		// Keep delayed acknowledgments from occupying the connections used for uploads.
+		pendingStage?.abort();
+		pendingStage = new AbortController();
+		void request("/api/agent/stage", {
+			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage }),
+			signal: AbortSignal.any([controller.signal, pendingStage.signal, AbortSignal.timeout(10_000)]),
+		}).catch(() => { /* Progress reports must not hold up rendering. */ });
 	};
 	return { request, signal: controller.signal, release, reportStage };
 }

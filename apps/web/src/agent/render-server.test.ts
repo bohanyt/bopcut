@@ -42,11 +42,14 @@ test.each(["completes", "stalls"] as const)("a server render %s according to sta
 			expect((await renderWorker(new Request(`${url}?${query}`, { method: "POST", headers, body: "video" }), workspace)).ok).toBe(true);
 		} else {
 			expect((await progress(0.42)).ok).toBe(true);
-			for (let step = 0; step < 3; step++) {
+			let repeats = 0;
+			for (; repeats < 10; repeats++) {
 				await Bun.sleep(75);
 				renderPresence(visible());
-				expect((await progress(0.42)).ok).toBe(true);
+				if (!(await progress(0.42)).ok) break;
 			}
+			expect(repeats).toBeGreaterThan(0);
+			expect(repeats).toBeLessThan(10);
 		}
 		let result;
 		for (;;) {
@@ -101,8 +104,8 @@ for (const owner of ["visible", "hidden"] as const) {
 			const token = claim.headers.get(tokenHeader)!;
 			const request = await claim.json();
 			expect(request).toMatchObject({ projectId: "project", format: "mp4" });
-			const post = (action: string, body: object) => renderWorker(new Request(`${url}?action=${action}`, {
-				method: "POST", headers: { [tokenHeader]: token }, body: JSON.stringify(body),
+			const post = (action: string, body: object, sequence?: number) => renderWorker(new Request(`${url}?action=${action}`, {
+				method: "POST", headers: { [tokenHeader]: token, ...(sequence && { "x-bopencut-render-stage-sequence": String(sequence) }) }, body: JSON.stringify(body),
 			}), workspace);
 			for (const action of ["draft", "applied", "sync", "selection", "edits", "retrieve", "gif"]) {
 				expect((await post(action, {})).status).toBe(403);
@@ -113,8 +116,10 @@ for (const owner of ["visible", "hidden"] as const) {
 				await post("export-result", { rev: request.rev, projectId: "project", status: "exporting", progress: 0.42, frame });
 				expect(await next()).toEqual({ stage: `encoding 42% (frame ${frame})` });
 			}
-			await post("stage", { stage: "finalizing video" });
+			await post("stage", { stage: "finalizing video" }, 5);
 			expect(await next()).toEqual({ stage: "finalizing video" });
+			await post("stage", { stage: "starting encoding" }, 2);
+			await post("export-result", { rev: request.rev, projectId: "project", status: "exporting", progress: 0.43, frame: 4300 }, 4);
 			expect(JSON.parse(await readFile(resultPath, "utf8"))).toEqual({ rev: "legacy", status: "done" });
 			const query = new URLSearchParams({ action: "export-file", rev: request.rev, projectId: "project", name: "Final", format: "mp4", result: '{"format":"mp4","fps":30}' });
 			const saved = renderWorker(new Request(`${url}?${query}`, {

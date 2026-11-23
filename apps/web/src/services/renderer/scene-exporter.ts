@@ -85,7 +85,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 	}: {
 		rootNode: RootNode;
 		signal?: AbortSignal;
-		onFinalize?: () => Promise<void>;
+		onFinalize?: () => void;
 	}): Promise<ArrayBuffer | null> {
 		signal?.throwIfAborted();
 		const fps = this.renderer.fps;
@@ -176,7 +176,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 				this.emit("progress", i / frameCount, i + 1);
 			}
 
-			if (onFinalize) await onFinalize();
+			onFinalize?.();
 			signal?.throwIfAborted();
 			// A low frame rate can leave multiple audio blocks after the last video timestamp.
 			if (audioSource && this.audio) {

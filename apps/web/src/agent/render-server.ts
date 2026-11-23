@@ -24,7 +24,7 @@ type Job = {
 	lease: AbortController;
 	writes: Set<Promise<Response>>;
 	send(event: object): void; finish(result: object, signal: AbortSignal): Promise<void>;
-	reportStage(stage: string): void;
+	reportStage(stage: string, sequence?: number): void;
 	heartbeat(): void; abandon(token: string): void;
 	awaitWatch(): void; watchRegistered(): void;
 };
@@ -95,6 +95,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		let registration: ReturnType<typeof setTimeout>;
 		let deadline: ReturnType<typeof setTimeout>;
 		let stage: string;
+		let stageSequence = 0;
 		let stream: ReadableStreamDefaultController<Uint8Array>;
 		let cleanup: Promise<void> | undefined;
 		const close = () => {
@@ -131,8 +132,14 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			send(event) {
 				if (!closed) stream.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
 			},
-			reportStage(next) {
-				if (closed || next === stage) return;
+			reportStage(next, sequence) {
+				if (closed) return;
+				// The worker can start a later phase before an earlier report arrives.
+				if (sequence !== undefined) {
+					if (!Number.isSafeInteger(sequence) || sequence <= stageSequence) return;
+					stageSequence = sequence;
+				}
+				if (next === stage) return;
 				stage = next;
 				clearTimeout(deadline);
 				deadline = setTimeout(() => {
@@ -179,6 +186,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 					await fs.rm(path.join(scratch, "frames"), { recursive: true, force: true, maxRetries: 3 });
 					job.owner = undefined;
 					job.lease = new AbortController();
+					stageSequence = 0;
 					await offer();
 				}).catch(() => close());
 			},
@@ -242,6 +250,8 @@ export async function renderWorker(req: Request, workspace: string) {
 async function publish(job: Job, req: Request, url: URL, workspace: string, signal: AbortSignal) {
 	const action = url.searchParams.get("action");
 	const body = () => requestBody(req, signal);
+	const sequence = req.headers.get("x-bopencut-render-stage-sequence");
+	const reportStage = (stage: string) => job.reportStage(stage, sequence === null ? undefined : Number(sequence));
 	try {
 		if (action === "failure" && job.owner === "hidden") {
 			const { error } = await body().json();
@@ -259,7 +269,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 			const valid = typeof stage === "string" && (job.kind === "export"
 				? stage === "mixing audio" || stage === "starting encoding" || stage === "finalizing video" || /^checking video \d{1,12}\/\d{1,12}$/.test(stage)
 				: /^rendering frame \d{1,3}\/\d{1,3}$/.test(stage));
-			if (startup || valid) job.reportStage(stage);
+			if (startup || valid) reportStage(stage);
 			return json({ ok: true });
 		}
 		if (job.kind === "export" && action === "export-result") {
@@ -271,7 +281,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 				const percent = Math.round(Number(result.progress) * 100);
 				if (percent >= 0 && percent <= 100) {
 					const frame = Number.isSafeInteger(result.frame) && result.frame > 0 ? ` (frame ${result.frame})` : "";
-					job.reportStage(`encoding ${percent}%${frame}`);
+					reportStage(`encoding ${percent}%${frame}`);
 				}
 			} else if (result.status === "release" && job.owner !== "hidden") {
 				job.abandon(job.token);
@@ -282,7 +292,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 		}
 		if (job.kind === "export" && action === "export-file" && url.searchParams.get("rev") === job.rev && url.searchParams.get("projectId") === job.projectId) {
 			job.finishing = true;
-			job.reportStage("uploading video");
+			reportStage("uploading video");
 			try {
 				await fs.mkdir(job.scratch, { recursive: true });
 				return await handleExportFile(req, workspace, {
@@ -309,7 +319,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 				!(image instanceof File) || image.type !== "image/jpeg" || form.has("variant")) return json({ error: "Invalid frame" }, { status: 400 });
 			signal.throwIfAborted();
 			if (job.owner !== "hidden") job.heartbeat();
-			job.reportStage("saving");
+			reportStage("saving");
 			await atomicWrite(path.join(job.scratch, "frames", `${time}.jpg`), new Uint8Array(await image.arrayBuffer()), signal);
 			return json({ file: `frames/${job.rev}/${time}.jpg` });
 		}

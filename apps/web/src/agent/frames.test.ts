@@ -60,12 +60,16 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 	let paused = false;
 	let failed = false;
 	const globals = {
-		fetch: async (url: string, init?: RequestInit) => {
+		fetch: async (input: string, init?: RequestInit) => {
+			const action = new URL(input, "http://localhost").searchParams.get("action");
+			const url = action ? `/api/agent/${action}` : input;
+			if (action === "watch") return new Promise<Response>(() => {});
 			if (url === pauseAt && !paused) {
 				paused = true;
 				entered.resolve();
 				await release.promise;
 			}
+			if (action === "stage") return Response.json({ ok: true });
 			if (url === "/api/agent/frames-request") return Response.json({ rev: "frame-test", compare, times });
 			if (url === "/api/agent/frame") {
 				uploads.push(init?.body as FormData);
@@ -131,6 +135,21 @@ test("a render-only core hydrates a saved project without opening a save session
 });
 
 const ready = () => ({ ready: true, missingMedia: [] });
+
+test("CLI frame capture finishes while its progress response is delayed", async () => {
+	const { render, results, entered, release } = setup({ pauseAt: "/api/agent/stage", times: [0] });
+	const response = Response.json({ rev: "cli-frames", times: [0] }, { headers: { "x-bopencut-render-token": "token" } });
+	const capture = pollFrames(ready, response);
+	try {
+		await entered;
+		expect(await Promise.race([capture.then(() => "done"), Bun.sleep(100).then(() => "blocked")])).toBe("done");
+		expect(render).toHaveBeenCalledTimes(1);
+		expect(results).toEqual([{ rev: "cli-frames", projectId: "p", files: ["frame-1.jpg"] }]);
+	} finally {
+		release();
+		await capture;
+	}
+});
 
 test("agent frame resizing caps the height of a narrow portrait canvas", async () => {
 	const { drawImage, results } = setup({ pauseAt: "", times: [0], imageSize: { width: 64, height: 4096 } });

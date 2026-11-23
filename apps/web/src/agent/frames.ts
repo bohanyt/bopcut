@@ -151,8 +151,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			for (const [state, variant] of passes) {
 				if (signal.aborted) return await cancel();
 				try {
-					if (reportStage) await reportStage(`rendering frame ${index + 1}/${times.length}`);
-					signal.throwIfAborted();
+					reportStage?.(`rendering frame ${index + 1}/${times.length}`);
 					const error = missing(state);
 					if (error) throw new Error(error);
 					const before = editor.media.getAssets();
