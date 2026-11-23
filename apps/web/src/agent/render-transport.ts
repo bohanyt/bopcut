@@ -6,7 +6,7 @@ export const renderTabHeaders = (projectId: string) => ({ "x-bopencut-render-tab
 
 export function renderTransport(response: Response) {
 	const token = response.headers.get(tokenHeader);
-	if (!token) return { request: fetch, signal: undefined, release: undefined };
+	if (!token) return { request: fetch, signal: undefined, release: undefined, reportStage: undefined };
 	const controller = new AbortController();
 	const hidden = response.headers.has("x-bopencut-render-kind");
 	const release = () => controller.abort();
@@ -36,7 +36,17 @@ export function renderTransport(response: Response) {
 		release();
 		return new Response(null, { status: 409 });
 	};
-	return { request, signal: controller.signal, release };
+	const reportStage = async (stage: string) => {
+		try {
+			await request("/api/agent/stage", {
+				method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage }),
+				signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+			});
+		} catch {
+			// A failed progress report does not take the job away from the worker.
+		}
+	};
+	return { request, signal: controller.signal, release, reportStage };
 }
 
 export type RenderTransport = ReturnType<typeof renderTransport>;

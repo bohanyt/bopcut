@@ -2,6 +2,7 @@ import { parseArgs as parse } from "node:util";
 import path from "node:path";
 import { parseExportRequest } from "../src/agent/export";
 import { parseFrameInput } from "../src/agent/render-input";
+import { renderTimeoutMessage, waitingForRender } from "../src/agent/render-timeout";
 import { captionLanguage, getTranscript, type TranscriptRequest } from "../src/retrieval/transcript";
 import { isHttpUrl, parseTime } from "../src/retrieval/time";
 import { runRender } from "./agent-render";
@@ -103,7 +104,7 @@ async function transcriptCommand(request: TranscriptRequest, timeoutMs: number) 
 	}
 }
 
-async function main(args: string[]) {
+export async function main(args: string[]) {
 	const options = parseArgs(args);
 	if (options.command === "transcript") return transcriptCommand(options.request, options.timeoutMs);
 	const { command, projectId, timeoutMs, origin, request } = options;
@@ -112,7 +113,9 @@ async function main(args: string[]) {
 	const interrupt = new AbortController();
 	const stop = () => interrupt.abort(new Error("Interrupted by Ctrl+C."));
 	if (request) process.on("SIGINT", stop);
-	const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), interrupt.signal]);
+	const connection = new AbortController();
+	const deadline = request && setTimeout(() => connection.abort(new Error(renderTimeoutMessage(timeoutMs, waitingForRender))), timeoutMs);
+	const signal = request ? AbortSignal.any([connection.signal, interrupt.signal]) : AbortSignal.timeout(timeoutMs);
 	try {
 		const response = await fetch(target, {
 			signal, redirect: "error",
@@ -121,16 +124,19 @@ async function main(args: string[]) {
 			signal.throwIfAborted();
 			throw new Error(`Cannot reach the editor at ${origin}. Start it from apps/web with bunx next dev --turbopack -H 127.0.0.1 -p ${target.port || "80"}, then retry.`);
 		});
-		if (request && response.ok) return await runRender(response, { signal });
+		if (deadline && response.ok) {
+			clearTimeout(deadline);
+			return await runRender(response, { signal: interrupt.signal, timeoutMs });
+		}
 		const body = await response.json().catch(() => null);
 		signal.throwIfAborted();
 		if (!response.ok || !body) throw new Error(body?.error ?? "The server did not answer the agent CLI. Start this version of the editor and retry.");
 		return body;
 	} catch (error) {
 		if (signal.aborted && !request) throw new Error("Timed out while reading from the editor. Check the server or increase --timeout.");
-		if (request && error === signal.reason && signal.reason?.name === "TimeoutError") throw new Error("Timed out while waiting for a tab.");
 		throw error;
 	} finally {
+		if (deadline) clearTimeout(deadline);
 		process.removeListener("SIGINT", stop);
 	}
 }

@@ -223,7 +223,8 @@ export class RendererManager {
 	 */
 	async exportProject(job: {
 		options: ExportOptions;
-		onProgress?: ({ progress }: { progress: number }) => void;
+		onProgress?: ({ progress, frame }: { progress: number; frame?: number }) => void;
+		onStage?: (stage: string) => Promise<void>;
 		signal?: AbortSignal;
 	}): Promise<ExportResult> {
 		if (this.exportRunning) {
@@ -249,10 +250,12 @@ export class RendererManager {
 	private async runExport({
 		options,
 		onProgress,
+		onStage,
 		signal: callerSignal,
 	}: {
 		options: ExportOptions;
-		onProgress?: ({ progress }: { progress: number }) => void;
+		onProgress?: ({ progress, frame }: { progress: number; frame?: number }) => void;
+		onStage?: (stage: string) => Promise<void>;
 		signal: AbortSignal;
 	}): Promise<ExportResult> {
 		const { format, quality, fps, includeAudio, sceneId, allowMissing } = options;
@@ -308,10 +311,18 @@ export class RendererManager {
 			const videoIds = new Set(collectVisibleMedia({ tracks, scenes, duration })
 				.filter(({ type }) => type === "video").map(({ mediaId }) => mediaId));
 			const videoProbes = new Map<File, MediaLoadFailure["error"] | undefined>();
+			let checked = 0;
+			let lastVideoReport = -Infinity;
 			for (const id of videoIds) {
+				checked++;
 				const asset = assetsById.get(id);
 				if (!asset || asset.type !== "video" || !asset.url) continue;
 				if (!videoProbes.has(asset.file)) {
+					if (onStage && Date.now() - lastVideoReport >= 2000) {
+						lastVideoReport = Date.now();
+						await onStage(`checking video ${checked}/${videoIds.size}`);
+						signal.throwIfAborted();
+					}
 					try {
 						await verifyVideoFile(asset.file, signal);
 						videoProbes.set(asset.file, undefined);
@@ -328,6 +339,7 @@ export class RendererManager {
 
 			let firstAudioBlock: AudioBuffer | undefined;
 			if (includeAudio) {
+				if (onStage) await onStage("mixing audio");
 				onProgress?.({ progress: 0.05 });
 				signal.throwIfAborted();
 				audioBlocks = mixTimelineAudio({
@@ -342,6 +354,7 @@ export class RendererManager {
 				if (!first.done) firstAudioBlock = first.value;
 			}
 
+			if (onStage) await onStage("starting encoding");
 			signal.throwIfAborted();
 
 			const scene = buildScene({
@@ -367,14 +380,14 @@ export class RendererManager {
 				},
 			});
 
-			exporter.on("progress", (progress) => {
+			exporter.on("progress", (progress, frame) => {
 				const adjustedProgress = includeAudio
 					? 0.05 + progress * 0.95
 					: progress;
-				onProgress?.({ progress: adjustedProgress });
+				onProgress?.({ progress: adjustedProgress, frame });
 			});
 
-			const buffer = await exporter.export({ rootNode: scene, signal });
+			const buffer = await exporter.export({ rootNode: scene, signal, onFinalize: onStage && (() => onStage("finalizing video")) });
 			signal.throwIfAborted();
 
 			if (!buffer) {

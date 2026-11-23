@@ -41,7 +41,7 @@ const qualityMap = {
 const MP4_MIN_SAMPLE_DURATION = 1 / 57_600;
 
 export type SceneExporterEvents = {
-	progress: [progress: number];
+	progress: [progress: number, frame?: number];
 	complete: [buffer: ArrayBuffer];
 	error: [error: Error];
 	cancelled: [];
@@ -81,9 +81,11 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 	async export({
 		rootNode,
 		signal,
+		onFinalize,
 	}: {
 		rootNode: RootNode;
 		signal?: AbortSignal;
+		onFinalize?: () => Promise<void>;
 	}): Promise<ArrayBuffer | null> {
 		signal?.throwIfAborted();
 		const fps = this.renderer.fps;
@@ -171,9 +173,11 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 				signal?.throwIfAborted();
 				await waitWithAbort(videoSource.add(timeSeconds, sampleDuration), signal);
 
-				this.emit("progress", i / frameCount);
+				this.emit("progress", i / frameCount, i + 1);
 			}
 
+			if (onFinalize) await onFinalize();
+			signal?.throwIfAborted();
 			// A low frame rate can leave multiple audio blocks after the last video timestamp.
 			if (audioSource && this.audio) {
 				for await (const buffer of this.audio.blocks) await addAudioBlock(buffer);

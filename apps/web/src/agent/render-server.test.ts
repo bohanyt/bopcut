@@ -12,12 +12,60 @@ const url = "http://127.0.0.1/api/agent/cli/render";
 const tokenHeader = "x-bopencut-render-token";
 const runInAnotherProcess = (code: string, ...args: string[]) =>
 	promisify(execFile)(process.execPath, ["-e", code, ...args], { cwd: path.join(import.meta.dir, "../.."), timeout: 5000 });
-const begin = (signal?: AbortSignal) => new Request(url, {
-	signal, method: "POST", body: JSON.stringify({ command: "export", request: {}, timeoutMs: 10000 }),
+const begin = (signal?: AbortSignal, timeoutMs = 10_000) => new Request(url, {
+	signal, method: "POST", body: JSON.stringify({ command: "export", request: {}, timeoutMs }),
 });
 const visible = (project = "project") => new Request(url, { headers: {
 	"x-bopencut-project": project, "x-bopencut-render-tab": "visible", "x-bopencut-ready": "1",
 } });
+
+test.each(["completes", "stalls"] as const)("a server render %s according to stage changes", async (outcome) => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-deadline-"));
+	let reader: ReadableStreamDefaultReader<string> | undefined;
+	try {
+		const response = await startRender(begin(undefined, 350), workspace, async () => "project", { claim: 3000 });
+		reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+		const claim = await renderRequest(visible(), "export", workspace);
+		const { rev, projectId } = await claim.json();
+		const headers = { [tokenHeader]: claim.headers.get(tokenHeader)! };
+		const watching = renderWorker(new Request(`${url}?action=watch`, { headers }), workspace);
+		const progress = (progress: number) => renderWorker(new Request(`${url}?action=export-result`, {
+			method: "POST", headers, body: JSON.stringify({ rev, projectId, status: "exporting", progress }),
+		}), workspace);
+		expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "waiting for a tab" });
+		if (outcome === "completes") {
+			for (let step = 1; step <= 12; step++) {
+				await Bun.sleep(120);
+				expect((await progress(step / 100)).ok).toBe(true);
+			}
+			const query = new URLSearchParams({ action: "export-file", rev, projectId, name: "Long", format: "mp4" });
+			expect((await renderWorker(new Request(`${url}?${query}`, { method: "POST", headers, body: "video" }), workspace)).ok).toBe(true);
+		} else {
+			expect((await progress(0.42)).ok).toBe(true);
+			for (let step = 0; step < 3; step++) {
+				await Bun.sleep(75);
+				renderPresence(visible());
+				expect((await progress(0.42)).ok).toBe(true);
+			}
+		}
+		let result;
+		for (;;) {
+			const event = await reader.read();
+			if (event.done) break;
+			result = JSON.parse(event.value).result ?? result;
+		}
+		if (outcome === "completes") expect(result).toMatchObject({ rev, projectId, status: "done", file: "exports/Long.mp4" });
+		else expect(result).toMatchObject({ rev, projectId, error: "Timed out after 0.35 s without progress while encoding 42%. Increase --timeout and retry." });
+		expect((await watching).ok).toBe(true);
+		expect(await readdir(path.join(workspace, ".render-jobs"))).toEqual([]);
+		const next = await startRender(begin(), workspace, async () => "project");
+		expect(next.ok).toBe(true);
+		await next.body!.cancel();
+	} finally {
+		await reader?.cancel();
+		await rm(workspace, { recursive: true, force: true, maxRetries: 3 });
+	}
+});
 
 for (const owner of ["visible", "hidden"] as const) {
 	test(`${owner} owns its only render, with legacy results preserved until publication`, async () => {
@@ -61,13 +109,19 @@ for (const owner of ["visible", "hidden"] as const) {
 			}
 			await post("export-result", { rev: request.rev, projectId: "project", status: "exporting", progress: 0.42 });
 			expect(await next()).toEqual({ stage: "encoding 42%" });
+			for (const frame of [4201, 4202]) {
+				await post("export-result", { rev: request.rev, projectId: "project", status: "exporting", progress: 0.42, frame });
+				expect(await next()).toEqual({ stage: `encoding 42% (frame ${frame})` });
+			}
+			await post("stage", { stage: "finalizing video" });
+			expect(await next()).toEqual({ stage: "finalizing video" });
 			expect(JSON.parse(await readFile(resultPath, "utf8"))).toEqual({ rev: "legacy", status: "done" });
 			const query = new URLSearchParams({ action: "export-file", rev: request.rev, projectId: "project", name: "Final", format: "mp4", result: '{"format":"mp4","fps":30}' });
 			const saved = renderWorker(new Request(`${url}?${query}`, {
 				method: "POST", headers: { [tokenHeader]: token }, body: "video",
 			}), workspace);
-			expect(await next()).toEqual({ stage: "encoding 100%" });
-			expect(await next()).toEqual({ stage: "saving" });
+			expect(await next()).toEqual({ stage: "uploading video" });
+			expect(await next()).toEqual({ stage: "saving video" });
 			const { result } = await next();
 			expect(await (await saved).json()).toEqual({ file: "exports/Final.mp4", bytes: 5 });
 			expect(result).toMatchObject({ rev: request.rev, projectId: "project", status: "done", fps: 30 });
@@ -110,8 +164,7 @@ test("a stopped CLI connection during publication aborts the upload and preserve
 				},
 			}, { highWaterMark: 0 }),
 		}), workspace);
-		await reader.read(); // encoding 100%
-		await reader.read(); // saving
+		expect(JSON.parse(new TextDecoder().decode((await reader.read()).value))).toEqual({ stage: "uploading video" });
 		await stalled.promise;
 		controller.abort();
 		expect((await upload).ok).toBe(false);
@@ -124,6 +177,44 @@ test("a stopped CLI connection during publication aborts the upload and preserve
 		await rm(workspace, { recursive: true, force: true });
 	}
 });
+
+test("an upload that keeps writing bytes can finish past the stall interval", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-upload-"));
+	let reader: ReadableStreamDefaultReader<string> | undefined;
+	try {
+		const response = await startRender(begin(undefined, 3000), workspace, async () => "project");
+		reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+		const next = async () => JSON.parse((await reader!.read()).value!);
+		expect(await next()).toEqual({ stage: "waiting for a tab" });
+		const claim = await renderRequest(visible(), "export", workspace);
+		const { rev, projectId } = await claim.json();
+		const query = new URLSearchParams({ action: "export-file", rev, projectId, name: "Slow", format: "mp4" });
+		let chunks = 0;
+		let cancelled = false;
+		const upload = renderWorker(new Request(`${url}?${query}`, {
+			method: "POST", headers: { [tokenHeader]: claim.headers.get(tokenHeader)! },
+			body: new ReadableStream({
+				async pull(stream) {
+					await Bun.sleep(2150);
+					if (cancelled) return;
+					stream.enqueue(new Uint8Array(1024));
+					if (++chunks === 2) stream.close();
+				},
+				cancel() { cancelled = true; },
+			}, { highWaterMark: 0 }),
+		}), workspace);
+		expect(await next()).toEqual({ stage: "uploading video" });
+		expect(await next()).toEqual({ stage: "uploading video (1024 bytes)" });
+		expect(await next()).toEqual({ stage: "uploading video (2048 bytes)" });
+		expect(await next()).toEqual({ stage: "saving video" });
+		expect((await next()).result).toMatchObject({ status: "done", bytes: 2048 });
+		expect((await upload).ok).toBe(true);
+		expect(await reader.read()).toMatchObject({ done: true });
+	} finally {
+		await reader?.cancel();
+		await rm(workspace, { recursive: true, force: true, maxRetries: 3 });
+	}
+}, 8000);
 
 test("pending legacy frame requests retain both files during a CLI render", async () => {
 	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-legacy-"));

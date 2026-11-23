@@ -344,7 +344,7 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 	const key = `agent-export-${projectId}`;
 	const remember = () => { if (!editor.renderOnly) markAnswered(key, rev); };
 	if (!editor.renderOnly && wasAnswered(key, rev)) return;
-	const { request: send, signal: jobSignal, release } = transport ?? renderTransport(response);
+	const { request: send, signal: jobSignal, release, reportStage } = transport ?? renderTransport(response);
 	const before = exportable();
 	if (!before || before.project.metadata.id !== projectId) {
 		if (jobSignal) await sendExportResult({ rev, projectId, status: "release" }, send);
@@ -395,10 +395,13 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 	const claimController = new AbortController();
 	let lastPost = Date.now();
 	let posting: Promise<unknown> | null = null;
-	const progress = (value: number) => {
+	const progress = (value: number, frame?: number) => {
+		if (reportStage && frame === undefined) return;
 		if (!running || posting || Date.now() - lastPost < 2000) return;
 		lastPost = Date.now();
-		posting = sendExportResult({ rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000 }, send)
+		posting = sendExportResult({
+			rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000, ...(reportStage && { frame }),
+		}, send)
 			.then((sent) => {
 				if (sent === "answered" || sent === "claimed") claimController.abort();
 			})
@@ -413,7 +416,11 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 		// stops if the project is closed or another one opened (its media go with it).
 		result = await editor.renderer.exportProject({
 			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
-			onProgress: ({ progress: value }) => progress(value),
+			onProgress: ({ progress: value, frame }) => progress(value, frame),
+			onStage: reportStage && (async (stage) => {
+				await posting;
+				await reportStage(stage);
+			}),
 			signal: jobSignal ? AbortSignal.any([claimController.signal, jobSignal]) : claimController.signal,
 		});
 	} catch (error) {
