@@ -256,7 +256,7 @@ export function EditableProjectName() {
 			inputRef.current?.blur();
 		} else if (event.key === "Escape") {
 			event.preventDefault();
-			if (inputRef.current) {
+			if (isEditing && inputRef.current) {
 				inputRef.current.value = originalNameRef.current;
 				inputRef.current.setSelectionRange(0, 0);
 			}

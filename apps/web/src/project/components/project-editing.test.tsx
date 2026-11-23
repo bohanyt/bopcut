@@ -135,10 +135,11 @@ function EditorShortcuts({ children }: { children: ReactNode }) {
 }
 
 test.each([
-	{ finish: "Escape", expected: false },
-	{ finish: "Enter", expected: true },
-	{ finish: "click away", expected: true },
-])("finishes an inline rename with $finish", ({ finish, expected }) => {
+	{ mode: "editing", finish: "Escape", expected: false },
+	{ mode: "editing", finish: "Enter", expected: true },
+	{ mode: "editing", finish: "click away", expected: true },
+	{ mode: "read-only", finish: "Escape", expected: false },
+])("$finish on the $mode title", ({ mode, finish, expected }) => {
 	const project = EditorCore.getInstance().project;
 	const date = new Date(0);
 	const getActive = spyOn(project, "getActive").mockReturnValue({
@@ -169,9 +170,9 @@ test.each([
 		const input = document.querySelector("input")!;
 		act(() => {
 			input.focus();
-			input.click();
+			if (mode === "editing") input.click();
 		});
-		typeValue(input, " New title ");
+		if (mode === "editing") typeValue(input, " New title ");
 
 		if (finish === "click away") {
 			act(() => document.querySelector("button")!.focus());
@@ -180,6 +181,7 @@ test.each([
 		}
 
 		expect(input.readOnly).toBe(true);
+		expect(document.activeElement).not.toBe(input);
 		if (expected) {
 			expect(rename.mock.calls).toEqual([
 				[{ id: "project", name: "New title" }],
