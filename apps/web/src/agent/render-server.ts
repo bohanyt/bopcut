@@ -5,7 +5,8 @@ import { atomicWrite, readJson } from "@/services/storage/server/files";
 import { CLAIM_MS, handleExportFile } from "./export-server";
 import { parseExportRequest } from "./export";
 import { parseFrameInput } from "./render-input";
-import { renderTimeoutMessage, waitingForRender } from "./render-timeout";
+import { renderTimeoutMessage, waitingForGraphics, waitingForRender } from "./render-timeout";
+import { isRenderAdapterStage, renderGpuWorkaround } from "./render-gpu";
 import { isForeignOrigin } from "./origin";
 import { profileDirectory, recordOutput, recoverRenderJobs, removeRenderJob, renderJobDir, rollbackOutput } from "./render-output";
 
@@ -155,7 +156,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			},
 			awaitWatch() {
 				registration = setTimeout(() => {
-					job.send({ result: { rev, projectId, error: "The hidden browser did not register its render connection." } });
+					job.send({ result: { rev, projectId, error: `The hidden browser did not register its render connection. ${renderGpuWorkaround}` } });
 					close();
 				}, watchRegistration);
 			},
@@ -170,7 +171,8 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			abandon(token) {
 				if (closed || job.lease.signal.aborted || !job.owner || token !== job.token) return;
 				if (job.owner === "hidden") {
-					job.send({ result: { rev, projectId, error: "The hidden browser lost its render connection before delivering a result." } });
+					const error = "The hidden browser lost its render connection before delivering a result.";
+					job.send({ result: { rev, projectId, error: stage === waitingForGraphics ? `${error} ${renderGpuWorkaround}` : error } });
 					close();
 					return;
 				}
@@ -265,7 +267,9 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 			const { stage } = await body().json();
 			signal.throwIfAborted();
 			if (job.finishing) return json(null, { status: 409 });
-			const startup = job.owner === "hidden" && (stage === "loading media" || stage === "waiting for graphics");
+			const startup = job.owner === "hidden" && (
+				stage === "loading media" || stage === waitingForGraphics || isRenderAdapterStage(stage)
+			);
 			const valid = typeof stage === "string" && (job.kind === "export"
 				? stage === "mixing audio" || stage === "starting encoding" || stage === "finalizing video" || /^checking video \d{1,12}\/\d{1,12}$/.test(stage)
 				: /^rendering frame \d{1,3}\/\d{1,3}$/.test(stage));

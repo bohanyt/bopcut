@@ -369,6 +369,10 @@ test.each(["retry", "cancel"] as const)("a promoted frame survives failed result
 		const post = (action: string, body: BodyInit) => renderWorker(new Request(`${url}?action=${action}`, {
 			method: "POST", headers, body,
 		}), workspace);
+		expect((await post("stage", JSON.stringify({ stage: "graphics adapter: driver details" }))).ok).toBe(true);
+		expect((await post("stage", JSON.stringify({ stage: "graphics adapter: unknown" }))).ok).toBe(true);
+		expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "loading project" });
+		expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "graphics adapter: unknown" });
 		const form = new FormData();
 		form.set("rev", rev);
 		form.set("time", "0");
@@ -385,14 +389,12 @@ test.each(["retry", "cancel"] as const)("a promoted frame survives failed result
 		if (outcome === "retry") {
 			failedRename.mockRestore();
 			expect((await post("frames-result", resultBody)).ok).toBe(true);
-			expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "loading project" });
 			expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "saving" });
 			expect(JSON.parse((await reader.read()).value!)).toEqual({ result });
 			expect(await reader.read()).toMatchObject({ done: true });
 			expect(await readFile(path.join(workspace, file), "utf8")).toBe("jpeg");
 		} else {
 			controller.abort();
-			expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "loading project" });
 			expect(JSON.parse((await reader.read()).value!)).toEqual({ stage: "saving" });
 			expect(await reader.read()).toMatchObject({ done: true });
 			expect(await readdir(path.join(workspace, "frames"))).toEqual([]);
@@ -425,7 +427,7 @@ test("a hidden claim without a watch reports a registration timeout and releases
 		const terminal = await reader.read();
 		expect(terminal.done).toBe(false);
 		expect(JSON.parse(terminal.value!)).toEqual({ result: {
-			rev, projectId, error: "The hidden browser did not register its render connection.",
+			rev, projectId, error: "The hidden browser did not register its render connection. If graphics could not start, retry with BOPENCUT_RENDER_GPU=low-power.",
 		} });
 		expect(await reader.read()).toMatchObject({ done: true });
 		expect(await readdir(path.join(workspace, ".render-jobs"))).toEqual([]);

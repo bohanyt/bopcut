@@ -65,6 +65,38 @@ export function getRendererLimits() {
 	return rendererDevice.status.state === "ready" ? limits : noLimits;
 }
 
+type NavigatorWithGpu = Navigator & {
+	gpu?: {
+		requestAdapter(options: { powerPreference: "high-performance" }): Promise<{
+			info?: { vendor?: string; isFallbackAdapter?: boolean };
+		} | null>;
+	};
+};
+
+export async function getRendererAdapter(): Promise<string | undefined> {
+	let timeout: number | undefined;
+	try {
+		if (gl) {
+			const info = gl.getExtension("WEBGL_debug_renderer_info");
+			const description: unknown = info && gl.getParameter(info.UNMASKED_RENDERER_WEBGL);
+			return typeof description === "string" ? description : undefined;
+		}
+		const { gpu } = navigator as NavigatorWithGpu;
+		if (!gpu) return;
+		// Match the compositor's WebGPU preference without requesting another device.
+		const adapter = await Promise.race([
+			gpu.requestAdapter({ powerPreference: "high-performance" }),
+			new Promise<undefined>((resolve) => { timeout = window.setTimeout(resolve, 500); }),
+		]);
+		const info = adapter?.info;
+		return info?.isFallbackAdapter ? "software" : info?.vendor;
+	} catch {
+		return undefined;
+	} finally {
+		if (timeout !== undefined) window.clearTimeout(timeout);
+	}
+}
+
 export type CanvasSizeIssue =
 	| { kind: "canvasInvalid" }
 	| { kind: "canvasOverLimit"; width: number; height: number; max: number };

@@ -1,4 +1,5 @@
 import { launchBrowser, type RunningBrowser } from "./agent-browser";
+import { renderGpuWorkaround } from "../src/agent/render-gpu";
 import { renderTimeoutMessage, waitingForRender } from "../src/agent/render-timeout";
 
 export async function runRender(response: Response, { timeoutMs, signal: interrupt, launch = launchBrowser, progress = console.error }: {
@@ -29,7 +30,7 @@ export async function runRender(response: Response, { timeoutMs, signal: interru
 				throw new Error(`Lost the editor server connection while ${stage ?? waitingForRender}.`, { cause });
 			});
 			signal.throwIfAborted();
-			if (exited) throw new Error("The hidden browser exited. Open the project in the editor and retry.");
+			if (exited) throw new Error(`The hidden browser exited. Open the project in the editor and retry. ${renderGpuWorkaround}`);
 			if (done) throw new Error(`The editor server stopped while ${stage ?? waitingForRender}.`);
 			pending += value;
 			const lines = pending.split("\n");
