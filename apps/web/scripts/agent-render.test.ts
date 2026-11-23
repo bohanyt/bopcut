@@ -1,6 +1,50 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
+import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { main, parseArgs, renderFailed } from "./agent";
+import { launchBrowser, type RunningBrowser } from "./agent-browser";
 import { runRender } from "./agent-render";
+import { isRenderAdapterStage, renderAdapterStage } from "../src/agent/render-gpu";
+
+test.each([["default", undefined], ["low-power", "low-power"]] as const)("launches the hidden browser with GPU mode %s", (_name, mode) => {
+	const browser: RunningBrowser = { exited: Promise.resolve(), stop: async () => {} };
+	const start = mock((_args: string[]) => browser);
+	expect(launchBrowser("http://localhost/worker", "profile", { start, env: { BOPENCUT_RENDER_GPU: mode } })).toBe(browser);
+	const [args] = start.mock.lastCall!;
+	expect(args).toContain("--headless");
+	expect(args.includes("--force_high_performance_gpu")).toBe(mode !== "low-power");
+});
+
+test("refuses an invalid GPU mode before starting the hidden browser", () => {
+	const start = mock(() => { throw new Error("unexpected browser launch"); });
+	expect(() => launchBrowser("http://localhost/worker", "profile", { start, env: { BOPENCUT_RENDER_GPU: "auto" } }))
+		.toThrow("Set BOPENCUT_RENDER_GPU to high-performance or low-power.");
+	expect(start).not.toHaveBeenCalled();
+});
+
+test("reads the GPU override from a dotenv file and prefers the CLI environment", () => {
+	const directory = mkdtempSync(path.join(tmpdir(), "agent-render-gpu-"));
+	const envFile = path.join(directory, ".env.local");
+	writeFileSync(envFile, "BOPENCUT_RENDER_GPU=low-power # bypass the broken driver\n");
+	try {
+		const start = mock((_args: string[]): RunningBrowser => ({ exited: Promise.resolve(), stop: async () => {} }));
+		launchBrowser("http://localhost/worker", "profile", { start, env: {}, envFile });
+		expect(start.mock.lastCall![0]).not.toContain("--force_high_performance_gpu");
+		launchBrowser("http://localhost/worker", "profile", { start, env: { BOPENCUT_RENDER_GPU: "high-performance" }, envFile });
+		expect(start.mock.lastCall![0]).toContain("--force_high_performance_gpu");
+	} finally {
+		unlinkSync(envFile);
+		rmdirSync(directory);
+	}
+});
+
+test("reports only known adapter vendors and handles missing adapter information", () => {
+	expect(renderAdapterStage()).toBe("graphics adapter: unknown");
+	expect(renderAdapterStage("ANGLE (NVIDIA, GeForce RTX 3060, driver 1)")).toBe("graphics adapter: NVIDIA");
+	expect(isRenderAdapterStage(renderAdapterStage())).toBe(true);
+	expect(isRenderAdapterStage("graphics adapter: NVIDIA driver 1")).toBe(false);
+});
 
 test("validates render arguments before connecting", () => {
 	expect(parseArgs(["export", "--name", "Final", "--fps", "29.97", "--allow-missing"]).request)
@@ -118,6 +162,7 @@ for (const mode of ["visible", "done", "error", "timeout", "interrupt", "server 
 		});
 		if (mode === "visible" || mode === "done") expect(await run).toEqual(result);
 		else if (mode === "error") expect(await run).toEqual({ error: "encoding failed" });
+		else if (mode === "browser exit") await expect(run).rejects.toThrow("BOPENCUT_RENDER_GPU=low-power");
 		else await expect(run).rejects.toThrow(mode === "timeout" ? "loading media" : /interrupt|server|browser/i);
 		expect(progress).toEqual(["loading media"]);
 		expect(starts).toBe(mode === "visible" ? 0 : 1);

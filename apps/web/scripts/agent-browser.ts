@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { parseEnv } from "node:util";
 
 export type RunningBrowser = { exited: Promise<unknown>; stop(): Promise<void> };
 
@@ -21,14 +22,9 @@ function findBrowser() {
 	return browser;
 }
 
-export function launchBrowser(url: string, profile: string): RunningBrowser {
+function startBrowser(args: string[]): RunningBrowser {
 	const windows = process.platform === "win32";
-	const child = spawn(findBrowser(), [
-		"--headless", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
-		"--disable-breakpad", "--disable-crash-reporter", "--disable-extensions", "--disable-sync",
-		"--disable-background-timer-throttling", "--disable-renderer-backgrounding",
-		"--enable-unsafe-swiftshader", `--user-data-dir=${profile}`, url,
-	], { detached: !windows, windowsHide: true, stdio: "ignore" });
+	const child = spawn(findBrowser(), args, { detached: !windows, windowsHide: true, stdio: "ignore" });
 	const exited = new Promise<unknown>((resolve) => {
 		child.once("error", resolve);
 		child.once("exit", resolve);
@@ -52,4 +48,30 @@ export function launchBrowser(url: string, profile: string): RunningBrowser {
 			await exited;
 		},
 	};
+}
+
+export function launchBrowser(url: string, profile: string, {
+	start = startBrowser,
+	env = process.env,
+	envFile = env === process.env ? path.resolve(import.meta.dir, "../.env.local") : undefined,
+}: {
+	start?: typeof startBrowser;
+	env?: Record<string, string | undefined>;
+	envFile?: string;
+} = {}): RunningBrowser {
+	let gpu = env.BOPENCUT_RENDER_GPU;
+	if (gpu === undefined && envFile && existsSync(envFile)) {
+		gpu = parseEnv(readFileSync(envFile, "utf8")).BOPENCUT_RENDER_GPU;
+	}
+	gpu ??= "high-performance";
+	if (gpu !== "high-performance" && gpu !== "low-power") {
+		throw new Error("Set BOPENCUT_RENDER_GPU to high-performance or low-power.");
+	}
+	return start([
+		"--headless", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+		"--disable-breakpad", "--disable-crash-reporter", "--disable-extensions", "--disable-sync",
+		"--disable-background-timer-throttling", "--disable-renderer-backgrounding",
+		...(gpu === "high-performance" ? ["--force_high_performance_gpu"] : []),
+		"--enable-unsafe-swiftshader", `--user-data-dir=${profile}`, url,
+	]);
 }
