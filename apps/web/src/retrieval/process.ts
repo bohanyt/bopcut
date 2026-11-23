@@ -5,7 +5,7 @@ import path from "node:path";
 import { checkCancelled, withScratch } from "./jobs";
 import { windowsSupervisor, windowsWorker } from "./process-windows";
 import { RetrievalError } from "./server-errors";
-import { withCookieCopy } from "./yt-dlp-cookies";
+import { cookiePlugin, cookiePluginFile, runWithPrivateCookies } from "./yt-dlp-cookies";
 
 // The pipe is closed on cancellation and on owner exit, including a forced server stop.
 // The supervisor stays outside the tool's process group so it can wait for termination.
@@ -66,8 +66,24 @@ export function runProcess(command: string, args: string[], signal?: AbortSignal
 }
 
 export function runYtDlpProcess(command: string, args: string[], signal?: AbortSignal, scratch?: string) {
-	return withToolScratch(signal, scratch, (temp, activeSignal) => withCookieCopy(args, temp, activeSignal,
-		(toolArgs) => supervise(command, toolArgs, activeSignal, temp, { PYTHONIOENCODING: "utf-8" })));
+	return withToolScratch(signal, scratch, async (temp, activeSignal) => {
+		const env: Record<string, string> = {
+			YTDLP_NO_PLUGINS: "",
+			BOPENCUT_TOOL_ORIGINAL_TEMP: JSON.stringify({
+				TMPDIR: process.env.TMPDIR ?? null, TMP: process.env.TMP ?? null, TEMP: process.env.TEMP ?? null,
+			}),
+		};
+		if (process.platform === "win32") {
+			env.BOPENCUT_TOOL_PLUGIN_FILE = cookiePluginFile;
+			env.BOPENCUT_TOOL_PLUGIN_SOURCE = cookiePlugin;
+		} else {
+			const file = path.join(temp, cookiePluginFile);
+			await fs.mkdir(path.dirname(file), { recursive: true });
+			await fs.writeFile(file, cookiePlugin, { flag: "wx" });
+		}
+		return runWithPrivateCookies(args, temp, activeSignal,
+			(toolArgs) => supervise(command, toolArgs, activeSignal, temp, env));
+	});
 }
 
 async function withToolScratch<T>(

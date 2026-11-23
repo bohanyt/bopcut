@@ -295,7 +295,8 @@ function cleanLabel(label: SfxLabel = {}): SfxLabel {
 	return { ...(name ? { name } : {}), ...(pageUrl ? { pageUrl } : {}) };
 }
 
-async function getMyinstants(ref: string, deps: SfxDeps, scratch: string, signal: AbortSignal, label: SfxLabel = {}): Promise<SfxFile> {
+async function getMyinstants(ref: string, deps: SfxDeps, label: SfxLabel = {}): Promise<SfxFile> {
+	checkCancelled(deps.signal, "sound lookup");
 	if (!SOUND_PATH.test(ref)) throw new RetrievalError("invalid myinstants reference");
 	const dir = path.join(deps.filesRoot, "sfx", "myinstants");
 	// The file name plus a hash of the whole reference: two sounds with the same file name never share a cache entry.
@@ -317,28 +318,32 @@ async function getMyinstants(ref: string, deps: SfxDeps, scratch: string, signal
 		}
 	};
 	const cached = await lookup();
+	checkCancelled(deps.signal, "sound lookup");
 	if (cached) return cached;
-	const res = await fetchPublic(MYINSTANTS + ref, { headers: { "User-Agent": USER_AGENT }, fetchImpl: deps.fetchImpl, env: deps.env, timeoutMs: 30_000, signal });
-	if (!res.ok) {
-		await res.body?.cancel();
-		throw new RetrievalError(`myinstants download failed (${res.status})`);
-	}
-	const bytes = await readCapped(res, MAX_DOWNLOAD_BYTES);
-	if (bytes.length === 0) throw new RetrievalError("myinstants returned an empty file");
-	const ext = path.extname(ref).toLowerCase();
-	const raw = path.join(scratch, "download" + ext);
-	const normalized = path.join(scratch, "normalized.m4a");
-	await fs.writeFile(raw, bytes, { signal });
-	const encoded = await normalizeInto(raw, normalized, { ...deps, signal });
-	const file = path.join(path.dirname(meta), base + (encoded ? ".m4a" : ext));
-	const given = cleanLabel(label);
-	const name = given.name ?? titleFromFile(decodeURIComponent(path.posix.basename(ref)));
-	const pageUrl = given.pageUrl ?? `${MYINSTANTS}/en/search/?name=${encodeURIComponent(name)}`;
-	if (!(await publishMedia(encoded ? normalized : raw, file, signal, {
-		file: meta, value: { name, pageUrl, soundUrl: MYINSTANTS + ref, fetchedAt: new Date().toISOString() },
-	}))) return reusePublished(lookup);
-	clearLibraryIndex();
-	return { path: toPosix(path.relative(deps.filesRoot, file)), name, source: "myinstants", pageUrl, cached: false };
+	return withScratch(path.resolve(deps.filesRoot), deps.signal, async (scratch, signal) => {
+		const res = await fetchPublic(MYINSTANTS + ref, { headers: { "User-Agent": USER_AGENT }, fetchImpl: deps.fetchImpl, env: deps.env, timeoutMs: 30_000, signal });
+		if (!res.ok) {
+			await res.body?.cancel();
+			throw new RetrievalError(`myinstants download failed (${res.status})`);
+		}
+		const bytes = await readCapped(res, MAX_DOWNLOAD_BYTES);
+		if (bytes.length === 0) throw new RetrievalError("myinstants returned an empty file");
+		const ext = path.extname(ref).toLowerCase();
+		const raw = path.join(scratch, "download" + ext);
+		const normalized = path.join(scratch, "normalized.m4a");
+		await fs.writeFile(raw, bytes, { signal });
+		const encoded = await normalizeInto(raw, normalized, { ...deps, signal });
+		const file = path.join(path.dirname(meta), base + (encoded ? ".m4a" : ext));
+		const given = cleanLabel(label);
+		const name = given.name ?? titleFromFile(decodeURIComponent(path.posix.basename(ref)));
+		const pageUrl = given.pageUrl ?? `${MYINSTANTS}/en/search/?name=${encodeURIComponent(name)}`;
+		if (!(await publishMedia(encoded ? normalized : raw, file, signal, {
+			file: meta, value: { name, pageUrl, soundUrl: MYINSTANTS + ref, fetchedAt: new Date().toISOString() },
+		}))) return reusePublished(lookup);
+		clearLibraryIndex();
+		return { path: toPosix(path.relative(deps.filesRoot, file)), name, source: "myinstants", pageUrl, cached: false };
+	});
+
 }
 
 /** A library sound: used in place when it is under AGENT_FILES_ROOT, otherwise copied into `sfx/library/` once. */
@@ -364,8 +369,7 @@ export async function getLibrary(ref: string, deps: SfxDeps, kind: LibraryKind =
 }
 
 export function getSfx(source: SfxSource, ref: string, deps: SfxDeps, label?: SfxLabel): Promise<SfxFile> {
-	return source === "library" ? getLibrary(ref, deps) : withScratch(path.resolve(deps.filesRoot), deps.signal,
-		(scratch, signal) => getMyinstants(ref, deps, scratch, signal, label));
+	return source === "library" ? getLibrary(ref, deps) : getMyinstants(ref, deps, label);
 }
 
 /** A library file to stream for a preview, or null when the reference is not valid. */

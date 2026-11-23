@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { defaultRunner, fetchSection, toolsFromEnv } from "./server";
+import { defaultRunner, fetchFrame, fetchSection, fetchWebFile, toolsFromEnv } from "./server";
+import { getMusic } from "@/sounds/music-server";
+import { getSfx } from "@/sounds/sfx-server";
+import { cookiePluginFile } from "./yt-dlp-cookies";
 import { cacheTargets, publishMedia, sharedJob, withScratch } from "./jobs";
 import { ownedJobName } from "@/agent/job-scratch";
 
@@ -174,32 +178,31 @@ test("configured tools get a private temp folder that is removed when they exit"
 	await expect(readdir(folder)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-test("cancelling yt-dlp after it rewrites its job copy leaves the configured cookie file intact", async () => {
-	const original = path.join(root, "configured cookies café.txt");
+async function verifyCookieCopy(verify: (copy: string) => void, useAlias = false) {
+	const original = path.join(root, "configured cookies caf\u00e9.txt");
 	const contents = Buffer.from("# Netscape HTTP Cookie File\r\nexample.test\tFALSE\t/\tTRUE\t0\tfixture\tvalue\r\n");
 	await writeFile(original, contents);
 	const marker = path.join(root, "cookie-copy-path");
 	const tool = path.join(root, "fake-yt-dlp.js");
 	await writeFile(tool, String.raw`
-		const { readFileSync, writeFileSync } = require("node:fs");
-		const [original, marker, ...args] = process.argv.slice(2);
-		if (args.includes("--help")) {
-			const repr = (values) => "[" + values.map((value) => JSON.stringify(value)).join(", ") + "]";
-			console.error("[debug] Command-line config: " + repr(args));
-			console.error('[debug] | Config "test.conf": ' + repr(["--config-locations", "nested.conf"]));
-			console.error('[debug] | | Config "nested.conf": ' + repr(["--cookies", original]));
-			process.exit(0);
-		}
-		// Simulate yt-dlp reading and then truncating its configured destination.
-		const copy = args.includes("--cookies") ? args[args.lastIndexOf("--cookies") + 1] : original;
-		if (!readFileSync(copy).equals(readFileSync(original))) throw new Error("the copy differs");
+		const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+		const path = require("node:path");
+		const [marker, pluginFile, ...args] = process.argv.slice(2);
+		const original = args[args.indexOf(args.includes("--session") ? "--session" : "--cookies") + 1];
+		const hasPlugin = args.includes("--use-postprocessor") && args.includes("BopencutJobCookies");
+		const scratch = args[args.indexOf("--plugin-dirs") + 1];
+		// Simulate yt-dlp passing its resolved cookie path to the required postprocessor.
+		const copy = hasPlugin && existsSync(path.join(scratch, pluginFile)) ? path.join(scratch, "cookies.txt") : original;
+		if (hasPlugin) writeFileSync(path.join(scratch, "cookie-state"), "copy");
+		if (copy !== original) writeFileSync(copy, readFileSync(original));
 		writeFileSync(copy, "");
 		writeFileSync(marker, copy);
 		setTimeout(() => process.exit(), 7000);
 	`);
 	const controller = new AbortController();
 	const filesRoot = path.join(root, "files");
-	const tools = { ...toolsFromEnv({}), ytdlp: [process.execPath, tool, original, marker] };
+	const cookieArgs = useAlias ? ["--alias", "session", "--cookies {0}", "--session", original] : ["--cookies", original];
+	const tools = { ...toolsFromEnv({}), ytdlp: [process.execPath, tool, marker, cookiePluginFile, ...cookieArgs] };
 	const job = fetchSection({ url: "https://example.com/video", start: 10, end: 12 }, { filesRoot, tools, signal: controller.signal });
 	try {
 		let copy: string | undefined;
@@ -210,6 +213,8 @@ test("cancelling yt-dlp after it rewrites its job copy leaves the configured coo
 			});
 			if (!copy) await Promise.race([job, new Promise((resolve) => setTimeout(resolve, 20))]);
 		}
+		expect(await readFile(original)).toEqual(contents);
+		verify(copy);
 		controller.abort();
 		await expect(job).rejects.toThrow(/cancelled/);
 		expect(await readFile(original)).toEqual(contents);
@@ -220,7 +225,63 @@ test("cancelling yt-dlp after it rewrites its job copy leaves the configured coo
 		controller.abort();
 		await job.catch(() => {});
 	}
+}
+
+test("cancelling yt-dlp after it rewrites its job copy leaves the configured cookie file intact", async () => {
+	await verifyCookieCopy(() => {});
 }, 10_000);
+
+test("yt-dlp supplies the cookie file resolved from a configured alias to the private copy step", async () => {
+	await verifyCookieCopy(() => {}, true);
+}, 10_000);
+
+test.skipIf(process.platform !== "win32")("the Windows cookie copy has only the current user in its ACL", async () => {
+	await verifyCookieCopy((copy) => {
+		const shell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+		const command = `
+			$ErrorActionPreference = "Stop"
+			$file = Get-Item -LiteralPath $env:RETRIEVAL_TEST_COOKIE
+			$directory = $file.Directory.GetAccessControl()
+			$user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+			$rules = $file.GetAccessControl().GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+			$directory.AreAccessRulesProtected -and $rules.Count -eq 1 -and $rules[0].IdentityReference -eq $user
+		`;
+		const options = { env: { ...process.env, RETRIEVAL_TEST_COOKIE: copy }, encoding: "utf8" as const, windowsHide: true };
+		expect(execFileSync(shell, ["-NoProfile", "-NonInteractive", "-Command", command], options).trim()).toBe("True");
+	});
+}, 10_000);
+
+test("warm media caches are usable when the files root cannot create scratch", async () => {
+	const deps = {
+		filesRoot: root,
+		env: { BOPENCUT_ALLOW_PRIVATE_URLS: "1", BOPENCUT_MUSIC_LOUDNESS: "off", BOPENCUT_SFX_NORMALIZE: "off" },
+		fetchImpl: Object.assign(async () => new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47])), { preconnect: fetch.preconnect }),
+		runner: async (_command: string, args: string[]) => {
+			const output = args.includes("-o") ? args[args.indexOf("-o") + 1].replace("%(ext)s", args.includes("-x") ? "m4a" : "mp4") : args.at(-1)!;
+			await writeFile(output, "media");
+			return { stdout: JSON.stringify({ title: "Fixture" }), stderr: "" };
+		},
+	};
+	const url = "https://example.com/media";
+	const lookups = [
+		() => fetchSection({ url, start: 1, end: 2 }, deps),
+		() => fetchFrame({ url, time: 1 }, deps),
+		() => fetchWebFile(url, deps),
+		() => getMusic("online", url, deps),
+		() => getSfx("myinstants", "/media/sounds/test.mp3", deps),
+	];
+	const saved = await Promise.all(lookups.map((get) => get()));
+	const mkdir = spyOn(fs, "mkdir").mockImplementation(async () => {
+		throw Object.assign(new Error("read-only files root"), { code: "EROFS" });
+	});
+	try {
+		const cached = await Promise.all(lookups.map((get) => get()));
+		expect(cached.map(({ cached, path }) => ({ cached, path }))).toEqual(saved.map(({ path }) => ({ cached: true, path })));
+		expect(mkdir).not.toHaveBeenCalled();
+	} finally {
+		mkdir.mockRestore();
+	}
+});
 
 test("competing publishers commit one matching pair without replacing it", async () => {
 	const { meta } = await cacheTargets(path.join(root, "video.json"));

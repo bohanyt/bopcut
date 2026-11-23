@@ -20,6 +20,25 @@ export const windowsSupervisor = String.raw`
 	$ErrorActionPreference = 'Stop'
 	$ProgressPreference = 'SilentlyContinue'
 	[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+	if ($env:BOPENCUT_TOOL_PLUGIN_FILE) {
+		# POSIX mode bits are ignored on Windows. Protect scratch before creating the plugin or loading credentials.
+		$directory = Get-Item -LiteralPath $env:TMPDIR -Force
+		$user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+		if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+			$directory.GetAccessControl().GetOwner([Security.Principal.SecurityIdentifier]) -ne $user) {
+			throw 'The tool scratch directory is not owned by the current user.'
+		}
+		$security = [Security.AccessControl.DirectorySecurity]::new()
+		$security.SetAccessRuleProtection($true, $false)
+		$rule = [Security.AccessControl.FileSystemAccessRule]::new(
+			$user, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+		$security.AddAccessRule($rule)
+		$directory.SetAccessControl($security)
+		$file = Join-Path $directory.FullName $env:BOPENCUT_TOOL_PLUGIN_FILE
+		[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($file)) | Out-Null
+		[IO.File]::WriteAllText($file, $env:BOPENCUT_TOOL_PLUGIN_SOURCE)
+		Remove-Item Env:BOPENCUT_TOOL_PLUGIN_FILE, Env:BOPENCUT_TOOL_PLUGIN_SOURCE
+	}
 	Add-Type -TypeDefinition @'
 	using System;
 	using System.ComponentModel;

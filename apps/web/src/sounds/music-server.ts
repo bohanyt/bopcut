@@ -88,11 +88,10 @@ const onlineJob = sharedJob<MusicFile>();
 /** An online song, sound only, into the files root. Concurrent callers share the download. */
 function getOnline(url: string, deps: MusicDeps): Promise<MusicFile> {
 	const root = path.resolve(deps.filesRoot);
-	return onlineJob(root + "|" + url, deps.signal, (signal) => withScratch(root, signal,
-		(scratch) => fetchOnline(url, { ...deps, filesRoot: root }, scratch, signal)));
+	return onlineJob(root + "|" + url, deps.signal, (signal) => fetchOnline(url, { ...deps, filesRoot: root }, signal));
 }
 
-async function fetchOnline(url: string, deps: MusicDeps, scratch: string, signal: AbortSignal): Promise<MusicFile> {
+async function fetchOnline(url: string, deps: MusicDeps, signal: AbortSignal): Promise<MusicFile> {
 	if (!isHttpUrl(url)) throw new RetrievalError("an online song needs an http(s) link");
 	await assertPublicUrl(url, deps.env, undefined, signal);
 	const env = deps.env ?? process.env;
@@ -117,26 +116,29 @@ async function fetchOnline(url: string, deps: MusicDeps, scratch: string, signal
 	};
 	const cached = await lookup();
 	if (cached) return cached;
-	const args = [...ytDlpJobArgs(scratch), "--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", `!is_live & duration <= ${maxSeconds(env)}`, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"];
-	if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
-	const [command, ...rest] = tools.ffmpeg;
-	if (rest.length === 0 && /[\\/]/.test(command)) args.push("--ffmpeg-location", command);
-	args.push("-o", path.join(scratch, "song.%(ext)s"), "--", url);
-	const stdout = await runTool(runner, tools.ytdlp, args, "yt-dlp", signal, scratch);
-	const line = stdout.split(/\r?\n/).reverse().find((l) => l.trim().startsWith("{"));
-	const info = line ? (JSON.parse(line) as { title?: string; uploader?: string; channel?: string; webpage_url?: string; duration?: number }) : undefined;
-	let staged = path.join(scratch, "song.m4a");
-	if (!info || !(await exists(staged))) throw new RetrievalError(`nothing was downloaded (longer than ${maxSeconds(env)} s, a live stream, or an unsupported link)`);
-	const target = loudnessTarget(env);
-	if (target !== null) {
-		const normalized = path.join(scratch, "normalized.m4a");
-		await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", staged, "-vn", "-af", `loudnorm=I=${target}:TP=-1.5:LRA=11`, "-ar", "48000", "-c:a", "aac", "-b:a", "192k", normalized], "ffmpeg", signal, scratch);
-		staged = normalized;
-	}
-	const result = { name: info.title ?? "song", uploader: info.uploader || info.channel, pageUrl: info.webpage_url || url, duration: info.duration, fetchedAt: new Date().toISOString() };
-	if (!(await publishMedia(staged, media, signal, { file: meta, value: result }))) return reusePublished(lookup);
-	clearLibraryIndex();
-	return { path: toPosix(path.relative(deps.filesRoot, media)), name: result.name, source: "online", pageUrl: result.pageUrl, uploader: result.uploader, cached: false };
+	return withScratch(deps.filesRoot, signal, async (scratch, signal) => {
+		const args = [...ytDlpJobArgs(scratch), "--no-playlist", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", `!is_live & duration <= ${maxSeconds(env)}`, "-f", "ba[ext=m4a]/ba/b", "-x", "--audio-format", "m4a"];
+		if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
+		const [command, ...rest] = tools.ffmpeg;
+		if (rest.length === 0 && /[\\/]/.test(command)) args.push("--ffmpeg-location", command);
+		args.push("-o", path.join(scratch, "song.%(ext)s"), "--", url);
+		const stdout = await runTool(runner, tools.ytdlp, args, "yt-dlp", signal, scratch);
+		const line = stdout.split(/\r?\n/).reverse().find((l) => l.trim().startsWith("{"));
+		const info = line ? (JSON.parse(line) as { title?: string; uploader?: string; channel?: string; webpage_url?: string; duration?: number }) : undefined;
+		let staged = path.join(scratch, "song.m4a");
+		if (!info || !(await exists(staged))) throw new RetrievalError(`nothing was downloaded (longer than ${maxSeconds(env)} s, a live stream, or an unsupported link)`);
+		const target = loudnessTarget(env);
+		if (target !== null) {
+			const normalized = path.join(scratch, "normalized.m4a");
+			await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", staged, "-vn", "-af", `loudnorm=I=${target}:TP=-1.5:LRA=11`, "-ar", "48000", "-c:a", "aac", "-b:a", "192k", normalized], "ffmpeg", signal, scratch);
+			staged = normalized;
+		}
+		const result = { name: info.title ?? "song", uploader: info.uploader || info.channel, pageUrl: info.webpage_url || url, duration: info.duration, fetchedAt: new Date().toISOString() };
+		if (!(await publishMedia(staged, media, signal, { file: meta, value: result }))) return reusePublished(lookup);
+		clearLibraryIndex();
+		return { path: toPosix(path.relative(deps.filesRoot, media)), name: result.name, source: "online", pageUrl: result.pageUrl, uploader: result.uploader, cached: false };
+	});
+
 }
 
 export async function getMusic(source: MusicSource, ref: string, deps: MusicDeps): Promise<MusicFile> {

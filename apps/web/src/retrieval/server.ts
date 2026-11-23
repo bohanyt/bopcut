@@ -263,7 +263,7 @@ function cachedDownload(
 ): Promise<RetrievedFile> {
 	const root = path.resolve(deps.filesRoot);
 	const legacyMeta = path.join(root, directory, key + ".json");
-	return once(root + "|" + key, deps.signal, (signal) => withScratch(root, signal, async (scratch) => {
+	return once(root + "|" + key, deps.signal, async (signal) => {
 		const { meta, sidecars } = await cacheTargets(legacyMeta);
 		const mediaName = key + extension;
 		const media = path.join(path.dirname(meta), mediaName);
@@ -275,11 +275,13 @@ function cachedDownload(
 		};
 		const cached = await lookup();
 		if (cached) return cached;
-		const { file, result } = await work(scratch, signal);
-		const saved = { ...result, path: toPosix(path.relative(root, media)) };
-		if (!(await publishMedia(file, media, signal, { file: meta, value: saved }))) return reusePublished(lookup);
-		return { ...saved, cached: false };
-	}));
+		return withScratch(root, signal, async (scratch) => {
+			const { file, result } = await work(scratch, signal);
+			const saved = { ...result, path: toPosix(path.relative(root, media)) };
+			if (!(await publishMedia(file, media, signal, { file: meta, value: saved }))) return reusePublished(lookup);
+			return { ...saved, cached: false };
+		});
+	});
 }
 
 /** Fetch [start, end) and cache it by link, range, height and audio mode. */
@@ -366,10 +368,10 @@ const WEB_FETCH_TIMEOUT_MS = 120_000;
 export function fetchWebFile(url: string, deps: RetrievalDeps): Promise<RetrievedFile> {
 	const key = cacheKey(["web", url]);
 	return once(path.resolve(deps.filesRoot) + "|" + key, deps.signal, (signal) =>
-		withScratch(deps.filesRoot, signal, (scratch) => downloadWebFile(url, key, { ...deps, signal }, scratch, signal)));
+		downloadWebFile(url, key, deps, signal));
 }
 
-async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl = fetch, env }: RetrievalDeps, scratch: string, signal: AbortSignal): Promise<RetrievedFile> {
+async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl = fetch, env }: RetrievalDeps, signal: AbortSignal): Promise<RetrievedFile> {
 	const dir = path.join(filesRoot, "retrieved", "web");
 	const legacyMeta = path.join(dir, key + ".json");
 	const { meta, sidecars } = await cacheTargets(legacyMeta);
@@ -385,51 +387,54 @@ async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl 
 	};
 	const cached = await lookup();
 	if (cached) return cached;
-	let res: Response;
-	let bytes: Buffer;
-	try {
-		res = await fetchPublic(url, {
-			fetchImpl,
-			env,
-			timeoutMs: WEB_FETCH_TIMEOUT_MS,
-			signal,
-			headers: { "User-Agent": "Mozilla/5.0 (compatible; bopencut)", Accept: "image/*,video/*,audio/*;q=0.9,*/*;q=0.1" },
-		});
-		if (!res.ok) {
-			await res.body?.cancel();
-			throw new RetrievalError(`the link answered ${res.status}`);
+	return withScratch(filesRoot, signal, async (scratch, signal) => {
+		let res: Response;
+		let bytes: Buffer;
+		try {
+			res = await fetchPublic(url, {
+				fetchImpl,
+				env,
+				timeoutMs: WEB_FETCH_TIMEOUT_MS,
+				signal,
+				headers: { "User-Agent": "Mozilla/5.0 (compatible; bopencut)", Accept: "image/*,video/*,audio/*;q=0.9,*/*;q=0.1" },
+			});
+			if (!res.ok) {
+				await res.body?.cancel();
+				throw new RetrievalError(`the link answered ${res.status}`);
+			}
+			bytes = await readCapped(res, MAX_WEB_FILE_BYTES);
+		} catch (error) {
+			checkCancelled(signal, "web download");
+			if (error instanceof RetrievalError) throw error;
+			throw new RetrievalError(`could not download the link: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		bytes = await readCapped(res, MAX_WEB_FILE_BYTES);
-	} catch (error) {
-		checkCancelled(signal, "web download");
-		if (error instanceof RetrievalError) throw error;
-		throw new RetrievalError(`could not download the link: ${error instanceof Error ? error.message : String(error)}`);
-	}
-	if (bytes.length === 0) throw new RetrievalError("the link gave an empty file");
-	const kind = sniffMedia(bytes);
-	if (kind === "svg") throw new RetrievalError("SVG images are not supported; use a PNG or JPEG of it");
-	if (!kind) {
-		const declared = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-		throw new RetrievalError(`the link is not a supported image, video or sound (${declared || "unknown type"})`);
-	}
-	const file = path.join(path.dirname(meta), key + kind.ext);
-	const staged = path.join(scratch, "web" + kind.ext);
-	await fs.writeFile(staged, bytes, { signal });
-	let name = "web media";
-	try {
-		name = decodeURIComponent(new URL(res.url || url).pathname.split("/").pop() || "").replace(/\.[a-z0-9]{2,5}$/i, "") || name;
-	} catch {
-		// keep the default name
-	}
-	const result: Omit<RetrievedFile, "cached"> = {
-		path: toPosix(path.relative(filesRoot, file)),
-		type: kind.type,
-		mime: kind.mime,
-		name,
-		source: { url, pageUrl: url, link: url, start: 0, end: 0, fetchedAt: new Date().toISOString() },
-	};
-	if (!(await publishMedia(staged, file, signal, { file: meta, value: result }))) return reusePublished(lookup);
-	return { ...result, cached: false };
+		if (bytes.length === 0) throw new RetrievalError("the link gave an empty file");
+		const kind = sniffMedia(bytes);
+		if (kind === "svg") throw new RetrievalError("SVG images are not supported; use a PNG or JPEG of it");
+		if (!kind) {
+			const declared = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+			throw new RetrievalError(`the link is not a supported image, video or sound (${declared || "unknown type"})`);
+		}
+		const file = path.join(path.dirname(meta), key + kind.ext);
+		const staged = path.join(scratch, "web" + kind.ext);
+		await fs.writeFile(staged, bytes, { signal });
+		let name = "web media";
+		try {
+			name = decodeURIComponent(new URL(res.url || url).pathname.split("/").pop() || "").replace(/\.[a-z0-9]{2,5}$/i, "") || name;
+		} catch {
+			// keep the default name
+		}
+		const result: Omit<RetrievedFile, "cached"> = {
+			path: toPosix(path.relative(filesRoot, file)),
+			type: kind.type,
+			mime: kind.mime,
+			name,
+			source: { url, pageUrl: url, link: url, start: 0, end: 0, fetchedAt: new Date().toISOString() },
+		};
+		if (!(await publishMedia(staged, file, signal, { file: meta, value: result }))) return reusePublished(lookup);
+		return { ...result, cached: false };
+	});
+
 }
 
 /** Body of POST /api/agent/retrieve: `{kind:"section", url, start, end|duration, height?, audioOnly?}`, `{kind:"frame", url, time, width?}` or `{kind:"file", url}`. */
