@@ -5,6 +5,7 @@ import path from "node:path";
 import { checkCancelled, withScratch } from "./jobs";
 import { windowsSupervisor, windowsWorker } from "./process-windows";
 import { RetrievalError } from "./server-errors";
+import { withCookieCopy } from "./yt-dlp-cookies";
 
 // The pipe is closed on cancellation and on owner exit, including a forced server stop.
 // The supervisor stays outside the tool's process group so it can wait for termination.
@@ -60,7 +61,19 @@ const unixSupervisor = String.raw `
 	process.stdin.on("error", stop);
 `;
 
-export async function runProcess(command: string, args: string[], signal?: AbortSignal, scratch?: string) {
+export function runProcess(command: string, args: string[], signal?: AbortSignal, scratch?: string) {
+	return withToolScratch(signal, scratch, (temp, activeSignal) => supervise(command, args, activeSignal, temp));
+}
+
+export function runYtDlpProcess(command: string, args: string[], signal?: AbortSignal, scratch?: string) {
+	return withToolScratch(signal, scratch, (temp, activeSignal) => withCookieCopy(args, temp, activeSignal,
+		(toolArgs) => supervise(command, toolArgs, activeSignal, temp, { PYTHONIOENCODING: "utf-8" })));
+}
+
+async function withToolScratch<T>(
+	signal: AbortSignal | undefined, scratch: string | undefined,
+	work: (temp: string, signal: AbortSignal) => Promise<T>,
+): Promise<T> {
 	const assets = path.resolve(scratch ? path.dirname(path.dirname(scratch)) : process.env.AGENT_FILES_ROOT ??
 		process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 	const root = await fs.realpath(assets).catch(() => assets);
@@ -73,14 +86,14 @@ export async function runProcess(command: string, args: string[], signal?: Abort
 		const stat = await fs.mkdir(privateRoot, { recursive: true, mode: 0o700 })
 			.then(() => fs.lstat(privateRoot)).catch(() => undefined);
 		if (!stat?.isDirectory() || (uid !== undefined && (stat.uid !== uid || (stat.mode & 0o077) !== 0))) continue;
-		return withScratch(privateRoot, signal, (temp, activeSignal) => supervise(command, args, activeSignal, temp));
+		return withScratch(privateRoot, signal, work);
 	}
 	throw new RetrievalError("no private tool temp folder is available outside the files root");
 }
 
-async function supervise(command: string, args: string[], signal: AbortSignal, scratch: string) {
+async function supervise(command: string, args: string[], signal: AbortSignal, scratch: string, extraEnv?: Record<string, string>) {
 	checkCancelled(signal, "tool startup");
-	const env = { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch };
+	const env = { ...process.env, ...extraEnv, TMPDIR: scratch, TMP: scratch, TEMP: scratch };
 	const options = { windowsHide: true, stdio: "pipe" as const };
 	const child = process.platform === "win32"
 		? spawn(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),

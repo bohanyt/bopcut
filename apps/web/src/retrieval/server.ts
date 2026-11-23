@@ -1,11 +1,10 @@
-// Server-side media retrieval: resolve source metadata and encode only the requested section or frame.
+// Server-side media retrieval: fetch only a section of an online video (yt-dlp downloads just that range
 // Node only: used by the agent API route and the retrieve CLI.
-import { runProcess } from "./process";
+import { runProcess, runYtDlpProcess } from "./process";
 import { Cancelled, cacheTargets, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "./jobs";
 import { existsSync } from "node:fs";
 import { RetrievalError } from "./server-errors";
 import { assertPublicUrl, fetchPublic, readCapped } from "./net";
-import { type Stream, withSectionInputs } from "./section-source";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -85,7 +84,7 @@ export function ytDlpJobArgs(scratch?: string) {
 		"--no-cache-dir", "--no-download-archive", "--no-exec", "--no-exec-before-download",
 		"--no-write-description", "--no-write-info-json", "--no-write-subs", "--no-write-auto-subs",
 		"--no-write-thumbnail", "--no-split-chapters", "--no-check-formats",
-		...(scratch ? ["-P", "home:" + scratch, "-P", "temp:" + scratch] : []),
+		...(scratch ? ["-P", "temp:" + scratch] : []),
 	];
 }
 
@@ -97,12 +96,14 @@ export async function runTool(runner: Runner, tool: string[], args: string[], la
 export async function runToolOutput(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, scratch?: string): Promise<{ stdout: string; stderr: string }> {
 	try {
 		checkCancelled(signal, label);
-		const output = await runner(tool[0], [...tool.slice(1), ...args], signal, scratch);
+		const run = label === "yt-dlp" && runner === defaultRunner ? runYtDlpProcess : runner;
+		const output = await run(tool[0], [...tool.slice(1), ...args], signal, scratch);
 		checkCancelled(signal, label);
 		return output;
 	} catch (error) {
 		if (error instanceof Cancelled) throw new Cancelled(label);
 		checkCancelled(signal, label);
+		if (error instanceof RetrievalError) throw error;
 		const e = error as NodeJS.ErrnoException & { stderr?: string };
 		if (e.code === "ENOENT") {
 			const env = label === "yt-dlp" ? "BOPENCUT_YTDLP (for example `python -m yt_dlp`)" : "BOPENCUT_FFMPEG";
@@ -113,8 +114,7 @@ export async function runToolOutput(runner: Runner, tool: string[], args: string
 	}
 }
 
-export type Probe = Stream & {
-	requested_formats?: Stream[];
+export type Probe = {
 	title?: string;
 	uploader?: string;
 	channel?: string;
@@ -149,16 +149,35 @@ export type RetrievedFile = {
 	cached: boolean;
 };
 
-/** yt-dlp format: prefer H.264 + AAC over other seekable HTTP formats. */
-export function formatSelector(height: number, audioOnly?: boolean) {
-	const http = "[protocol^=http][protocol!*=segments]";
-	const audio = "ba" + http;
-	const video = "bv*" + http;
-	const combined = "b" + http;
-	return audioOnly ? audio + "[ext=m4a]/" + audio + "/" + combined
-		: video + "[height<=" + height + "][vcodec^=avc1]+" + audio + "[ext=m4a]/" +
-			video + "[height<=" + height + "]+" + audio + "/" + combined + "[height<=" + height + "]/" +
-			video + "+" + audio + "/" + combined;
+/** yt-dlp format: H.264 + AAC when available, else the best up to `height`. */
+export const formatSelector = (height: number, audioOnly?: boolean) =>
+	audioOnly
+		? "ba[ext=m4a]/ba/b"
+		: `bv*[height<=${height}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=${height}]+ba/b[height<=${height}]/bv*+ba/b`;
+
+/** `--ffmpeg-location` for yt-dlp when ffmpeg is configured as a path rather than a command on PATH. */
+function ffmpegLocation(tools: RetrievalTools): string[] {
+	const [command, ...rest] = tools.ffmpeg;
+	return rest.length === 0 && /[\\/]/.test(command) ? ["--ffmpeg-location", command] : [];
+}
+
+/**
+ * yt-dlp arguments that download only [start, end) and print the info JSON. Video is re-encoded with key
+ * frames at the cuts, so the section starts exactly at `start`. Running live streams are skipped.
+ */
+export function downloadArgs({ url, start, end, height, audioOnly, tools, output }: { url: string; start: number; end: number; height: number; audioOnly?: boolean; tools: RetrievalTools; output: string }): string[] {
+	const args = ["--no-playlist", "--playlist-items", "1", "--no-warnings", "--no-progress", "--no-simulate", "-O", "%()j", "--force-overwrites", "--match-filter", "!is_live"];
+	if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
+	args.push(...ffmpegLocation(tools), "-f", formatSelector(height, audioOnly), "--download-sections", `*${start.toFixed(3)}-${end.toFixed(3)}`);
+	if (audioOnly) {
+		args.push("-x", "--audio-format", "m4a");
+	} else {
+		// -f mp4: H.264 + AAC always land in an MP4 container, also when the source was a single WebM stream.
+		const encode = [...encoderArgs(tools.videoEncoder), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-f", "mp4"].join(" ");
+		args.push("--force-keyframes-at-cuts", "--downloader-args", `ffmpeg_o:${encode}`, "--merge-output-format", "mp4");
+	}
+	args.push("-o", output, "--", url);
+	return args;
 }
 
 function parseInfo(stdout: string): Probe | undefined {
@@ -221,29 +240,21 @@ export type RetrievalDeps = {
 };
 
 async function download(
-	request: SectionRequest, output: string, signal: AbortSignal, deps: RetrievalDeps,
-): Promise<Probe> {
+	request: SectionRequest, dir: string, signal: AbortSignal, deps: RetrievalDeps,
+): Promise<{ file: string; info: Probe }> {
 	const { start, end, url, audioOnly } = request;
 	const { tools = toolsFromEnv(deps.env), runner = defaultRunner } = deps;
-	const cwd = path.dirname(output);
-	const args = [...ytDlpJobArgs(cwd), "--no-playlist", "--playlist-items", "1", "--no-warnings", "--skip-download", "-j",
-		"-f", formatSelector(request.height ?? tools.defaultHeight, audioOnly)];
-	if (tools.cookiesFromBrowser) args.push("--cookies-from-browser", tools.cookiesFromBrowser);
-	const info = parseInfo(await runTool(runner, tools.ytdlp, [...args, "--", url], "yt-dlp", signal, cwd));
+	const stem = "section";
+	const output = path.join(dir, stem + ".%(ext)s");
+	const args = downloadArgs({ url, start, end, height: request.height ?? tools.defaultHeight, audioOnly, tools, output });
+	const info = parseInfo(await runTool(runner, tools.ytdlp, [...ytDlpJobArgs(dir), ...args], "yt-dlp", signal, dir));
 	if (info?.is_live) throw new RetrievalError("this link is a live stream that is still running; use it once the replay is available");
-	if (!info) throw new RetrievalError("nothing was downloaded (an unsupported link)");
-	if (info.duration && start >= info.duration) throw new RetrievalError("start is outside the source; choose an earlier time");
-	await withSectionInputs(info.requested_formats ?? [info], info.duration, end - start, { ...deps, signal }, async (inputs) => {
-		const read = inputs.flatMap((input) => ["-protocol_whitelist", "http,tcp", "-http_proxy", "",
-			"-format_whitelist", "mov,matroska,webm,wav,mp3,aac,ogg,flac,mpegts,avi,flv,mpeg", "-analyzeduration", "1000000", "-probesize", "32768", "-seekable", "1", "-reconnect", "1", "-reconnect_delay_max", "0", "-ss", String(start), "-i", input]);
-		const maps = audioOnly ? ["-map", "0:a:0", "-vn"] : ["-map", "0:v:0", "-map", (inputs.length === 2 ? "1" : "0") + ":a:0?"];
-		const encode = audioOnly ? [] : [...encoderArgs(tools.videoEncoder), "-pix_fmt", "yuv420p"];
-		await runTool(runner, tools.ffmpeg, [
-			"-hide_banner", "-loglevel", "error", "-nostdin", ...read, "-t", String(end - start),
-			...maps, ...encode, "-c:a", "aac", "-b:a", "192k", "-abort_on", "empty_output", output,
-		], "ffmpeg", signal, cwd);
-	});
-	return info;
+	const files = await fs.readdir(dir);
+	const expected = stem + (audioOnly ? ".m4a" : ".mp4");
+	const produced = files.includes(expected) ? expected : files.find((file) =>
+		file.startsWith(stem + ".") && !/\.f\d+\.|\.(part|ytdl)$|\.temp/.test(file.slice(stem.length)));
+	if (!info || !produced) throw new RetrievalError("nothing was downloaded (a live stream that is still running, or an unsupported link)");
+	return { file: path.join(dir, produced), info };
 }
 
 function cachedDownload(
@@ -281,8 +292,7 @@ export async function fetchSection(request: SectionRequest, deps: RetrievalDeps)
 	const key = cacheKey(["section", url, start, end, height, Boolean(audioOnly)]);
 	const ext = audioOnly ? ".m4a" : ".mp4";
 	return cachedDownload(deps, key, "retrieved", ext, async (scratch, signal) => {
-		const file = path.join(scratch, "section" + ext);
-		const info = await download({ ...validated.value, height }, file, signal, { ...deps, tools });
+		const { file, info } = await download({ ...validated.value, height }, scratch, signal, { ...deps, tools });
 		return { file, result: {
 			type: audioOnly ? "audio" : "video",
 			name: (info.title ?? "clip") + " " + formatTime(start) + "-" + formatTime(end),
@@ -296,8 +306,7 @@ export async function fetchFrame(request: FrameRequest, deps: RetrievalDeps): Pr
 	const { url, time, width = 960 } = request;
 	const key = cacheKey(["frame", url, time, width]);
 	return cachedDownload(deps, key, "retrieved/frames", ".jpg", async (scratch, signal) => {
-		const video = path.join(scratch, "section.mp4");
-		const info = await download({ url, start: time, end: time + 1, height: 720 }, video, signal, deps);
+		const { file: video, info } = await download({ url, start: time, end: time + 1, height: 720 }, scratch, signal, deps);
 		const file = path.join(scratch, "still.jpg");
 		await runTool(deps.runner ?? defaultRunner, (deps.tools ?? toolsFromEnv(deps.env)).ffmpeg,
 			["-hide_banner", "-loglevel", "error", "-y", "-i", video, "-frames:v", "1", "-vf", "scale=" + width + ":-2", "-q:v", "3", file], "ffmpeg", signal, scratch);

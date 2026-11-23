@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { defaultRunner } from "./server";
+import { defaultRunner, fetchSection, toolsFromEnv } from "./server";
 import { cacheTargets, publishMedia, sharedJob, withScratch } from "./jobs";
 import { ownedJobName } from "@/agent/job-scratch";
 
@@ -173,6 +173,54 @@ test("configured tools get a private temp folder that is removed when they exit"
 	expect(path.relative(root, folder)).toMatch(/^\.\./);
 	await expect(readdir(folder)).rejects.toMatchObject({ code: "ENOENT" });
 });
+
+test("cancelling yt-dlp after it rewrites its job copy leaves the configured cookie file intact", async () => {
+	const original = path.join(root, "configured cookies café.txt");
+	const contents = Buffer.from("# Netscape HTTP Cookie File\r\nexample.test\tFALSE\t/\tTRUE\t0\tfixture\tvalue\r\n");
+	await writeFile(original, contents);
+	const marker = path.join(root, "cookie-copy-path");
+	const tool = path.join(root, "fake-yt-dlp.js");
+	await writeFile(tool, String.raw`
+		const { readFileSync, writeFileSync } = require("node:fs");
+		const [original, marker, ...args] = process.argv.slice(2);
+		if (args.includes("--help")) {
+			const repr = (values) => "[" + values.map((value) => JSON.stringify(value)).join(", ") + "]";
+			console.error("[debug] Command-line config: " + repr(args));
+			console.error('[debug] | Config "test.conf": ' + repr(["--config-locations", "nested.conf"]));
+			console.error('[debug] | | Config "nested.conf": ' + repr(["--cookies", original]));
+			process.exit(0);
+		}
+		// Simulate yt-dlp reading and then truncating its configured destination.
+		const copy = args.includes("--cookies") ? args[args.lastIndexOf("--cookies") + 1] : original;
+		if (!readFileSync(copy).equals(readFileSync(original))) throw new Error("the copy differs");
+		writeFileSync(copy, "");
+		writeFileSync(marker, copy);
+		setTimeout(() => process.exit(), 7000);
+	`);
+	const controller = new AbortController();
+	const filesRoot = path.join(root, "files");
+	const tools = { ...toolsFromEnv({}), ytdlp: [process.execPath, tool, original, marker] };
+	const job = fetchSection({ url: "https://example.com/video", start: 10, end: 12 }, { filesRoot, tools, signal: controller.signal });
+	try {
+		let copy: string | undefined;
+		while (!copy) {
+			copy = await readFile(marker, "utf8").catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error;
+				return undefined;
+			});
+			if (!copy) await Promise.race([job, new Promise((resolve) => setTimeout(resolve, 20))]);
+		}
+		controller.abort();
+		await expect(job).rejects.toThrow(/cancelled/);
+		expect(await readFile(original)).toEqual(contents);
+		expect(path.relative(filesRoot, copy)).toMatch(/^\.\./);
+		await expect(readFile(copy)).rejects.toMatchObject({ code: "ENOENT" });
+		expect(await readdir(path.join(filesRoot, ".retrieval-jobs"))).toEqual([]);
+	} finally {
+		controller.abort();
+		await job.catch(() => {});
+	}
+}, 10_000);
 
 test("competing publishers commit one matching pair without replacing it", async () => {
 	const { meta } = await cacheTargets(path.join(root, "video.json"));
