@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { promises as fs } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -44,20 +45,97 @@ test("interrupted publication preserves the previous media", async () => {
 	const controller = new AbortController();
 	const { meta } = await cacheTargets(path.join(root, "cached.json"));
 	const media = path.join(path.dirname(meta), path.basename(file));
-	await expect(withScratch(root, controller.signal, async (scratch, signal) => {
-		const staged = path.join(scratch, "media");
-		await writeFile(staged, "new");
-		const check = signal.throwIfAborted.bind(signal);
-		signal.throwIfAborted = () => {
-			controller.abort();
-			check();
-		};
-		await publishMedia(staged, media, signal, { file: meta, value: {} });
-	})).rejects.toThrow(/cancelled/i);
+	const write = fs.writeFile;
+	const spy = spyOn(fs, "writeFile").mockImplementation(async (...args) => {
+		await write(...args);
+		if (path.basename(String(args[0])) === "cached.json") controller.abort();
+	});
+	try {
+		await expect(withScratch(root, controller.signal, async (scratch, signal) => {
+			const staged = path.join(scratch, "media");
+			await writeFile(staged, "new");
+			await publishMedia(staged, media, signal, { file: meta, value: {} });
+		})).rejects.toThrow(/cancelled/i);
+	} finally {
+		spy.mockRestore();
+	}
 	expect(await readFile(file, "utf8")).toBe("old");
 	await expect(readFile(meta, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 	expect(await readdir(path.join(root, ".retrieval-jobs"))).toEqual([]);
 });
+
+test.each([false, true])("publishes atomically across volumes (sidecar: %s)", async (sidecar) => {
+	const cache = path.join(root, "cache");
+	const meta = sidecar ? path.join(cache, "clip.asset", "clip.json") : undefined;
+	const target = path.join(meta ? path.dirname(meta) : cache, "clip.mp4");
+	const onCacheVolume = (file: string) => file.startsWith(cache + path.sep);
+	const rename = fs.rename;
+	const commits: string[] = [];
+	const spy = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+		const source = String(from), destination = String(to);
+		if (onCacheVolume(source) !== onCacheVolume(destination)) {
+			throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+		}
+		if (destination === (meta ? path.dirname(meta) : target)) commits.push(destination);
+		await rename(from, to);
+	});
+	try {
+		await withScratch(root, undefined, async (scratch, signal) => {
+			const file = path.join(scratch, "media");
+			await writeFile(file, "clip");
+			expect(await publishMedia(file, target, signal, meta ? { file: meta, value: "metadata" } : undefined)).toBe(true);
+		});
+		expect(commits).toEqual([meta ? path.dirname(meta) : target]);
+		expect(await readFile(target, "utf8")).toBe("clip");
+		if (meta) expect(await readFile(meta, "utf8")).toBe('"metadata"');
+	} finally {
+		spy.mockRestore();
+	}
+});
+
+test.each(["inherit", "ignore"])("abort reaches a surviving child after the wrapper exits (%s pipes)", async (stdio) => {
+	const controller = new AbortController();
+	const heartbeat = path.join(root, "heartbeat");
+	const grandchild = `
+		const [pid, file] = process.argv.slice(1);
+		const { appendFileSync } = require("node:fs");
+		const timer = setInterval(() => {
+			try { process.kill(Number(pid), 0); }
+			catch (error) {
+				if (error.code !== "ESRCH") throw error;
+				clearInterval(timer);
+				appendFileSync(file, ".");
+				setInterval(() => appendFileSync(file, "."), 20);
+			}
+		}, 20);
+		setTimeout(() => process.exit(), 7500);
+	`;
+	const parent = `
+		const [child, file, stdio] = process.argv.slice(1);
+		// On Windows, Bun terminates its non-detached subprocesses when it exits.
+		require("node:child_process").spawn(process.execPath, ["-e", child, String(process.pid), file], {
+			stdio, detached: process.platform === "win32",
+		}).unref();
+	`;
+	const contents = () => readFile(heartbeat, "utf8").catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== "ENOENT") throw error;
+		return "";
+	});
+	const job = defaultRunner(process.execPath, ["-e", parent, grandchild, heartbeat, stdio], controller.signal);
+	const stoppedEarly = job.then(() => { throw new Error("job settled before its child exited"); });
+	const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+	try {
+		while (!(await contents())) await Promise.race([pause(20), stoppedEarly]);
+		controller.abort();
+		await expect(job).rejects.toThrow(/cancelled/i);
+		const stopped = await contents();
+		await pause(300);
+		expect(await contents()).toBe(stopped);
+	} finally {
+		controller.abort();
+		await job.catch(() => {});
+	}
+}, 10_000);
 
 test("one of two waiters can cancel while the shared job continues", async () => {
 	const run = sharedJob<string>();

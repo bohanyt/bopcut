@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { ownedJobName, recoverScratch } from "@/agent/job-scratch";
 import { renameWithRetry } from "@/services/storage/server/files";
 import { RetrievalError } from "./server-errors";
@@ -78,32 +79,31 @@ export async function reusePublished<T>(lookup: () => Promise<T | undefined>): P
 export async function publishMedia(
 	source: string, target: string, signal: AbortSignal, metadata?: { file: string; value: unknown },
 ): Promise<boolean> {
-	checkCancelled(signal, "publication");
-	try {
+	const destination = path.dirname(target);
+	const parent = metadata ? path.dirname(destination) : destination;
+	return withScratch(parent, signal, async (scratch) => {
+		const staged = path.join(scratch, path.basename(target));
+		try {
+			await renameWithRetry(source, staged, signal);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+			await pipeline(createReadStream(source), createWriteStream(staged, { flags: "wx" }), { signal });
+		}
 		if (!metadata) {
-			await fs.mkdir(path.dirname(target), { recursive: true });
-			await renameWithRetry(source, target, signal);
+			await renameWithRetry(staged, target, signal);
 			return true;
 		}
-		const destination = path.dirname(target);
-		const staged = path.join(path.dirname(source), "publish");
-		await fs.mkdir(staged);
-		await fs.rename(source, path.join(staged, path.basename(target)));
-		await fs.writeFile(path.join(staged, path.basename(metadata.file)), JSON.stringify(metadata.value, null, 1));
-		await fs.mkdir(path.dirname(destination), { recursive: true });
+		await fs.writeFile(path.join(scratch, path.basename(metadata.file)), JSON.stringify(metadata.value, null, 1));
 		try {
 			signal.throwIfAborted();
-			await fs.rename(staged, destination);
+			await fs.rename(scratch, destination);
 			return true;
 		} catch (error) {
 			checkCancelled(signal, "publication");
 			if (await fs.stat(destination).then((stat) => stat.isDirectory(), () => false)) return false;
 			throw error;
 		}
-	} catch (error) {
-		checkCancelled(signal, "publication");
-		throw error;
-	}
+	});
 }
 
 export function sharedJob<T>() {

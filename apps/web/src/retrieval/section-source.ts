@@ -29,11 +29,15 @@ function scopedCookies(raw: string, source: URL) {
 			cookies.push(cookie);
 		}
 	}
-	return (target: URL) => cookies.filter(({ domain, path, secure, expires }) => {
-		if (target.origin !== source.origin || (secure && target.protocol !== "https:")) return false;
+	// The browser export preserves the leading dot on domain cookies and emits bare host names for host-only cookies.
+	const hostMatches = (host: string, domain: string) => domain.startsWith(".")
+		? host === domain.slice(1) || (domain.slice(1).includes(".") && host.endsWith(domain))
+		: host === domain;
+	const defaultPath = source.pathname.slice(0, source.pathname.lastIndexOf("/")) || "/";
+	return (target: URL) => cookies.filter(({ domain = source.hostname, path = defaultPath, secure, expires }) => {
+		if (!hostMatches(source.hostname, domain) || !hostMatches(target.hostname, domain)) return false;
+		if (secure && target.protocol !== "https:") return false;
 		if (expires !== undefined && (!Number.isFinite(expires) || expires * 1000 <= Date.now())) return false;
-		if (domain && target.hostname !== domain.replace(/^\./, "") && !target.hostname.endsWith("." + domain.replace(/^\./, ""))) return false;
-		if (!path) return target.pathname === source.pathname;
 		return target.pathname === path || target.pathname.startsWith(path.endsWith("/") ? path : path + "/");
 	}).map(({ pair }) => pair).join("; ");
 }

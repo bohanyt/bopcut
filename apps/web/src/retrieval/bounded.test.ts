@@ -66,17 +66,29 @@ test.each([60, 10_800])("a one-second seek transfers only a small part of a %s-s
 	}
 }, 15_000);
 
-test("a range redirect applies the browser cookie only within its path scope", async () => {
+test.each([
+	["same host", "https://video.example.com/private/other", "session=fixture; host=only; secure=yes"],
+	["sibling host", "https://cdn.example.com/private/other", "session=fixture; secure=yes"],
+	["insecure sibling", "http://cdn.example.com/private/other", "session=fixture"],
+	["path mismatch", "https://video.example.com/private-other", "host=only"],
+	["unrelated host", "https://elsewhere.example.net/private/other", null],
+])("a range redirect applies only eligible cookies on %s", async (_case, location, expected) => {
 	const seen: (string | null)[] = [];
 	const fetchImpl = Object.assign(async (_u: string | URL | Request, init?: RequestInit) => {
 		seen.push(new Headers(init?.headers).get("cookie"));
 		return seen.length === 1
-			? new Response(null, { status: 302, headers: { location: "/other" } })
+			? new Response(null, { status: 302, headers: { location: String(location) } })
 			: new Response(null, { status: 206, headers: { "Content-Range": "bytes 0-0/1000000" } });
 	}, { preconnect: fetch.preconnect });
 	await withSectionInputs([{
-		url: "https://example.com/private/video", protocol: "https",
-		cookies: "session=fixture; Domain=example.com; Path=/private; Secure; common=yes; Domain=example.com; Path=/",
+		url: "https://video.example.com/private/video", protocol: "https",
+		cookies: [
+			"session=fixture; Domain=.example.com; Path=/private",
+			"host=only; Domain=video.example.com; Path=/",
+			"secure=yes; Domain=.example.com; Path=/private; Secure",
+			"expired=no; Domain=.example.com; Path=/; Expires=1",
+			"unrelated=no; Domain=.example.net; Path=/",
+		].join("; "),
 	}], 1000, 1, { fetchImpl, env, signal: new AbortController().signal }, async () => {});
-	expect(seen).toEqual(["session=fixture; common=yes", "common=yes"]);
+	expect(seen).toEqual(["session=fixture; host=only; secure=yes", expected]);
 });
