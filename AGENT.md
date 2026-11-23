@@ -1,17 +1,12 @@
-# bopencut — shared editing workspace
+# bopencut — shared human + AI workspace
 
-**bopencut** is a fork of [OpenCut](https://github.com/opencut-app/opencut-classic) by the OpenCut team (MIT license; see `LICENSE`). All credit for the base editor belongs to them; this fork adds an agent bridge and a few small improvements. It can be used for any video project. Humans edit in the UI as usual; agents can read and modify the same timeline without overwriting human edits.
+**bopencut** is a fork of [OpenCut](https://github.com/opencut-app/opencut-classic) by the OpenCut team (MIT license; see `LICENSE`). All credit for the base editor belongs to them; this fork adds an agent bridge and a few small improvements. It can be used for any video project. Humans edit in the UI as usual; agents (AI/scripts) can read and modify the same timeline without overwriting human edits.
 
 ## Running
-
-Install [Bun](https://bun.sh), then run this from the repository root:
-
-```sh
-bun run start:local
 ```
-
-On first setup, choose a footage folder and optionally a data folder. Press Enter to use the defaults below. The command installs dependencies when needed, records the folder choices in `apps/web/.env.local`, and starts the editor at `http://127.0.0.1:3000/projects`. Press Ctrl+C to stop it. For unattended setup, use `bun run start:local --footage <dir> --data <dir> --yes`. With `--yes`, existing values are kept. Use `--port <number>` to select another local port and pass the corresponding `--url` to the agent CLI.
-
+bun install
+cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
+```
 No account or database is required. Projects and media are stored in `<repo>/workspace/projects/<projectId>/`: `project.json`, `media/<mediaId>.<ext>`, and media metadata. Git ignores `workspace/`. Old browser projects and their media are automatically copied the first time they are opened; the browser copies are not deleted. Deleting a disk project does not trigger another copy.
 
 ## Agent CLI

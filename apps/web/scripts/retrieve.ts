@@ -6,11 +6,21 @@
 // T is seconds, 1:02:03 or 1h2m3s; --start/--at default to the link's own t=. Prints the result as JSON:
 // use its `path` as a draft or bundle asset path. Settings come from the environment or apps/web/.env.local
 // (AGENT_FILES_ROOT, AGENT_WORKSPACE, BOPENCUT_YTDLP, BOPENCUT_FFMPEG, ...; see AGENT.md).
-import { loadEnvLocal } from "./local-env";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { handleRetrieve } from "../src/retrieval/server";
 
 const webDir = path.resolve(import.meta.dir, "..");
+
+function loadEnvLocal(file: string) {
+	if (!existsSync(file)) return;
+	for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+		const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+		if (!m || line.trim().startsWith("#")) continue;
+		const value = m[2].replace(/^(['"])(.*)\1$/, "$2");
+		if (process.env[m[1]] === undefined) process.env[m[1]] = value;
+	}
+}
 
 function usage(message?: string): never {
 	if (message) console.error(message);

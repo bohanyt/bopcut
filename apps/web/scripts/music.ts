@@ -7,11 +7,21 @@
 //
 // Prints JSON. Settings come from the environment or apps/web/.env.local (AGENT_FILES_ROOT,
 // BOPENCUT_MUSIC_DIRS, BOPENCUT_MUSIC_LOUDNESS, BOPENCUT_MUSIC_MAX_SECONDS, BOPENCUT_YTDLP, ...; see AGENT.md).
-import { loadEnvLocal } from "./local-env";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { handleMusic } from "../src/sounds/music-server";
 
 const webDir = path.resolve(import.meta.dir, "..");
+
+function loadEnvLocal(file: string) {
+	if (!existsSync(file)) return;
+	for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+		const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+		if (!m || line.trim().startsWith("#")) continue;
+		const value = m[2].replace(/^(['"])(.*)\1$/, "$2");
+		if (process.env[m[1]] === undefined) process.env[m[1]] = value;
+	}
+}
 
 function usage(message?: string): never {
 	if (message) console.error(message);

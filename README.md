@@ -30,17 +30,14 @@
 
 ## Menjalankan
 
-Pasang [Bun](https://bun.sh), lalu jalankan perintah ini dari folder utama repo:
+Butuh [Bun](https://bun.sh); `ffmpeg` di PATH dipakai untuk mengubah GIF menjadi video. Untuk mengambil potongan video dari link, pasang juga [yt-dlp](https://github.com/yt-dlp/yt-dlp) (pengaturannya ada di `AGENT.md`). Tidak perlu akun, database, atau Docker.
 
-```sh
-bun run start:local
+```
+bun install
+cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
 ```
 
-Saat penyiapan pertama, pilih folder footage dan, jika perlu, folder data. Tekan Enter untuk memakai lokasi bawaan di bawah. Perintah ini memasang dependensi jika diperlukan, menyimpan pilihan folder ke `apps/web/.env.local`, dan menjalankan editor di `http://127.0.0.1:3000/projects`. Tekan Ctrl+C untuk menghentikannya.
-
-Untuk penyiapan tanpa pertanyaan, jalankan `bun run start:local --footage <dir> --data <dir> --yes`. Opsi `--yes` mempertahankan nilai yang sudah ada. Pakai `--port <nomor>` untuk mengganti port lokal.
-
-`ffmpeg` dan [yt-dlp](https://github.com/yt-dlp/yt-dlp) bersifat opsional. Perintah ini memberi tahu fitur mana yang membutuhkannya. Lihat [AGENT.md](AGENT.md#media-from-links-sections-not-whole-videos) untuk pengaturannya. Tidak perlu akun, database, atau Docker.
+Buka `http://127.0.0.1:3000/projects`.
 
 Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa Indonesia. Pilihanmu akan diingat di browser itu.
 

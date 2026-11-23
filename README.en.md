@@ -30,17 +30,14 @@
 
 ## Running
 
-Install [Bun](https://bun.sh) and run this from the repository root:
+Install [Bun](https://bun.sh). Put `ffmpeg` on your PATH for GIF-to-video conversion. Install [yt-dlp](https://github.com/yt-dlp/yt-dlp) to fetch clips from links. See `AGENT.md` for its configuration. No account, database, or Docker is required.
 
-```sh
-bun run start:local
+```
+bun install
+cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
 ```
 
-On first setup, choose a footage folder and, optionally, a data folder. Press Enter to use the defaults below. The command installs dependencies when needed, saves your folder choices in `apps/web/.env.local`, and starts the editor at `http://127.0.0.1:3000/projects`. Press Ctrl+C to stop it.
-
-For unattended setup, run `bun run start:local --footage <dir> --data <dir> --yes`. With `--yes`, existing values are kept. Use `--port <number>` to change the local port.
-
-`ffmpeg` and [yt-dlp](https://github.com/yt-dlp/yt-dlp) are optional. The command reports which features need them. See [AGENT.md](AGENT.md#media-from-links-sections-not-whole-videos) for tool settings. No account, database, or Docker is required.
+Open `http://127.0.0.1:3000/projects`.
 
 Use the **EN / ID** button in the header to choose English or Bahasa Indonesia. The app remembers your choice in that browser.
 
