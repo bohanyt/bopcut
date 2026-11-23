@@ -9,6 +9,7 @@
 // BOPENCUT_SFX_DIRS, BOPENCUT_SFX_NORMALIZE, BOPENCUT_FFMPEG; see AGENT.md).
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { retrievalOptions, runRetrievalCli } from "./retrieval-cli";
 import { handleSfx } from "../src/sounds/sfx-server";
 
 const webDir = path.resolve(import.meta.dir, "..");
@@ -35,7 +36,8 @@ loadEnvLocal(path.join(webDir, ".env.local"));
 const workspace = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(webDir, "..", "..", "workspace"));
 const filesRoot = path.resolve(process.env.AGENT_FILES_ROOT ?? workspace);
 
-const [kind, ...rest] = process.argv.slice(2);
+const { args, timeout } = retrievalOptions(process.argv.slice(2), usage);
+const [kind, ...rest] = args;
 let body: Record<string, unknown>;
 if (kind === "get") {
 	const [source, ref, ...more] = rest;
@@ -56,6 +58,4 @@ if (kind === "get") {
 	body = { kind, query: words.join(" "), ...(sources.length ? { sources } : {}), ...(limit ? { limit } : {}) };
 } else usage();
 
-const result = await handleSfx(body, { filesRoot });
-console.log(JSON.stringify(result.body, null, 1));
-process.exit(result.status === 200 ? 0 : 1);
+await runRetrievalCli(timeout, (signal) => handleSfx(body, { filesRoot, signal }));

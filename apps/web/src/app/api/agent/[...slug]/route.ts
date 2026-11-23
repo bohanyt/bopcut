@@ -141,7 +141,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	}
 	if (slug[0] === "music") {
 		// Songs from the music folders, or found or linked online (sound only, via yt-dlp); see AGENT.md.
-		const result = await handleMusic(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
+		const result = await handleMusic(await req.json().catch(() => null), { filesRoot: FILES_ROOT, signal: req.signal });
 		return Response.json(result.body, { status: result.status });
 	}
 	if (slug[0] === "duck") {
@@ -151,12 +151,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	}
 	if (slug[0] === "sfx") {
 		// Sound effects from the library folders and myinstants.com; see AGENT.md.
-		const result = await handleSfx(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
+		const result = await handleSfx(await req.json().catch(() => null), { filesRoot: FILES_ROOT, signal: req.signal });
 		return Response.json(result.body, { status: result.status });
 	}
 	if (slug[0] === "retrieve") {
 		// A section of an online video (or one frame of it) into AGENT_FILES_ROOT/retrieved/; see AGENT.md.
-		const result = await handleRetrieve(await req.json().catch(() => null), { filesRoot: FILES_ROOT });
+		const result = await handleRetrieve(await req.json().catch(() => null), { filesRoot: FILES_ROOT, signal: req.signal });
 		return Response.json(result.body, { status: result.status });
 	}
 	if (slug[0] === "gif") return handleGif(req);

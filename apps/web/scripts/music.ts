@@ -9,6 +9,7 @@
 // BOPENCUT_MUSIC_DIRS, BOPENCUT_MUSIC_LOUDNESS, BOPENCUT_MUSIC_MAX_SECONDS, BOPENCUT_YTDLP, ...; see AGENT.md).
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { retrievalOptions, runRetrievalCli } from "./retrieval-cli";
 import { handleMusic } from "../src/sounds/music-server";
 
 const webDir = path.resolve(import.meta.dir, "..");
@@ -35,7 +36,8 @@ loadEnvLocal(path.join(webDir, ".env.local"));
 const workspace = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(webDir, "..", "..", "workspace"));
 const filesRoot = path.resolve(process.env.AGENT_FILES_ROOT ?? workspace);
 
-const [kind, ...rest] = process.argv.slice(2);
+const { args, timeout } = retrievalOptions(process.argv.slice(2), usage);
+const [kind, ...rest] = args;
 let body: Record<string, unknown>;
 if (kind === "get") {
 	const [source, ref] = rest;
@@ -55,6 +57,4 @@ if (kind === "get") {
 	body = { kind, query: words.join(" "), ...(sources.length ? { sources } : {}), ...(limit ? { limit } : {}) };
 } else usage();
 
-const result = await handleMusic(body, { filesRoot });
-console.log(JSON.stringify(result.body, null, 1));
-process.exit(result.status === 200 ? 0 : 1);
+await runRetrievalCli(timeout, (signal) => handleMusic(body, { filesRoot, signal }));

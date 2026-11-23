@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { type Runner, type RetrievalTools, RetrievalError, defaultRunner, runToolOutput, toolsFromEnv } from "@/retrieval/server";
+import { Cancelled, cacheTargets, checkCancelled, publishMedia, reusePublished, withScratch } from "@/retrieval/jobs";
 import { fetchPublic, readCapped } from "@/retrieval/net";
 import { SFX_SOURCES, type SfxFile, type SfxResult, type SfxSource } from "./sfx-types";
 
@@ -18,6 +19,7 @@ export type SfxDeps = {
 	env?: Record<string, string | undefined>;
 	fetchImpl?: typeof fetch;
 	runner?: Runner;
+	signal?: AbortSignal;
 	tools?: RetrievalTools;
 };
 
@@ -52,9 +54,10 @@ export function titleFromFile(fileName: string): string {
 	return fileName.replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-async function scan(rootIndex: number, root: string): Promise<Entry[]> {
+async function scan(rootIndex: number, root: string, signal?: AbortSignal): Promise<Entry[]> {
 	const entries: Entry[] = [];
 	const walk = async (dir: string, depth: number) => {
+		checkCancelled(signal, "library search");
 		if (depth > 8 || entries.length >= 50000) return;
 		let items: import("node:fs").Dirent[];
 		try {
@@ -64,6 +67,7 @@ async function scan(rootIndex: number, root: string): Promise<Entry[]> {
 		}
 		const present = new Set(items.map((item) => item.name));
 		for (const item of items) {
+			checkCancelled(signal, "library search");
 			if (item.name.startsWith(".")) continue;
 			const full = path.join(dir, item.name);
 			if (item.isDirectory()) await walk(full, depth + 1);
@@ -91,7 +95,7 @@ async function scan(rootIndex: number, root: string): Promise<Entry[]> {
 const indexCache = new Map<string, { at: number; entries: Entry[] }>();
 const INDEX_TTL_MS = 30_000;
 
-async function libraryIndex(roots: string[]): Promise<Entry[]> {
+async function libraryIndex(roots: string[], signal?: AbortSignal): Promise<Entry[]> {
 	const all: Entry[] = [];
 	for (const [i, root] of roots.entries()) {
 		const cached = indexCache.get(`${i}:${root}`);
@@ -99,7 +103,7 @@ async function libraryIndex(roots: string[]): Promise<Entry[]> {
 			all.push(...cached.entries);
 			continue;
 		}
-		const entries = await scan(i, root);
+		const entries = await scan(i, root, signal);
 		indexCache.set(`${i}:${root}`, { at: Date.now(), entries });
 		all.push(...entries);
 	}
@@ -164,11 +168,11 @@ export async function libraryTitle(file: string): Promise<string> {
 	return path.basename(file).replace(AUDIO_EXT, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-export async function searchLibrary(query: string, { filesRoot, env = process.env }: SfxDeps, limit = 20, kind: LibraryKind = SFX_LIBRARY): Promise<SfxResult[]> {
+export async function searchLibrary(query: string, { filesRoot, env = process.env, signal }: SfxDeps, limit = 20, kind: LibraryKind = SFX_LIBRARY): Promise<SfxResult[]> {
 	const q = words(query);
 	if (!q.length) return [];
 	const roots = libraryRoots(filesRoot, env, kind);
-	const scored = (await libraryIndex(roots))
+	const scored = (await libraryIndex(roots, signal))
 		.map((entry) => ({ entry, score: scoreEntry(q, entry) }))
 		.filter((s) => s.score > 0)
 		.sort((a, b) => b.score - a.score || a.entry.name.length - b.entry.name.length);
@@ -217,8 +221,11 @@ export function parseMyinstants(html: string): SfxResult[] {
 export async function searchMyinstants(query: string, deps: SfxDeps, limit = 20): Promise<SfxResult[]> {
 	const fetchImpl = deps.fetchImpl ?? fetch;
 	if (!query.trim()) return [];
-	const res = await fetchPublic(`${MYINSTANTS}/en/search/?name=${encodeURIComponent(query.trim())}`, { headers: { "User-Agent": USER_AGENT }, fetchImpl, env: deps.env, timeoutMs: 20_000 });
-	if (!res.ok) throw new RetrievalError(`myinstants search failed (${res.status})`);
+	const res = await fetchPublic(`${MYINSTANTS}/en/search/?name=${encodeURIComponent(query.trim())}`, { headers: { "User-Agent": USER_AGENT }, fetchImpl, env: deps.env, timeoutMs: 20_000, signal: deps.signal });
+	if (!res.ok) {
+		await res.body?.cancel();
+		throw new RetrievalError(`myinstants search failed (${res.status})`);
+	}
 	const html = (await readCapped(res, 5 * 1024 * 1024)).toString("utf8");
 	// Myinstants also matches tags; results whose title has the query words come first (stable otherwise).
 	const q = words(query);
@@ -237,6 +244,7 @@ export async function searchSfx(query: string, sources: readonly SfxSource[], de
 		try {
 			results.push(...(source === "library" ? await searchLibrary(query, deps, limit) : await searchMyinstants(query, deps, limit)));
 		} catch (error) {
+			checkCancelled(deps.signal, "sound search");
 			errors.push({ source, error: error instanceof Error ? error.message : String(error) });
 		}
 	}
@@ -259,7 +267,6 @@ const safeFileName = (fileName: string) => {
 	const ext = (AUDIO_EXT.exec(fileName)?.[0] ?? "").toLowerCase();
 	return safeStem(ext ? fileName.slice(0, -ext.length) : fileName) + ext;
 };
-const unique = () => `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** Peak-normalizes to -1 dBFS into an AAC m4a (BOPENCUT_SFX_NORMALIZE=off keeps the file as downloaded). */
 async function normalizeInto(input: string, output: string, deps: SfxDeps): Promise<boolean> {
@@ -268,10 +275,10 @@ async function normalizeInto(input: string, output: string, deps: SfxDeps): Prom
 	const tools = deps.tools ?? toolsFromEnv(env);
 	const runner = deps.runner ?? defaultRunner;
 	try {
-		const probe = await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-nostats", "-i", input, "-af", "volumedetect", "-f", "null", "-"], "ffmpeg");
+		const probe = await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-nostats", "-i", input, "-af", "volumedetect", "-f", "null", "-"], "ffmpeg", deps.signal, deps.filesRoot);
 		const max = /max_volume:\s*(-?[\d.]+) dB/.exec(probe.stderr);
 		const gain = max ? Math.min(30, -1 - Number(max[1])) : 0;
-		await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", input, "-vn", "-af", `volume=${gain.toFixed(2)}dB`, "-c:a", "aac", "-b:a", "192k", output], "ffmpeg");
+		await runToolOutput(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", input, "-vn", "-af", `volume=${gain.toFixed(2)}dB`, "-c:a", "aac", "-b:a", "192k", output], "ffmpeg", deps.signal, deps.filesRoot);
 		return true;
 	} catch (error) {
 		if (error instanceof RetrievalError && /not found/.test(error.message)) return false;
@@ -289,71 +296,76 @@ function cleanLabel(label: SfxLabel = {}): SfxLabel {
 }
 
 async function getMyinstants(ref: string, deps: SfxDeps, label: SfxLabel = {}): Promise<SfxFile> {
+	checkCancelled(deps.signal, "sound lookup");
 	if (!SOUND_PATH.test(ref)) throw new RetrievalError("invalid myinstants reference");
 	const dir = path.join(deps.filesRoot, "sfx", "myinstants");
 	// The file name plus a hash of the whole reference: two sounds with the same file name never share a cache entry.
 	const base = `${safeStem(decodeURIComponent(path.posix.basename(ref)).replace(AUDIO_EXT, ""))}-${createHash("sha1").update(ref).digest("hex").slice(0, 6)}`;
-	const meta = path.join(dir, `${base}.json`);
-	for (const ext of [".m4a", path.extname(ref).toLowerCase()]) {
-		const file = path.join(dir, base + ext);
-		if ((await exists(file)) && (await exists(meta))) {
-			try {
-				const saved = JSON.parse(await fs.readFile(meta, "utf8")) as { name: string; pageUrl?: string };
-				return { path: toPosix(path.relative(deps.filesRoot, file)), name: saved.name, source: "myinstants", pageUrl: saved.pageUrl, cached: true };
-			} catch {
-				// unreadable sidecar: fetch again
+	const legacyMeta = path.join(dir, base + ".json");
+	const { meta, sidecars } = await cacheTargets(legacyMeta);
+	const lookup = async (): Promise<SfxFile | undefined> => {
+		for (const sidecar of sidecars) {
+			for (const ext of [".m4a", path.extname(ref).toLowerCase()]) {
+				const file = path.join(path.dirname(sidecar), base + ext);
+				if (!(await exists(file))) continue;
+				try {
+					const saved = JSON.parse(await fs.readFile(sidecar, "utf8")) as { name: string; pageUrl?: string };
+					return { path: toPosix(path.relative(deps.filesRoot, file)), name: saved.name, source: "myinstants", pageUrl: saved.pageUrl, cached: true };
+				} catch {
+					// Missing or unreadable sidecar.
+				}
 			}
 		}
-	}
-	const res = await fetchPublic(MYINSTANTS + ref, { headers: { "User-Agent": USER_AGENT }, fetchImpl: deps.fetchImpl, env: deps.env, timeoutMs: 30_000 });
-	if (!res.ok) throw new RetrievalError(`myinstants download failed (${res.status})`);
-	const bytes = await readCapped(res, MAX_DOWNLOAD_BYTES);
-	if (bytes.length === 0) throw new RetrievalError("myinstants returned an empty file");
-	await fs.mkdir(dir, { recursive: true });
-	const attempt = unique();
-	const raw = path.join(dir, `${base}.${attempt}.download${path.extname(ref).toLowerCase()}`);
-	const normalized = path.join(dir, `${base}.m4a`);
-	await fs.writeFile(raw, bytes);
-	let file: string;
-	try {
-		if (await normalizeInto(raw, `${normalized}.${attempt}.part.m4a`, deps)) {
-			await fs.rename(`${normalized}.${attempt}.part.m4a`, normalized);
-			file = normalized;
-		} else {
-			file = path.join(dir, base + path.extname(ref).toLowerCase());
-			await fs.rename(raw, file);
+	};
+	const cached = await lookup();
+	checkCancelled(deps.signal, "sound lookup");
+	if (cached) return cached;
+	return withScratch(dir, deps.signal, async (scratch, signal) => {
+		const res = await fetchPublic(MYINSTANTS + ref, { headers: { "User-Agent": USER_AGENT }, fetchImpl: deps.fetchImpl, env: deps.env, timeoutMs: 30_000, signal });
+		if (!res.ok) {
+			await res.body?.cancel();
+			throw new RetrievalError(`myinstants download failed (${res.status})`);
 		}
-	} finally {
-		await fs.rm(raw, { force: true });
-		await fs.rm(`${normalized}.${attempt}.part.m4a`, { force: true });
-	}
-	const given = cleanLabel(label);
-	const name = given.name ?? titleFromFile(decodeURIComponent(path.posix.basename(ref)));
-	const pageUrl = given.pageUrl ?? `${MYINSTANTS}/en/search/?name=${encodeURIComponent(name)}`;
-	const metaTmp = `${meta}.${attempt}.tmp`;
-	await fs.writeFile(metaTmp, JSON.stringify({ name, pageUrl, soundUrl: MYINSTANTS + ref, fetchedAt: new Date().toISOString() }, null, 1));
-	await fs.rename(metaTmp, meta);
-	clearLibraryIndex();
-	return { path: toPosix(path.relative(deps.filesRoot, file)), name, source: "myinstants", pageUrl, cached: false };
+		const bytes = await readCapped(res, MAX_DOWNLOAD_BYTES);
+		if (bytes.length === 0) throw new RetrievalError("myinstants returned an empty file");
+		const ext = path.extname(ref).toLowerCase();
+		const raw = path.join(scratch, "download" + ext);
+		const normalized = path.join(scratch, "normalized.m4a");
+		await fs.writeFile(raw, bytes, { signal });
+		const encoded = await normalizeInto(raw, normalized, { ...deps, signal });
+		const file = path.join(path.dirname(meta), base + (encoded ? ".m4a" : ext));
+		const given = cleanLabel(label);
+		const name = given.name ?? titleFromFile(decodeURIComponent(path.posix.basename(ref)));
+		const pageUrl = given.pageUrl ?? `${MYINSTANTS}/en/search/?name=${encodeURIComponent(name)}`;
+		if (!(await publishMedia(encoded ? normalized : raw, file, signal, {
+			file: meta, value: { name, pageUrl, soundUrl: MYINSTANTS + ref, fetchedAt: new Date().toISOString() },
+		}))) return reusePublished(lookup);
+		clearLibraryIndex();
+		return { path: toPosix(path.relative(deps.filesRoot, file)), name, source: "myinstants", pageUrl, cached: false };
+	});
+
 }
 
 /** A library sound: used in place when it is under AGENT_FILES_ROOT, otherwise copied into `sfx/library/` once. */
 export async function getLibrary(ref: string, deps: SfxDeps, kind: LibraryKind = SFX_LIBRARY): Promise<SfxFile> {
+	checkCancelled(deps.signal, "library lookup");
 	const roots = libraryRoots(deps.filesRoot, deps.env, kind);
 	const file = await resolveLibraryFile(ref, roots);
 	const stat = await fs.stat(file).catch(() => null);
 	if (!stat?.isFile()) throw new RetrievalError("library sound not found");
 	const name = await libraryTitle(file);
 	const filesRoot = await fs.realpath(deps.filesRoot).catch(() => path.resolve(deps.filesRoot));
+	checkCancelled(deps.signal, "library lookup");
 	if (file.startsWith(filesRoot + path.sep)) return { path: toPosix(path.relative(filesRoot, file)), name, source: "library", cached: true };
 	const hash = createHash("sha1").update(`${file}|${stat.size}|${stat.mtimeMs}`).digest("hex").slice(0, 8);
 	const copy = path.join(filesRoot, kind.folder, "library", `${hash}-${safeFileName(path.basename(file))}`);
 	if (await exists(copy)) return { path: toPosix(path.relative(filesRoot, copy)), name, source: "library", cached: true };
-	await fs.mkdir(path.dirname(copy), { recursive: true });
-	const part = `${copy}.${unique()}.part`;
-	await fs.copyFile(file, part);
-	await fs.rename(part, copy);
-	return { path: toPosix(path.relative(filesRoot, copy)), name, source: "library", cached: false };
+	return withScratch(path.dirname(copy), deps.signal, async (scratch, signal) => {
+		const part = path.join(scratch, "library");
+		await fs.copyFile(file, part);
+		await publishMedia(part, copy, signal);
+		return { path: toPosix(path.relative(filesRoot, copy)), name, source: "library", cached: false };
+	});
 }
 
 export function getSfx(source: SfxSource, ref: string, deps: SfxDeps, label?: SfxLabel): Promise<SfxFile> {
@@ -385,6 +397,7 @@ export async function handleSfx(body: unknown, deps: SfxDeps): Promise<{ status:
 	if (!sources) return { status: 400, body: { error: `sources must be a list of ${SFX_SOURCES.join(", ")}` } };
 	const limit = Math.min(50, Math.max(1, Number.isInteger(input.limit) ? (input.limit as number) : 20));
 	try {
+		checkCancelled(deps.signal, "preparation");
 		if (input.kind === "search" || input.kind === "find") {
 			if (typeof input.query !== "string" || !input.query.trim() || input.query.length > 200) return { status: 400, body: { error: "query is required (up to 200 characters)" } };
 			if (input.kind === "search") return { status: 200, body: await searchSfx(input.query, sources, deps, limit) };
@@ -404,7 +417,7 @@ export async function handleSfx(body: unknown, deps: SfxDeps): Promise<{ status:
 		}
 		return { status: 400, body: { error: 'kind must be "search", "get" or "find"' } };
 	} catch (error) {
-		if (error instanceof RetrievalError) return { status: 502, body: { error: error.message } };
+		if (error instanceof RetrievalError) return { status: error instanceof Cancelled ? 499 : 502, body: { error: error.message } };
 		throw error;
 	}
 }

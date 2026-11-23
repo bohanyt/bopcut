@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
-import { hostname } from "node:os";
+import { randomUUID } from "node:crypto";
+import { ownedJobName, recoverScratch } from "./job-scratch";
 import path from "node:path";
 import { atomicWrite, dataRoot, readJson, renameWithRetry } from "@/services/storage/server/files";
 
@@ -8,10 +8,6 @@ const identity = async (file: string) => {
 	const stat = await fs.lstat(file, { bigint: true });
 	return `${stat.dev}:${stat.ino}`;
 };
-const exists = (file: string) => fs.lstat(file).then(() => true, (error: NodeJS.ErrnoException) => {
-	if (error.code === "ENOENT") return false;
-	throw error;
-});
 
 export async function profileDirectory(workspace: string, data = dataRoot()) {
 	for (const root of new Set([data, workspace])) {
@@ -30,23 +26,10 @@ export async function profileDirectory(workspace: string, data = dataRoot()) {
 }
 
 export const renderJobsDir = (workspace: string) => path.join(workspace, ".render-jobs");
-const localHost = createHash("sha256").update(hostname()).digest("hex").slice(0, 16);
 const jobName = /^(cli-[a-f0-9-]{36})(?:\.([a-f0-9]{16})\.([1-9]\d*))?$/;
 
 export const renderJobDir = (workspace: string, rev: string) =>
-	path.join(renderJobsDir(workspace), `${rev}.${localHost}.${process.pid}`);
-
-function isAbandoned(host: string | undefined, owner: string | undefined) {
-	if (!owner) return true;
-	const pid = Number(owner);
-	if (host !== localHost || pid > 0x7fffffff) return false;
-	try {
-		process.kill(pid, 0);
-		return false;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "ESRCH";
-	}
-}
+	path.join(renderJobsDir(workspace), ownedJobName(rev));
 
 export async function recordOutput(workspace: string, scratch: string, target: string, source: string) {
 	await atomicWrite(path.join(scratch, "output.json"), JSON.stringify({
@@ -90,22 +73,6 @@ export async function removeRenderJob(workspace: string, scratch: string) {
 }
 
 /** Reclaim abandoned jobs before creating a new job, even when servers share a workspace. */
-export async function recoverRenderJobs(workspace: string) {
-	const dir = renderJobsDir(workspace);
-	if (!(await exists(dir))) return;
-	if (!(await fs.lstat(dir)).isDirectory()) throw new Error("The render jobs folder must be a directory.");
-	for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-		const match = entry.isDirectory() && jobName.exec(entry.name);
-		if (!match || !isAbandoned(match[2], match[3])) continue;
-		const abandoned = path.join(dir, entry.name);
-		const scratch = renderJobDir(workspace, match[1]);
-		try {
-			// Claim the directory before touching outputs, so only one process can recover it.
-			await fs.rename(abandoned, scratch);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-			throw error;
-		}
-		await removeRenderJob(workspace, scratch);
-	}
+export function recoverRenderJobs(workspace: string) {
+	return recoverScratch(renderJobsDir(workspace), jobName, (scratch) => removeRenderJob(workspace, scratch));
 }

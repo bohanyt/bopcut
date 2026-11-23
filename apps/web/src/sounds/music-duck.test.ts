@@ -132,11 +132,13 @@ describe("music", () => {
 		const env = { BOPENCUT_ALLOW_PRIVATE_URLS: "1" };
 		const first = (await handleMusic({ kind: "find", query: "nocturne", sources: ["online"] }, { filesRoot: root, env, runner })).body as { path: string; name: string; uploader: string; cached: boolean };
 		expect(first).toMatchObject({ name: "Nocturne Op. 9 No. 2", uploader: "Pianist", cached: false });
-		expect(first.path).toMatch(/^music\/online\/[0-9a-f]{12}\.m4a$/);
+		expect(first.path).toMatch(/^music\/online\/[0-9a-f]{12}\.asset\/[0-9a-f]{12}\.m4a$/);
 		const download = calls.find((c) => c.includes("-x")) as string[];
+		expect(download).not.toContain("--ignore-config");
+		expect(download).toContain("--no-write-info-json");
 		expect(download.join(" ")).toContain("--match-filter !is_live & duration <= 900");
 		expect(calls.at(-1)?.join(" ")).toContain("loudnorm=I=-16");
-		expect((await fs.readdir(path.join(root, "music", "online"))).sort()).toEqual([path.basename(first.path), path.basename(first.path).replace(".m4a", ".json")].sort());
+		expect((await fs.readdir(path.dirname(path.join(root, first.path)))).sort()).toEqual([path.basename(first.path), path.basename(first.path).replace(".m4a", ".json")].sort());
 		const again = (await handleMusic({ kind: "get", source: "online", ref: "https://www.youtube.com/watch?v=a" }, { filesRoot: root, env, runner })).body as { cached: boolean };
 		expect(again.cached).toBe(true);
 		const local = (await handleMusic({ kind: "search", query: "nocturne", sources: ["library"] }, { filesRoot: root, env, runner })).body as { results: { name: string }[] };

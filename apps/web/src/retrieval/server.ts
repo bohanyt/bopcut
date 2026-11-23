@@ -1,7 +1,7 @@
 // Server-side media retrieval: fetch only a section of an online video (yt-dlp downloads just that range
-// and re-encodes it with key frames at the cuts), or one frame of it. Never downloads a whole video.
 // Node only: used by the agent API route and the retrieve CLI.
-import { execFile } from "node:child_process";
+import { runProcess, runYtDlpProcess } from "./process";
+import { Cancelled, cacheTargets, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "./jobs";
 import { existsSync } from "node:fs";
 import { RetrievalError } from "./server-errors";
 import { assertPublicUrl, fetchPublic, readCapped } from "./net";
@@ -75,26 +75,36 @@ export function encoderArgs(encoder: string): string[] {
 	return ["-c:v", encoder, "-b:v", "12M"];
 }
 
-export type Runner = (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+/** `filesRoot` is the caller's files root: private tool files must never be written inside it. */
+export type Runner = (command: string, args: string[], signal?: AbortSignal, filesRoot?: string) => Promise<{ stdout: string; stderr: string }>;
+export const defaultRunner: Runner = runProcess;
 
-export const defaultRunner: Runner = (command, args) =>
-	new Promise((resolve, reject) => {
-		execFile(command, args, { maxBuffer: 256 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
-			if (error) reject(Object.assign(error, { stderr: String(stderr ?? "") }));
-			else resolve({ stdout: String(stdout), stderr: String(stderr) });
-		});
-	});
+/** Keep the user's extractor settings while overriding side effects and job paths. */
+export function ytDlpJobArgs(scratch?: string) {
+	return [
+		"--no-cache-dir", "--no-download-archive", "--no-exec", "--no-exec-before-download",
+		"--no-write-description", "--no-write-info-json", "--no-write-subs", "--no-write-auto-subs",
+		"--no-write-thumbnail", "--no-split-chapters", "--no-check-formats",
+		...(scratch ? ["-P", "temp:" + scratch] : []),
+	];
+}
 
-
-export async function runTool(runner: Runner, tool: string[], args: string[], label: string): Promise<string> {
-	return (await runToolOutput(runner, tool, args, label)).stdout;
+export async function runTool(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, filesRoot?: string): Promise<string> {
+	return (await runToolOutput(runner, tool, args, label, signal, filesRoot)).stdout;
 }
 
 /** Runs a configured tool; missing tools and failures become a RetrievalError with a short message. */
-export async function runToolOutput(runner: Runner, tool: string[], args: string[], label: string): Promise<{ stdout: string; stderr: string }> {
+export async function runToolOutput(runner: Runner, tool: string[], args: string[], label: string, signal?: AbortSignal, filesRoot?: string): Promise<{ stdout: string; stderr: string }> {
 	try {
-		return await runner(tool[0], [...tool.slice(1), ...args]);
+		checkCancelled(signal, label);
+		const run = label === "yt-dlp" && runner === defaultRunner ? runYtDlpProcess : runner;
+		const output = await run(tool[0], [...tool.slice(1), ...args], signal, filesRoot);
+		checkCancelled(signal, label);
+		return output;
 	} catch (error) {
+		if (error instanceof Cancelled) throw new Cancelled(label);
+		checkCancelled(signal, label);
+		if (error instanceof RetrievalError) throw error;
 		const e = error as NodeJS.ErrnoException & { stderr?: string };
 		if (e.code === "ENOENT") {
 			const env = label === "yt-dlp" ? "BOPENCUT_YTDLP (for example `python -m yt_dlp`)" : "BOPENCUT_FFMPEG";
@@ -223,107 +233,87 @@ async function readCached(media: string, meta: string): Promise<RetrievedFile | 
 	}
 }
 
-async function writeSidecar(meta: string, value: unknown) {
-	const tmp = `${meta}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.writeFile(tmp, JSON.stringify(value, null, 1));
-	await fs.rename(tmp, meta);
+const once = sharedJob<RetrievedFile>();
+
+export type RetrievalDeps = {
+	filesRoot: string; tools?: RetrievalTools; runner?: Runner; env?: Record<string, string | undefined>;
+	fetchImpl?: typeof fetch; signal?: AbortSignal;
+};
+
+async function download(
+	request: SectionRequest, dir: string, signal: AbortSignal, deps: RetrievalDeps,
+): Promise<{ file: string; info: Probe }> {
+	const { start, end, url, audioOnly } = request;
+	const { tools = toolsFromEnv(deps.env), runner = defaultRunner } = deps;
+	const stem = "section";
+	const output = path.join(dir, stem + ".%(ext)s");
+	const args = downloadArgs({ url, start, end, height: request.height ?? tools.defaultHeight, audioOnly, tools, output });
+	const info = parseInfo(await runTool(runner, tools.ytdlp, [...ytDlpJobArgs(dir), ...args], "yt-dlp", signal, deps.filesRoot));
+	if (info?.is_live) throw new RetrievalError("this link is a live stream that is still running; use it once the replay is available");
+	const files = await fs.readdir(dir);
+	const expected = stem + (audioOnly ? ".m4a" : ".mp4");
+	const produced = files.includes(expected) ? expected : files.find((file) =>
+		file.startsWith(stem + ".") && !/\.f\d+\.|\.(part|ytdl)$|\.temp/.test(file.slice(stem.length)));
+	if (!info || !produced) throw new RetrievalError("nothing was downloaded (a live stream that is still running, or an unsupported link)");
+	return { file: path.join(dir, produced), info };
 }
 
-const inFlight = new Map<string, Promise<RetrievedFile>>();
-
-/** One fetch per cache key at a time: concurrent identical requests share the same result. */
-function once(key: string, work: () => Promise<RetrievedFile>): Promise<RetrievedFile> {
-	const running = inFlight.get(key);
-	if (running) return running;
-	const promise = work().finally(() => inFlight.delete(key));
-	inFlight.set(key, promise);
-	return promise;
-}
-
-export type RetrievalDeps = { filesRoot: string; tools?: RetrievalTools; runner?: Runner; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch };
-
-/** Download a section with yt-dlp into `<dir>/<key>.part.<ext>`; returns the file and the info JSON. */
-async function download({ url, start, end, height, audioOnly, dir, key, tools, runner }: { url: string; start: number; end: number; height: number; audioOnly?: boolean; dir: string; key: string; tools: RetrievalTools; runner: Runner }): Promise<{ file: string; info: Probe }> {
-	await fs.mkdir(dir, { recursive: true });
-	// A stem unique to this attempt, so another process fetching the same section never touches these files.
-	const stem = `${key}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.part`;
-	const clean = async () => {
-		for (const f of await fs.readdir(dir)) if (f.startsWith(stem)) await fs.rm(path.join(dir, f), { force: true });
-	};
-	await clean();
-	try {
-		const output = path.join(dir, `${stem}.%(ext)s`);
-		const stdout = await runTool(runner, tools.ytdlp, downloadArgs({ url, start, end, height, audioOnly, tools, output }), "yt-dlp");
-		const info = parseInfo(stdout);
-		if (info?.is_live) throw new RetrievalError("this link is a live stream that is still running; use it once the replay is available");
-		const files = await fs.readdir(dir);
-		const expected = `${stem}.${audioOnly ? "m4a" : "mp4"}`;
-		const produced = files.includes(expected) ? expected : files.find((f) => f.startsWith(`${stem}.`) && !/\.f\d+\.|\.(part|ytdl)$|\.temp/.test(f.slice(stem.length)));
-		if (!info || !produced) throw new RetrievalError("nothing was downloaded (a live stream that is still running, or an unsupported link)");
-		return { file: path.join(dir, produced), info };
-	} catch (error) {
-		await clean();
-		throw error;
-	}
-}
-
-/**
- * Fetch [start, end) of an online video into `<filesRoot>/retrieved/`. The result is cached by link,
- * range, height and audioOnly; `<key>.json` next to the media keeps the source (title, page link at
- * the start time) for credits.
- */
-export async function fetchSection(request: SectionRequest, { filesRoot, tools = toolsFromEnv(), runner = defaultRunner }: RetrievalDeps): Promise<RetrievedFile> {
-	const height = request.height ?? tools.defaultHeight;
-	const key = cacheKey(["section", request.url, request.start, request.end, height, Boolean(request.audioOnly)]);
-	const dir = path.join(filesRoot, "retrieved");
-	const media = path.join(dir, key + (request.audioOnly ? ".m4a" : ".mp4"));
-	const meta = path.join(dir, `${key}.json`);
-	return once(key, async () => {
-		const cached = await readCached(media, meta);
-		if (cached) return cached;
-		const { file, info } = await download({ url: request.url, start: request.start, end: request.end, height, audioOnly: request.audioOnly, dir, key, tools, runner });
-		await fs.rename(file, media);
-		const result: Omit<RetrievedFile, "cached"> = {
-			path: toPosix(path.relative(filesRoot, media)),
-			type: request.audioOnly ? "audio" : "video",
-			name: `${info.title ?? "clip"} ${formatTime(request.start)}-${formatTime(request.end)}`,
-			source: sourceInfo(info, request.url, request.start, request.end),
+function cachedDownload(
+	deps: RetrievalDeps, key: string, directory: string, extension: string,
+	work: (scratch: string, signal: AbortSignal) => Promise<{ file: string; result: Omit<RetrievedFile, "path" | "cached"> }>,
+): Promise<RetrievedFile> {
+	const root = path.resolve(deps.filesRoot);
+	const legacyMeta = path.join(root, directory, key + ".json");
+	return once(root + "|" + key, deps.signal, async (signal) => {
+		const { meta, sidecars } = await cacheTargets(legacyMeta);
+		const mediaName = key + extension;
+		const media = path.join(path.dirname(meta), mediaName);
+		const lookup = async () => {
+			for (const sidecar of sidecars) {
+				const found = await readCached(path.join(path.dirname(sidecar), mediaName), sidecar);
+				if (found) return found;
+			}
 		};
-		await writeSidecar(meta, result);
-		return { ...result, cached: false };
+		const cached = await lookup();
+		if (cached) return cached;
+		return withScratch(path.join(root, directory), signal, async (scratch) => {
+			const { file, result } = await work(scratch, signal);
+			const saved = { ...result, path: toPosix(path.relative(root, media)) };
+			if (!(await publishMedia(file, media, signal, { file: meta, value: saved }))) return reusePublished(lookup);
+			return { ...saved, cached: false };
+		});
 	});
 }
 
-/**
- * One frame of an online video at `time`, as JPEG in `<filesRoot>/retrieved/frames/`, to look before
- * fetching a section. Downloads one second at 720p and keeps only its first frame.
- */
-export async function fetchFrame(request: FrameRequest, { filesRoot, tools = toolsFromEnv(), runner = defaultRunner }: RetrievalDeps): Promise<RetrievedFile> {
-	const width = request.width ?? 960;
-	const key = cacheKey(["frame", request.url, request.time, width]);
-	const dir = path.join(filesRoot, "retrieved", "frames");
-	const image = path.join(dir, `${key}.jpg`);
-	const meta = path.join(dir, `${key}.json`);
-	return once(key, async () => {
-		const cached = await readCached(image, meta);
-		if (cached) return cached;
-		const { file, info } = await download({ url: request.url, start: request.time, end: request.time + 1, height: 720, dir, key, tools, runner });
-		const still = path.join(dir, `${key}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.still.jpg`);
-		try {
-			await runTool(runner, tools.ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", file, "-frames:v", "1", "-vf", `scale=${width}:-2`, "-q:v", "3", still], "ffmpeg");
-			await fs.rename(still, image);
-		} finally {
-			await fs.rm(still, { force: true });
-			await fs.rm(file, { force: true });
-		}
-		const result: Omit<RetrievedFile, "cached"> = {
-			path: toPosix(path.relative(filesRoot, image)),
-			type: "image",
-			name: `${info.title ?? "frame"} ${formatTime(request.time)}`,
-			source: sourceInfo(info, request.url, request.time, request.time),
-		};
-		await writeSidecar(meta, result);
-		return { ...result, cached: false };
+/** Fetch [start, end) and cache it by link, range, height and audio mode. */
+export async function fetchSection(request: SectionRequest, deps: RetrievalDeps): Promise<RetrievedFile> {
+	const tools = deps.tools ?? toolsFromEnv(deps.env);
+	const validated = normalizeSectionRequest(request, tools.maxSectionSeconds);
+	if (!validated.ok) throw new RetrievalError(validated.error);
+	const { url, start, end, audioOnly } = validated.value;
+	const height = request.height ?? tools.defaultHeight;
+	const key = cacheKey(["section", url, start, end, height, Boolean(audioOnly)]);
+	const ext = audioOnly ? ".m4a" : ".mp4";
+	return cachedDownload(deps, key, "retrieved", ext, async (scratch, signal) => {
+		const { file, info } = await download({ ...validated.value, height }, scratch, signal, { ...deps, tools });
+		return { file, result: {
+			type: audioOnly ? "audio" : "video",
+			name: (info.title ?? "clip") + " " + formatTime(start) + "-" + formatTime(end),
+			source: sourceInfo(info, url, start, end),
+		} };
+	});
+}
+
+/** Grab the first frame of a one-second window and keep only its JPEG. */
+export async function fetchFrame(request: FrameRequest, deps: RetrievalDeps): Promise<RetrievedFile> {
+	const { url, time, width = 960 } = request;
+	const key = cacheKey(["frame", url, time, width]);
+	return cachedDownload(deps, key, "retrieved/frames", ".jpg", async (scratch, signal) => {
+		const { file: video, info } = await download({ url, start: time, end: time + 1, height: 720 }, scratch, signal, deps);
+		const file = path.join(scratch, "still.jpg");
+		await runTool(deps.runner ?? defaultRunner, (deps.tools ?? toolsFromEnv(deps.env)).ffmpeg,
+			["-hide_banner", "-loglevel", "error", "-y", "-i", video, "-frames:v", "1", "-vf", "scale=" + width + ":-2", "-q:v", "3", file], "ffmpeg", signal, deps.filesRoot);
+		return { file, result: { type: "image", name: (info.title ?? "frame") + " " + formatTime(time), source: sourceInfo(info, url, time, time) } };
 	});
 }
 
@@ -376,94 +366,105 @@ const WEB_FETCH_TIMEOUT_MS = 120_000;
  * Every redirect hop must point at a public address, the body is read with a size cap and a timeout, and
  * the format comes from the file's own bytes. SVG documents are refused (they can carry scripts).
  */
-export function fetchWebFile(url: string, deps: { filesRoot: string; fetchImpl?: typeof fetch; env?: Record<string, string | undefined> }): Promise<RetrievedFile> {
+export function fetchWebFile(url: string, deps: RetrievalDeps): Promise<RetrievedFile> {
 	const key = cacheKey(["web", url]);
-	return once(`${deps.filesRoot}|${key}`, () => downloadWebFile(url, key, deps));
+	return once(path.resolve(deps.filesRoot) + "|" + key, deps.signal, (signal) =>
+		downloadWebFile(url, key, deps, signal));
 }
 
-async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl = fetch, env }: { filesRoot: string; fetchImpl?: typeof fetch; env?: Record<string, string | undefined> }): Promise<RetrievedFile> {
+async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl = fetch, env }: RetrievalDeps, signal: AbortSignal): Promise<RetrievedFile> {
 	const dir = path.join(filesRoot, "retrieved", "web");
-	const meta = path.join(dir, `${key}.json`);
-	if (await exists(meta)) {
-		try {
-			const cached = JSON.parse(await fs.readFile(meta, "utf8")) as Omit<RetrievedFile, "cached">;
-			if (await exists(path.join(filesRoot, cached.path))) return { ...cached, cached: true };
-		} catch {
-			// unreadable sidecar: fetch again
+	const legacyMeta = path.join(dir, key + ".json");
+	const { meta, sidecars } = await cacheTargets(legacyMeta);
+	const lookup = async (): Promise<RetrievedFile | undefined> => {
+		for (const sidecar of sidecars) {
+			try {
+				const cached = JSON.parse(await fs.readFile(sidecar, "utf8")) as Omit<RetrievedFile, "cached">;
+				if (await exists(path.join(filesRoot, cached.path))) return { ...cached, cached: true };
+			} catch {
+				// Missing or unreadable sidecar.
+			}
 		}
-	}
-	let res: Response;
-	let bytes: Buffer;
-	try {
-		res = await fetchPublic(url, {
-			fetchImpl,
-			env,
-			timeoutMs: WEB_FETCH_TIMEOUT_MS,
-			headers: { "User-Agent": "Mozilla/5.0 (compatible; bopencut)", Accept: "image/*,video/*,audio/*;q=0.9,*/*;q=0.1" },
-		});
-		if (!res.ok) throw new RetrievalError(`the link answered ${res.status}`);
-		bytes = await readCapped(res, MAX_WEB_FILE_BYTES);
-	} catch (error) {
-		if (error instanceof RetrievalError) throw error;
-		throw new RetrievalError(`could not download the link: ${error instanceof Error ? error.message : String(error)}`);
-	}
-	if (bytes.length === 0) throw new RetrievalError("the link gave an empty file");
-	const kind = sniffMedia(bytes);
-	if (kind === "svg") throw new RetrievalError("SVG images are not supported; use a PNG or JPEG of it");
-	if (!kind) {
-		const declared = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-		throw new RetrievalError(`the link is not a supported image, video or sound (${declared || "unknown type"})`);
-	}
-	await fs.mkdir(dir, { recursive: true });
-	const file = path.join(dir, key + kind.ext);
-	// Names unique to this attempt: a parallel fetch in another process never shares a temporary file.
-	const unique = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-	await fs.writeFile(`${file}.${unique}.part`, bytes);
-	await fs.rename(`${file}.${unique}.part`, file);
-	let name = "web media";
-	try {
-		name = decodeURIComponent(new URL(res.url || url).pathname.split("/").pop() || "").replace(/\.[a-z0-9]{2,5}$/i, "") || name;
-	} catch {
-		// keep the default name
-	}
-	const result: Omit<RetrievedFile, "cached"> = {
-		path: toPosix(path.relative(filesRoot, file)),
-		type: kind.type,
-		mime: kind.mime,
-		name,
-		source: { url, pageUrl: url, link: url, start: 0, end: 0, fetchedAt: new Date().toISOString() },
 	};
-	await fs.writeFile(`${meta}.${unique}.tmp`, JSON.stringify(result, null, 1));
-	await fs.rename(`${meta}.${unique}.tmp`, meta);
-	return { ...result, cached: false };
+	const cached = await lookup();
+	if (cached) return cached;
+	return withScratch(dir, signal, async (scratch, signal) => {
+		let res: Response;
+		let bytes: Buffer;
+		try {
+			res = await fetchPublic(url, {
+				fetchImpl,
+				env,
+				timeoutMs: WEB_FETCH_TIMEOUT_MS,
+				signal,
+				headers: { "User-Agent": "Mozilla/5.0 (compatible; bopencut)", Accept: "image/*,video/*,audio/*;q=0.9,*/*;q=0.1" },
+			});
+			if (!res.ok) {
+				await res.body?.cancel();
+				throw new RetrievalError(`the link answered ${res.status}`);
+			}
+			bytes = await readCapped(res, MAX_WEB_FILE_BYTES);
+		} catch (error) {
+			checkCancelled(signal, "web download");
+			if (error instanceof RetrievalError) throw error;
+			throw new RetrievalError(`could not download the link: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		if (bytes.length === 0) throw new RetrievalError("the link gave an empty file");
+		const kind = sniffMedia(bytes);
+		if (kind === "svg") throw new RetrievalError("SVG images are not supported; use a PNG or JPEG of it");
+		if (!kind) {
+			const declared = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+			throw new RetrievalError(`the link is not a supported image, video or sound (${declared || "unknown type"})`);
+		}
+		const file = path.join(path.dirname(meta), key + kind.ext);
+		const staged = path.join(scratch, "web" + kind.ext);
+		await fs.writeFile(staged, bytes, { signal });
+		let name = "web media";
+		try {
+			name = decodeURIComponent(new URL(res.url || url).pathname.split("/").pop() || "").replace(/\.[a-z0-9]{2,5}$/i, "") || name;
+		} catch {
+			// keep the default name
+		}
+		const result: Omit<RetrievedFile, "cached"> = {
+			path: toPosix(path.relative(filesRoot, file)),
+			type: kind.type,
+			mime: kind.mime,
+			name,
+			source: { url, pageUrl: url, link: url, start: 0, end: 0, fetchedAt: new Date().toISOString() },
+		};
+		if (!(await publishMedia(staged, file, signal, { file: meta, value: result }))) return reusePublished(lookup);
+		return { ...result, cached: false };
+	});
+
 }
 
 /** Body of POST /api/agent/retrieve: `{kind:"section", url, start, end|duration, height?, audioOnly?}`, `{kind:"frame", url, time, width?}` or `{kind:"file", url}`. */
 export async function handleRetrieve(body: unknown, deps: RetrievalDeps): Promise<{ status: number; body: unknown }> {
-	const tools = deps.tools ?? toolsFromEnv();
+	const tools = deps.tools ?? toolsFromEnv(deps.env);
 	const input = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
 	try {
+		checkCancelled(deps.signal, "preparation");
 		if (input.kind === "section") {
 			const request = normalizeSectionRequest(input, tools.maxSectionSeconds);
 			if (!request.ok) return { status: 400, body: { error: request.error } };
 			if (isPlaylistOnly(request.value.url)) return { status: 400, body: { error: "this is a playlist link; use the link of one video" } };
-			await assertPublicUrl(request.value.url, deps.env);
+			await assertPublicUrl(request.value.url, deps.env, undefined, deps.signal);
 			return { status: 200, body: await fetchSection(request.value, { ...deps, tools }) };
 		}
 		if (input.kind === "frame") {
 			const request = normalizeFrameRequest(input);
 			if (!request.ok) return { status: 400, body: { error: request.error } };
 			if (isPlaylistOnly(request.value.url)) return { status: 400, body: { error: "this is a playlist link; use the link of one video" } };
-			await assertPublicUrl(request.value.url, deps.env);
+			await assertPublicUrl(request.value.url, deps.env, undefined, deps.signal);
 			return { status: 200, body: await fetchFrame(request.value, { ...deps, tools }) };
 		}
 		if (input.kind === "file") {
 			if (!isHttpUrl(input.url)) return { status: 400, body: { error: "url must be an http(s) link" } };
-			return { status: 200, body: await fetchWebFile(input.url, { filesRoot: deps.filesRoot, fetchImpl: deps.fetchImpl, env: deps.env }) };
+			return { status: 200, body: await fetchWebFile(input.url, deps) };
 		}
 		return { status: 400, body: { error: 'kind must be "section", "frame" or "file"' } };
 	} catch (error) {
-		if (error instanceof RetrievalError) return { status: 502, body: { error: error.message } };
+		if (error instanceof RetrievalError) return { status: error instanceof Cancelled ? 499 : 502, body: { error: error.message } };
 		throw error;
 	}
 }
