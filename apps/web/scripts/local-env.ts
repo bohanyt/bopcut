@@ -4,7 +4,7 @@ export const managedFolderComment = " # bopencut local path";
 
 // Use dotenv's quoted-value boundaries, including multiline values and escaped delimiters.
 // Keep the prefix and comment separate so updates preserve surrounding text.
-export const assignment = /^(\s*(?:export\s+)?([\w.-]+)(?:\s*=[\t ]*|:[\t ]+))(\s*"(?:\\"|[^"])*"|\s*'(?:\\'|[^'])*'|\s*\x60(?:\\\x60|[^\x60])*\x60|[^#\r\n]*?)([\t ]*(?:#[^\r\n]*)?)(?=\r?$)/gm;
+export const assignment = /^(\s*(?:export\s+)?([\w.-]+)(?:\s*=[\t ]*|:\s+?))(\s*"(?:\\"|[^"])*"|\s*'(?:\\'|[^'])*'|\s*\x60(?:\\\x60|[^\x60])*\x60|[^#\r\n]*?)([\t ]*(?:#[^\r\n]*)?)(?=\r?$)/gm;
 
 function decodeValue(raw: string): string {
 	return raw.trim()
@@ -29,9 +29,10 @@ export function directEnvValues(source: string): Record<string, string> {
 	}
 
 	// Decode only the folder values written by the launcher using dotenv syntax.
-	for (const [, , key, raw, suffix] of source.matchAll(assignment)) {
+	const settings = envValues(source);
+	for (const [, , key, , suffix] of source.matchAll(assignment)) {
 		if ((key === "AGENT_FILES_ROOT" || key === "BOPENCUT_DATA") && suffix.endsWith(managedFolderComment)) {
-			values.set(key, decodeValue(raw));
+			values.set(key, settings[key]);
 		}
 	}
 	return Object.fromEntries(values);

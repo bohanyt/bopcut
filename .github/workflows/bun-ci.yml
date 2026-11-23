@@ -61,6 +61,9 @@ jobs:
         working-directory: apps/web
         run: bun install
 
+      - name: Check local launcher on pinned Bun
+        run: bun run start:local --help
+
       - name: Build
         working-directory: apps/web
         run: bun run build

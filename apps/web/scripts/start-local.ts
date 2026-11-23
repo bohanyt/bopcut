@@ -1,6 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { assignment, envValues, managedFolderComment } from "./local-env";
@@ -157,6 +157,7 @@ export async function setupEnv(
 	original: string | undefined,
 	options: Options,
 	settings: Awaited<ReturnType<typeof readDevelopmentSettings>>,
+	inherited: Record<string, string | undefined> = {},
 ) {
 	const source = original ?? "";
 	const { effective, overrides } = settings;
@@ -192,21 +193,51 @@ export async function setupEnv(
 
 	// Remember accepted defaults without pinning them to paths in this checkout.
 	const markDefaults = firstSetup && folderSettings.some(({ key }) => effective[key] === undefined);
-	const newline = source.includes("\r\n") ? "\r\n" : "\n";
-	const base = markDefaults ? SETUP_COMMENT + newline + source : source;
-	const next = mergeEnv(base, values, approved);
-	if (next === original) return;
+	if (original !== undefined && !markDefaults && Object.keys(values).length === 0) return;
 
+	const lockFile = file + ".lock";
 	const temporary = file + "." + randomUUID() + ".tmp";
+	let interrupted = false;
+	const interrupt = () => { interrupted = true; };
+	process.on("SIGINT", interrupt);
+	process.on("SIGTERM", interrupt);
 	try {
-		await writeFile(temporary, next, { flag: "wx", mode: 0o600 });
-		if (await readOptional(file) !== original || (original !== undefined && (await lstat(file)).isSymbolicLink())) {
-			throw new Error(".env.local changed during setup or is a symbolic link. Check the file before retrying.");
+		const lock = await open(lockFile, "wx", 0o600).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "EEXIST") throw new Error("Another startup is updating .env.local. Run the command again.");
+			throw error;
+		});
+		try {
+			const current = await readOptional(file);
+			const active = await readDevelopmentSettings(path.dirname(file), current, inherited);
+			const stale = folderSettings.some(({ key }) => active.effective[key] !== effective[key] || active.overrides[key] !== overrides[key]);
+			const info = await lstat(file).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error;
+				return undefined;
+			});
+			if (current !== original || stale || info?.isSymbolicLink()) {
+				throw new Error("Local environment settings changed or .env.local is a symbolic link. Check the file before retrying.");
+			}
+			const newline = source.includes("\r\n") ? "\r\n" : "\n";
+			const base = markDefaults ? SETUP_COMMENT + newline + source : source;
+			const next = mergeEnv(base, values, approved);
+			if (interrupted) throw new Error("Local setup interrupted.");
+			await writeFile(temporary, next, { flag: "wx", mode: 0o600 });
+			if (interrupted) throw new Error("Local setup interrupted.");
+			if (await readOptional(file) !== current) throw new Error(".env.local changed during setup. Run the command again.");
+			await rename(temporary, file);
+		} finally {
+			try {
+				await rm(temporary, { force: true });
+			} finally {
+				await lock.close();
+				await rm(lockFile, { force: true });
+			}
 		}
-		await rename(temporary, file);
 	} finally {
-		await rm(temporary, { force: true });
+		process.off("SIGINT", interrupt);
+		process.off("SIGTERM", interrupt);
 	}
+	if (interrupted) throw new Error("Local setup interrupted.");
 }
 
 async function findNext(web: string, root: string): Promise<string | undefined> {
@@ -247,11 +278,11 @@ async function main() {
 	}
 
 	if (!(await findNext(web, root))) throw new Error("Next.js could not be found after dependency setup.");
-	await setupEnv(file, original, options, settings);
+	await setupEnv(file, original, options, settings, process.env);
 	console.log("Editor: http://127.0.0.1:" + options.port + "/projects");
 	console.log('Tell your agent: "Read AGENTS.md, then help me make a video from these sources."');
 	process.exitCode = await runBun(
-		["--no-env-file", "--bun", "run", "dev", "-H", "127.0.0.1", "-p", String(options.port)],
+		["--bun", "run", "dev", "-H", "127.0.0.1", "-p", String(options.port)],
 		web,
 		{ ...process.env, NEXT_TELEMETRY_DISABLED: "1", NODE_ENV: "development" },
 	);

@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { directEnvValues, envValues } from "./local-env";
@@ -120,6 +122,65 @@ test("direct-file commands retain legacy literal settings and decode launcher pa
 
 test("the playbook targets the chosen project for frames and export", async () => {
 	const playbook = await readFile(new URL("../../../AGENTS.md", import.meta.url), "utf8");
+	expect(playbook).toContain("bun run agent status --project-id PROJECT_ID");
+	expect(playbook).toContain("bun run agent notes --project-id PROJECT_ID");
+	expect(playbook).toContain("set its `projectId` to");
 	expect(playbook).toContain("bun run agent frames --project-id PROJECT_ID");
 	expect(playbook).toContain("bun run agent export --project-id PROJECT_ID");
+});
+test("Next accepts a quoted colon assignment that --yes must preserve", async () => {
+	const directory = await mkdtemp(path.join(tmpdir(), "bopencut-next-env-"));
+	try {
+		const file = path.join(directory, ".env.local");
+		const source = 'BOPENCUT_DATA:\n "/existing # footage"\n';
+		await writeFile(file, source);
+		const require = createRequire(import.meta.url);
+		const nextEnv = createRequire(require.resolve("next/package.json")).resolve("@next/env");
+		const child = spawnSync(process.execPath, ["-e", [
+			"delete process.env.BOPENCUT_DATA;",
+			"delete process.env.__NEXT_PROCESSED_ENV;",
+			'require(' + JSON.stringify(nextEnv) + ').loadEnvConfig(process.cwd(), true);',
+			"console.log(process.env.BOPENCUT_DATA);",
+		].join(" ")], { cwd: directory, env: { ...process.env, NODE_ENV: "development" }, encoding: "utf8" });
+		expect(child.status).toBe(0);
+		expect(child.stdout.trim()).toBe("/existing # footage");
+		const settings = await readDevelopmentSettings(directory, source, {});
+		expect(settings.effective.BOPENCUT_DATA).toBe(child.stdout.trim());
+		await setupEnv(file, source, parseArgs(["--data", "/other", "--yes"]), settings);
+		expect(await readFile(file, "utf8")).toContain(source);
+		expect(envValues(await readFile(file, "utf8")).BOPENCUT_DATA).toBe("/existing # footage");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("the last assignment for a managed folder wins for direct-file commands", () => {
+	const managed = mergeEnv("", { AGENT_FILES_ROOT: "/first # $dir" });
+	const source = managed + 'AGENT_FILES_ROOT="/second # dir"\nBOPENCUT_MUSIC_DIRS=/literal#path\n';
+	expect(directEnvValues(source)).toEqual({
+		AGENT_FILES_ROOT: "/second # dir",
+		BOPENCUT_MUSIC_DIRS: "/literal#path",
+	});
+});
+
+test("concurrent setup cannot discard a folder choice and releases its lock", async () => {
+	const directory = await mkdtemp(path.join(tmpdir(), "bopencut-concurrent-env-"));
+	try {
+		const file = path.join(directory, ".env.local");
+		const settings = await readDevelopmentSettings(directory, undefined, {});
+		const footage = parseArgs(["--footage", directory, "--yes"]);
+		const data = parseArgs(["--data", directory, "--yes"]);
+		const results = await Promise.allSettled([
+			setupEnv(file, undefined, footage, settings),
+			setupEnv(file, undefined, data, settings),
+		]);
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		const initial = await readFile(file, "utf8");
+		const retry = envValues(initial).AGENT_FILES_ROOT ? data : footage;
+		await setupEnv(file, initial, retry, await readDevelopmentSettings(directory, initial, {}));
+		expect(Object.keys(envValues(await readFile(file, "utf8"))).sort()).toEqual(["AGENT_FILES_ROOT", "BOPENCUT_DATA"]);
+		expect(await readdir(directory)).toEqual([".env.local"]);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 });
