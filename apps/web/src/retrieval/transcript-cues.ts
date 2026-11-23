@@ -62,7 +62,10 @@ function overlap(previous: Cue, next: Cue, prefix: string[], suffix: string[], f
 	if (next.start >= previous.end && !(echo && next.start - previous.end <= 0.05)) return 0;
 	for (let count = Math.min(suffix.length, prefix.length); count > 0; count--) {
 		if (prefix.slice(0, count).join(" ") !== suffix.slice(-count).join(" ")) continue;
-		if (previous.words && next.words && next.words[count - 1].start >= previous.words.at(-1)!.end) continue;
+		if (previous.words && next.words) {
+			const starts = previous.words.slice(-count);
+			if (next.words.slice(0, count).some((word, i) => Math.abs(word.start - starts[i].start) > 0.01)) continue;
+		}
 		return count;
 	}
 	return 0;

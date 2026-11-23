@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { transcriptCacheParts } from "@/agent/inside";
 import { atomicWrite } from "@/services/storage/server/files";
 import { Cancelled, checkCancelled, sharedJob } from "./jobs";
 import { assertPublicUrl } from "./net";
@@ -54,7 +55,7 @@ async function stat(file: string) {
 async function cacheDir(workspace: string) {
 	await fs.mkdir(workspace, { recursive: true });
 	let dir = await fs.realpath(workspace);
-	for (const part of ["cache", "transcripts", "v1"]) {
+	for (const part of [...transcriptCacheParts, "v1"]) {
 		dir = path.join(dir, part);
 		await fs.mkdir(dir).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
 		if (!(await fs.lstat(dir)).isDirectory()) throw new RetrievalError("Transcript cache path contains a link or is not a directory. Use a regular cache folder.");
@@ -179,9 +180,13 @@ export async function getTranscript(request: TranscriptRequest, deps: Deps) {
 		};
 		const preferred = chooseTracks(info)[0];
 		for (const track of chooseTracks(info, language)) {
-			const file = `${source.id}.${track.language}.${track.origin}.json`;
+			const file = `${source.id}.${track.key}.${track.origin}.json`;
 			const revision = track.format.revision ?? track.format.last_modified;
-			const aliases = new Set([alias, aliasFile(url, track.language), aliasFile(source.pageUrl, track.language)]);
+			const aliases = new Set([alias, aliasFile(source.pageUrl, language)]);
+			if (!language) {
+				aliases.add(aliasFile(url, track.language));
+				aliases.add(aliasFile(source.pageUrl, track.language));
+			}
 			if (!language || (preferred?.key === track.key && preferred.origin === track.origin)) {
 				aliases.add(aliasFile(url));
 				aliases.add(aliasFile(source.pageUrl));

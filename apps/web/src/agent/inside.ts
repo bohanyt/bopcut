@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+export const transcriptCacheParts = ["cache", "transcripts"] as const;
+
 /**
  * The real path of a regular file under `root`, or null when either is missing. A link that leads out
  * of the root, or anything that is not a regular file, is refused, so these reads stay in their folder.

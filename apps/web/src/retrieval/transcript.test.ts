@@ -74,6 +74,14 @@ test("rolling captions keep novel words and their source times, while dropping s
 	expect(result.warnings.join(" ")).toContain("verify openings");
 });
 
+test("overlapping automatic cues preserve repeated words spoken at different times", async () => {
+	metadata.subtitles = {};
+	captionData = JSON.stringify({ events: [0, 1000].map((tStartMs) => ({
+		tStartMs, dDurationMs: 2000, segs: [{ utf8: "No.", tOffsetMs: 0 }],
+	})) });
+	expect((await get()).cues.map((cue) => [cue.text, cue.words?.[0].start])).toEqual([["No.", 0], ["No.", 1]]);
+});
+
 test("ranges overlap half-open edges and preserve full cue times", async () => {
 	const result = await get({ range: { start: 2.3, end: 4.5 } });
 	expect(result.cues.map(({ start, end }) => ({ start, end }))).toEqual([{ start: 0.9, end: 3.5 }]);
@@ -124,6 +132,14 @@ test("cache hits and YouTube aliases are disk-only, and refresh updates the shar
 	expect(calls).toHaveLength(8);
 });
 
+test("explicit automatic original captions cannot replace the plain language alias", async () => {
+	metadata.automatic_captions = { "en-orig": captions.en };
+	expect((await get({ language: "en" })).origin).toBe("creator");
+	expect((await get({ language: "en-orig" })).origin).toBe("auto");
+	expect(await get({ language: "en" })).toMatchObject({ origin: "creator", cached: true });
+	expect(calls).toHaveLength(4);
+});
+
 test("live streams and unavailable captions leave no cache entry", async () => {
 	metadata.is_live = true;
 	await expect(get()).rejects.toThrow(/live stream.*replay/);
@@ -158,6 +174,30 @@ test("cache folders cannot traverse a link", async () => {
 	} finally {
 		await unlink(link);
 		await rmdir(outside);
+	}
+});
+
+test("the agent asset route keeps the transcript cache private, including through a junction", async () => {
+	await get();
+	const asset = "youtube-example_id1.en.creator.json";
+	const link = path.join(workspace, "linked");
+	await symlink(cache, link, "junction");
+	const roots = { AGENT_WORKSPACE: process.env.AGENT_WORKSPACE, AGENT_FILES_ROOT: process.env.AGENT_FILES_ROOT };
+	try {
+		process.env.AGENT_WORKSPACE = process.env.AGENT_FILES_ROOT = workspace;
+		const { GET } = await import("../app/api/agent/[...slug]/route");
+		const read = (p: string) => GET(new Request("http://localhost/api/agent/file?" + new URLSearchParams({ p })),
+			{ params: Promise.resolve({ slug: ["file"] }) });
+		await writeFile(path.join(workspace, "asset.json"), "{}");
+		expect((await read("asset.json")).status).toBe(200);
+		expect((await read("cache/transcripts/v1/" + asset)).status).toBe(404);
+		expect((await read("linked/" + asset)).status).toBe(404);
+	} finally {
+		for (const [key, value] of Object.entries(roots)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		await unlink(link);
 	}
 });
 

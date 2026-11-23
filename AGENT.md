@@ -38,7 +38,7 @@ Run `bun run agent transcript <url> [--lang CODE] [--range START-END] [--refresh
 
 Times are seconds in the original video. A range returns overlapping cues with their full source times. The command picks the original language when known, or the first available track, and prefers creator captions for the selected language. Automatic captions can be off by a few seconds. Verify openings with frames or audio before cutting. If captions are unavailable, try a different language or use manual ranges. Speech-to-text requires a configured command in a later release.
 
-Successful transcripts are cached under `AGENT_WORKSPACE/cache/transcripts/v1/`. A cached link reads from disk. Use `--refresh` to check the source again. When the command reads source metadata and finds a changed duration or caption revision, it fetches the track again. The default timeout is 30 seconds.
+Successful transcripts are cached under `AGENT_WORKSPACE/cache/transcripts/v1/` for local CLI access. A cached link reads from disk. Use `--refresh` to check the source again. When the command reads source metadata and finds a changed duration or caption revision, it fetches the track again. The default timeout is 30 seconds.
 
 Use the file protocol below for drafts, changes, historical frames, and comparisons.
 
