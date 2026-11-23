@@ -35,7 +35,7 @@ export function EditableTimecode({
 	const [inputValue, setInputValue] = useState("");
 	const [hasError, setHasError] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
-	const enterPressedRef = useRef(false);
+	const skipBlurCommitRef = useRef(false);
 	const formattedTime = formatMediaTimecode({ time, format, fps }) ?? "";
 
 	const startEditing = () => {
@@ -43,14 +43,14 @@ export function EditableTimecode({
 		setIsEditing(true);
 		setInputValue(formattedTime);
 		setHasError(false);
-		enterPressedRef.current = false;
+		skipBlurCommitRef.current = false;
 	};
 
 	const cancelEditing = () => {
 		setIsEditing(false);
 		setInputValue("");
 		setHasError(false);
-		enterPressedRef.current = false;
+		skipBlurCommitRef.current = true;
 	};
 
 	const applyEdit = () => {
@@ -73,13 +73,12 @@ export function EditableTimecode({
 		setIsEditing(false);
 		setInputValue("");
 		setHasError(false);
-		enterPressedRef.current = false;
 	};
 
 	const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
 		if (event.key === "Enter") {
 			event.preventDefault();
-			enterPressedRef.current = true;
+			skipBlurCommitRef.current = true;
 			applyEdit();
 		} else if (event.key === "Escape") {
 			event.preventDefault();
@@ -95,7 +94,7 @@ export function EditableTimecode({
 	};
 
 	const handleBlur = () => {
-		if (!enterPressedRef.current && isEditing) {
+		if (!skipBlurCommitRef.current && isEditing) {
 			applyEdit();
 		}
 	};

@@ -202,7 +202,7 @@ function ProjectDropdown() {
 	);
 }
 
-function EditableProjectName() {
+export function EditableProjectName() {
 	const { t } = useI18n();
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
@@ -223,9 +223,12 @@ function EditableProjectName() {
 	};
 
 	const saveEdit = async () => {
-		if (!inputRef.current || !activeProject) return;
-		const newName = inputRef.current.value.trim();
+		if (!inputRef.current || !activeProject || !isEditing) return;
+		const value = inputRef.current.value;
+		const newName = value.trim();
 		setIsEditing(false);
+
+		if (value === originalNameRef.current) return;
 
 		if (!newName) {
 			inputRef.current.value = originalNameRef.current;
@@ -253,7 +256,7 @@ function EditableProjectName() {
 			inputRef.current?.blur();
 		} else if (event.key === "Escape") {
 			event.preventDefault();
-			if (inputRef.current) {
+			if (isEditing && inputRef.current) {
 				inputRef.current.value = originalNameRef.current;
 				inputRef.current.setSelectionRange(0, 0);
 			}
