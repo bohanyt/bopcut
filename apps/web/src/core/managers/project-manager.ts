@@ -698,13 +698,15 @@ export class ProjectManager {
 	async updateSettings({
 		settings,
 		pushHistory = true,
+		settingsBeforePreview,
 	}: {
 		settings: Partial<TProjectSettings>;
 		pushHistory?: boolean;
+		settingsBeforePreview?: Partial<TProjectSettings>;
 	}): Promise<void> {
 		if (!this.active) return;
 
-		const command = new UpdateProjectSettingsCommand(settings);
+		const command = new UpdateProjectSettingsCommand(settings, settingsBeforePreview);
 		if (pushHistory) {
 			this.editor.command.execute({ command });
 			return;

@@ -69,6 +69,7 @@ export function EditableTimecode({
 			? snapSeekMediaTime({ time: parsedTime, duration, fps })
 			: parsedTime;
 
+		skipBlurCommitRef.current = true;
 		onTimeChange?.({ time: clampedTime });
 		setIsEditing(false);
 		setInputValue("");
@@ -78,7 +79,6 @@ export function EditableTimecode({
 	const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
 		if (event.key === "Enter") {
 			event.preventDefault();
-			skipBlurCommitRef.current = true;
 			applyEdit();
 		} else if (event.key === "Escape") {
 			event.preventDefault();

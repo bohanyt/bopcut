@@ -60,6 +60,12 @@ function getDisplayHue(hue: number, saturation: number, internalHue: number): nu
 	return saturation === 0 || isSameHueWrapped ? internalHue : hue;
 }
 
+function blurOnEnter(event: React.KeyboardEvent<HTMLInputElement>) {
+	if (event.key !== "Enter") return;
+	event.preventDefault();
+	event.currentTarget.blur();
+}
+
 interface ColorPickerContentProps {
 	value?: string;
 	onChange?: (value: string) => void;
@@ -81,6 +87,7 @@ function ColorPickerContent({
 }: ColorPickerContentProps) {
 	const { t } = useI18n();
 	const drag = useRef<{ target: HTMLButtonElement; cancel: () => void } | null>(null);
+	const inputRef = useRef<HTMLInputElement>(null);
 	const [internalHue, setInternalHue] = useState(0);
 	const [inputValue, setInputValue] = useState(value);
 	const [colorFormat, setColorFormat] = useState<ColorFormat>("hex");
@@ -195,13 +202,6 @@ function ColorPickerContent({
 
 	const handleInputBlur = () => commitInputValue();
 
-	const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-		if (event.key === "Enter") {
-			commitInputValue();
-			event.currentTarget.blur();
-		}
-	};
-
 	const handlePaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
 		const pastedText = event.clipboardData.getData("text");
 		const extractedHex = extractColorFromText({ text: pastedText });
@@ -238,7 +238,13 @@ function ColorPickerContent({
 				event.preventDefault();
 			}}
 			onInteractOutside={(event) => {
-				if (drag.current) event.preventDefault();
+				if (drag.current) {
+					event.preventDefault();
+					return;
+				}
+				// Pointer-down can dismiss the popover before the browser blurs the input.
+				const input = inputRef.current;
+				if (input && input.ownerDocument.activeElement === input) input.blur();
 			}}
 		>
 			<header className="border-b flex justify-between items-center pb-2 px-2">
@@ -341,6 +347,7 @@ function ColorPickerContent({
 					</Select>
 
 					<Input
+						ref={inputRef}
 						className={cn(
 							"h-7 rounded-sm p-2.5",
 							colorFormat === "hex" && "uppercase",
@@ -349,7 +356,7 @@ function ColorPickerContent({
 						value={inputValue}
 						onChange={handleInputChange}
 						onBlur={handleInputBlur}
-						onKeyDown={handleInputKeyDown}
+						onKeyDown={blurOnEnter}
 						onPaste={handlePaste}
 					/>
 				</div>
@@ -423,15 +430,6 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 
 		const handleInputBlur = () => commitInputValue(inputValue);
 
-		const handleInputKeyDown = (
-			event: React.KeyboardEvent<HTMLInputElement>,
-		) => {
-			if (event.key === "Enter") {
-				commitInputValue(inputValue);
-				event.currentTarget.blur();
-			}
-		};
-
 		const handlePaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
 			const pastedText = event.clipboardData.getData("text");
 			const extractedHex = extractColorFromText({ text: pastedText });
@@ -478,7 +476,7 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 							value={inputValue}
 							onChange={handleInputChange}
 							onBlur={handleInputBlur}
-							onKeyDown={handleInputKeyDown}
+							onKeyDown={blurOnEnter}
 							onPaste={handlePaste}
 						/>
 					</div>

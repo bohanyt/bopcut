@@ -6,7 +6,10 @@ export class UpdateProjectSettingsCommand extends Command {
 	private savedSettings: TProjectSettings | null = null;
 	private savedUpdatedAt: Date | null = null;
 
-	constructor(private updates: Partial<TProjectSettings>) {
+	constructor(
+		private updates: Partial<TProjectSettings>,
+		private settingsBeforePreview?: Partial<TProjectSettings>,
+	) {
 		super();
 	}
 
@@ -15,7 +18,10 @@ export class UpdateProjectSettingsCommand extends Command {
 		const activeProject = editor.project.getActive();
 		if (!activeProject) return;
 
-		this.savedSettings = activeProject.settings;
+		this.savedSettings = this.settingsBeforePreview
+			? { ...activeProject.settings, ...this.settingsBeforePreview }
+			: activeProject.settings;
+		this.settingsBeforePreview = undefined;
 		this.savedUpdatedAt = activeProject.metadata.updatedAt;
 
 		const updatedProject: TProject = {

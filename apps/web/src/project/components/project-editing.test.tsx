@@ -6,9 +6,12 @@ import { bindAction, unbindAction } from "@/actions";
 import { useKeybindingsListener } from "@/actions/use-keybindings";
 import { EditableTimecode } from "@/components/editable-timecode";
 import { EditableProjectName } from "@/components/editor/editor-header";
+import { useBackgroundColorPreview } from "@/components/editor/panels/assets/views/settings/background";
+import { ColorPicker } from "@/components/ui/color-picker";
 import { Dialog } from "@/components/ui/dialog";
 import { EditorCore } from "@/core";
-import { mediaTime, ZERO_MEDIA_TIME } from "@/wasm";
+import { DEFAULT_BACKGROUND_COLOR } from "@/background/color";
+import { mediaTime, type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import { DeleteProjectConfirmation } from "./delete-project-dialog";
 
 let dom: Window;
@@ -215,6 +218,107 @@ test("Escape cancels a valid timecode draft without seeking", () => {
 
 	expect(seek).not.toHaveBeenCalled();
 	expect(document.querySelector("button")?.textContent).toBe("00:00:00:00");
+});
+
+test("a corrected timecode commits on blur after an invalid Enter", () => {
+	const seek = mock<(value: { time: MediaTime }) => void>(() => {});
+	render(
+		<EditorShortcuts>
+			<EditableTimecode
+				time={ZERO_MEDIA_TIME}
+				duration={mediaTime({ ticks: 1_200_000 })}
+				fps={{ numerator: 30, denominator: 1 }}
+				onTimeChange={seek}
+			/>
+			<button type="button">Outside</button>
+		</EditorShortcuts>,
+	);
+	const [timecode, outside] = document.querySelectorAll("button");
+	act(() => timecode.click());
+	const input = document.querySelector("input")!;
+	typeValue(input, "invalid");
+	pressKey(input, "Enter");
+	expect(document.activeElement).toBe(input);
+	expect(seek).not.toHaveBeenCalled();
+
+	typeValue(input, "00:00:01:00");
+	act(() => outside.focus());
+
+	expect(seek.mock.calls).toEqual([[{ time: mediaTime({ ticks: 120_000 }) }]]);
+	expect(document.querySelector("input")).toBeNull();
+});
+
+function CustomBackgroundField({ value }: { value: string }) {
+	const { previewColor, commitColor } = useBackgroundColorPreview();
+	return (
+		<ColorPicker
+			value={value.replace(/^#/, "").toUpperCase()}
+			onChange={previewColor}
+			onChangeEnd={commitColor}
+		/>
+	);
+}
+
+test.each([
+	{ finish: "blur", original: { type: "color", color: "#123456" } as const },
+	{ finish: "Enter", original: { type: "blur", blurIntensity: 12 } as const },
+])("a custom background committed by $finish can be undone and redone", ({ finish, original }) => {
+	EditorCore.reset();
+	const editor = EditorCore.getInstance();
+	editor.save.stop();
+	const date = new Date(0);
+	editor.project.setActiveProject({
+		project: {
+			metadata: {
+				id: "project",
+				name: "Background test",
+				duration: ZERO_MEDIA_TIME,
+				createdAt: date,
+				updatedAt: date,
+			},
+			scenes: [],
+			currentSceneId: "scene",
+			version: 1,
+			settings: {
+				fps: { numerator: 30, denominator: 1 },
+				canvasSize: { width: 1920, height: 1080 },
+				background: original,
+			},
+		},
+	});
+	try {
+		render(
+			<CustomBackgroundField
+				value={original.type === "color" ? original.color : DEFAULT_BACKGROUND_COLOR}
+			/>,
+		);
+		const input = document.querySelector("input")!;
+		act(() => input.focus());
+		typeValue(input, "abcdef");
+		if (finish === "Enter") pressKey(input, "Enter");
+		else act(() => input.blur());
+
+		const getBackground = () => editor.project.getActive().settings.background;
+		const edited = { type: "color", color: "#abcdef" } as const;
+		expect(getBackground()).toEqual(edited);
+		act(() => editor.command.undo());
+		expect(getBackground()).toEqual(original);
+		expect(editor.command.canUndo()).toBe(false);
+		act(() => editor.command.redo());
+		expect(getBackground()).toEqual(edited);
+	} finally {
+		EditorCore.reset();
+	}
+});
+
+test("Enter commits an inline color once", () => {
+	const onChangeEnd = mock<(color: string) => void>(() => {});
+	render(<ColorPicker value="123456" onChangeEnd={onChangeEnd} />);
+	const input = document.querySelector("input")!;
+	act(() => input.focus());
+	typeValue(input, "abcdef");
+	pressKey(input, "Enter");
+	expect(onChangeEnd.mock.calls).toEqual([["abcdef"]]);
 });
 
 test("Escape still blurs an ordinary field and runs its shortcut outside the field", () => {
