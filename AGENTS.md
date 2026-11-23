@@ -4,15 +4,27 @@
 
 **bopencut is a place to edit video alongside a human.** You will usually be asked to **create or refine a video**, not change bopencut code. Change code only when the owner explicitly asks (see the rules below).
 
-Available capabilities:
-- **Shared timeline:** you assemble a draft (voice-over, footage, captions, motion graphics, transitions), the human edits directly in the UI, then you refine the requested parts. All your changes can be undone and do not overwrite human edits.
-- **Editable motion graphics** (in place of locked Manim videos): icons, rectangles, circles, lines, arrows, and paths with a draw effect; object groups; keyframes for position, size, rotation, and opacity. Each part is a separate element the human can move and resize in the preview.
-- **3D models** (GLB/glTF) that can be rotated and animated with keyframes.
-- **Live preview:** the human checks results in the editor without rendering. Small changes need only a draft, not an export. Export MP4 only for the final result.
-- **Eyes for you:** request a frame image at any time to check your work before reporting.
-- **Notes and preferences:** read human timeline notes and `PREFERENCES.md` before drafting; reply to or resolve notes after addressing them.
+What you can build with:
 
-See [`AGENT.md`](AGENT.md) for the workflow (drafts, notes, frames, preferences, and data locations). Footage and assets are in a separate folder specified by `AGENT_FILES_ROOT`, not in this repository; do not modify source files there.
+- **Shared timeline:** voice-over, footage, captions, motion graphics and transitions as editable elements. Every change can be undone, and none overwrites the human's edits.
+- **Editable motion graphics:** icons, shapes, lines, arrows and paths with a draw effect, groups, and keyframes. Each part can be moved and resized in the preview.
+- **3D models** (GLB/glTF) that rotate and animate with keyframes.
+- **Eyes for you:** frame images at any time, so you check your work before reporting.
+- **Notes and preferences:** the human's timeline notes and `PREFERENCES.md` files.
+
+### Playbook
+
+1. **Intake.** Start with whatever the human supplies: a long video or live link, articles, documents, a footage folder, or a script. Read the text and any available transcripts first. Inspect frames and fetch only the sections you need. For a live stream, use available text and wait for the replay if a cut needs footage. Sum up what you understood in a few lines. Consult both preference files before asking what to make: vertical clips, a scripted video, or something custom, with the aspect ratio, length, and language. Ask only for details the request and preferences leave open.
+2. **Read the project context.** Read both [preference files](AGENT.md#preferences) if present (general in `AGENT_PREFS`, project in `AGENT_WORKSPACE`). Identify the target project ID, then run `bun run agent status --project-id PROJECT_ID` and `bun run agent notes --project-id PROJECT_ID` for an existing project. Use the latest ready snapshot before changing an existing timeline.
+3. **Plan the beats.** Put the hook first, then map the story, supporting footage, sound, captions, and the ending to the requested duration.
+4. **Gather material.** Reuse existing media and use the [retrieval commands](AGENT.md#media-from-links-sections-not-whole-videos) for sections, sound effects, music, and images. Leave source files in place. Give long jobs such as fetching, transcription, and export a time limit and report progress by stage. If a job times out, report which stage stopped.
+5. **Draft on the editable timeline.** Import a bundle for a new project or write `draft.json` with `basedOn` for changes and set its `projectId` to the target project ID. Keep the editor tab open to apply the draft and check that it saved. Use the [file protocol](AGENT.md#agent-workspace-appswebenvlocal) for the formats and apply results.
+6. **Check the opening and key beats.** Capture frames with `bun run agent frames --project-id PROJECT_ID --times 0,1,2`, using the target project ID and times within the video. Inspect the 0 s frame and review the first spoken words and when they start. The first 1–2 seconds should carry a strong line, an on-screen claim, or a visible reaction. Cut any dead air before the first word. If the opening is uncertain, offer two or three alternatives as separate drafts.
+7. **Export MP4.** Run `bun run agent export --project-id PROJECT_ID --format mp4` after the draft saves. The server must be running, and the editor tab can be closed.
+8. **Report.** Give the MP4 path, summarize your main choices, list any alternative drafts, and say what the human should check. They can watch the export and fix individual items on the same timeline.
+9. **Refine.** Read new notes and human edits, then change the requested parts. Reply to or resolve the notes you addressed. Record preference rules only when the same pattern appears at least three times, with evidence.
+
+See [AGENT.md](AGENT.md) for protocol details. Footage and assets live under `AGENT_FILES_ROOT`; never modify source files there.
 
 ## Mode 2 — Changing bopencut's code (only when explicitly asked)
 
