@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, readdir, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { agentAssetPath } from "@/agent/inside";
 import { getTranscript } from "./transcript";
 import { runWithPrivateCookies } from "./yt-dlp-cookies";
 import type { Runner } from "./server";
@@ -177,26 +178,18 @@ test("cache folders cannot traverse a link", async () => {
 	}
 });
 
-test("the agent asset route keeps the transcript cache private, including through a junction", async () => {
+test("agent asset paths keep the transcript cache private, including through a junction", async () => {
 	await get();
 	const asset = "youtube-example_id1.en.creator.json";
 	const link = path.join(workspace, "linked");
 	await symlink(cache, link, "junction");
-	const roots = { AGENT_WORKSPACE: process.env.AGENT_WORKSPACE, AGENT_FILES_ROOT: process.env.AGENT_FILES_ROOT };
 	try {
-		process.env.AGENT_WORKSPACE = process.env.AGENT_FILES_ROOT = workspace;
-		const { GET } = await import("../app/api/agent/[...slug]/route");
-		const read = (p: string) => GET(new Request("http://localhost/api/agent/file?" + new URLSearchParams({ p })),
-			{ params: Promise.resolve({ slug: ["file"] }) });
+		const resolve = (p: string) => agentAssetPath(workspace, workspace, p);
 		await writeFile(path.join(workspace, "asset.json"), "{}");
-		expect((await read("asset.json")).status).toBe(200);
-		expect((await read("cache/transcripts/v1/" + asset)).status).toBe(404);
-		expect((await read("linked/" + asset)).status).toBe(404);
+		expect(await resolve("asset.json")).toMatchObject({ ext: ".json" });
+		await expect(resolve("cache/transcripts/v1/" + asset)).rejects.toThrow("Not found");
+		await expect(resolve("linked/" + asset)).rejects.toThrow("Not found");
 	} finally {
-		for (const [key, value] of Object.entries(roots)) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
 		await unlink(link);
 	}
 });
