@@ -20,6 +20,7 @@ import { colors } from "@/data/colors/solid";
 import { syntaxUIGradients } from "@/data/colors/syntax-ui";
 import { useEditor } from "@/editor/use-editor";
 import { effectPreviewService } from "@/services/renderer/effect-preview";
+import type { TBackground } from "@/project/types";
 import { cn } from "@/utils/ui";
 
 const BLUR_PREVIEW_UNIFORM_DIMENSIONS = {
@@ -142,36 +143,78 @@ const BackgroundPreviews = memo(
 
 BackgroundPreviews.displayName = "BackgroundPreviews";
 
-function CustomColorPreview({
-	currentBackgroundColor,
-	isSelected,
-	onPreview,
-	onCommit,
-}: {
-	currentBackgroundColor: string;
-	isSelected: boolean;
-	onPreview: (color: string) => void;
-	onCommit: (color: string) => void;
-}) {
-	const { t } = useI18n();
-	const editor = useEditor();
-	const readDragBaseline = () => {
+function hasColor(background: TBackground, color: string): boolean {
+	return background.type === "color" && background.color.toLowerCase() === color.toLowerCase();
+}
+
+export function useBackgroundColorPreview() {
+	const { project } = useEditor();
+	const beforePreview = useRef<{ session: number; background: TBackground } | null>(null);
+	const previewColor = (hex: string) => {
+		const activeProject = project.getActive();
+		if (!activeProject) return;
+		const color = `#${hex}`;
+		const { background } = activeProject.settings;
+		if (hasColor(background, color)) return;
+
+		const session = project.getSession();
+		if (beforePreview.current?.session !== session) {
+			beforePreview.current = { session, background };
+		}
+		const original = beforePreview.current.background;
+		void project.updateSettings({
+			settings: {
+				background: hasColor(original, color) ? original : { type: "color", color },
+			},
+			pushHistory: false,
+		});
+	};
+	const commitColor = (hex: string) => {
+		const baseline = beforePreview.current;
+		beforePreview.current = null;
+		const activeProject = project.getActive();
+		if (!activeProject || (baseline && baseline.session !== project.getSession())) return;
+		const color = `#${hex}`;
+		const background = baseline?.background ?? activeProject.settings.background;
+		if (hasColor(background, color)) return;
+		void project.updateSettings({
+			settings: { background: { type: "color", color } },
+			settingsBeforePreview: baseline ? { background } : undefined,
+		});
+	};
+	const readDragBaseline = (fallbackColor: string) => {
 		// The picker blurs its text input first, which can commit a different background.
-		const project = editor.project.getActive();
-		if (!project) return { color: currentBackgroundColor.replace(/^#/, "") };
-		const { background } = project.settings;
+		const activeProject = project.getActive();
+		if (!activeProject) return { color: fallbackColor.replace(/^#/, "") };
+		const { background } = activeProject.settings;
 		const color = background.type === "color" ? background.color : DEFAULT_BACKGROUND_COLOR;
 		return {
 			color: color.replace(/^#/, ""),
 			restore: () => {
-				if (editor.project.getActive()?.metadata.id !== project.metadata.id) return;
-				void editor.project.updateSettings({
+				beforePreview.current = null;
+				const current = project.getActive();
+				if (current?.metadata.id !== activeProject.metadata.id) return;
+				if (current.settings.background === background) return;
+				void project.updateSettings({
 					settings: { background },
 					pushHistory: false,
 				});
 			},
 		};
 	};
+	return { previewColor, commitColor, readDragBaseline };
+}
+
+function CustomColorPreview({
+	currentBackgroundColor,
+	isSelected,
+}: {
+	currentBackgroundColor: string;
+	isSelected: boolean;
+}) {
+	const { t } = useI18n();
+	const { timeline } = useEditor();
+	const { previewColor, commitColor, readDragBaseline } = useBackgroundColorPreview();
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
@@ -194,11 +237,11 @@ function CustomColorPreview({
 				</button>
 			</PopoverTrigger>
 			<ColorPickerContent
-				beginDragGesture={editor.timeline.beginPreviewGesture}
-				readDragBaseline={readDragBaseline}
+				beginDragGesture={timeline.beginPreviewGesture}
+				readDragBaseline={() => readDragBaseline(currentBackgroundColor)}
 				value={currentBackgroundColor.replace(/^#/, "").toUpperCase()}
-				onChange={(color) => onPreview(`#${color}`)}
-				onChangeEnd={(color) => onCommit(`#${color}`)}
+				onChange={previewColor}
+				onChangeEnd={commitColor}
 			/>
 		</Popover>
 	);
@@ -224,21 +267,10 @@ export function BackgroundContent() {
 		[editor.project],
 	);
 
-	const previewBackgroundColor = useCallback(
-		async (color: string) => {
-			await editor.project.updateSettings({
+	const handlePresetColorSelect = useCallback(
+		(color: string) => {
+			void editor.project.updateSettings({
 				settings: { background: { type: "color", color } },
-				pushHistory: false,
-			});
-		},
-		[editor.project],
-	);
-
-	const commitBackgroundColor = useCallback(
-		async (color: string) => {
-			await editor.project.updateSettings({
-				settings: { background: { type: "color", color } },
-				pushHistory: true,
 			});
 		},
 		[editor.project],
@@ -258,13 +290,6 @@ export function BackgroundContent() {
 
 	const hasPresetColorMatch = colors.some(
 		(color) => color.toLowerCase() === currentBackgroundColor.toLowerCase(),
-	);
-
-	const handlePresetColorSelect = useCallback(
-		(color: string) => {
-			void commitBackgroundColor(color);
-		},
-		[commitBackgroundColor],
 	);
 
 	const blurPreviews = useMemo(
@@ -311,8 +336,6 @@ export function BackgroundContent() {
 								<CustomColorPreview
 									currentBackgroundColor={currentBackgroundColor}
 									isSelected={isColorBackground && !hasPresetColorMatch}
-									onPreview={previewBackgroundColor}
-									onCommit={commitBackgroundColor}
 								/>
 							) : null}
 							<BackgroundPreviews

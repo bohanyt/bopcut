@@ -60,6 +60,12 @@ function getDisplayHue(hue: number, saturation: number, internalHue: number): nu
 	return saturation === 0 || isSameHueWrapped ? internalHue : hue;
 }
 
+function blurOnEnter(event: React.KeyboardEvent<HTMLInputElement>) {
+	if (event.key !== "Enter") return;
+	event.preventDefault();
+	event.currentTarget.blur();
+}
+
 interface ColorPickerContentProps {
 	value?: string;
 	onChange?: (value: string) => void;
@@ -194,13 +200,6 @@ function ColorPickerContent({
 	};
 
 	const handleInputBlur = () => commitInputValue();
-
-	const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-		if (event.key === "Enter") {
-			commitInputValue();
-			event.currentTarget.blur();
-		}
-	};
 
 	const handlePaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
 		const pastedText = event.clipboardData.getData("text");
@@ -349,7 +348,7 @@ function ColorPickerContent({
 						value={inputValue}
 						onChange={handleInputChange}
 						onBlur={handleInputBlur}
-						onKeyDown={handleInputKeyDown}
+						onKeyDown={blurOnEnter}
 						onPaste={handlePaste}
 					/>
 				</div>
@@ -423,15 +422,6 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 
 		const handleInputBlur = () => commitInputValue(inputValue);
 
-		const handleInputKeyDown = (
-			event: React.KeyboardEvent<HTMLInputElement>,
-		) => {
-			if (event.key === "Enter") {
-				commitInputValue(inputValue);
-				event.currentTarget.blur();
-			}
-		};
-
 		const handlePaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
 			const pastedText = event.clipboardData.getData("text");
 			const extractedHex = extractColorFromText({ text: pastedText });
@@ -478,7 +468,7 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 							value={inputValue}
 							onChange={handleInputChange}
 							onBlur={handleInputBlur}
-							onKeyDown={handleInputKeyDown}
+							onKeyDown={blurOnEnter}
 							onPaste={handlePaste}
 						/>
 					</div>
