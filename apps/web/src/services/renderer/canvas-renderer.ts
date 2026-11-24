@@ -4,6 +4,7 @@ import { renderTargetSize } from "./scale";
 import { buildFrameDescriptor } from "./compositor/frame-descriptor";
 import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
+import type { ProxyInfo } from "@/services/proxies/mapping";
 import { waitWithAbort } from "@/utils/abort";
 import { VideoCache } from "@/services/video-cache/service";
 import { MIN_GPU_CANVAS_DIMENSION, previewCanvasSize } from "@/canvas/sizes";
@@ -33,6 +34,16 @@ export type CanvasRendererParams = {
 
 // The WASM compositor and its textures are shared by all renderers.
 let renderQueue: Promise<void> = Promise.resolve();
+type PreviewRender = {
+	proxies?: ReadonlyMap<string, { info: ProxyInfo; file: File }>;
+	onProxyUnavailable?: (key: string) => void;
+	originals?: VideoCache;
+	valid: () => boolean;
+};
+
+function checkPreviewTarget(preview?: PreviewRender) {
+	if (preview && !preview.valid()) throw new DOMException("Scrub target changed", "AbortError");
+}
 
 export class CanvasRenderer {
 	width: number;
@@ -90,8 +101,12 @@ export class CanvasRenderer {
 		return this.outputCanvas;
 	}
 
-	async render({ node, time, signal }: { node: AnyBaseNode; time: number; signal?: AbortSignal }) {
-		return this.renderToCanvas({ node, time, signal, targetCanvas: this.outputCanvas });
+	async render({ node, time, signal, preview }: { node: AnyBaseNode; time: number; signal?: AbortSignal; preview?: PreviewRender }) {
+		try {
+			return await this.renderToCanvas({ node, time, signal, preview, targetCanvas: this.outputCanvas });
+		} finally {
+			preview?.originals?.clear();
+		}
 	}
 
 	private async renderFrame({
@@ -99,12 +114,16 @@ export class CanvasRenderer {
 		time,
 		signal,
 		targetCanvas,
+		preview,
 	}: {
 		node: AnyBaseNode;
 		time: number;
 		signal: AbortSignal;
 		targetCanvas: HTMLCanvasElement;
+		preview?: PreviewRender;
 	}) {
+		checkPreviewTarget(preview);
+		if (preview?.originals) this.videoCache.takePreparedSources(preview.originals);
 		const { maxSurfaceDimension, maxTextureDimension } = getRendererLimits();
 		this.target = this.getRenderTarget(maxSurfaceDimension);
 		if (targetCanvas !== this.outputCanvas) {
@@ -113,15 +132,18 @@ export class CanvasRenderer {
 		}
 		await measureSpanAsync({
 			name: "resolve",
-			fn: () => resolveRenderTree({ node, renderer: this, time, signal }),
+			fn: () => resolveRenderTree({ node, renderer: this, time, signal, proxies: preview?.proxies,
+				onProxyUnavailable: preview?.onProxyUnavailable }),
 		});
 		signal.throwIfAborted();
+		checkPreviewTarget(preview);
 		checkGraphicsContext();
 		const { frame, textures } = await measureSpanAsync({
 			name: "buildFrame",
 			fn: () => buildFrameDescriptor({ node, renderer: this, signal }),
 		});
 		signal.throwIfAborted();
+		checkPreviewTarget(preview);
 		checkGraphicsContext();
 		wasmCompositor.ensureInitialized({
 			width: this.outputWidth,
@@ -153,11 +175,13 @@ export class CanvasRenderer {
 		node,
 		time,
 		targetCanvas,
+		preview,
 		signal,
 	}: {
 		node: AnyBaseNode;
 		time: number;
 		targetCanvas: HTMLCanvasElement;
+		preview?: PreviewRender;
 		signal?: AbortSignal;
 	}) {
 		signal?.throwIfAborted();
@@ -166,7 +190,7 @@ export class CanvasRenderer {
 		const task = renderQueue.then(async () => {
 			frameSignal.throwIfAborted();
 			checkGraphicsContext();
-			await this.renderFrame({ node, time, signal: frameSignal, targetCanvas });
+			await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, preview });
 		}).catch((error: unknown) => {
 			frameSignal.throwIfAborted();
 			rethrowGraphicsFailure(error);

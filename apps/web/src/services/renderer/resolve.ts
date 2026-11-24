@@ -24,6 +24,8 @@ import type { Transform } from "@/rendering";
 import { applyShake, readShakeSettings } from "@/rendering/shake";
 import { waitWithAbort } from "@/utils/abort";
 import type { CanvasRenderer } from "./canvas-renderer";
+import { proxyTime, type ProxyInfo } from "@/services/proxies/mapping";
+import type { VideoCache } from "@/services/video-cache/service";
 import type { AnyBaseNode } from "./nodes/base-node";
 import {
 	BlurBackgroundNode,
@@ -58,20 +60,76 @@ type ResolveContext = {
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
+	proxies?: ReadonlyMap<string, { info: ProxyInfo; file: File }>;
+	onProxyUnavailable?: (key: string) => void;
 };
+
+function visitVisibleVideos(root: AnyBaseNode, time: number, onVideo: (node: VideoNode | BlurBackgroundNode, time: number) => void) {
+	function visit(node: AnyBaseNode, at: number) {
+		if (node instanceof CompoundNode || node instanceof VideoNode ||
+			(node instanceof BlurBackgroundNode && node.params.mediaType === "video")) {
+			const { timeOffset, duration } = node.params;
+			if (at < timeOffset || at >= timeOffset + duration) return;
+			if (node instanceof CompoundNode) {
+				visit(node.params.content, at - timeOffset + node.params.trimStart);
+				return;
+			}
+			onVideo(node, at);
+		}
+		for (const child of node.children) visit(child, at);
+	}
+	visit(root, time);
+}
+
+export function visibleVideoNodes(root: AnyBaseNode, time: number): Set<AnyBaseNode> {
+	const result = new Set<AnyBaseNode>();
+	visitVisibleVideos(root, time, node => result.add(node));
+	return result;
+}
+
+export async function preparePreviewOriginals(
+	node: AnyBaseNode, time: number, cache: VideoCache, signal: AbortSignal, proxies: NonNullable<ResolveContext["proxies"]>,
+) {
+	const seeks: { file: File; time: number }[] = [];
+	let hasProxy = false;
+	visitVisibleVideos(node, time, (video, at) => {
+		const { params } = video;
+		if (!("file" in params)) return;
+		hasProxy ||= proxies.get(params.mediaId)?.file === params.file;
+		seeks.push({
+			file: params.file,
+			time: videoSourceSeconds(params, at - params.timeOffset),
+		});
+	});
+	if (!hasProxy) return false;
+	const frames = await Promise.allSettled(seeks.map(seek => cache.prepareFrame({ ...seek, signal })));
+	return !signal.aborted && frames.every(frame => frame.status === "fulfilled" && frame.value);
+}
+
+function videoSourceSeconds(
+	{ trimStart, retime }: Pick<VideoNode["params"], "trimStart" | "retime">,
+	clipTime: number,
+) {
+	const time = trimStart + getSourceTimeAtClipTime({ clipTime, retime });
+	return mediaTimeToSeconds({ time: roundMediaTime({ time }) });
+}
 
 export async function resolveRenderTree({
 	node,
 	renderer,
 	time,
 	signal,
+	proxies,
+	onProxyUnavailable,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
+	proxies?: ResolveContext["proxies"];
+	onProxyUnavailable?: ResolveContext["onProxyUnavailable"];
 }): Promise<void> {
-	await resolveNode({ node, context: { renderer, time, signal } });
+	await resolveNode({ node, context: { renderer, time, signal, proxies, onProxyUnavailable } });
 }
 
 async function resolveNode({
@@ -314,15 +372,10 @@ async function resolveVideoNode({
 	const placement = resolveVisualPlacement(node.params, context);
 	if (!placement) return null;
 
-	const sourceTimeTicks =
-		node.params.trimStart +
-		getSourceTimeAtClipTime({
-			clipTime: context.time - node.params.timeOffset,
-			retime: node.params.retime,
-		});
+	const seconds = videoSourceSeconds(node.params, context.time - node.params.timeOffset);
 	const { width, height, outputWidth, outputHeight } = context.renderer;
 	const { scaleX, scaleY } = placement.transform;
-	const frame = await readVideoFrame(node.params, sourceTimeTicks, context, (source) => {
+	const frame = await readVideoFrame(node.params, seconds, context, (source) => {
 		const containScale = Math.min(width / source.width, height / source.height);
 		return containScale * Math.max(
 			(Math.abs(scaleX) * outputWidth) / width,
@@ -355,18 +408,33 @@ async function resolveVideoNode({
 
 function readVideoFrame(
 	{ mediaId, file }: { mediaId: string; file: File },
-	time: number,
+	seconds: number,
 	context: ResolveContext,
 	getScale: (source: { width: number; height: number }) => number,
 ) {
-	return readMediaSource(mediaId, context, () => context.renderer.videoCache.getFrameAt({
+	const readOriginal = () => context.renderer.videoCache.getFrameAt({
 		file,
-		time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
+		time: seconds,
 		getScale: context.renderer.exactFrames ? undefined : getScale,
 		maxTextureDimension: getRendererLimits().maxTextureDimension,
 		throwOnSeekError: context.renderer.strictVideoDecoding,
 		signal: context.signal,
-	}));
+	});
+	const candidate = context.proxies?.get(mediaId);
+	if (!candidate || candidate.file !== file) return readMediaSource(mediaId, context, readOriginal);
+	return readMediaSource(mediaId, context, async () => {
+		const info = candidate.info;
+		const mapped = proxyTime(info, seconds);
+		if (mapped !== undefined) {
+			const frame = await context.renderer.videoCache.getProxyFrameAt(
+				new URL("/api/proxies?key=" + info.key, location.origin).href, mapped,
+				getRendererLimits().maxTextureDimension, context.signal,
+			);
+			if (frame) return { ...frame, sourceWidth: info.width, sourceHeight: info.height };
+			context.onProxyUnavailable?.(info.key);
+		}
+		return readOriginal();
+	});
 }
 
 async function readMediaSource<T>(
@@ -618,14 +686,9 @@ async function resolveBackdropSource({
 	context: ResolveContext;
 }): Promise<BackdropSource | null> {
 	if (node.params.mediaType === "video") {
-		const sourceTimeTicks =
-			node.params.trimStart +
-			getSourceTimeAtClipTime({
-				clipTime,
-				retime: node.params.retime,
-			});
+		const seconds = videoSourceSeconds(node.params, clipTime);
 		const { outputWidth, outputHeight } = context.renderer;
-		const frame = await readVideoFrame(node.params, sourceTimeTicks, context, ({ width, height }) =>
+		const frame = await readVideoFrame(node.params, seconds, context, ({ width, height }) =>
 			Math.max(outputWidth / width, outputHeight / height),
 		);
 		if (!frame) {

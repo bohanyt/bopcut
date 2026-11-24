@@ -11,6 +11,7 @@ import { cookiePlugin, cookiePluginFile, runWithPrivateCookies } from "./yt-dlp-
 // The supervisor stays outside the tool's process group so it can wait for termination.
 const unixSupervisor = String.raw `
 	const { execFile, spawn } = require("node:child_process");
+	if (process.env.BOPENCUT_TOOL_BACKGROUND === "1") require("node:os").setPriority(0, 10);
 	let tool;
 	let input = "";
 	let stopping = false;
@@ -63,6 +64,11 @@ const unixSupervisor = String.raw `
 
 export function runProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string) {
 	return withToolScratch(signal, filesRoot, (temp, activeSignal) => supervise(command, args, activeSignal, temp));
+}
+
+export function runBackgroundProcess(command: string, args: string[], signal: AbortSignal, filesRoot: string) {
+	return withToolScratch(signal, filesRoot, (temp, activeSignal) =>
+		supervise(command, args, activeSignal, temp, { BOPENCUT_TOOL_BACKGROUND: "1" }));
 }
 
 export function runYtDlpProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string, workspace?: string) {

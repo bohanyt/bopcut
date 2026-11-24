@@ -24,11 +24,18 @@ async function render(key: string) {
 	const send = (action: string, body: object, signal?: AbortSignal) => job.request(`/api/agent/${action}`, {
 		method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
 	});
+	const proxyPause = new AbortController();
 	try {
 		const kind = claimed.headers.get("x-bopencut-render-kind");
 		const options = await claimed.clone().json();
 		const { projectId, includeAudio } = options;
 		const range = kind === "view" ? parseRangeInput(options) : undefined;
+		if (kind === "export") {
+			void fetch("/api/proxies", {
+				method: "POST", signal: proxyPause.signal, headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ action: "pause", id: crypto.randomUUID() }),
+			}).then(response => response.text()).catch(() => {});
+		}
 		const editor = EditorCore.createRenderOnly();
 		await editor.project.loadForRender(projectId, async () => { await send("stage", { stage: "loading media" }); }, { skipFonts: !!range });
 		const scenes = editor.scenes.getScenes();
@@ -57,6 +64,8 @@ async function render(key: string) {
 		if (!job.signal?.aborted) await send("failure", { error: "The hidden browser could not finish the render. Open the editor once and retry." });
 	} catch (error) {
 		if (!job.signal?.aborted) await send("failure", { error: error instanceof Error ? error.message : String(error) });
+	} finally {
+		proxyPause.abort();
 	}
 }
 
