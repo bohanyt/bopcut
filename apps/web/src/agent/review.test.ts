@@ -108,13 +108,14 @@ test("reviewSourceCrop and minimum gain cover compounds, shakes, and audio dips"
 	const videoItem = (items: ReturnType<typeof visibleRangeElements> extends Generator<infer T> ? T[] : never) =>
 		items.find((entry) => entry.element.type === "video" || entry.element.type === "image");
 	const cropItem = (parent?: { params?: VideoElement["params"]; animations?: VideoElement["animations"];
-		masks?: VideoElement["masks"] }) => {
+		masks?: VideoElement["masks"] }, own?: Pick<VideoElement, "params" | "animations">) => {
 		const [root] = fixture();
 		root.tracks.overlay = [];
 		root.tracks.audio = [];
 		if (!parent) {
 			const item = videoItem([...visibleRangeElements(root, [root], { from: 0, to: 5, rows: 1 })])!;
-			item.element.params = { ...fill };
+			item.element.params = { ...fill, ...own?.params };
+			item.element.animations = own?.animations;
 			return reviewSourceCrop(item, canvas, asset);
 		}
 		const inner = { ...video("inner", 0, 10), params: { ...fill } };
@@ -129,11 +130,11 @@ test("reviewSourceCrop and minimum gain cover compounds, shakes, and audio dips"
 	};
 	expectRect(cropItem());
 	expect(cropItem({ params: { "shake.intensity": 12 } })).toBeNull();
-	expect(cropItem({
-		params: { "shake.intensity": 0 },
-		animations: { "shake.intensity": { keys: [{ id: "0", time: t(0), value: 40, segmentToNext: "linear", tangentMode: "auto" },
-			{ id: "1", time: t(1), value: 0, segmentToNext: "linear", tangentMode: "auto" }] } } as VideoElement["animations"],
-	})).toBeNull();
+	const shaking = { "shake.intensity": { keys: [{ id: "0", time: t(0), value: 40, segmentToNext: "linear", tangentMode: "auto" },
+		{ id: "1", time: t(1), value: 0, segmentToNext: "linear", tangentMode: "auto" }] } } as VideoElement["animations"];
+	expect(cropItem({ params: { "shake.intensity": 0 }, animations: shaking })).toBeNull();
+	expect(cropItem(undefined, { params: { "shake.intensity": 0 }, animations: shaking })).toBeNull();
+	expect(cropItem(undefined, { params: { "shake.rotation": 2 } })).toBeNull();
 	expect(cropItem({ params: { "transform.scaleX": 0.5, "transform.scaleY": 0.5 } })).toBeNull();
 	expect(cropItem({ params: { "transform.rotate": 3 } })).toBeNull();
 	expect(cropItem({ params: { blendMode: "screen" } })).toBeNull();

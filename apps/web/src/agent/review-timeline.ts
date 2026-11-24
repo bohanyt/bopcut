@@ -108,17 +108,17 @@ export function reviewSourceCrop(item: Instance, canvas: Canvas, media: ReviewMe
 	// A compound is rasterized to its parent canvas before its own transform is applied.
 	if (chain.some((parent) => {
 		const { rotate, scaleX, scaleY, position } = buildTransformFromParams({ params: parent.params });
-		const shake = readShakeSettings(parent.params);
-		return rotate || scaleX !== 1 || scaleY !== 1 || position.x || position.y ||
-			(shake && peakShakeIntensity(shake, parent.animations)) || shake?.rotation;
+		return rotate || scaleX !== 1 || scaleY !== 1 || position.x || position.y;
 	})) return null;
-	if ([...chain, element].some((part) =>
-		Object.keys(part.animations ?? {}).some((key) => key.startsWith("transform")) ||
+	if ([...chain, element].some((part) => {
+		const shake = readShakeSettings(part.params);
+		return (shake && (peakShakeIntensity(shake, part.animations) || shake.rotation)) ||
+			Object.keys(part.animations ?? {}).some((key) => key.startsWith("transform")) ||
 			("masks" in part && part.masks?.length) || ("effects" in part && part.effects?.length) ||
 			(part.params.blendMode && part.params.blendMode !== "normal") ||
 			(part.params["animation.in"] && part.params["animation.in"] !== "none") ||
-			(part.params["animation.out"] && part.params["animation.out"] !== "none")
-	)) return null;
+			(part.params["animation.out"] && part.params["animation.out"] !== "none");
+	})) return null;
 	const bounds = getElementBounds({ element, canvasSize: canvas, localTime: 0, mediaAsset: media });
 	if (!bounds) return null;
 	const placed = projectBounds(bounds, canvas, []);
