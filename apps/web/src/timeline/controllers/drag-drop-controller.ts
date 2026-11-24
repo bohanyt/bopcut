@@ -571,6 +571,7 @@ export class DragDropController {
 						elementDuration: duration,
 						pixelsPerSecond: BASE_TIMELINE_PIXELS_PER_SECOND,
 						zoomLevel: this.config.zoomLevel,
+						frameRate: this.config.getActiveProjectFps(),
 					});
 
 					const trackType: TrackType =

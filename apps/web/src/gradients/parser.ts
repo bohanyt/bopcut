@@ -84,6 +84,7 @@ type Tokens = {
 	number: RegExp;
 	hslColor: RegExp;
 	hslaColor: RegExp;
+	hueValue: RegExp;
 };
 
 const tokens: Tokens = {
@@ -116,6 +117,7 @@ const tokens: Tokens = {
 	number: /^(([0-9]*\.[0-9]+)|([0-9]+\.?))/,
 	hslColor: /^hsl/i,
 	hslaColor: /^hsla/i,
+	hueValue: /^(-?(([0-9]*\.[0-9]+)|([0-9]+\.?)))(deg|rad|turn|grad)/i,
 };
 
 let input = "";
@@ -443,30 +445,26 @@ const matchSpaceSeparatedRgb = (): Color | undefined => {
 	const start = input;
 	const components: string[] = [];
 	for (let i = 0; i < 3; i++) {
-		const n = scan({ regexp: tokens.number });
-		if (!n) {
+		try {
+			components.push(matchRgbChannel());
+		} catch {
 			input = start;
 			return undefined;
 		}
-		components.push(n[1]);
 		if (scan({ regexp: tokens.comma })) {
 			input = start;
 			return undefined;
 		}
 	}
 	if (scan({ regexp: /^\// })) {
-		const percent = scan({ regexp: tokens.percentageValue });
-		const alpha = percent
-			? String(Number.parseFloat(percent[1]) / 100)
-			: matchNumber();
-		return { type: "rgba", value: [...components, alpha] };
+		return { type: "rgba", value: [...components, matchAlpha()] };
 	}
 	return { type: "rgb", value: components };
 };
 
 const matchHslSpaceComponents = (): Color | undefined => {
 	const start = input;
-	const hue = matchNumber();
+	const hue = matchHue();
 	const channels: string[] = [];
 	for (let i = 0; i < 2; i++) {
 		if (scan({ regexp: tokens.comma })) {
@@ -481,27 +479,36 @@ const matchHslSpaceComponents = (): Color | undefined => {
 		channels.push(p[1]);
 	}
 	if (scan({ regexp: /^\// })) {
-		const percent = scan({ regexp: tokens.percentageValue });
-		const alpha = percent
-			? String(Number.parseFloat(percent[1]) / 100)
-			: matchNumber();
-		return { type: "hsla", value: [hue, channels[0], channels[1], alpha] };
+		return { type: "hsla", value: [hue, channels[0], channels[1], matchAlpha()] };
 	}
 	return { type: "hsl", value: [hue, channels[0], channels[1]] };
+};
+
+const matchCommaRgbValues = ({ withAlpha }: { withAlpha: boolean }): string[] => {
+	const values = [matchRgbChannel()];
+	scan({ regexp: tokens.comma });
+	values.push(matchRgbChannel());
+	scan({ regexp: tokens.comma });
+	values.push(matchRgbChannel());
+	if (withAlpha) {
+		scan({ regexp: tokens.comma });
+		values.push(matchAlpha());
+	}
+	return values;
 };
 
 const matchRGBColor = (): Color | undefined =>
 	matchCall({
 		pattern: tokens.rgbColor,
 		callback: () =>
-			matchSpaceSeparatedRgb() ?? { type: "rgb", value: matchListing({ matcher: matchNumber }) },
+			matchSpaceSeparatedRgb() ?? { type: "rgb", value: matchCommaRgbValues({ withAlpha: false }) },
 	});
 
 const matchRGBAColor = (): Color | undefined =>
 	matchCall({
 		pattern: tokens.rgbaColor,
 		callback: () =>
-			matchSpaceSeparatedRgb() ?? { type: "rgba", value: matchListing({ matcher: matchNumber }) },
+			matchSpaceSeparatedRgb() ?? { type: "rgba", value: matchCommaRgbValues({ withAlpha: true }) },
 	});
 
 const matchVarColor = (): Color | undefined =>
@@ -530,7 +537,7 @@ const matchHSLColor = (): Color | undefined =>
 				});
 			}
 
-			const hue = matchNumber();
+			const hue = matchHue();
 			scan({ regexp: tokens.comma });
 			let captures = scan({ regexp: tokens.percentageValue });
 			const sat = captures ? captures[1] : null;
@@ -565,7 +572,7 @@ const matchHSLAColor = (): Color | undefined =>
 				return space;
 			}
 
-			const hue = matchNumber();
+			const hue = matchHue();
 			scan({ regexp: tokens.comma });
 			let captures = scan({ regexp: tokens.percentageValue });
 			const sat = captures ? captures[1] : null;
@@ -573,7 +580,7 @@ const matchHSLAColor = (): Color | undefined =>
 			captures = scan({ regexp: tokens.percentageValue });
 			const light = captures ? captures[1] : null;
 			scan({ regexp: tokens.comma });
-			const alpha = matchNumber();
+			const alpha = matchAlpha();
 			const ensuredSat =
 				sat ??
 				error({
@@ -604,6 +611,44 @@ const matchNumber = (): string => {
 	const captures =
 		scan({ regexp: tokens.number }) ?? error({ message: "Expected number" });
 	return captures[1];
+};
+
+const matchRgbChannel = (): string => {
+	const percent = scan({ regexp: tokens.percentageValue });
+	if (percent) {
+		return String(Math.round(Number.parseFloat(percent[1]) * 2.55));
+	}
+	return matchNumber();
+};
+
+const matchAlpha = (): string => {
+	const percent = scan({ regexp: tokens.percentageValue });
+	if (percent) {
+		return String(Number.parseFloat(percent[1]) / 100);
+	}
+	return matchNumber();
+};
+
+const formatHueDegrees = (degrees: number): string =>
+	String(Number.parseFloat(degrees.toFixed(4)));
+
+const matchHue = (): string => {
+	const captures = scan({ regexp: tokens.hueValue });
+	if (captures) {
+		const n = Number.parseFloat(captures[1]);
+		const unit = captures[5].toLowerCase();
+		if (unit === "deg") {
+			return String(n);
+		}
+		if (unit === "rad") {
+			return formatHueDegrees((n * 180) / Math.PI);
+		}
+		if (unit === "turn") {
+			return formatHueDegrees(n * 360);
+		}
+		return formatHueDegrees(n * 0.9);
+	}
+	return matchNumber();
 };
 
 const matchDistance = (): Distance | undefined =>

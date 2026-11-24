@@ -22,6 +22,7 @@ beforeEach(() => {
 	restoreProcessing = () => process.mockRestore();
 });
 const { EditorCore } = await import("@/core");
+const { computeAgentDraft } = await import("./draft");
 const { agentSnapshot, applyDraft, pollDraft, pollChanges } = await import("./bridge");
 const { snapshotHistory } = await import("./history");
 const { importAgentBundle } = await import("./importer");
@@ -318,6 +319,31 @@ describe("replace with direct media", () => {
 		expect(replaced.mediaId).toBe(backend.state.saved[0]);
 		expect(replaced.duration).toBe(T(3));
 		expect(editor.media.getAssets().some((m) => m.id === backend.state.saved[0])).toBe(true);
+	});
+});
+
+describe("draft errors name the element", () => {
+	const graphicScenes = () => [scene("main", {
+		overlay: [{ id: "t-g", name: "Shapes", type: "graphic", hidden: false, elements: [el("graphic", "box", 0, 4, { agentId: "box", definitionId: "line", params: { drawProgress: 1 } })] as any }],
+		main: { id: "t-main", name: "Main", type: "video", muted: false, hidden: false, elements: [] },
+		audio: [],
+	})];
+	const run = (ops: Parameters<typeof computeAgentDraft>[0]["ops"]) =>
+		computeAgentDraft({
+			scenes: structuredClone(graphicScenes()),
+			rootSceneId: "main",
+			ops,
+			mediaFor: () => undefined,
+			canvas: { width: 1920, height: 1080 },
+			fps: { numerator: 30, denominator: 1 },
+			ripple: false,
+		});
+
+	test("three representative errors name the element", () => {
+		const tag = "(box)";
+		expect(run([{ op: "set", match: { agentId: "box" }, keyframes: [{ path: "opacity", time: 0, value: "bad" }] }]).results[0].error).toContain(tag);
+		expect(run([{ op: "set", match: { agentId: "box" }, keyframes: [{ path: "", time: 0, value: 1 }] }]).results[0].error).toContain(tag);
+		expect(run([{ op: "set", match: { agentId: "box" }, caption: { text: "hi" } }]).results[0].error).toContain(tag);
 	});
 });
 

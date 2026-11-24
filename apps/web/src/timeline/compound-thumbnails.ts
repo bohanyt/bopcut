@@ -264,7 +264,7 @@ export function getCompoundThumbnailCache({
 	editor: EditorCore;
 }): CompoundThumbnailCache {
 	sharedCache ??= new CompoundThumbnailCache({
-		isBusy: () => editor.playback.getIsPlaying(),
+		isBusy: () => editor.playback.getIsPlaying() || editor.renderer.isExportRunning(),
 		wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 	});
 	return sharedCache;

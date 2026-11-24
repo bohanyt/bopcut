@@ -202,8 +202,8 @@ export function buildAgentElement(args: {
 	return args.e.animate === undefined ? element : animateAgentElement(element, args.e.animate);
 }
 
-export function checkAgentTrim(e: { name?: string; trimStart?: number | null }): void {
-	if (e.trimStart != null && !(e.trimStart >= 0 && Number.isFinite(e.trimStart))) throw new Error(`trimStart must be 0 or more for ${e.name}`);
+export function checkAgentTrim(e: { agent_id?: string; name?: string; trimStart?: number | null }): void {
+	if (e.trimStart != null && !(e.trimStart >= 0 && Number.isFinite(e.trimStart))) throw new Error(`trimStart must be 0 or more for ${e.agent_id ?? e.name}`);
 }
 
 function buildAgentElementOnly({ e, media, trackId, sceneId, canvas, keyframes: collected }: {
@@ -245,8 +245,8 @@ function buildAgentElementOnly({ e, media, trackId, sceneId, canvas, keyframes: 
 		}
 		return el;
 	}
-	if (e.model3d && media?.type !== "model") throw new Error("Model asset missing for " + e.name);
-	if (!media) throw new Error("Asset missing for " + e.name);
+	if (e.model3d && media?.type !== "model") throw new Error("Model asset missing for " + (e.agent_id ?? e.name));
+	if (!media) throw new Error("Asset missing for " + (e.agent_id ?? e.name));
 	checkAgentTrim(e);
 	const trimStart = e.trimStart ?? 0;
 	// Without a duration, audio and video play to the end of the media (e.g. a sound effect found by name).
