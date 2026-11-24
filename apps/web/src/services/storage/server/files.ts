@@ -110,6 +110,34 @@ export function repairedThumbnailFile(projectId: string, mediaId: string): strin
 	return path.join(projectDir(projectId), "media", "_thumbnails", `${safeId(mediaId)}.json`);
 }
 
+export async function checkedRepairedThumbnailFile(projectId: string, mediaId: string, create = false) {
+	const file = repairedThumbnailFile(projectId, mediaId);
+	const dir = path.dirname(file);
+	const lstat = (target: string) => fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT") return undefined;
+		throw error;
+	});
+	let folder = await lstat(dir);
+	if (!folder && create) {
+		await fs.mkdir(dir).catch((error: NodeJS.ErrnoException) => {
+			if (error.code !== "EEXIST") throw error;
+		});
+		folder = await lstat(dir);
+	}
+	if (!folder?.isDirectory() || folder.isSymbolicLink()) return;
+	const entry = await lstat(file);
+	if (entry ? entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1 : create) return file;
+}
+
+async function removeRepairedThumbnail(projectId: string, mediaId: string) {
+	try {
+		const file = await checkedRepairedThumbnailFile(projectId, mediaId);
+		if (file) await fs.rm(file, { force: true });
+	} catch (error) {
+		console.warn("Could not remove repaired thumbnail", error);
+	}
+}
+
 // One queue per project keeps revision checks and renames ordered.
 const locks = new Map<string, Promise<void>>();
 export async function withProjectLock<T>(
@@ -170,7 +198,6 @@ export async function saveMedia(
 			createWriteStream(temp, { flags: "wx" }),
 		);
 		await renameWithRetry(temp, file);
-		await retryTransient(() => fs.rm(repairedThumbnailFile(id, mediaId), { force: true }));
 		if (!old) {
 			try {
 				await atomicWrite(
@@ -183,6 +210,7 @@ export async function saveMedia(
 				throw error;
 			}
 		}
+		await removeRepairedThumbnail(id, mediaId);
 		const stat = await statFile(file);
 		return stat ? mediaRevision(stat) : undefined;
 	} finally {
@@ -305,5 +333,5 @@ export async function removeMedia(id: string, mediaId: string): Promise<void> {
 		: (await fs.readdir(dir).catch(() => [] as string[])).filter((name) => own.test(name));
 	for (const name of files) await retryTransient(() => fs.rm(path.join(dir, name), { force: true }));
 	await retryTransient(() => fs.rm(metaFile, { force: true }));
-	await retryTransient(() => fs.rm(repairedThumbnailFile(id, mediaId), { force: true }));
+	await removeRepairedThumbnail(id, mediaId);
 }

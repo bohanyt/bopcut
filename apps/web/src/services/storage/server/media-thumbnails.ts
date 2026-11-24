@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { atomicWrite, mediaRevision, projectDir, readJson, repairedThumbnailFile, statFile, withProjectLock } from "./files";
+import { atomicWrite, checkedRepairedThumbnailFile, mediaRevision, projectDir, readJson, statFile, withProjectLock } from "./files";
 
 const inlinePattern = /^data:(image\/[a-z0-9][a-z0-9.+-]{0,63})(?:;[a-z0-9-]+=[^;,]*)*(;base64)?,/i;
 const metadataFile = (projectId: string, mediaId: string) =>
@@ -25,7 +25,9 @@ async function sourceRevision(projectId: string, mediaId: string, metadata: Thum
 }
 
 async function readRepairedThumbnail(projectId: string, mediaId: string, metadata: ThumbnailMetadata, revision?: string) {
-	const repaired = await readJson(repairedThumbnailFile(projectId, mediaId)).catch(() => null);
+	const file = await checkedRepairedThumbnailFile(projectId, mediaId).catch(() => undefined);
+	if (!file) return;
+	const repaired = await readJson(file).catch(() => null);
 	if (!repaired || typeof repaired.thumbnail !== "string") return;
 	const current = revision ?? await sourceRevision(projectId, mediaId, metadata);
 	if (current && repaired.revision === current) return repaired.thumbnail as string;
@@ -140,7 +142,10 @@ export async function storeMissingMediaThumbnail(projectId: string, mediaId: str
 		const existing = mediaThumbnailReference(projectId, mediaId, metadata.thumbnailUrl) ??
 			mediaThumbnailReference(projectId, mediaId, await readRepairedThumbnail(projectId, mediaId, metadata, expected));
 		if (existing) return Response.json({ url: existing });
-		await atomicWrite(repairedThumbnailFile(projectId, mediaId), JSON.stringify({ revision: expected, thumbnail }), signal);
+		signal.throwIfAborted();
+		const file = await checkedRepairedThumbnailFile(projectId, mediaId, true);
+		if (!file) return new Response(null, { status: 409 });
+		await atomicWrite(file, JSON.stringify({ revision: expected, thumbnail }), signal);
 		return Response.json({ url: mediaThumbnailReference(projectId, mediaId, thumbnail) });
 	});
 }

@@ -12,6 +12,7 @@ function BookmarkTest() {
 	const { handleBookmarkMouseDown } = useBookmarkDrag({ zoomLevel: 1, scrollRef, snappingEnabled: false });
 	return (
 		<div ref={scrollRef}>
+			<input aria-label="Text field" />
 			<button onMouseDown={(event) => handleBookmarkMouseDown({ event, bookmark: { time: t(0) } })}>Bookmark</button>
 		</div>
 	);
@@ -46,8 +47,16 @@ test("bookmark dragging releases the timeline gesture on drop, cancellation, and
 		act(() => { dom.document.dispatchEvent(new dom.MouseEvent("mouseup")); });
 		expect(isTimelineGestureActive()).toBe(false);
 		expect(move).toHaveBeenCalledTimes(1);
+		const field = dom.document.querySelector("input")!;
+		act(() => field.focus());
+		expect(dom.document.activeElement).toBe(field);
 		start();
+		expect(dom.document.activeElement).not.toBe(field);
 		act(() => { expect(cancelInteraction()).toBe(true); });
+		expect(isTimelineGestureActive()).toBe(false);
+		expect(move).toHaveBeenCalledTimes(1);
+		start();
+		act(() => { dom.dispatchEvent(new dom.PointerEvent("pointercancel")); });
 		expect(isTimelineGestureActive()).toBe(false);
 		expect(move).toHaveBeenCalledTimes(1);
 		start();

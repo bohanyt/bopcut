@@ -6,6 +6,7 @@ import {
 	type RefObject,
 } from "react";
 import { useEditor } from "@/editor/use-editor";
+import { finishFocusedField } from "@/utils/browser";
 import { registerCanceller } from "@/editor/cancel-interaction";
 import { beginTimelineGesture } from "@/timeline/gesture-state";
 import { useShiftKey } from "@/hooks/use-shift-key";
@@ -306,6 +307,7 @@ export function useBookmarkDrag({
 		({ event, bookmark }: { event: React.MouseEvent; bookmark: Bookmark }) => {
 			if (event.button !== 0) return;
 
+			finishFocusedField(event.currentTarget);
 			event.preventDefault();
 			event.stopPropagation();
 
