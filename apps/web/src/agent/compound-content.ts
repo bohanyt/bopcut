@@ -2,7 +2,7 @@
 // bundle elements with `compound`). The nested scene's tracks are built like a draft `add`, so
 // every part stays a normal, editable element; times inside are relative to the clip's content.
 import { animateAgentElement } from "./animate";
-import type { CompoundElement, SceneTracks, TScene, TimelineElement } from "@/timeline";
+import type { CompoundElement, SceneTracks, TScene, TimelineElement, TimelineTrack } from "@/timeline";
 import { calculateTotalDuration, updateElementInSceneTracks } from "@/timeline";
 import { buildDefaultScene } from "@/timeline/scenes";
 import { getNextCompoundName, sceneHasVisualContent } from "@/timeline/compound";
@@ -59,7 +59,7 @@ function trackTypeForCompound(ctx: BuildContext, element: CompoundElement, reque
  */
 export function placeAgentElement({ tracks, sceneId, e, ref, ctx, prepare }: {
 	tracks: SceneTracks; sceneId: string; e: AgentElement; ref: AgentTrackRef; ctx: BuildContext;
-	prepare?: (element: TimelineElement, trackId: string) => TimelineElement;
+	prepare?: (element: TimelineElement, track: TimelineTrack) => TimelineElement;
 }): { trackId: string; element: any } {
 	let element: any = null;
 	let type: AgentTrackType;
@@ -79,7 +79,7 @@ export function placeAgentElement({ tracks, sceneId, e, ref, ctx, prepare }: {
 	// A compound's own audio plays only on an unmuted track.
 	if (isNew) track = createAgentTrack(type, ref.name, { muted: !e.compound });
 	element ??= buildAgentElement({ e, media: ctx.mediaFor(e), trackId: track.id, sceneId, canvas: ctx.canvas, keyframes: ctx.keyframes });
-	if (prepare) element = prepare(element, track.id);
+	if (prepare) element = prepare(element, track);
 	if (isNew) {
 		if (type === "audio") tracks.audio.push(track);
 		else tracks.overlay.splice(Math.max(0, Math.min(ref.index ?? 0, tracks.overlay.length)), 0, track);

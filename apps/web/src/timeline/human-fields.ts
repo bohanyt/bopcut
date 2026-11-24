@@ -10,10 +10,12 @@ const simpleFields = new Set([
 	"caption",
 	"retime",
 ]);
+const inheritedKeys = new Set(["prototype", ...Object.getOwnPropertyNames(Object.prototype)]);
 export const isHumanFieldPath = (path: unknown): path is string =>
 	typeof path === "string" &&
 	(simpleFields.has(path) ||
 		(/^(params|keyframes)\.[a-zA-Z0-9_][\w.-]*$/.test(path) &&
+			!inheritedKeys.has(path.slice(path.indexOf(".") + 1)) &&
 			!/^(params|keyframes)\.(effects|masks?)(\.|$)/.test(path)));
 
 export function normalizeHumanFields(value: unknown): string[] {
@@ -145,7 +147,7 @@ export function normalizeTrackHumanFields(tracks: SceneTracks): SceneTracks {
 				if (field.startsWith("keyframes.")) {
 					const path = field.slice(10);
 					return (
-						!!element.animations?.[path] ||
+						Object.hasOwn(element.animations ?? {}, path) ||
 						!!resolveAnimationTarget({ element, path })
 					);
 				}
@@ -164,6 +166,7 @@ export function recordHumanElementEdit(
 	before: TimelineElement,
 	after: TimelineElement,
 	movedTrack = false,
+	acceptsField?: (field: string) => boolean,
 ): TimelineElement {
 	if (
 		!after.agentId ||
@@ -173,15 +176,24 @@ export function recordHumanElementEdit(
 		return after;
 	const fields = changedHumanFields(before, after);
 	if (movedTrack) fields.push("track");
-	return fields.length
-		? withHumanFields(after, [...(after.humanFields ?? []), ...fields])
+	const direct = acceptsField ? fields.filter(acceptsField) : fields;
+	return direct.length
+		? withHumanFields(after, [...(after.humanFields ?? []), ...direct])
 		: after;
+}
+
+export function patchEditsHumanField(patch: Partial<TimelineElement>, field: string): boolean {
+	if (field.startsWith("params.")) return Object.hasOwn(patch.params ?? {}, field.slice(7));
+	if (field.startsWith("keyframes.")) return Object.hasOwn(patch, "animations");
+	if (field === "caption") return Object.hasOwn(patch, "caption") || Object.hasOwn(patch.params ?? {}, "content");
+	return Object.hasOwn(patch, field === "start" ? "startTime" : field);
 }
 
 export function recordHumanTrackEdit(
 	before: SceneTracks,
 	after: SceneTracks,
 	onlyId?: string,
+	acceptsField?: (elementId: string, field: string) => boolean,
 ): SceneTracks {
 	if (before === after) return after;
 	const oldTracks = [before.main, ...before.overlay, ...before.audio];
@@ -212,6 +224,7 @@ export function recordHumanTrackEdit(
 								old.element,
 								element,
 								old.trackId !== track.id,
+								acceptsField && ((field) => acceptsField(element.id, field)),
 							)
 						: element;
 				}),

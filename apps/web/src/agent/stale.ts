@@ -293,7 +293,9 @@ export function humanFieldsSince(
 	const fields = ["start", "duration", "trimStart", "caption", "retime"].filter((field) => differs(field, then, current));
 	if (then.trackId !== current.trackId) fields.push("track");
 	for (const key of new Set([...Object.keys(then.fields.params), ...Object.keys(current.fields.params)])) {
-		if (differs(`params.${key}`, then, current)) fields.push(`params.${key}`);
+		if (!differs(`params.${key}`, then, current)) continue;
+		const field = key === "content" && element.type === "text" && element.caption ? "caption" : `params.${key}`;
+		if (!fields.includes(field)) fields.push(field);
 	}
 	const previousKeys = JSON.parse(then.fields.animations) ?? {};
 	const currentKeys = JSON.parse(current.fields.animations) ?? {};
@@ -318,14 +320,17 @@ export function assertNoteNotStale({ base, now, sceneId, noteId }: { base: Reado
  * op based on that snapshot: throws StaleError for the first element of `after` whose start differs from
  * `before` (this op's own edit) and whose start the user changed since `base`.
  */
-export function assertRippleNotStale({ base, now, sceneId, before, after }: { base: ReadonlyMap<string, ElementRecord> | undefined; now: ReadonlyMap<string, ElementRecord> | undefined; sceneId: string; before: TScene["tracks"]; after: TScene["tracks"] }) {
+export function assertRippleNotStale({ base, now, sceneId, before, after, startReleased }: {
+	base: ReadonlyMap<string, ElementRecord> | undefined; now: ReadonlyMap<string, ElementRecord> | undefined;
+	sceneId: string; before: TScene["tracks"]; after: TScene["tracks"]; startReleased?: (id: string) => boolean;
+}) {
 	if (!base || !now) return;
 	const startOf = new Map<string, number>();
 	for (const track of orderedTracks(before)) for (const element of track.elements) startOf.set(element.id, element.startTime);
 	for (const track of orderedTracks(after)) {
 		for (const element of track.elements) {
 			const was = startOf.get(element.id);
-			if (was === undefined || was === element.startTime) continue;
+			if (was === undefined || was === element.startTime || startReleased?.(element.id)) continue;
 			const then = recordOf(base, sceneId, element.id);
 			const current = recordOf(now, sceneId, element.id);
 			if (!current) continue;

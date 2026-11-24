@@ -8,7 +8,7 @@ import {
 	t,
 	allTracks,
 } from "@/timeline/__tests__/compound-fixtures";
-import type { SceneTracks, TimelineElement } from "@/timeline";
+import type { SceneTracks, TextElement, TimelineElement } from "@/timeline";
 import { normalizeTrackHumanFields } from "@/timeline/human-fields";
 import { buildSceneSnapshot } from "./snapshot";
 import { computeAgentDraft, type Draft, type DraftOp } from "./draft";
@@ -16,6 +16,7 @@ import { fieldsMapOf } from "./stale";
 import { AgentDraftCommand } from "./draft-command";
 import { applyTextPreset, createTextPreset } from "@/text/presets";
 import { makeCaption } from "@/text/caption";
+import { resolveAnimationPathValueAtTime } from "@/animation";
 
 const fps = { numerator: 30, denominator: 1 };
 const canvas = { width: 1920, height: 1080 };
@@ -94,6 +95,7 @@ const run = (
 	ops: DraftOp[],
 	onConflict?: Draft["onConflict"],
 	base?: ReturnType<typeof fieldsMapOf>,
+	options?: Partial<Pick<Parameters<typeof computeAgentDraft>[0], "ripple" | "wordsOf">>,
 ) =>
 	computeAgentDraft({
 		scenes: source,
@@ -105,6 +107,7 @@ const run = (
 		canvas,
 		mediaFor: () => undefined,
 		ripple: false,
+		...options,
 	});
 
 test("committed inspector and preview edits mark only changed agent fields, with undo and redo", () => {
@@ -404,11 +407,17 @@ test("ownership is additive on snapshots and malformed loaded paths are dropped"
 				elements: [
 					{
 						...a,
+						animations: { constructor: undefined },
 						humanFields: [
 							"start",
 							"start",
 							"malformed",
 							"keyframes.effects.unknown",
+							"keyframes.constructor",
+							"keyframes.toString",
+							"keyframes.__proto__",
+							"keyframes.undefined",
+							"keyframes.opacity",
 						],
 					},
 					{ ...manual, humanFields: ["start"] },
@@ -417,7 +426,7 @@ test("ownership is additive on snapshots and malformed loaded paths are dropped"
 		],
 	};
 	const clean = normalizeTrackHumanFields(dirty);
-	expect(clean.overlay[0].elements[0].humanFields).toEqual(["start"]);
+	expect(clean.overlay[0].elements[0].humanFields).toEqual(["keyframes.opacity", "start"]);
 	expect(clean.overlay[0].elements[1].humanFields).toBeUndefined();
 	expect(normalizeTrackHumanFields(tracks)).toBe(tracks);
 	const snapshot = buildSceneSnapshot({
@@ -425,7 +434,7 @@ test("ownership is additive on snapshots and malformed loaded paths are dropped"
 		rootSceneId: "main",
 		mediaName: new Map(),
 	});
-	expect(snapshot.tracks[0].elements[0].humanFields).toEqual(["start"]);
+	expect(snapshot.tracks[0].elements[0].humanFields).toEqual(["keyframes.opacity", "start"]);
 });
 
 test("keyframe keep and take work per property, while legacy basedOn still refuses", () => {
@@ -591,4 +600,175 @@ test("keep leaves effect parameter stale checks and unbased rewrites unchanged",
 	const unbased = run(changed.scenes, [set(6)], "keep");
 	expect(unbased.results[0]).toMatchObject({ ok: true });
 	expect(find(unbased.scenes, "blur")?.params.intensity).toBe(6);
+});
+
+const titles = (...elements: TextElement[]) => [
+	scene("main", { ...tracks, overlay: [{ ...track, elements }, tracks.overlay[1]] }),
+];
+
+test("keep rejects overlap at the protected start and on the protected replacement track", () => {
+	const input = titles(
+		{ ...a, startTime: t(0), humanFields: ["start", "track"] },
+		text("neighbor", 2, 2),
+	);
+	const victims: DraftOp[] = [
+		{ op: "set", match: { id: "a" }, start: 5, duration: 3 },
+		{ op: "replace", match: { id: "a" }, track: { name: "Second" }, element: { text: "new", start: 5, duration: 3 } },
+	];
+	for (const op of victims) {
+		const outcome = run(input, [op], "keep");
+		expect(outcome.results[0]).toMatchObject({
+			ok: false,
+			error: expect.stringContaining("would overlap"),
+			current: { start: 0, duration: 2, trackId: "titles" },
+		});
+		expect(outcome.results[0].kept).toContain("start");
+		expect(outcome.scenes).toBe(input);
+		expect(run(input, [op]).results[0].ok).toBe(true);
+	}
+});
+
+test("keep validates the source range after retaining a trim and looks up words from that trim", () => {
+	const input = [scene("main", {
+		...tracks, main: { ...tracks.main, elements: [{
+			...v, trimStart: t(7), duration: t(3), trimEnd: t(0), humanFields: ["trimStart"],
+		}] },
+	})];
+	const set = { op: "set", match: { agentId: "footage" }, trimStart: 0, duration: 6 } as const;
+	const rejected = run(input, [set], "keep");
+	expect(rejected.results[0]).toMatchObject({
+		ok: false, error: expect.stringContaining("end of its source"), kept: ["trimStart"],
+		current: { trimStart: 7, duration: 3, sourceDuration: 10 },
+	});
+	expect(rejected.scenes).toBe(input);
+	expect(run(input, [set]).results[0].ok).toBe(true);
+	const named = run(input, [{ op: "set", match: set.match, endAfterWord: "end" }], "keep", undefined, {
+		wordsOf: () => [{ text: "end", start: 5, end: 6 }, { text: "end", start: 8, end: 9 }],
+	});
+	expect(named.results[0]).toMatchObject({ ok: true, endWord: { end: 9 } });
+	expect(find(named.scenes, "footage")).toMatchObject({ trimStart: t(7), duration: t(2), trimEnd: t(1) });
+});
+
+test("caption words are checked against the kept duration for set and replace", () => {
+	const input = titles({ ...a, humanFields: ["duration"] });
+	const match = { agentId: "phrase" };
+	for (const kind of ["set", "replace"] as const) {
+		const captionEdit = (duration: number, start: number, end: number): DraftOp => {
+			const caption = { text: "new", words: [{ text: "new", start, end }] };
+			return kind === "set" ? { op: kind, match, duration, caption } : { op: kind, match, element: { duration, caption } };
+		};
+		const rejected = run(input, [captionEdit(4, 3, 4)], "keep");
+		expect(rejected.results[0]).toMatchObject({ ok: false, kept: ["duration"], current: { duration: 2 } });
+		expect(rejected.results[0].error).toMatch(/word/i);
+		expect(rejected.scenes).toBe(input);
+		const accepted = run(input, [captionEdit(1, 1.25, 1.9)], "keep");
+		expect(accepted.results[0]).toMatchObject({ ok: true, kept: ["duration"] });
+		expect(find(accepted.scenes, "phrase")).toMatchObject({
+			duration: t(2), caption: { words: [{ text: "new", start: 1.25, end: 1.9 }] },
+		});
+	}
+});
+
+test("set and replace clamp supplied keys to the final kept duration", () => {
+	const input = titles({ ...a, humanFields: ["duration"] });
+	const match = { agentId: "phrase" };
+	const keyframes = [
+		{ path: "opacity", time: 1.5, value: 0.5 },
+		{ path: "opacity", time: 2, value: 0.75 },
+	];
+	const ops: DraftOp[] = [
+		{ op: "set", match, duration: 1, keyframes },
+		{ op: "replace", match, element: { text: "new", duration: 1, keyframes } },
+	];
+	for (const op of ops) {
+		const merged = run(input, [op], "keep");
+		expect(merged.results[0]).toMatchObject({ ok: true, kept: ["duration"] });
+		const clip = find(merged.scenes, "phrase");
+		for (const key of keyframes) {
+			expect(resolveAnimationPathValueAtTime({
+				animations: clip?.animations, propertyPath: key.path, localTime: t(key.time), fallbackValue: 1,
+			})).toBe(key.value);
+		}
+	}
+});
+
+test("keep cannot replace a compound with a protected descendant even with a fresh base", () => {
+	const editor = setup();
+	editor.timeline.updateElements({ updates: [{ ...ref, patch: { params: { color: "#00ff00" } } }] });
+	const { compound: inner } = editor.timeline.createCompound({ elements: [ref] });
+	const { compound: outer } = editor.timeline.createCompound({ elements: [inner] });
+	editor.timeline.updateElements({ updates: [{ ...outer, patch: { agentId: "wrapper" } }] });
+	const input = editor.scenes.getScenes();
+	const replace: DraftOp = {
+		op: "replace", match: { agentId: "wrapper" },
+		element: { compound: { elements: [{ name: "Regenerated", text: "new", start: 0, duration: 2, track: { name: "Titles" } }] } },
+	};
+	for (const base of [undefined, fieldsMapOf(input)]) {
+		const outcome = run(input, [replace], "keep", base);
+		expect(outcome.results[0]).toMatchObject({ ok: false, kept: ["content"], error: expect.stringContaining("edit its children") });
+		expect(outcome.scenes).toBe(input);
+	}
+	expect(run(input, [replace]).results[0].ok).toBe(true);
+});
+
+test("a trim clips keyframes without claiming them or its caption words", () => {
+	const editor = setup();
+	const keyed = run(scenes, [{ op: "set", match: { id: "a" }, keyframes: [
+		{ path: "opacity", time: 0, value: 0.5 }, { path: "opacity", time: 2, value: 1 },
+	] }]).scenes;
+	editor.scenes.setScenes({ scenes: keyed, activeSceneId: "main" });
+	editor.timeline.updateElementTrim({ elementId: "a", duration: t(1), trimStart: t(0), trimEnd: t(1) });
+	const trimmed = find(editor.scenes.getScenes(), "a");
+	expect(trimmed?.humanFields).toEqual(["duration"]);
+	expect(trimmed?.animations).not.toEqual(find(keyed, "a")?.animations);
+	const rewritten = run(editor.scenes.getScenes(), [{ op: "set", match: { id: "a" },
+		keyframesMode: "replace", keyframes: [{ path: "opacity", time: 0.5, value: 0.2 }],
+	}], "keep");
+	expect(rewritten.results[0]).toMatchObject({ ok: true });
+	expect(find(rewritten.scenes, "a")?.animations).not.toEqual(trimmed?.animations);
+});
+
+test("same-value take releases ownership for later ops, including a stale base", () => {
+	const owned = { ...a, params: { ...a.params, opacity: 0.25 }, humanFields: ["params.opacity"] };
+	const input = titles(owned);
+	const base = fieldsMapOf(titles({ ...owned, params: { ...owned.params, opacity: 0.1 } }));
+	const match = { agentId: "phrase" };
+	const take: DraftOp = { op: "set", match, params: { opacity: 0.25 }, take: ["params.opacity"] };
+	const set: DraftOp = { op: "set", match, params: { opacity: 0.75 } };
+	for (const snapshot of [undefined, base]) {
+		const outcome = run(input, [take, set], "keep", snapshot);
+		expect(outcome.results.map((result) => result.ok)).toEqual([true, true]);
+		expect(outcome.results[1].kept).toBeUndefined();
+		expect(find(outcome.scenes, "phrase")?.params.opacity).toBe(0.75);
+		expect(find(outcome.scenes, "phrase")?.humanFields).toBeUndefined();
+	}
+	const failed = run(input, [{ ...take, duration: 0 }, set], "keep", base);
+	expect(failed.results[0].ok).toBe(false);
+	expect(failed.results[1].kept).toEqual(["params.opacity"]);
+});
+
+test("legacy replacement checks stale state before malformed track data", () => {
+	const input = titles({ ...a, params: { ...a.params, opacity: 0.25 } });
+	const base = fieldsMapOf(titles(a));
+	const malformed: DraftOp = {
+		op: "replace", match: { id: "a" }, element: { text: "new" },
+		track: { name: 42 } as unknown as { name: string },
+	};
+	expect(run(input, [malformed], undefined, base).results[0]).toMatchObject({ ok: false, stale: true });
+	expect(run(input, [malformed]).results[0].error).toContain("track needs");
+});
+
+test("keep refuses an overlapping extension with ripple and preserves protected neighbor starts on shrink", () => {
+	const input = titles({ ...a, startTime: t(0) }, { ...b, startTime: t(2), humanFields: ["start"] });
+	const match = { id: "a" };
+	const options = { ripple: true };
+	expect(run(input, [{ op: "set", match, duration: 3 }], "keep", undefined, options).results[0].ok).toBe(false);
+	const shrink: DraftOp = { op: "set", match, duration: 1 };
+	expect(find(run(input, [shrink], "keep", undefined, options).scenes, "b")?.startTime).toBe(t(2));
+	expect(find(run(input, [shrink], undefined, undefined, options).scenes, "b")?.startTime).toBe(t(1));
+	const base = fieldsMapOf(titles({ ...a, startTime: t(0) }, { ...b, startTime: t(3) }));
+	const release: DraftOp = { op: "set", match: { id: "b" }, start: 2, take: ["start"] };
+	const released = run(input, [release, shrink], "keep", base, options);
+	expect(released.results.map((result) => result.ok)).toEqual([true, true]);
+	expect(find(released.scenes, "b")?.startTime).toBe(t(1));
 });

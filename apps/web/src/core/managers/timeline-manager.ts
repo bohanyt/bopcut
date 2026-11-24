@@ -1,4 +1,4 @@
-import { recordHumanTrackEdit } from "@/timeline/human-fields";
+import { patchEditsHumanField, recordHumanTrackEdit } from "@/timeline/human-fields";
 import type { EditorCore } from "@/core";
 import { registerCanceller } from "@/editor/cancel-interaction";
 import { reconcileCaptionEdit } from "@/text/caption";
@@ -173,7 +173,8 @@ export class TimelineManager {
 			this.discardPreview();
 			return after === null ? "overlap" : undefined;
 		}
-		const recorded = pushHistory && !this.editor.command.isAgent ? recordHumanTrackEdit(before, after, elementId) : after;
+		const recorded = pushHistory && !this.editor.command.isAgent
+			? recordHumanTrackEdit(before, after, elementId, (_, field) => field === "retime" || field === "duration") : after;
 		const command = new TracksSnapshotCommand({ before, after: recorded, ripples: false });
 		if (pushHistory) this.editor.command.execute({ command });
 		else command.execute();
@@ -858,7 +859,12 @@ export class TimelineManager {
 			return;
 		}
 		const preview = this.previewTracks ?? this.applyPreviewOverlay(committedTracks);
-		const afterTracks = this.editor.command.isAgent ? preview : recordHumanTrackEdit(committedTracks, preview, this.retimePreviewTarget);
+		const afterTracks = this.editor.command.isAgent ? preview : recordHumanTrackEdit(
+			committedTracks, preview, this.retimePreviewTarget,
+			(id, field) => this.retimePreviewTarget
+				? field === "retime" || field === "duration"
+				: patchEditsHumanField(this.previewOverlay.get(id) ?? {}, field),
+		);
 		const command = new TracksSnapshotCommand({
 			before: committedTracks,
 			after: afterTracks,

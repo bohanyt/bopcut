@@ -1,11 +1,61 @@
 import { getSourceSpanAtClipTime } from "@/retime";
-import { roundMediaTime } from "@/wasm";
-import type { TimelineElement } from "@/timeline";
+import { roundMediaTime, TICKS_PER_SECOND } from "@/wasm";
+import type { TimelineElement, TimelineTrack } from "@/timeline";
 import {
 	changedHumanFields,
 	normalizeHumanFields,
 	withHumanFields,
 } from "@/timeline/human-fields";
+import { secs } from "./elements";
+
+const timingKeys = { start: "startTime", duration: "duration", trimStart: "trimStart" } as const;
+type Timing = Partial<Record<keyof typeof timingKeys, number>>;
+
+export function keepTiming<T extends Timing>(
+	request: T,
+	before: TimelineElement,
+	protectedFields: ReadonlySet<string>,
+	kept: Set<string>,
+): T {
+	const timing: Timing = { ...request };
+	for (const field of ["start", "duration", "trimStart"] as const) {
+		if (!protectedFields.has(field)) continue;
+		const wanted = request[field];
+		if (wanted === undefined) continue;
+		const current = before[timingKeys[field]];
+		if (secs(wanted) !== current) kept.add(field);
+		timing[field] = current / TICKS_PER_SECOND;
+	}
+	return timing as T;
+}
+
+export function validateKeptFit({
+	before, element, track, originalTrack, source,
+}: {
+	before: TimelineElement;
+	element: TimelineElement;
+	track: { id: string; elements: readonly TimelineElement[] };
+	originalTrack: TimelineTrack;
+	source?: number;
+}): TimelineElement {
+	const { startTime, duration, trimStart } = element;
+	if (![startTime, duration, trimStart].every(Number.isFinite) || startTime < 0 || duration <= 0 || trimStart < 0) {
+		throw new Error("the merged clip needs a nonnegative start and trim and a positive duration");
+	}
+	if (source !== undefined) {
+		const span = getSourceSpanAtClipTime({ clipTime: duration, retime: "retime" in element ? element.retime : undefined });
+		const remaining = source - trimStart - roundMediaTime({ time: span });
+		if (remaining < 0) throw new Error("the merged clip runs past the end of its source");
+		element = { ...element, trimEnd: roundMediaTime({ time: remaining }) };
+	}
+	if (startTime !== before.startTime || duration !== before.duration || track.id !== originalTrack.id) {
+		const end = startTime + duration;
+		const clash = track.elements.find((other) => other.id !== before.id && other.id !== element.id &&
+			other.startTime < end && other.startTime + other.duration > startTime);
+		if (clash) throw new Error(`the merged clip would overlap ${clash.name || clash.id} on its track`);
+	}
+	return element;
+}
 
 function restoreKey(
 	before: Record<string, unknown> | undefined,
@@ -30,14 +80,12 @@ export function mergeHumanFields({
 	keep,
 	take,
 	stale = [],
-	replacing = false,
 }: {
 	before: TimelineElement;
 	candidate: TimelineElement;
 	keep: boolean;
 	take: ReadonlySet<string>;
 	stale?: readonly string[];
-	replacing?: boolean;
 }): { element: TimelineElement; kept: string[] } {
 	const owned = before.humanFields ?? [];
 	if (!before.agentId || (!owned.length && !stale.length))
@@ -51,7 +99,7 @@ export function mergeHumanFields({
 				.filter(
 					(field) =>
 						!take.has(field) &&
-						(changes.has(field) || (replacing && field === "track")),
+						changes.has(field),
 				)
 				.sort()
 		: [];
@@ -107,30 +155,10 @@ export function mergeHumanFields({
 			};
 		}
 	}
-	if (
-		element.sourceDuration !== undefined &&
-		kept.some(
-			(field) =>
-				field === "duration" || field === "trimStart" || field === "retime",
-		)
-	) {
-		const sourceSpan = getSourceSpanAtClipTime({
-			clipTime: element.duration,
-			retime: "retime" in element ? element.retime : undefined,
-		});
-		element = {
-			...element,
-			trimEnd: roundMediaTime({
-				time: Math.max(
-					0,
-					element.sourceDuration - element.trimStart - sourceSpan,
-				),
-			}),
-		};
-	}
 	const actual = new Set(changedHumanFields(before, element));
 	// An explicit track override is handled by placement, which knows the resulting track.
-	const fields = owned.filter((field) => !actual.has(canonical(field)));
+	const fields = owned.filter((field) => !actual.has(canonical(field)) &&
+		(!keep || (!take.has(field) && !take.has(canonical(field)))));
 	return { element: withHumanFields(element, fields), kept };
 }
 

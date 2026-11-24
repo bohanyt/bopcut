@@ -1,5 +1,5 @@
 import { validateElementTrackCompatibility } from "@/timeline/placement/compatibility";
-import { mergeHumanFields, takeHumanFields } from "./human-conflicts";
+import { keepTiming, mergeHumanFields, takeHumanFields, validateKeptFit } from "./human-conflicts";
 import { withHumanFields, isHumanFieldPath, equalHumanValue } from "@/timeline/human-fields";
 // Agent draft ops applied to a copy of the project's scenes. Pure: the bridge loads assets first,
 // then wraps the resulting scene list in one command, so the whole draft is one Undo step even
@@ -19,7 +19,7 @@ import { generateUUID } from "@/utils/id";
 import { validNote } from "./notes";
 import { type AgentElement, type AgentKeyframe, type AgentTrackRef, type LoadedMedia, createAgentTrack, secs } from "./elements";
 import { type BuildContext, applyAgentKeyframes, cloneTracks, placeAgentElement, upsertAgentKeyframe } from "./compound-content";
-import { type AgentMatch, type ElementHit, addressOf, getScenePaths, orderedTracks, resolveCompoundTarget, resolveMatch } from "./scene-graph";
+import { type AgentMatch, type ElementHit, addressOf, getReachableScenes, getScenePaths, orderedTracks, resolveCompoundTarget, resolveMatch } from "./scene-graph";
 import { updateAgentCaption, type AgentCaption } from "./captions";
 import { reconcileCaptionEdit } from "@/text/caption";
 import { parseSourceWords, type SourceWord } from "@/media/words";
@@ -180,14 +180,15 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		let next = ripple && !noRipple ? applyRippleAdjustments({ tracks, adjustments: computeRippleAdjustments({ beforeTracks: scene.tracks, afterTracks: tracks }) }) : tracks;
 		if (next !== tracks && activeKeep) {
 			const starts = new Map(orderedTracks(tracks).flatMap((track) => track.elements
-				.filter((element) => element.agentId && element.humanFields?.includes("start"))
+				.filter((element) => element.id === operation.fixedStartId || (element.agentId && element.humanFields?.includes("start")))
 				.map((element) => [element.id, element.startTime] as const)));
 			if (orderedTracks(next).some((track) => track.elements.some((element) =>
 				starts.has(element.id) && starts.get(element.id) !== element.startTime))) next = tracks;
 		}
 		// A clip this edit moves (explicitly or by ripple) must not be one the user moved after basedOn.
 		if (!activeKeep || next !== tracks) {
-			assertRippleNotStale({ base, now, sceneId, before: activeKeep ? tracks : scene.tracks, after: next });
+			assertRippleNotStale({ base, now, sceneId, before: activeKeep ? tracks : scene.tracks, after: next,
+				startReleased: activeKeep ? (id) => !!released.get(id)?.has("start") : undefined });
 		}
 		replace({ ...scene, tracks: next, updatedAt: new Date() });
 		return out;
@@ -251,12 +252,23 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	};
 
 	let activeKeep = false;
+	const released = new Map<string, Set<string>>();
+	let operation: { hit?: ElementHit; fixedStartId?: string; release?: { id: string; fields: ReadonlySet<string> } };
 	const run = (op: DraftOp, result: any) => {
 		const keep = (op?.onConflict ?? onConflict) === "keep";
-		activeKeep = keep && (op.op === "set" || op.op === "replace");
+		activeKeep = false;
 		const take = keep ? takeHumanFields(op.take) : new Set<string>();
-		const merge = (hit: ElementHit, candidate: TimelineElement, replacing = false) => {
-			const staleFields = keep && hit.element.agentId ? humanFieldsSince(base, now, hit.sceneId, hit.element) : [];
+		const kept = new Set<string>();
+		const reportKept = () => { if (kept.size) result.kept = [...kept].sort(); };
+		const staleFor = (hit: ElementHit) => keep && hit.element.agentId
+			? humanFieldsSince(base, now, hit.sceneId, hit.element).filter((field) => !released.get(hit.element.id)?.has(field))
+			: [];
+		const protection = (hit: ElementHit, stale: readonly string[]) => new Set(
+			keep && hit.element.agentId
+				? [...(hit.element.humanFields ?? []), ...stale].filter((field) => !take.has(field))
+				: [],
+		);
+		const merge = (hit: ElementHit, candidate: TimelineElement, staleFields = staleFor(hit)) => {
 			if (staleFields.some((field) => {
 				const path = field.slice(10);
 				return field.startsWith("keyframes.") && !isHumanFieldPath(field) &&
@@ -265,8 +277,13 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: ["keyframes"], scenes: list });
 			}
 			const protectedFields = staleFields.filter(isHumanFieldPath);
-			const outcome = mergeHumanFields({ before: hit.element, candidate, keep, take, stale: protectedFields, replacing });
-			if (outcome.kept.length) result.kept = outcome.kept;
+			const outcome = mergeHumanFields({ before: hit.element, candidate, keep, take, stale: protectedFields });
+			for (const field of outcome.kept) kept.add(field);
+			reportKept();
+			if (keep && hit.element.agentId) {
+				operation.release = { id: hit.element.id, fields: take };
+				if (protection(hit, staleFields).has("start")) operation.fixedStartId = outcome.element.id;
+			}
 			return outcome.element;
 		};
 		switch (op.op) {
@@ -284,6 +301,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			case "set": {
 				const cutWords = checkCut(op.cut);
 				const hit = find(op.match);
+				const keepSet = keep && !!hit.element.agentId;
+				activeKeep = keepSet;
+				if (keepSet) operation.hit = hit;
 				let setWords: SourceWord[] | undefined;
 				const atWords = op.startAtWord !== undefined || op.endAfterWord !== undefined;
 				if (atWords && (op.trimStart !== undefined || op.duration !== undefined || cutWords)) throw new Error("startAtWord/endAfterWord replace trimStart, duration and cut");
@@ -296,14 +316,18 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					? fields.filter((field) => field.startsWith("params.") && (hit.element.type === "effect" || !isHumanFieldPath(field)))
 					: fields;
 				if (checked.length || !keep || !hit.element.agentId) assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: checked, scenes: list });
+				const stale = staleFor(hit);
+				const protectedFields = protection(hit, stale);
 				editTracks(hit.sceneId, (tracks) => {
 					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
 					const el = track.elements[hit.index];
 					const patch: any = {};
-					if (op.start !== undefined) patch.startTime = secs(op.start);
-					if (op.duration !== undefined) patch.duration = secs(op.duration);
-					if (op.trimStart !== undefined) patch.trimStart = secs(op.trimStart);
-					if (el.sourceDuration !== undefined && (patch.duration !== undefined || patch.trimStart !== undefined)) {
+					const timing = keepTiming({ start: op.start, duration: op.duration, trimStart: op.trimStart }, el, protectedFields, kept);
+					reportKept();
+					if (timing.start !== undefined) patch.startTime = secs(timing.start);
+					if (timing.duration !== undefined) patch.duration = secs(timing.duration);
+					if (timing.trimStart !== undefined) patch.trimStart = secs(timing.trimStart);
+					if (!keepSet && el.sourceDuration !== undefined && (patch.duration !== undefined || patch.trimStart !== undefined)) {
 						patch.trimEnd = Math.max(0, el.sourceDuration - (patch.trimStart ?? el.trimStart) - (patch.duration ?? el.duration));
 					}
 					// Animation presets written as raw params are checked like an animate op.
@@ -311,6 +335,29 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					if (op.params) patch.params = { ...el.params, ...op.params };
 					if (op.caption && el.type !== "text") throw new Error("caption can only update a text element");
 					let next = { ...el, ...patch };
+					const applyWordCut = (wordPatch: Pick<TimelineElement, "duration" | "trimStart" | "trimEnd">) => {
+						if (!keepSet) {
+							assertRoomForEnd(track.elements, hit.index, next.startTime + next.duration, next.startTime + wordPatch.duration);
+							return { ...next, ...wordPatch };
+						}
+						const final = keepTiming({ duration: seconds(wordPatch.duration), trimStart: seconds(wordPatch.trimStart) }, el, protectedFields, kept);
+						reportKept();
+						return { ...next, duration: secs(final.duration), trimStart: secs(final.trimStart) };
+					};
+					const applyWords = () => {
+						if (!setWords) return;
+						if (atWords) {
+							const cut = cutAtWords(next, setWords, fps, { startWord: op.startAtWord, endWord: op.endAfterWord, limit: sourceEnd(el) });
+							if (typeof cut === "string") throw new Error(cut);
+							next = applyWordCut(cut.patch);
+							if (cut.start && next.trimStart === cut.patch.trimStart) result.startWord = cut.start;
+							if (cut.end && next.duration === cut.patch.duration && next.trimStart === cut.patch.trimStart) result.endWord = cut.end;
+						} else {
+							const snapped = snapCutsToWords(next, setWords, fps, { limit: sourceEnd(el) });
+							if (snapped) next = applyWordCut(snapped);
+						}
+					};
+					if (keepSet) applyWords();
 					if (op.keyframes !== undefined || op.keyframesMode !== undefined) {
 						if (!Array.isArray(op.keyframes)) throw new Error("set: keyframes must be a list");
 						const mode = op.keyframesMode ?? "merge";
@@ -325,27 +372,24 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 							for (const target of keyframeTargets(next, k)) next = upsertAgentKeyframe(next, { ...target, time: k.time, interpolation: k.interpolation }, { strict: true });
 						}
 					}
-					if (setWords && atWords) {
-						const cut = cutAtWords(next, setWords, fps, { startWord: op.startAtWord, endWord: op.endAfterWord, limit: sourceEnd(el) });
-						if (typeof cut === "string") throw new Error(cut);
-						const requestedEnd = next.startTime + next.duration;
-						next = { ...next, ...cut.patch };
-						assertRoomForEnd(track.elements, hit.index, requestedEnd, next.startTime + next.duration);
-						if (cut.start) result.startWord = cut.start;
-						if (cut.end) result.endWord = cut.end;
-					} else if (setWords) {
-						// The source ends where it did before this op (a shorter clip does not shorten its file).
-						const snapped = snapCutsToWords(next, setWords, fps, { limit: sourceEnd(el) });
-						if (snapped) {
-							const requestedEnd = next.startTime + next.duration;
-							next = { ...next, ...snapped };
-							assertRoomForEnd(track.elements, hit.index, requestedEnd, next.startTime + next.duration);
-						}
+					if (!keepSet) applyWords();
+					let captionEdit = op.caption;
+					if (captionEdit && el.caption && protectedFields.has("caption")) {
+						const { text, words, ...style } = captionEdit;
+						if ((text !== undefined && text !== el.params.content) ||
+							(words !== undefined && !equalHumanValue(words, el.caption.words))) kept.add("caption");
+						captionEdit = style;
 					}
 					const candidate = el.type === "text" && next.type === "text"
-						? op.caption ? updateAgentCaption(reconcileCaptionEdit(el, next), op.caption) : reconcileCaptionEdit(el, next)
+						? captionEdit ? updateAgentCaption(reconcileCaptionEdit(el, next), captionEdit) : reconcileCaptionEdit(el, next)
 						: next;
-					const merged = merge(hit, candidate);
+					let merged = merge(hit, candidate, stale);
+					if (keepSet) {
+						const trimChanged = merged.duration !== el.duration || merged.trimStart !== el.trimStart;
+						const source = trimChanged && (el.type === "video" || el.type === "audio" || el.type === "compound")
+							? el.sourceDuration ?? (el.type === "compound" ? undefined : secs(sourceEnd(el))) : undefined;
+						merged = validateKeptFit({ before: el, element: merged, track, originalTrack: hit.track, source });
+					}
 					if (keep && equalHumanValue(el, merged)) return false;
 					track.elements[hit.index] = merged;
 				});
@@ -547,23 +591,46 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "replace": {
 				const hit = find(op.match);
+				const old = hit.element;
 				const given = op.element;
+				const sameIdentity = !!old.agentId && (given?.agent_id ?? old.agentId) === old.agentId;
+				const keepReplacement = keep && sameIdentity;
+				activeKeep = keepReplacement;
+				if (!keepReplacement) assertNotStale({ base, now, sceneId: hit.sceneId, element: old, fields: "all", scenes: list });
+				if (keepReplacement) operation.hit = hit;
 				if (!given || typeof given !== "object") throw new Error("replace needs an element");
 				refuseNestedCut([given]);
 				if (op.track !== undefined && (typeof op.track?.name !== "string" || "compound" in op.track)) throw new Error("replace: track needs {name} and stays in the element's scene");
-				const old = hit.element;
-				const sameIdentity = !!old.agentId && (given.agent_id ?? old.agentId) === old.agentId;
-				if (!keep || !sameIdentity) assertNotStale({ base, now, sceneId: hit.sceneId, element: old, fields: "all", scenes: list });
-				if (keep && sameIdentity) assertNotStale({
+				if (keepReplacement && isCompoundElement(old) && getReachableScenes(list, old.sceneId).some(
+					(scene) => orderedTracks(scene.tracks).some((track) => track.elements.some((child) => child.agentId && child.humanFields?.length)),
+				)) {
+					kept.add("content");
+					reportKept();
+					throw new Error("the compound contains protected elements; edit its children instead");
+				}
+				if (keepReplacement) assertNotStale({
 					base, now, sceneId: hit.sceneId, element: old, fields: ["unmanaged", "content", "trackSettings"], scenes: list,
 				});
-				const keptTrack = keep && sameIdentity && !take.has("track") &&
-					(old.humanFields?.includes("track") || humanFieldsSince(base, now, hit.sceneId, old).includes("track"));
+				const stale = keepReplacement ? staleFor(hit) : [];
+				const protectedFields = keepReplacement ? protection(hit, stale) : new Set<string>();
+				const keptTrack = protectedFields.has("track");
+				if (keptTrack && op.track && (op.track.id ? op.track.id !== hit.track.id : op.track.name !== hit.track.name)) kept.add("track");
 				// Unset fields keep the replaced element's agentId, name, and span.
+				const timing = keepTiming({
+					start: given.start ?? seconds(old.startTime),
+					duration: given.duration ?? seconds(old.duration),
+					trimStart: given.trimStart ?? (keepReplacement ? 0 : undefined),
+				}, old, protectedFields, kept);
+				reportKept();
 				const element = {
 					...given, agent_id: given.agent_id ?? old.agentId, name: given.name ?? old.name,
-					start: given.start ?? seconds(old.startTime), duration: given.duration ?? seconds(old.duration),
+					...timing,
 				} as AgentElement;
+				if (element.caption?.words && old.type === "text" && old.caption && protectedFields.has("caption")) {
+					if (!equalHumanValue(element.caption.words, old.caption.words)) kept.add("caption");
+					element.caption = { ...element.caption, words: undefined };
+					reportKept();
+				}
 				result.agentId = element.agent_id;
 				const ref = keptTrack ? { name: hit.track.name, id: hit.track.id, type: hit.track.type } : op.track ?? { name: hit.track.name, id: hit.track.id };
 				// Media were loaded for the element as given; `element` is a new object built from it.
@@ -571,25 +638,20 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				// One edit: ripple editing sees a replacement, not a removal followed by an insertion.
 				const placed = editTracks(hit.sceneId, (tracks) => {
 					(orderedTracks(tracks).find((t) => t.id === hit.track.id) as any).elements.splice(hit.index, 1);
-					const placed = placeAgentElement({ tracks, sceneId: hit.sceneId, e: element, ref, ctx, prepare: keep && sameIdentity ? (candidate, trackId) => {
-						if (keptTrack && !validateElementTrackCompatibility({
-							element: candidate, track: hit.track, scenes: [...list, ...ctx.created],
-						}).isValid) {
-							result.kept = ["track"];
-							return old;
-						}
+					return placeAgentElement({ tracks, sceneId: hit.sceneId, e: element, ref, ctx, prepare: keepReplacement ? (candidate, track) => {
+						const compatibility = validateElementTrackCompatibility({
+							element: candidate, track, scenes: [...list, ...ctx.created],
+						});
+						if (!compatibility.isValid) throw new Error(compatibility.errorMessage ?? "the merged clip is incompatible with its track");
 						const ownKeys = ctx.keyframes.filter((key) => key.elementId === candidate.id);
 						ctx.keyframes = ctx.keyframes.filter((key) => key.elementId !== candidate.id);
 						const animated = ownKeys.reduce((clip, key) => upsertAgentKeyframe(clip, key), candidate);
-						const next = merge(hit, animated, !!keptTrack && op.track !== undefined);
-						return trackId === hit.track.id ? next : withHumanFields(next, (next.humanFields ?? []).filter((field) => field !== "track"));
+						const next = merge(hit, animated, stale);
+						if (next === old) throw new Error("the merged clip type cannot preserve the protected fields");
+						const fitted = validateKeptFit({ before: old, element: next, track, originalTrack: hit.track, source: next.sourceDuration });
+						return track.id === hit.track.id ? fitted : withHumanFields(fitted, (fitted.humanFields ?? []).filter((field) => field !== "track"));
 					} : undefined });
-					return placed.element === old ? false : placed;
 				});
-				if (placed === false) {
-					address(result, "element", hit.sceneId, old.id);
-					return;
-				}
 				result.replaced = { sceneId: hit.sceneId, id: old.id };
 				placedElement(hit.sceneId, ref.name, placed, ctx, result);
 				if (!keep && sameIdentity && old.humanFields?.length) {
@@ -699,6 +761,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		const result: any = { op: op?.op };
 		if (op && "match" in op && op.match !== undefined) result.match = op.match;
 		const saved = { list, touched: touched.length, finish: finish.length };
+		operation = {};
 		try {
 			run(op, result);
 			result.ok = true;
@@ -711,12 +774,14 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				return words ? cutWarnings(element, words).map((warning) => ({ elementId, ...warning })) : [];
 			});
 			if (warnings.length) result.cutWarnings = warnings;
+			const release = operation.release;
+			if (release?.fields.size) released.set(release.id, new Set([...(released.get(release.id) ?? []), ...release.fields]));
 		} catch (error) {
 			// An op that fails changes nothing; the rest of the draft still applies.
 			list = saved.list;
 			touched.length = saved.touched;
 			finish.length = saved.finish;
-			for (const key of Object.keys(result)) if (key !== "op" && key !== "match" && key !== "id" && key !== "agentId") delete result[key];
+			for (const key of Object.keys(result)) if (key !== "op" && key !== "match" && key !== "id" && key !== "agentId" && key !== "kept") delete result[key];
 			if (op?.op === "add") result.name = op.element?.name;
 			result.ok = false;
 			result.error = message(error);
@@ -724,6 +789,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				result.stale = true;
 				result.fields = error.fields;
 				result.current = error.current;
+			} else if (operation.hit) {
+				const { element, track } = operation.hit;
+				result.current = { start: seconds(element.startTime), duration: seconds(element.duration),
+					trimStart: seconds(element.trimStart), trackId: track.id,
+					sourceDuration: element.sourceDuration === undefined ? undefined : seconds(element.sourceDuration) };
 			}
 		}
 		results[i] = result;

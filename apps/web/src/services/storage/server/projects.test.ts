@@ -5,6 +5,10 @@ import path from "node:path";
 import { GET, PUT, DELETE } from "../../../app/api/storage/[...slug]/route";
 import { StorageService } from "../service";
 import { IndexedDBAdapter } from "../indexeddb-adapter";
+import { EditorCore } from "@/core";
+import type { TProject } from "@/project/types";
+import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
+import { scene, t, text } from "@/timeline/__tests__/compound-fixtures";
 
 let root: string;
 let previous: string | undefined;
@@ -161,6 +165,56 @@ test("direct loads migrate only the requested version and the listing makes one 
 		expect(await new StorageService().loadAllProjectsMetadata()).toContainEqual(expect.objectContaining({ id: other }));
 		expect(paths).toEqual([base]);
 	} finally {
+		fetchSpy.mockRestore();
+	}
+});
+
+test("saved human fields survive a reload and project duplication", async () => {
+	const id = "ownership-round-trip";
+	const clip = {
+		...text("caption", 0, 2),
+		agentId: "phrase",
+		humanFields: ["duration", "params.content", "keyframes.constructor"],
+	};
+	const legacyClip = { ...text("legacy", 2, 1), agentId: "legacy" };
+	const project: TProject = {
+		metadata: { id, name: id, duration: t(3), createdAt: new Date(0), updatedAt: new Date(0) },
+		scenes: [scene("main", {
+			main: { id: "main", name: "Main", type: "video", muted: false, hidden: false, elements: [] },
+			overlay: [{ id: "titles", name: "Titles", type: "text", hidden: false, elements: [clip, legacyClip] }],
+			audio: [],
+		})],
+		currentSceneId: "main",
+		version: CURRENT_PROJECT_VERSION,
+		settings: {
+			fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1920, height: 1080 },
+			background: { type: "color", color: "#000000" },
+		},
+	};
+	const handleFetch: typeof fetch = Object.assign(async (url: RequestInfo | URL, init?: RequestInit) => {
+		const relative = String(url);
+		const req = new Request(`http://localhost${relative}`, init);
+		const handle = req.method === "PUT" ? PUT : GET;
+		return handle(req, { params: Promise.resolve({ slug: relative.split("/").slice(3) }) });
+	}, { preconnect: fetch.preconnect });
+	const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(handleFetch);
+	try {
+		const storage = new StorageService();
+		await storage.saveProject({ project });
+		const loaded = await storage.loadProject({ id });
+		const [duplicateId] = await EditorCore.getInstance().project.duplicateProjects({ ids: [id] });
+		expect(duplicateId).toBeTruthy();
+		expect(duplicateId).not.toBe(id);
+		const duplicate = await storage.loadProject({ id: duplicateId });
+		for (const result of [loaded, duplicate]) {
+			const elements = result?.project.scenes[0].tracks.overlay[0].elements;
+			expect(elements?.[0]).toMatchObject({
+				agentId: "phrase", duration: t(2), humanFields: ["duration", "params.content"],
+			});
+			expect(elements?.[1].humanFields).toBeUndefined();
+		}
+	} finally {
+		EditorCore.reset();
 		fetchSpy.mockRestore();
 	}
 });
