@@ -97,14 +97,6 @@ export class PlaybackManager {
 	seek({ time }: { time: MediaTime }): void {
 		this.interruptListeners.forEach((fn) => fn());
 		this.setTime(time);
-		this.persistPlayheadViewState();
-	}
-
-	private persistPlayheadViewState(): void {
-		if (this.isPlaying || this.isScrubbing) return;
-		this.editor.project.scheduleTimelineViewStatePlayhead({
-			playheadTime: this.currentTime,
-		});
 	}
 
 	private setTime(time: MediaTime): void {

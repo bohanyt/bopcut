@@ -28,7 +28,6 @@ import { getElementFontFamilies } from "@/timeline/element-utils";
 import { frameRateToFloat, getRaisedProjectFpsForImportedMedia } from "@/fps/utils";
 import type { MediaAsset } from "@/media/types";
 import { mediaIdsInScenes } from "./media-manager";
-import type { MediaTime } from "@/wasm";
 
 export interface MigrationState {
 	isMigrating: boolean;
@@ -75,8 +74,6 @@ export class ProjectManager {
 	private exportTarget: { session: number; sceneId?: string } | null = null;
 	private thumbnailGeneration = 0;
 	private thumbnailUploads = new Map<string, Promise<void>>();
-	private playheadViewStateTimer: ReturnType<typeof setTimeout> | null = null;
-	private pendingPlayheadViewTime: MediaTime | undefined;
 
 	constructor(private editor: EditorCore) {}
 
@@ -834,22 +831,6 @@ export class ProjectManager {
 		return this.active?.timelineViewState ?? DEFAULTS.timeline.viewState;
 	}
 
-	scheduleTimelineViewStatePlayhead({ playheadTime }: { playheadTime: MediaTime }): void {
-		if (!this.active) return;
-		this.pendingPlayheadViewTime = playheadTime;
-		if (this.playheadViewStateTimer) clearTimeout(this.playheadViewStateTimer);
-		this.playheadViewStateTimer = setTimeout(() => {
-			this.playheadViewStateTimer = null;
-			const time = this.pendingPlayheadViewTime;
-			this.pendingPlayheadViewTime = undefined;
-			if (time === undefined) return;
-			const viewState = this.getTimelineViewState();
-			this.setTimelineViewState({
-				viewState: { ...viewState, playheadTime: time },
-			});
-		}, 200);
-	}
-
 	setTimelineViewState({ viewState, sceneId = this.active?.currentSceneId }: { viewState: TTimelineViewState; sceneId?: string }): void {
 		if (!this.active) return;
 		const current = this.getTimelineViewState();
@@ -899,11 +880,6 @@ export class ProjectManager {
 	}
 
 	private advanceSession(): void {
-		if (this.playheadViewStateTimer) {
-			clearTimeout(this.playheadViewStateTimer);
-			this.playheadViewStateTimer = null;
-			this.pendingPlayheadViewTime = undefined;
-		}
 		if (this.editor.playback.getIsPlaying()) this.editor.playback.pause();
 		const previous = this.sessionController;
 		this.session++;

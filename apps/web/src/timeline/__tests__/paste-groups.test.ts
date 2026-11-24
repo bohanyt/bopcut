@@ -84,8 +84,10 @@ describe("paste groups", () => {
 		expect(row.elements.map((el) => el.startTime)).toEqual([t(2), t(4.5)]);
 		noOverlap(tracks);
 		ed.command.undo();
+		expect(ed.scenes.getActiveScene().tracks.overlay).toEqual([]);
 		ed.command.redo();
-		expect(row.elements.map((el) => el.startTime)).toEqual([t(2), t(4.5)]);
+		const again = ed.scenes.getActiveScene().tracks.overlay.find((tr) => tr.elements.some((el) => el.name === "a"));
+		expect(again?.elements.map((el) => el.startTime)).toEqual([t(2), t(4.5)]);
 
 		const end = fixture();
 		const endTime = 10;

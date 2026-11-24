@@ -30,7 +30,7 @@ function setup() {
 	const editor = {
 		timeline: { ...store, getTotalDuration: () => mediaTimeFromSeconds({ seconds: 30 }) },
 		scenes: store,
-		project: { ...store, getActiveOrNull: () => null, scheduleTimelineViewStatePlayhead: () => {} },
+		project: { ...store, getActiveOrNull: () => null },
 		media: store,
 		renderer: store,
 		selection: store,

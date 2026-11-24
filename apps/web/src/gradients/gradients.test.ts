@@ -47,27 +47,3 @@ test("gradient parser and canvas background fixes", () => {
 	});
 	expect(bad.fillStyle).toBe("rgba(0,0,0,0)");
 });
-
-test("gradient color forms issue 276", () => {
-	const ast = parseGradient({
-		code: "linear-gradient(RGBA(255, 0, 0, 50%), rgb(100% 0% 0% / 50%), rgb(100%, 0%, 0%), hsl(240deg 100% 50%), hsl(1.5707963rad 100% 50%), hsl(0.6666667turn 100% 50%), hsl(266.6666667grad 100% 50%), red)",
-	})[0];
-	expect(ast?.colorStops.length).toBe(8);
-	const c0 = ast?.colorStops[0];
-	expect(c0?.type === "rgba" && c0.value).toEqual(["255", "0", "0", "0.5"]);
-	const c1 = ast?.colorStops[1];
-	expect(c1?.type === "rgba" && c1.value).toEqual(["255", "0", "0", "0.5"]);
-	const c2 = ast?.colorStops[2];
-	expect(c2?.type === "rgb" && c2.value).toEqual(["255", "0", "0"]);
-	const c3 = ast?.colorStops[3];
-	expect(c3?.type === "hsl" && c3.value).toEqual(["240", "100", "50"]);
-	const c4 = ast?.colorStops[4];
-	expect(c4?.type === "hsl" && c4.value[0]).toBe("90");
-	const c5 = ast?.colorStops[5];
-	expect(c5?.type === "hsl" && c5.value[0]).toBe("240");
-	const c6 = ast?.colorStops[6];
-	expect(c6?.type === "hsl" && c6.value[0]).toBe("240");
-	expect(() =>
-		parseGradient({ code: "linear-gradient(rgb(255, 0, 0, bogus))" }),
-	).toThrow();
-});

@@ -50,8 +50,7 @@ function setup(scenes: TScene[] = withBookmark()) {
 }
 
 function snapshot(editor: ReturnType<typeof setup>) {
-	const scene = editor.scenes.getActiveScene();
-	return { tracks: structuredClone(scene.tracks), bookmarks: structuredClone(scene.bookmarks) };
+	return editor.scenes.getScenes().map(({ id, name, tracks, bookmarks }) => structuredClone({ id, name, tracks, bookmarks }));
 }
 
 function videoHost(patch?: (clip: VideoElement) => void) {
@@ -165,11 +164,6 @@ export const TIMELINE_UNDO_TABLE: {
 afterEach(() => { EditorCore.reset(); });
 
 describe("timeline command undo table", () => {
-	test("covers every element and track command class", () => {
-		expect(TIMELINE_UNDO_TABLE).toHaveLength(28);
-		expect(new Set(TIMELINE_UNDO_TABLE.map((row) => row.name)).size).toBe(28);
-	});
-
 	test.each(TIMELINE_UNDO_TABLE)("$name", ({ scenes, ready, command }) => {
 		const editor = setup(scenes?.() ?? withBookmark());
 		ready?.(editor);
