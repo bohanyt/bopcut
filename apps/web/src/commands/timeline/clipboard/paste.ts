@@ -12,6 +12,7 @@ import {
 	resolveTrackPlacement,
 	enforceMainTrackStart,
 } from "@/timeline/placement";
+import { canPlaceTimeSpansOnTrack } from "@/timeline/placement/overlap";
 import { cloneAnimations } from "@/animation";
 import {
 	collectCompoundScenes,
@@ -111,7 +112,7 @@ export class PasteCommand extends Command {
 				updatedTracks.main,
 				...updatedTracks.audio,
 			].findIndex((track) => track.id === trackId);
-			const placementResult = resolveTrackPlacement({
+			let placementResult = resolveTrackPlacement({
 				tracks: updatedTracks,
 				trackType,
 				timeSpans: elementsToAdd.map((element) => ({
@@ -149,17 +150,25 @@ export class PasteCommand extends Command {
 					});
 
 					if (delta !== ZERO_MEDIA_TIME) {
-						elementsForPlacement = elementsToAdd.map((element) => ({
+						const shifted = elementsToAdd.map((element) => ({
 							...element,
 							startTime: maxMediaTime({
 								a: ZERO_MEDIA_TIME,
 								b: addMediaTime({ a: element.startTime, b: delta }),
 							}),
 						}));
+						if (canPlaceTimeSpansOnTrack({ track: targetTrack, timeSpans: shifted })) {
+							elementsForPlacement = shifted;
+						} else {
+							placementResult = resolveTrackPlacement({ tracks: updatedTracks, trackType,
+								timeSpans: elementsToAdd, strategy: { type: "alwaysNew", position: "highest" },
+							});
+						}
 					}
 				}
 			}
 
+			if (!placementResult) continue;
 			const applied = applyPlacement({
 				tracks: updatedTracks,
 				placementResult,

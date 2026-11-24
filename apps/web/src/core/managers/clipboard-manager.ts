@@ -57,8 +57,7 @@ export class ClipboardManager {
 			return false;
 		}
 
-		this.editor.command.execute({ command });
-		return true;
+		return this.editor.command.execute({ command })?.changed !== false;
 	}
 
 	subscribe(listener: () => void): () => void {

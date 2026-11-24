@@ -236,7 +236,7 @@ describe("draft imports stay private until commit", () => {
 		restore = backend.restore;
 		const order: string[] = [];
 		const a = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "first") }])).then(() => order.push("first"));
-		const b = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("fast.png", "second") }])).then(() => order.push("second"));
+		const b = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: { ...image("fast.png", "second"), start: 1 } }])).then(() => order.push("second"));
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		// The second draft has not even started importing while the first one waits.
 		expect(backend.state.saved.length).toBe(0);
@@ -413,7 +413,7 @@ describe("drafts belong to the project session they were queued in", () => {
 		expect(backend.state.promoted).toEqual([]);
 		// Saving works: the next write contains both drafts, so both imports are promoted.
 		editor.save.start();
-		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("second.png", "second") }]));
+		await applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: { ...image("second.png", "second"), start: 1 } }]));
 		expect(backend.state.results[1]).toMatchObject({ applied: true, saved: true });
 		expect([...backend.state.promoted].sort()).toEqual([...backend.state.saved].sort());
 	});

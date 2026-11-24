@@ -72,8 +72,6 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const signal = jobSignal ? AbortSignal.any([session, jobSignal]) : session;
 		const elements = jobSignal ? request.elements : undefined;
 		const requestedNote = typeof request.noteId === "string" && request.noteId.length > 0;
-		if (!elements && !requestedNote && (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0))) return;
-		if (request.width !== undefined && (!Number.isInteger(request.width) || request.width < 1 || request.width > 4096)) return;
 		// A request read across a session switch has not been picked up by either project yet.
 		const project = editor.project.getActiveOrNull();
 		if (!project || session.aborted || editor.timeline.isPreviewActive() || isGraphicsInitializing() || !readiness().ready) {
@@ -95,7 +93,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			pendingCancellation = { rev, projectId, key: switchKey, send };
 			return postCancellation(pendingCancellation);
 		};
-		const finish = async (body: Record<string, unknown>) => {
+		const finish = async (body: Record<string, unknown>, answerKey = key) => {
 			try {
 				const response = await result(body);
 				if (!response.ok) throw new Error(await response.text());
@@ -103,9 +101,15 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 				if (signal.aborted) return await cancel();
 				throw error;
 			}
-			if (!editor.renderOnly) markAnswered(signal.aborted ? switchKey : key, rev);
+			if (!editor.renderOnly) markAnswered(signal.aborted ? switchKey : answerKey, rev);
 		};
 		const refuse = (error: string) => finish({ files: [], error });
+		if (!elements && !requestedNote && (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0))) {
+			return await finish({ files: [], error: "times must be a nonempty list of finite, nonnegative seconds" }, switchKey);
+		}
+		if (width !== undefined && (!Number.isInteger(width) || width < 1 || width > 4096)) {
+			return await finish({ files: [], error: "width must be a whole number between 1 and 4096" }, switchKey);
+		}
 		if (missingMedia.length && request.allowMissing !== true) {
 			// The same request may run after the missing assets have been reloaded.
 			const missingKey = JSON.stringify([projectId, rev]);

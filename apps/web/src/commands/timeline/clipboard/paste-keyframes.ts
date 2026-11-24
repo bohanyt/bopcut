@@ -57,6 +57,7 @@ function pasteKeyframesIntoElement({
 			channelLayout: target.channelLayout,
 			coerceValue: target.coerceValue,
 		});
+		if (nextAnimations === nextElement.animations) continue;
 		const pastedKeyframe = getKeyframeAtTime({
 			animations: nextAnimations,
 			propertyPath: item.propertyPath,
@@ -114,24 +115,29 @@ export class PasteKeyframesCommand extends Command {
 
 	execute(): CommandResult | undefined {
 		if (this.clipboardItems.length === 0) {
-			return undefined;
+			return { changed: false };
 		}
 
 		const editor = EditorCore.getInstance();
 		this.savedState = editor.scenes.getActiveScene().tracks;
+		let changed = false;
 
 		const updatedTracks = updateElementInSceneTracks({
 			tracks: this.savedState,
 			trackId: this.trackId,
 			elementId: this.elementId,
-			update: (element) =>
-				pasteKeyframesIntoElement({
+			update: (element) => {
+				const updated = pasteKeyframesIntoElement({
 					element,
 					time: this.time,
 					clipboardItems: this.clipboardItems,
-				}),
+				});
+				changed ||= updated !== element;
+				return updated;
+			},
 		});
 
+		if (!changed) return { changed: false };
 		editor.timeline.updateTracks(updatedTracks);
 		return undefined;
 	}

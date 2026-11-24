@@ -30,6 +30,19 @@ import { roundMediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 const browserMigrationKey = "bopencut:browser-storage-copied";
 
+class ProjectVersionError extends Error {}
+
+function readProjectVersion(raw: unknown): number {
+	const version = typeof raw === "string" && raw.trim() ? Number(raw) : raw;
+	if (typeof version !== "number" || !Number.isInteger(version) || version < 0) {
+		throw new ProjectVersionError("This project does not have a valid version. Open it with a compatible editor and save it again.");
+	}
+	if (version > CURRENT_PROJECT_VERSION) {
+		throw new ProjectVersionError("This project was made with a newer version of bopencut. Update bopencut to open it.");
+	}
+	return version;
+}
+
 function deserializeMetadata(metadata: ProjectSummary["metadata"], duration = metadata.duration): TProjectMetadata {
 	return {
 		...metadata,
@@ -124,8 +137,10 @@ class StorageService {
 				if (!id) { failed++; continue; }
 				try {
 					if (await this.projectsAdapter.migrationExists(id)) continue;
-					const version = typeof source.version === "number" ? source.version : (Array.isArray(source.scenes) && source.scenes.length ? 1 : 0);
-					const project = await migrateProject(source, id, version);
+					const version = source.version === undefined
+						? (Array.isArray(source.scenes) && source.scenes.length ? 1 : 0)
+						: readProjectVersion(source.version);
+					const project = await migrateProject({ ...source, version }, id, version);
 					const { mediaMetadataAdapter, mediaAssetsAdapter } = this.getProjectMediaAdapters({ projectId: id });
 					for (const metadata of await mediaMetadataAdapter.getAll({ existingOnly: true })) {
 						const file = await mediaAssetsAdapter.get(metadata.id);
@@ -247,10 +262,10 @@ class StorageService {
 	 * re-read, not overwritten). The new metadata, or null when the project does not exist.
 	 */
 	async renameProject({ id, name }: { id: string; name: string }): Promise<TProjectMetadata | null> {
-		const updated = await this.projectsAdapter.update(id, (stored) => ({
-			...stored,
-			metadata: { ...stored.metadata, name, updatedAt: new Date().toISOString() },
-		}));
+		const updated = await this.projectsAdapter.update(id, (stored) => {
+			readProjectVersion(stored.version);
+			return { ...stored, metadata: { ...stored.metadata, name, updatedAt: new Date().toISOString() } };
+		});
 		if (!updated) return null;
 		return deserializeSummary(updated);
 	}
@@ -264,17 +279,6 @@ class StorageService {
 	}): Promise<{ project: TProject } | null> {
 		if (!readOnly) await this.ensureMigrations();
 		let serializedProject = await this.projectsAdapter.get(id);
-		if (serializedProject && typeof serializedProject.version === "number" && serializedProject.version < CURRENT_PROJECT_VERSION) {
-			if (readOnly) throw new Error("This project needs migration. Open it in the editor once and retry.");
-			// Transform the exact copy whose revision is checked by the write. On a conflict, retry
-			// against the latest copy, which may already have been migrated in another tab.
-			serializedProject = await this.projectsAdapter.update(id, (current) =>
-				current.version < CURRENT_PROJECT_VERSION
-					? migrateProject(current as unknown as ProjectRecord, id, current.version)
-					: current,
-			);
-		}
-
 		if (!serializedProject) return null;
 
 		if (
@@ -288,6 +292,19 @@ class StorageService {
 				{ id, entry: serializedProject },
 			);
 			return null;
+		}
+		let version = readProjectVersion(serializedProject.version);
+		if (version < CURRENT_PROJECT_VERSION) {
+			if (readOnly) throw new Error("This project needs migration. Open it in the editor once and retry.");
+			// Validate and migrate the exact copy whose revision will be checked by the write.
+			serializedProject = await this.projectsAdapter.update(id, (current) => {
+				const currentVersion = readProjectVersion(current.version);
+				return currentVersion < CURRENT_PROJECT_VERSION
+					? migrateProject({ ...current, version: currentVersion }, id, currentVersion)
+					: current;
+			});
+			if (!serializedProject) return null;
+			version = readProjectVersion(serializedProject.version);
 		}
 
 		const scenes =
@@ -310,7 +327,7 @@ class StorageService {
 			scenes,
 			currentSceneId: validNavigation ? navigation.currentSceneId : serializedProject.currentSceneId || "",
 			settings: serializedProject.settings,
-			version: serializedProject.version,
+			version,
 			timelineViewState: validNavigation ? navigation.timelineViewState : serializedProject.timelineViewState,
 		};
 
@@ -323,9 +340,11 @@ class StorageService {
 		const projects: TProject[] = [];
 
 		for (const id of projectIds) {
-			const result = await this.loadProject({ id });
-			if (result?.project) {
-				projects.push(result.project);
+			try {
+				const result = await this.loadProject({ id });
+				if (result?.project) projects.push(result.project);
+			} catch (error) {
+				if (!(error instanceof ProjectVersionError)) throw error;
 			}
 		}
 

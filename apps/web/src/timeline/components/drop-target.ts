@@ -6,6 +6,7 @@ import { getTrackHeight } from "./track-layout";
 import {
 	mediaTime,
 	type MediaTime,
+	roundFrameTime,
 	roundMediaTime,
 	TICKS_PER_SECOND,
 } from "@/wasm";
@@ -47,11 +48,13 @@ function getTrackAtY({
 	mouseY,
 	tracks,
 	verticalDragDirection,
+	external,
 }: {
 	mouseY: number;
 	tracks: TimelineTrack[];
 	verticalDragDirection?: "up" | "down" | null;
-}): { trackIndex: number; relativeY: number } | null {
+	external: boolean;
+}): { trackIndex: number; relativeY: number; inGap?: true } | null {
 	let cumulativeHeight = 0;
 
 	for (let i = 0; i < tracks.length; i++) {
@@ -66,10 +69,11 @@ function getTrackAtY({
 			};
 		}
 
-		if (i < tracks.length - 1 && verticalDragDirection) {
+		if (i < tracks.length - 1 && (verticalDragDirection || external)) {
 			const gapTop = trackBottom;
 			const gapBottom = gapTop + TIMELINE_TRACK_GAP_PX;
 			if (mouseY >= gapTop && mouseY < gapBottom) {
+				if (external) return { trackIndex: i + 1, relativeY: 0, inGap: true };
 				const isDraggingUp = verticalDragDirection === "up";
 				return {
 					trackIndex: isDraggingUp ? i : i + 1,
@@ -112,13 +116,13 @@ export function computeDropTarget({
 	zoomLevel,
 	verticalDragDirection,
 	startTimeOverride,
+	frameRate,
 	excludeElementId,
 	excludeElementIds,
 	targetElementTypes,
 }: ComputeDropTargetParams): DropTarget {
 	const orderedTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
-	const mainTrackIndex = tracks.overlay.length;
-	const xPosition =
+	const rawPosition =
 		startTimeOverride !== undefined
 			? startTimeOverride
 			: isExternalDrop
@@ -129,6 +133,7 @@ export function computeDropTarget({
 								TICKS_PER_SECOND,
 						),
 					});
+	const xPosition = frameRate ? roundFrameTime({ time: rawPosition, fps: frameRate }) : rawPosition;
 
 	if (orderedTracks.length === 0) {
 		const placementResult = resolveTrackPlacement({
@@ -161,6 +166,7 @@ export function computeDropTarget({
 		mouseY,
 		tracks: orderedTracks,
 		verticalDragDirection,
+		external: isExternalDrop,
 	});
 
 	if (!trackAtMouse) {
@@ -192,10 +198,10 @@ export function computeDropTarget({
 		};
 	}
 
-	const { trackIndex, relativeY } = trackAtMouse;
+	const { trackIndex, relativeY, inGap } = trackAtMouse;
 	const track = orderedTracks[trackIndex];
 
-	if (targetElementTypes && targetElementTypes.length > 0) {
+	if (!inGap && targetElementTypes && targetElementTypes.length > 0) {
 		const targetElement = findElementAtPosition({
 			mouseX,
 			tracks: orderedTracks,
@@ -225,6 +231,7 @@ export function computeDropTarget({
 			trackIndex,
 			hoverDirection: relativeY < trackHeight / 2 ? "above" : "below",
 			verticalDragDirection,
+			createNewTrackOnly: inGap,
 		},
 	});
 	if (!placementResult) {

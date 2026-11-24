@@ -1,4 +1,5 @@
 import { validateElementTrackCompatibility } from "@/timeline/placement/compatibility";
+import { canPlaceTimeSpansOnTrack } from "@/timeline/placement/overlap";
 import { keepTiming, mergeHumanFields, takeHumanFields, validateKeptFit } from "./human-conflicts";
 import { withHumanFields, isHumanFieldPath, equalHumanValue } from "@/timeline/human-fields";
 // Agent draft ops applied to a copy of the project's scenes. Pure: the bridge loads assets first,
@@ -176,8 +177,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					if (cut.start) at.result.startWord = cut.start;
 					if (cut.end) at.result.endWord = cut.end;
 				} else snapped = snapCutsToWords(el, words, fps);
-				if (!snapped) return el;
-				const next = { ...el, ...snapped };
+				const next = snapped ? { ...el, ...snapped } : el;
 				// The clip was just placed in a free spot: its new span must not reach any other clip.
 				const end = next.startTime + next.duration;
 				const clash = track.elements.find((other: TimelineElement, j: number) => j !== index && other.startTime < end && other.startTime + other.duration > next.startTime);
@@ -291,7 +291,15 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		}
 		const ctx: BuildContext = { canvas, keyframes: [], mediaFor, existing: list, created: [] };
 		// Placed as usual first (defaults, track, place), then its cuts move out of words.
-		const placed = editTracks(sceneId, (tracks) => placeAgentElement({ tracks, sceneId, e: element, ref: track, ctx }));
+		const placed = editTracks(sceneId, (tracks) => placeAgentElement({
+			tracks, sceneId, e: element, ref: track, ctx,
+			prepare: words ? undefined : (candidate, target) => {
+				if (!canPlaceTimeSpansOnTrack({ track: target, timeSpans: [candidate] })) {
+					throw new Error(`the added clip would overlap another clip on ${target.name}`);
+				}
+				return candidate;
+			},
+		}));
 		if (words) placed.element = snapPlaced(sceneId, placed.element.id, words, atWords ? { startWord: element.startAtWord, endWord: element.endAfterWord, result } : undefined);
 		placedElement(sceneId, track.name, placed, ctx, result);
 	};
@@ -341,7 +349,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				operation.release = { id: hit.element.id, fields: take };
 				if (protection(hit, staleFields).has("start")) operation.fixedStartId = outcome.element.id;
 			}
-			return outcome.element;
+			return kept.size && outcome.element !== hit.element
+				? withHumanFields(outcome.element, [...(outcome.element.humanFields ?? []), ...kept])
+				: outcome.element;
 		};
 		switch (op.op) {
 			case "add":

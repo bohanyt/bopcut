@@ -236,6 +236,22 @@ test("CLI frame capture finishes while its progress response is delayed", async 
 	}
 });
 
+test("invalid workspace frame requests receive one error from the matching project", async () => {
+	const { results, render, open } = setup({ pauseAt: "" });
+	const poll = (body: object) => pollFrames(ready, Response.json(body));
+	await poll({ rev: "bad/rev", width: false });
+	await poll({ rev: "bad-times", times: [-1], projectId: "another" });
+	expect(results).toEqual([]);
+	for (let attempt = 0; attempt < 2; attempt++) {
+		await poll({ rev: "bad-times", times: [-1], projectId: "p" });
+		await poll({ rev: "bad-width", times: [0], width: 4097 });
+	}
+	open("other");
+	await poll({ rev: "bad-width", times: [0], width: 4097 });
+	expect(results).toEqual(["bad-times", "bad-width"].map((rev) => ({ rev, projectId: "p", files: [], error: expect.any(String) })));
+	expect(render).not.toHaveBeenCalled();
+});
+
 test("agent frame resizing caps the height of a narrow portrait canvas", async () => {
 	const { drawImage, results } = setup({ pauseAt: "", times: [0], imageSize: { width: 64, height: 4096 } });
 	const limits = spyOn(graphics, "getRendererLimits")
