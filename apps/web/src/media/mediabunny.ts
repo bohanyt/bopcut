@@ -1,6 +1,7 @@
 import {
 	AudioSampleSink,
 	type Input,
+	type InputVideoTrack,
 } from "mediabunny";
 import { EXPORT_SAMPLE_RATE as SAMPLE_RATE, mixTimelineAudio } from "@/media/audio-mixdown";
 import type { SceneTracks, TScene } from "@/timeline";
@@ -36,16 +37,7 @@ export async function readVideoFile({
 		await checkPacketTail(videoTrack, signal);
 		const packetStats = await videoTrack.computePacketStats(100);
 		const { displayWidth: width, displayHeight: height } = videoTrack;
-		const thumbnailUrl = await withFirstVideoFrame(videoTrack, signal, (frame) => {
-			try {
-				return renderThumbnailDataUrl({
-					width, height,
-					draw: ({ context, width, height }) => frame.draw(context, 0, 0, width, height),
-				});
-			} catch {
-				return null;
-			}
-		});
+		const thumbnailUrl = await firstFrameThumbnail(videoTrack, signal);
 		const audio = await readVideoAudio(input, signal);
 
 		return {
@@ -58,6 +50,25 @@ export async function readVideoFile({
 			thumbnailUrl,
 		};
 	});
+}
+
+function firstFrameThumbnail(track: InputVideoTrack, signal?: AbortSignal) {
+	return withFirstVideoFrame(track, signal, (frame) => {
+		try {
+			return renderThumbnailDataUrl({
+				width: track.displayWidth, height: track.displayHeight,
+				draw: ({ context, width, height }) => frame.draw(context, 0, 0, width, height),
+			});
+		} catch {
+			return null;
+		}
+	});
+}
+
+export function readVideoThumbnail(file: File, signal: AbortSignal): Promise<string | null> {
+	return withVideoInput(file, signal, async (input) =>
+		firstFrameThumbnail(await getDecodableVideoTrack(input), signal),
+	);
 }
 
 async function readVideoAudio(input: Input, signal?: AbortSignal) {

@@ -33,6 +33,7 @@ import {
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { mediaTimeFromSeconds, type MediaTime } from "@/wasm";
 import { useEditor } from "@/editor/use-editor";
+import { useVisibleThumbnail } from "@/media/use-visible-thumbnail";
 import { useFileUpload } from "@/media/use-file-upload";
 import { invokeAction } from "@/actions";
 import { isModelFile } from "@/media/media-utils";
@@ -482,12 +483,25 @@ function MediaPreview({
 	item: MediaAsset;
 	variant?: "grid" | "compact";
 }) {
+	const { ref, thumbnailUrl } = useVisibleThumbnail(item);
+	return (
+		<div ref={ref} className="size-full">
+			<MediaPreviewContent item={item} thumbnailUrl={thumbnailUrl} variant={variant} />
+		</div>
+	);
+}
+
+function MediaPreviewContent({ item, thumbnailUrl, variant }: {
+	item: MediaAsset;
+	thumbnailUrl: string | undefined;
+	variant: "grid" | "compact";
+}) {
 	const { t } = useI18n();
 	const shouldShowDurationBadge = variant === "grid";
 
 	if (item.type === "image") {
-		const src = isModelFile(item.file) ? item.thumbnailUrl :
-			item.file.type === "image/gif" ? item.url : item.thumbnailUrl ?? item.url;
+		const src = isModelFile(item.file) ? thumbnailUrl :
+			item.file.type === "image/gif" ? item.url : thumbnailUrl ?? item.url;
 		return (
 			<div className="relative flex size-full items-center justify-center bg-muted">
 				{src && <MediaPreviewImage src={src} alt={item.name} className="object-cover" />}
@@ -496,11 +510,11 @@ function MediaPreview({
 	}
 
 	if (item.type === "video") {
-		if (item.thumbnailUrl) {
+		if (thumbnailUrl) {
 			return (
 				<div className="relative size-full">
 					<MediaPreviewImage
-						src={item.thumbnailUrl}
+						src={thumbnailUrl}
 						alt={item.name}
 						className="rounded object-cover"
 					/>

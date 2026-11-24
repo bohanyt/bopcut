@@ -116,6 +116,39 @@ describe("media thumbnails", () => {
 		return handler(req, { params: Promise.resolve({ slug }) });
 	}
 
+	test("writes one matching missing thumbnail and leaves media and project bytes alone", async () => {
+		const id = "missing-thumbnail";
+		const { dir, metadata, metadataFile } = await legacyMedia(id);
+		const { thumbnailUrl: _thumbnail, ...withoutThumbnail } = metadata;
+		await fs.writeFile(metadataFile, JSON.stringify({ ...withoutThumbnail, futureField: 42 }));
+		const projectFile = path.join(dir, "..", "project.json");
+		const project = JSON.stringify({ metadata: { id, name: id } });
+		await fs.writeFile(projectFile, project);
+		const source = `/api/storage/projects/${id}/media/m`;
+		const response = await call(source);
+		const revision = response.headers.get("X-Media-Revision")!;
+		expect(await response.text()).toBe("original");
+		expect((await call(`${source}/thumbnail`, "POST", { "X-Media-Revision": "stale" }, inline)).status).toBe(409);
+		const save = (data: string) => call(`${source}/thumbnail`, "POST", { "X-Media-Revision": revision }, data);
+		const alternate = "data:image/jpeg,%FF%D8%FF%D9%80";
+		const results = await Promise.all([save(inline), save(alternate)]);
+		const [winner, other] = await Promise.all(results.map((result) => result.json()));
+		expect(winner).toEqual(other);
+		const stored = await fs.readFile(metadataFile, "utf8");
+		const saved = JSON.parse(stored);
+		expect(saved).toMatchObject({ ...withoutThumbnail, futureField: 42 });
+		expect([inline, alternate]).toContain(saved.thumbnailUrl);
+		const expectedBytes = saved.thumbnailUrl === inline ? bytes : [...bytes, 128];
+		expect(await (await call(winner.url)).arrayBuffer()).toEqual(Uint8Array.from(expectedBytes).buffer);
+		const before = await fs.stat(metadataFile);
+		await save(inline);
+		const after = await fs.stat(metadataFile);
+		expect(after).toMatchObject({ ino: before.ino, mtimeMs: before.mtimeMs });
+		expect(await fs.readFile(metadataFile, "utf8")).toBe(stored);
+		expect(await fs.readFile(projectFile, "utf8")).toBe(project);
+		expect(await fs.readFile(path.join(dir, "m.mp4"), "utf8")).toBe("original");
+	});
+
 	test("projects legacy thumbnails into compact references without changing any files", async () => {
 		const id = "legacy";
 		const { dir, metadata, metadataFile } = await legacyMedia(id);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { projectDir, readJson, statFile } from "./files";
+import { atomicWrite, mediaRevision, projectDir, readJson, statFile, withProjectLock } from "./files";
 
 const inlinePattern = /^data:(image\/[a-z0-9][a-z0-9.+-]{0,63})(?:;[a-z0-9-]+=[^;,]*)*(;base64)?,/i;
 const metadataFile = (projectId: string, mediaId: string) =>
@@ -98,6 +98,27 @@ export function isEmbeddedMediaThumbnail(value: unknown): value is string {
 	if (typeof value !== "string") return false;
 	const header = inlinePattern.exec(value);
 	return !!header && !!decodeDataPayload(value.slice(header[0].length), !!header[2])?.byteLength;
+}
+
+/** Repair just the missing field while retaining the latest metadata and original file. */
+export async function storeMissingMediaThumbnail(projectId: string, mediaId: string, expected: string | null, thumbnail: string) {
+	if (!expected || thumbnail.length > 1024 * 1024 || !isEmbeddedMediaThumbnail(thumbnail)) {
+		return new Response(null, { status: 400 });
+	}
+	return withProjectLock(projectId, async () => {
+		const file = metadataFile(projectId, mediaId);
+		const metadata = await readJson(file);
+		if (!metadata || metadata.staged || (metadata.type !== "image" && metadata.type !== "video") ||
+			!new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(metadata.diskFile)) {
+			return new Response(null, { status: 404 });
+		}
+		const source = await statFile(path.join(projectDir(projectId), "media", metadata.diskFile));
+		if (!source || mediaRevision(source) !== expected) return new Response(null, { status: 409 });
+		const existing = mediaThumbnailReference(projectId, mediaId, metadata.thumbnailUrl);
+		if (existing) return Response.json({ url: existing });
+		await atomicWrite(file, JSON.stringify({ ...metadata, thumbnailUrl: thumbnail }));
+		return Response.json({ url: mediaThumbnailReference(projectId, mediaId, thumbnail) });
+	});
 }
 
 function decodeDataPayload(payload: string, base64: boolean): Buffer<ArrayBuffer> | null {

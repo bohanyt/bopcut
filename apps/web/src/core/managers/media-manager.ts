@@ -1,7 +1,11 @@
 import { localizeErrorDetail } from "@/i18n/error-details";
 import { getBrowserTranslator } from "@/i18n/browser";
 import { releaseMediaAssetUrls } from "@/media/url-release";
-import { processMediaFile } from "@/media/processing";
+import { generateImageThumbnail, processMediaFile } from "@/media/processing";
+import { readVideoThumbnail } from "@/media/mediabunny";
+import { isModelFile } from "@/media/media-utils";
+import { thumbnailActivity } from "@/media/thumbnail-activity";
+import { ThumbnailQueue } from "@/media/thumbnail-queue";
 import type { EditorCore } from "@/core";
 import { toast } from "sonner";
 import type { MediaAsset, MediaLoadFailure, MediaType } from "@/media/types";
@@ -53,8 +57,61 @@ export class MediaManager {
 	private binWrites = new Map<string, Map<string, BinWrite>>();
 	private loadingBinChanges: { projectId: string; changes: Map<string, MediaAsset | null> } | null = null;
 	private listeners = new Set<() => void>();
+	private thumbnails?: ThumbnailQueue<MediaAsset>;
+	private failedThumbnails = new WeakSet<File>();
+	private thumbnailListeners = new Map<string, Set<() => void>>();
 
 	constructor(private editor: EditorCore) {}
+
+	subscribeThumbnail(id: string, listener: () => void): () => void {
+		const listeners = this.thumbnailListeners.get(id) ?? new Set();
+		listeners.add(listener);
+		this.thumbnailListeners.set(id, listeners);
+		return () => {
+			listeners.delete(listener);
+			if (listeners.size === 0) this.thumbnailListeners.delete(id);
+		};
+	}
+
+	requestThumbnail(asset: MediaAsset): () => void {
+		const session = this.startImport();
+		if (this.editor.renderOnly || !session || asset.thumbnailUrl || this.failedThumbnails.has(asset.file) ||
+			(asset.type !== "video" && (asset.type !== "image" || isModelFile(asset.file)))) return () => {};
+		this.thumbnails ??= new ThumbnailQueue(thumbnailActivity(this.editor));
+		return this.thumbnails.request(asset, async (jobSignal) => {
+			const signal = AbortSignal.any([jobSignal, session.signal]);
+			const current = () => this.assets.find(({ id, file }) => id === asset.id && file === asset.file);
+			const target = current();
+			if (!target || target.thumbnailUrl || this.failedThumbnails.has(asset.file)) return;
+			let thumbnail: string | null;
+			try {
+				signal.throwIfAborted();
+				if (asset.type === "video") {
+					thumbnail = await readVideoThumbnail(asset.file, signal);
+				} else {
+					const url = URL.createObjectURL(asset.file);
+					try {
+						thumbnail = (await generateImageThumbnail({ url, signal })).thumbnailUrl;
+					} finally {
+						URL.revokeObjectURL(url);
+					}
+				}
+				if (!thumbnail) throw new Error("Thumbnail is unavailable");
+			} catch {
+				if (!signal.aborted) this.failedThumbnails.add(asset.file);
+				return;
+			}
+			signal.throwIfAborted();
+			if (!current() || current()?.thumbnailUrl) return;
+			const thumbnailUrl = await storageService.storeMissingMediaThumbnail(session.projectId, asset, thumbnail, signal);
+			signal.throwIfAborted();
+			const updated = current();
+			if (!updated || updated.thumbnailUrl) return;
+			// Thumbnail-only notifications avoid recomputing the editor's media and scene snapshots.
+			updated.thumbnailUrl = thumbnailUrl;
+			this.thumbnailListeners.get(updated.id)?.forEach((listener) => listener());
+		});
+	}
 
 	startImport(): MediaImportSession | null {
 		const { project } = this.editor;
@@ -565,6 +622,8 @@ export class MediaManager {
 	}
 
 	clearAllAssets(): void {
+		this.thumbnails?.clear();
+		this.failedThumbnails = new WeakSet<File>();
 		this.loadGeneration++;
 		this.loadController?.abort();
 		this.loadController = null;

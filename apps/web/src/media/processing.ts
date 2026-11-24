@@ -30,7 +30,7 @@ const getStorageLimitDescription = ({
 	});
 };
 
-async function generateImageThumbnail({
+export async function generateImageThumbnail({
 	url,
 	signal,
 }: {

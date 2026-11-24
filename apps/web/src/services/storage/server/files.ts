@@ -101,6 +101,10 @@ export function revision(value: unknown): string {
 	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+export function mediaRevision(stat: import("node:fs").Stats): string {
+	return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
 // One queue per project keeps revision checks and renames ordered.
 const locks = new Map<string, Promise<void>>();
 export async function withProjectLock<T>(
@@ -127,7 +131,7 @@ export async function saveMedia(
 	mediaId: string,
 	metadata: any,
 	body: ReadableStream<Uint8Array>,
-): Promise<void> {
+): Promise<string | undefined> {
 	const dir = path.join(projectDir(id), "media");
 	safeId(mediaId);
 	if (
@@ -161,17 +165,20 @@ export async function saveMedia(
 			createWriteStream(temp, { flags: "wx" }),
 		);
 		await renameWithRetry(temp, file);
-		if (old) return;
-		try {
-			await atomicWrite(
-				metaFile,
-				JSON.stringify({ ...metadata, diskFile: fileName }),
-			);
-		} catch (error) {
-			// Without metadata the file is unreachable: do not leave it behind.
-			await fs.rm(file, { force: true });
-			throw error;
+		if (!old) {
+			try {
+				await atomicWrite(
+					metaFile,
+					JSON.stringify({ ...metadata, diskFile: fileName }),
+				);
+			} catch (error) {
+				// Without metadata the file is unreachable: do not leave it behind.
+				await fs.rm(file, { force: true });
+				throw error;
+			}
 		}
+		const stat = await statFile(file);
+		return stat ? mediaRevision(stat) : undefined;
 	} finally {
 		await fs.rm(temp, { force: true });
 	}
@@ -235,7 +242,7 @@ export async function streamMediaFile(file: string, fileType: string | undefined
 			"Accept-Ranges": "bytes",
 			"Content-Type": fileType || "application/octet-stream",
 			"Cache-Control": "no-store",
-			"X-Media-Revision": `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`,
+			"X-Media-Revision": mediaRevision(stat),
 		};
 		if (range) {
 			const match = /^bytes=(\d*)-(\d*)$/.exec(range);
