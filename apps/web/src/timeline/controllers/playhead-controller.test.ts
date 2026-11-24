@@ -46,7 +46,7 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 	const tracksViewport = { scrollLeft: 0 } as HTMLDivElement;
 	const attrs = new Map<string, string>();
 	const playhead = {
-		style: { left: "" },
+		style: { transform: "" },
 		contains: () => false,
 		getAttribute: (name: string) => attrs.get(name),
 		setAttribute: (name: string, value: string) => attrs.set(name, value),
@@ -122,6 +122,7 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 		replaceTracks: () => { tracks = { ...tracks }; controller.stopIfScopeChanged(); },
 		setDuration: (value: MediaTime) => { duration = value; },
 		lineTime: () => attrs.get("aria-valuenow"),
+		lineTransform: () => playhead.style.transform,
 		pointerCaptured: () => captured.has(1),
 		cancel: () => send("pointercancel", 400),
 		loseCapture: () => send("lostpointercapture", 400, { receiver: target }),
@@ -173,6 +174,7 @@ test("reveal scrolls only to a playhead outside the view", () => {
 	scrub.controller.reveal(time(8));
 	expect(scrub.rulerViewport.scrollLeft).toBe(300);
 	expect(scrub.tracksViewport.scrollLeft).toBe(300);
+	expect(scrub.lineTransform()).toBe("translateX(99px)");
 });
 
 test("snap points are reused until the scene data changes and Shift bypasses the cache", () => {

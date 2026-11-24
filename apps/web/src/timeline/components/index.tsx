@@ -359,7 +359,7 @@ export function Timeline() {
 		onSnapPointChange: handleSnapPointChange,
 	});
 
-	const { handleRulerPointerDown: handlePlayheadRulerPointerDown } =
+	const { handleRulerPointerDown: handlePlayheadRulerPointerDown, handlePlayheadPointerDown } =
 		useTimelinePlayhead({
 			zoomLevel,
 			rulerRef,
@@ -627,11 +627,10 @@ export function Timeline() {
 					<TimelinePlayhead
 						zoomLevel={zoomLevel}
 						hasHorizontalScrollbar={hasHorizontalScrollbar}
-						rulerRef={rulerRef}
-						rulerScrollRef={rulerScrollRef}
 						tracksScrollRef={tracksScrollRef}
 						timelineRef={timelineRef}
 						playheadRef={playheadRef}
+						onPointerDown={handlePlayheadPointerDown}
 						isSnappingToPlayhead={
 							showSnapIndicator && currentSnapPoint?.type === "playhead"
 						}
