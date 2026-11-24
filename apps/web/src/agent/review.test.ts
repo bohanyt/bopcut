@@ -10,9 +10,11 @@ import type { TextElement, VideoElement } from "@/timeline";
 import { reserveEditorActivity, reserveReview } from "./review-activity";
 import { knownExportProfile, saveExportProfile } from "./export-profile";
 import { cutPop, finding, summarizeReview, unusualPauses } from "./review-findings";
-import { inspectTimeline, textFindings } from "./review-timeline";
+import { inspectTimeline, reviewSourceCrop, textFindings } from "./review-timeline";
 import { writeReview } from "./review-server";
-import { frameAt, frameCadence, probeReviewFile, scanReviewFile } from "./review-scan";
+import { cutFrames, frameAt, frameCadence, probeReviewFile, scanReviewFile } from "./review-scan";
+import { requireReviewScratch, reviewScratchBytes, reviewTimeout } from "./review-limits";
+import { visibleRangeElements } from "./range-view-project";
 
 test("a short isolated click is distinct from a hard speech onset and a longer sound effect", () => {
 	const pcm = new Float32Array(400).fill(0.02);
@@ -49,6 +51,47 @@ test("a short final sample preserves 30 fps, and VFR lookup uses decoded timesta
 	expect(frameCadence(variable, 30).variable).toBe(true);
 	expect(frameAt(variable, 0.08)).toBe(1);
 	expect(frameAt(variable, 0.10)).toBe(2);
+	expect(cutFrames(variable, 0.08)).toEqual({ before: 1, after: 2 });
+	expect(cutFrames(variable, 0.10)).toEqual({ before: 1, after: 2 });
+	expect(cutFrames(variable, 0.25)).toEqual({ before: 5, after: undefined });
+});
+
+test("duration controls time and scratch limits before a decode begins", () => {
+	expect(reviewTimeout(10)).toBe(180000);
+	expect(reviewTimeout(600)).toBe(300000);
+	const bytes = reviewScratchBytes(600, 30, 48000, 2);
+	expect(bytes).toBe(274176000);
+	expect(() => requireReviewScratch(2 * 1024 ** 3 + bytes - 1, bytes)).toThrow("Insufficient scratch space");
+	expect(() => requireReviewScratch(2 * 1024 ** 3 + bytes, bytes)).not.toThrow();
+});
+
+test("a non-zero export range clips title timing before length and bounds checks", () => {
+	const [root] = fixture();
+	root.tracks.overlay = [{ type: "text", id: "titles", name: "Titles", hidden: false, elements: [
+		{ ...text("headline", 0, 8), params: { content: "Read this full sentence before it disappears", fontSize: 9 } },
+		{ ...text("excluded", 0, 0.25), params: { content: "Outside the export", fontSize: 1 } },
+	] }];
+	root.tracks.audio = [];
+	const report = inspectTimeline(root, [root], [], { width: 640, height: 360 }, 10, 30, { from: 5, to: 6 });
+	expect(report.findings.find((hit) => hit.kind === "short-text")).toMatchObject({ from: 5, to: 6, elementIds: ["headline"],
+		values: { seconds: 1, sampledAt: expect.any(Number) } });
+	expect(report.findings.some((hit) => hit.elementIds.includes("excluded"))).toBe(false);
+	expect(report.instances.every((item) => item.start >= 5 && item.end <= 6)).toBe(true);
+});
+
+test("portrait crop uses the visible source rectangle and rejects unproved transforms", () => {
+	const [root] = fixture();
+	root.tracks.overlay = [];
+	root.tracks.audio = [];
+	const item = [...visibleRangeElements(root, [root], { from: 0, to: 5, rows: 1 })][0];
+	const asset = { id: "asset", name: "Landscape", width: 640, height: 360 };
+	item.element.params = { "transform.scaleX": 3.160493827, "transform.scaleY": 3.160493827 };
+	const crop = reviewSourceCrop(item, { width: 360, height: 640 }, asset);
+	expect(crop?.x).toBeCloseTo(219, 0);
+	expect(crop?.width).toBeGreaterThanOrEqual(202);
+	expect(crop?.width).toBeLessThan(205);
+	item.element.params["transform.rotate"] = 5;
+	expect(reviewSourceCrop(item, { width: 360, height: 640 }, asset)).toBeNull();
 });
 
 test("a short caption follows words heard during the span even if the middle of its clip is silent", () => {
@@ -131,12 +174,13 @@ async function encode(args: string[], output: string, codec = "mpeg4") {
 test.skipIf(!available)("one pass retains 29.97, 60 and 33/67 ms decoded cadence", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "review-cadence-"));
 	try {
-		for (const [name, rate, variable] of [["fractional.mov", "30000/1001", false], ["fast.mov", "60", false], ["vary.webm", "30", true]] as const) {
+		for (const [name, rate, variable] of [["fractional.mov", "30000/1001", false], ["fast.mov", "60", false],
+			["fractional.webm", "30000/1001", false], ["fast.webm", "60", false], ["vary.webm", "30", true]] as const) {
 			const file = path.join(dir, name);
-			const output = path.join(dir, rate.replace("/", "-"));
+			const output = path.join(dir, "decoded-" + name);
 			await fs.mkdir(output);
 			await encode(["-f", "lavfi", "-i", `testsrc2=s=64x36:r=${rate}:d=1`, ...(variable ?
-				["-vf", "select='not(eq(mod(n,3),2))'", "-fps_mode", "vfr"] : [])], file, variable ? "libvpx-vp9" : "mpeg4");
+				["-vf", "select='not(eq(mod(n,3),2))'", "-fps_mode", "vfr"] : [])], file, name.endsWith(".webm") ? "libvpx-vp9" : "mpeg4");
 			const signal = AbortSignal.timeout(12_000);
 			const scan = await scanReviewFile(file, output, await probeReviewFile(file, signal, dir), signal, dir);
 			expect(scan.decodeError).toBeUndefined();
@@ -147,6 +191,16 @@ test.skipIf(!available)("one pass retains 29.97, 60 and 33/67 ms decoded cadence
 				expect(scan.stamps.some((item, i) => i > 0 && item.at - scan.stamps[i - 1].at > 0.06)).toBe(true);
 			} else expect(scan.fps).toBeCloseTo(rate === "60" ? 60 : 30000 / 1001, 3);
 		}
+		const broken = path.join(dir, "timing-failure");
+		await fs.mkdir(path.join(broken, "frames.crc"), { recursive: true });
+		const file = path.join(dir, "fast.mov");
+		const signal = AbortSignal.timeout(12000);
+		const probe = await probeReviewFile(file, signal, dir);
+		const open = spyOn(fs, "open");
+		try {
+			await expect(scanReviewFile(file, broken, probe, signal, dir)).rejects.toThrow();
+			expect(open).not.toHaveBeenCalledWith(path.join(broken, "frames.gray"), "r");
+		} finally { open.mockRestore(); }
 	} finally { await fs.rm(dir, { recursive: true, force: true }); }
 }, 30_000);
 
@@ -276,6 +330,10 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 		await encode(["-i", source, "-an"], path.join(files, "silent.mov"));
 		const noAudio = await read("silent.mov");
 		expect(noAudio.report.findings.find((hit) => hit.kind === "missing-audio")?.severity).toBe("error");
+		const silentStat = await fs.stat(path.join(files, "silent.mov"));
+		await fs.writeFile(path.join(dir, "export-result.json"), JSON.stringify({ projectId: "fixture", file: "files/silent.mov",
+			bytes: silentStat.size, fileMtimeMs: silentStat.mtimeMs - 1000, status: "done", sceneId: "alternate", includeAudio: false }));
+		expect((await read("silent.mov")).summary.sceneNotice).toContain("current saved scene");
 		await saveExportProfile(dir, "files/silent.mov", { projectId: "fixture", width: 640, height: 360, fps: 24,
 			sceneId: "alternate", includeAudio: false, range: { from: 0, to: 12 } });
 		const off = await read("silent.mov");
@@ -286,13 +344,22 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 			"-map", "0:v", "-map", "1:a", "-c:a", "pcm_s16le"], path.join(files, "broken-mix.mov"));
 		const dropped = await read("broken-mix.mov");
 		expect(dropped.report.findings.find((hit) => hit.kind === "unexpected-silence")).toMatchObject({ severity: "warning", from: 3 });
+		const savedPath = path.join(projectDir, "project.json");
+		const oldProject = await fs.readFile(savedPath, "utf8");
+		const ducked = JSON.parse(oldProject) as { scenes: ReturnType<typeof fixture> };
+		ducked.scenes[0].tracks.audio[0].elements[0].params.volume = -60;
+		await fs.writeFile(savedPath, JSON.stringify(ducked));
+		await encode(["-i", source, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=12", "-map", "0:v", "-map", "1:a",
+			"-c:a", "pcm_s16le"], path.join(files, "ducked.mov"));
+		const silence = (await read("ducked.mov")).report.findings;
+		expect(silence.find((hit) => hit.kind === "audio-levels")?.severity).toBe("info");
+		expect(silence.filter((hit) => hit.kind === "unexpected-silence")).toEqual([expect.objectContaining({ from: 6, severity: "warning" })]);
+		await fs.writeFile(savedPath, oldProject);
 
 		// Black in the source and a separate empty timeline gap stay distinguishable.
 		const solid = path.join(media, "source.mp4");
 		await encode(["-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=12",
 			"-vf", "drawbox=c=black:t=fill:enable='gte(t,0.5)*lt(t,1)'"], solid);
-		const savedPath = path.join(projectDir, "project.json");
-		const oldProject = await fs.readFile(savedPath, "utf8");
 		const edits = JSON.parse(oldProject) as { scenes: ReturnType<typeof fixture> };
 		const track = edits.scenes[0].tracks.main;
 		const video = track.elements[0];
@@ -300,7 +367,8 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 		await fs.writeFile(savedPath, JSON.stringify(edits));
 		await encode(["-i", solid, "-vf", "drawbox=c=black:t=fill:enable='gte(t,2)*lt(t,2.5)'", "-an"], path.join(files, "dark.mov"));
 		const black = (await read("dark.mov")).report.findings;
-		expect(black.find((hit) => hit.kind === "black-picture" && Math.abs(hit.from - 0.5) < 0.05)?.severity).toBe("info");
+		expect(black.find((hit) => hit.kind === "black-picture" && Math.abs(hit.from - 0.75) < 0.05)?.severity).toBe("info");
+		expect(black.some((hit) => hit.kind === "black-picture" && Math.abs(hit.from - 0.5) < 0.05)).toBe(false);
 		expect(black.find((hit) => hit.kind === "black-gap" && Math.abs(hit.from - 2) < 0.05)?.severity).toBe("warning");
 		await fs.writeFile(savedPath, oldProject);
 
@@ -319,6 +387,24 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 		expect(cancel.signal.aborted).toBe(true);
 		expect(await fs.readdir(path.join(dir, "reviews"))).toEqual(existing);
 		expect(await fs.readFile(path.join(dir, "review.json"), "utf8")).toBe(before);
+		const portraitSource = path.join(media, "reframe.mp4");
+		await encode(["-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=3", "-vf",
+			"negate=enable='between(t,1.7,2.25)',drawbox=x=216:y=0:w=208:h=360:c=gray:t=fill,drawbox=x=216:y=0:w=208:h=360:c=black:t=fill:enable='lt(t,1.25)'"],
+			portraitSource);
+		await fs.writeFile(path.join(media, "_metadata", "reframe.json"), JSON.stringify({ id: "reframe", name: "Landscape",
+			diskFile: "reframe.mp4", fileType: "video/mp4", width: 640, height: 360, hasAudio: false }));
+		const [portrait] = fixture();
+		portrait.tracks.main.elements = [{ ...portrait.tracks.main.elements[0] as VideoElement, mediaId: "reframe", duration: t(3),
+			params: { "transform.scaleX": 3.160493827, "transform.scaleY": 3.160493827 } }];
+		portrait.tracks.audio = []; portrait.tracks.overlay = [];
+		await fs.writeFile(savedPath, JSON.stringify({ version: CURRENT_PROJECT_VERSION, metadata: { id: "fixture", name: "Short-form reframe" },
+			currentSceneId: portrait.id, scenes: [portrait], settings: { canvasSize: { width: 360, height: 640 },
+				fps: { numerator: 24, denominator: 1 }, background: { type: "color", color: "#000000" } } }));
+		await encode(["-i", portraitSource, "-vf", "crop=202:360:219:0:exact=1,scale=360:640", "-an"], path.join(files, "portrait.mov"));
+		const reframed = await read("portrait.mov");
+		expect(reframed.summary.clean).toBe(true);
+		expect(reframed.report.findings.find((hit) => hit.kind === "black-picture")?.severity).toBe("info");
+		expect(reframed.report.findings.find((hit) => hit.kind === "frozen-picture")?.severity).toBe("info");
 		const oldSetting = process.env.BOPENCUT_FFPROBE;
 		try {
 			process.env.BOPENCUT_FFPROBE = path.join(dir, "missing-ffprobe");

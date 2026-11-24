@@ -13,9 +13,10 @@ import { fileInside, inside } from "./inside";
 import { exportSceneSettings, knownExportProfile } from "./export-profile";
 import { accumulatePeaks, drawRangeView, RANGE_BUCKETS, RANGE_HEADER, RANGE_ROW_HEIGHT, RANGE_WIDTH } from "./range-view";
 import { decibels, finding, meanDelta, REVIEW_LIMITS as L, summarizeReview, type ReviewFinding } from "./review-findings";
-import { frameAt, inspectAudio, probeReviewFile, REVIEW_HEIGHT, REVIEW_WIDTH, scanReviewFile, sourceFrames, sourcePeak, type FileScan, type Interval } from "./review-scan";
-import { inspectTimeline, reviewOpacity, type ReviewMedia } from "./review-timeline";
+import { cutFrames, frameAt, inspectAudio, probeReviewFile, REVIEW_HEIGHT, REVIEW_WIDTH, scanReviewFile, sourceFrames, sourcePeaks, type FileScan, type Interval } from "./review-scan";
+import { inspectTimeline, reviewOpacity, reviewSourceCrop, type ReviewMedia } from "./review-timeline";
 import { readReviewableProject } from "./transcript-view-server";
+import { requireReviewScratch, reviewScratchBytes, reviewTimeout } from "./review-limits";
 
 const missingTool = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 const frameBytes = REVIEW_WIDTH * REVIEW_HEIGHT;
@@ -24,19 +25,20 @@ type EvidenceRow = { at: number; elementIds: string[]; picture?: string; before?
 export async function writeReview({
 	projectId, relative, pictures, timeoutMs, workspace, filesRoot, signal,
 }: {
-	projectId: string; relative: string; pictures: boolean; timeoutMs: number;
+	projectId: string; relative: string; pictures: boolean; timeoutMs?: number;
 	workspace: string; filesRoot: string; signal: AbortSignal;
 }) {
 	relative = path.relative(filesRoot, inside(filesRoot, relative));
 	const file = await fileInside(filesRoot, relative);
 	if (!file) throw new Error("The export was not found under AGENT_FILES_ROOT.");
 	const start = performance.now();
-	const active = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+	let active = timeoutMs === undefined ? signal : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
 	const { project, projectFile, scenes, root: defaultRoot, activeSceneId, media, dir } = await readReviewableProject(projectId, active);
 	const [saved, exported] = await Promise.all([fs.stat(projectFile), fs.stat(file)]);
 	const exportResult = await fileInside(workspace, "export-result.json");
 	const recorded = exportResult ? await readJson(exportResult).catch(() => null) : null;
 	const profile = await knownExportProfile(workspace, projectId, file, exported) ?? (recorded?.status === "done" && recorded.projectId === projectId && recorded.bytes === exported.size &&
+		recorded.fileMtimeMs === exported.mtimeMs &&
 		typeof recorded.file === "string" && await fileInside(workspace, recorded.file) === file ? {
 			width: typeof recorded.width === "number" ? recorded.width : null,
 			height: typeof recorded.height === "number" ? recorded.height : null,
@@ -67,7 +69,7 @@ export async function writeReview({
 			}
 		}
 	}
-	const timeline = inspectTimeline(root, scenes, assets, canvasSize, fullDuration, fps.numerator / fps.denominator);
+	const timeline = inspectTimeline(root, scenes, assets, canvasSize, fullDuration, fps.numerator / fps.denominator, { from: timelineStart, to: timelineEnd });
 	const findings = timeline.findings.filter((hit) => hit.from < timelineEnd && hit.to >= timelineStart);
 	for (const hit of findings) {
 		hit.from = Math.max(0, hit.from - timelineStart);
@@ -94,8 +96,24 @@ export async function writeReview({
 	let committed = false;
 	const run = async (scratch: string, cancellation: AbortSignal) => {
 		let scan: FileScan;
+		let probe: Awaited<ReturnType<typeof probeReviewFile>>;
+		const probeSignal = timeoutMs === undefined ?
+			AbortSignal.any([cancellation, AbortSignal.timeout(reviewTimeout(0))]) : cancellation;
 		try {
-			const probe = await probeReviewFile(file, cancellation, filesRoot);
+			probe = await probeReviewFile(file, probeSignal, filesRoot);
+		} catch (error) {
+			probeSignal.throwIfAborted();
+			if (missingTool(error)) { skipped.push(...toolsSkipped); return; }
+			findings.push(finding("broken-file", "error", 0, 0, { message: error instanceof Error ? error.message : String(error) }));
+			skipped.push(...toolsSkipped.slice(1));
+			return;
+		}
+		if (timeoutMs === undefined) {
+			active = cancellation = AbortSignal.any([cancellation, AbortSignal.timeout(Math.max(1, reviewTimeout(probe.duration) - Math.ceil(performance.now() - start)))]);
+		}
+		const scratchSpace = await fs.statfs(scratch);
+		requireReviewScratch(scratchSpace.bavail * scratchSpace.bsize, reviewScratchBytes(probe.duration, probe.fps, probe.sampleRate, probe.channels));
+		try {
 			const beginScan = performance.now();
 			scan = await scanReviewFile(file, scratch, probe, cancellation, filesRoot);
 			scanSeconds = (performance.now() - beginScan) / 1000;
@@ -109,7 +127,6 @@ export async function writeReview({
 			skipped.push(...toolsSkipped.slice(1));
 			return;
 		}
-		const probe = scan.probe;
 		observed = { ...probe, fps: scan.fps, frames: scan.frames, videoDuration: scan.videoDuration, variable: scan.variable };
 		if (scan.decodeError || !scan.frames) findings.push(finding("broken-file", "error", scan.stamps.at(-1)?.at ?? 0, probe.duration,
 			{ message: scan.decodeError ?? "No frames decoded.", frames: scan.frames }));
@@ -128,13 +145,13 @@ export async function writeReview({
 			expectedSounds.length ? "error" : "info", 0, scan.videoDuration, { expected: expectedSounds.length > 0, includeAudio: profile?.includeAudio ?? null },
 			[...new Set(expectedSounds.map((sound) => sound.element.id.split("/").at(-1)!))]));
 		for (const quiet of silent) {
+			const step = 0.1;
+			const expected = new Map<number, { peak: number; id: string }>();
 			for (const sound of expectedSounds) {
-				const from = Math.max(sound.from, quiet.from + timelineStart);
-				const end = Math.min(sound.to, quiet.to + timelineStart);
-				if (end <= from) continue;
-				const to = Math.min(end, from + 5);
-				const gain = Math.min(...[from + (to - from) / 4, (from + to) / 2, to - (to - from) / 4].map(sound.gain));
-				if (gain <= 0.001) continue;
+				const origin = quiet.from + timelineStart;
+				const first = Math.max(0, Math.ceil((sound.from - origin) / step - 1e-7));
+				const last = Math.floor((Math.min(sound.to, quiet.to + timelineStart) - origin) / step + 1e-7);
+				if (last <= first) continue;
 				let filename = assets.find(({ id }) => id === sound.mediaId)?.sourceFile;
 				if (!filename && /^\/api\/agent\/(?:sfx|music)-file\?/.test(sound.mediaId)) {
 					const url = new URL(sound.mediaId, "http://localhost");
@@ -142,17 +159,33 @@ export async function writeReview({
 						url.pathname.endsWith("/music-file") ? MUSIC_LIBRARY : undefined) ?? undefined;
 				}
 				if (!filename) continue;
-				const at = sound.src + (from - sound.from) * sound.rate;
-				const peak = await sourcePeak(filename, at, at + (to - from) * sound.rate, cancellation, filesRoot)
-					.catch(() => { cancellation.throwIfAborted(); return -Infinity; });
-				if (peak + decibels(gain) <= -60) continue;
-				findings.push(finding("unexpected-silence", "warning", quiet.from, quiet.to,
-					{ exportBelowDb: -60, expectedPeakDb: peak + decibels(gain), sourceStart: at, sourceEnd: at + (to - from) * sound.rate },
-					[sound.element.id.split("/").at(-1)!]));
-				break;
+				const sourceStep = step * sound.rate;
+				const at = sound.src + (origin + first * step - sound.from) * sound.rate;
+				const peaks = await sourcePeaks(filename, at, at + (last - first) * sourceStep, sourceStep, cancellation, filesRoot)
+					.catch(() => { cancellation.throwIfAborted(); return []; });
+				for (const entry of peaks) {
+					const index = first + Math.round(entry.at / sourceStep);
+					if (index < first || index >= last) continue;
+					const gain = sound.gain(origin + (index + 0.5) * step);
+					const peak = entry.peak + decibels(gain);
+					if (peak > -45 && peak > (expected.get(index)?.peak ?? -Infinity)) {
+						expected.set(index, { peak, id: sound.element.id.split("/").at(-1)! });
+					}
+				}
+			}
+			const indices = [...expected.keys()].sort((a, b) => a - b);
+			for (let i = 0; i < indices.length;) {
+				const start = i++;
+				while (i < indices.length && indices[i] === indices[i - 1] + 1) i++;
+				if (i - start < 10) continue;
+				const group = indices.slice(start, i).map((index) => expected.get(index)!);
+				findings.push(finding("unexpected-silence", "warning",
+					quiet.from + indices[start] * step, quiet.from + (indices[i - 1] + 1) * step,
+					{ exportBelowDb: -60, expectedAboveDb: -45, lowestExpectedPeakDb: Math.min(...group.map((item) => item.peak)), windowSeconds: step },
+					[...new Set(group.map((item) => item.id))]));
 			}
 		}
-		const visual = timeline.instances.filter(({ element }) => element.type !== "audio" && element.type !== "effect" && element.type !== "compound");
+		const visual = timeline.instances.filter(({ element }) => element.type !== "audio" && element.type !== "compound");
 		const sourceTime = (item: typeof visual[number], time: number) => {
 			const element = item.element;
 			const rate = getEffectiveRateAt({ retime: "retime" in element ? element.retime : undefined });
@@ -172,22 +205,28 @@ export async function writeReview({
 				.sort((a, b) => a - b);
 			for (let piece = 1; piece < boundaries.length; piece++) {
 				const a = boundaries[piece - 1], b = boundaries[piece];
+				if (b - a < L.blackSeconds - 1e-6) continue;
 				const midpoint = (a + b) / 2;
-				const item = visible.find((layer) => layer.start <= midpoint && layer.end > midpoint);
+				const layers = visible.filter((layer) => layer.start <= midpoint && layer.end > midpoint &&
+					reviewOpacity(layer, midpoint, canvasSize.height) > 0);
+				const item = layers[0];
 				if (!item) {
-					findings.push(finding("black-gap", "warning", a - timelineStart, b - timelineStart, values));
+					if (!visible.some((layer) => layer.start <= midpoint && layer.end > midpoint)) {
+						findings.push(finding("black-gap", "warning", a - timelineStart, b - timelineStart, values));
+					}
 					continue;
 				}
 				const element = item.element;
 				const fade = [a, midpoint, b - 1e-6].some((time) => reviewOpacity(item, time, canvasSize.height) < 0.95);
-				if (fade || (element.type !== "image" && element.type !== "video") || element.masks?.length) continue;
+				if (fade || (element.type !== "image" && element.type !== "video")) continue;
 				const asset = assets.find(({ id }) => id === element.mediaId);
+				const crop = layers.length === 1 && asset ? reviewSourceCrop(item, canvasSize, asset) : null;
 				const times = element.type === "image" ? [0] : [sourceTime(item, midpoint - timelineStart)];
-				const frames = asset?.sourceFile && !stale
-					? await sourceFrames(asset.sourceFile, times, path.join(scratch, `black-${index}.gray`), cancellation, filesRoot, element.type === "image")
+				const frames = crop && asset?.sourceFile && !stale
+					? await sourceFrames(asset.sourceFile, times, path.join(scratch, `black-${index}.gray`), cancellation, filesRoot, element.type === "image", crop)
 						.catch(() => { cancellation.throwIfAborted(); return []; }) : [];
 				const reference = frames[0];
-				const blackFraction = reference ? reference.reduce((sum, pixel) => sum + Number(pixel <= 16), 0) / reference.length : null;
+				const blackFraction = reference && crop ? 1 - crop.coverage * reference.reduce((sum, pixel) => sum + Number(pixel > 16), 0) / reference.length : null;
 				findings.push(finding("black-picture", blackFraction !== null && blackFraction < L.blackFraction ? "error" : "info",
 					a - timelineStart, b - timelineStart, { ...values, sourceBlackFraction: blackFraction }, [element.id]));
 			}
@@ -198,15 +237,16 @@ export async function writeReview({
 			const item = layers[0];
 			const source = item?.element;
 			const asset = source?.type === "video" ? assets.find(({ id }) => id === source.mediaId) : undefined;
+			const crop = layers.length === 1 && asset ? reviewSourceCrop(item, canvasSize, asset) : null;
 			let movement: number | null = null;
 			if (source?.type === "video" && source.retime?.rate !== 0 && item.start <= interval.from + timelineStart + 1e-6 &&
-				item.end >= interval.to + timelineStart - 1e-6 && asset?.sourceFile && !stale &&
+				item.end >= interval.to + timelineStart - 1e-6 && crop && asset?.sourceFile && !stale &&
 				reviewOpacity(item, interval.from + timelineStart, canvasSize.height) >= 0.95) {
 				const first = frameAt(scan.stamps, interval.from);
 				const last = frameAt(scan.stamps, Math.min(interval.to - 1e-6, interval.from + 6));
 				const times = scan.stamps.slice(first, last + 1).map((stamp) => sourceTime(item, stamp.at));
-				movement = await sourceFrames(asset.sourceFile, times, path.join(scratch, `motion-${index}.gray`), cancellation, filesRoot)
-					.then((frames) => frames.length < 2 ? null : frames.slice(1).reduce((max, frame, i) => Math.max(max, meanDelta(frames[i], frame)), 0))
+				movement = await sourceFrames(asset.sourceFile, times, path.join(scratch, `motion-${index}.gray`), cancellation, filesRoot, false, crop)
+					.then((frames) => frames.length < 2 ? null : crop.coverage * frames.slice(1).reduce((max, frame, i) => Math.max(max, meanDelta(frames[i], frame)), 0))
 					.catch(() => { cancellation.throwIfAborted(); return null; });
 			}
 			findings.push(finding("frozen-picture", movement !== null && movement >= L.sourceMeanDelta ? "warning" : "info",
@@ -214,9 +254,9 @@ export async function writeReview({
 					minimumSeconds: L.freezeSeconds }, source ? [source.id] : []));
 		}
 		if (scan.stamps.length) for (const cut of cuts) {
-			const at = frameAt(scan.stamps, cut.at);
-			cut.before = scan.stamps[Math.max(0, at - 1)].at;
-			cut.after = scan.stamps[at].at;
+			const pair = cutFrames(scan.stamps, cut.at);
+			cut.before = scan.stamps[pair.before].at;
+			cut.after = pair.after === undefined ? undefined : scan.stamps[pair.after].at;
 		}
 		if (!pictures) skipped.push("pictures-disabled");
 		else if (scan.stamps.length) {
@@ -262,9 +302,10 @@ async function evidencePictures(scan: FileScan, staged: string, id: string, word
 		add(typeof hit.values.sampledAt === "number" ? hit.values.sampledAt : hit.from).findings.push(hit);
 	}
 	if (!rows.size) return 0;
-	const handles = await Promise.all([fs.open(scan.video, "r"), scan.audio ? fs.open(scan.audio, "r").catch(() => null) : null]);
-	const [video, audio] = handles;
+	const video = await fs.open(scan.video, "r");
+	let audio: Awaited<ReturnType<typeof fs.open>> | null = null;
 	try {
+		audio = scan.audio ? await fs.open(scan.audio, "r").catch(() => null) : null;
 		const all = [...rows].sort(([a], [b]) => a - b);
 		const pageSize = Math.min(64, Math.max(8, Math.ceil(all.length / 12)));
 		for (let offset = 0; offset < all.length && files.length < 12; offset += pageSize) {
@@ -280,10 +321,11 @@ async function evidencePictures(scan: FileScan, staged: string, id: string, word
 			const tmp = tile.getContext("2d");
 			for (let i = 0; i < page.length; i++) {
 				signal.throwIfAborted();
-				const frame = frameAt(scan.stamps, page[i][0]);
+				const pairFrames = cutFrames(scan.stamps, page[i][0]);
 				const pair = createCanvas(REVIEW_WIDTH * 2, REVIEW_HEIGHT);
 				const pairCtx = pair.getContext("2d");
-				for (const [slot, index] of [Math.max(0, frame - 1), frame].entries()) {
+				for (const [slot, index] of [pairFrames.before, pairFrames.after].entries()) {
+					if (index === undefined) continue;
 					const gray = Buffer.alloc(frameBytes);
 					await video.read(gray, 0, gray.length, index * frameBytes);
 					const image = tmp.createImageData(REVIEW_WIDTH, REVIEW_HEIGHT);
@@ -326,5 +368,5 @@ async function evidencePictures(scan: FileScan, staged: string, id: string, word
 			for (const [, row] of page) for (const entry of [...row.cuts, ...row.findings]) entry.picture = name;
 		}
 		return Math.max(0, all.length - pageSize * files.length);
-	} finally { await Promise.all(handles.map((handle) => handle?.close())); }
+	} finally { await Promise.all([video.close(), audio?.close()]); }
 }

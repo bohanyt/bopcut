@@ -117,7 +117,9 @@ export async function handleExportFile(req: Request, workspace: string, job?: {
 	if ("error" in saved) return Response.json({ error: saved.error }, { status: saved.status });
 	const file = `exports/${saved.file}`;
 	const fields = Object.fromEntries(DONE_FIELDS.filter((key) => key in done).map((key) => [key, done[key]]));
-	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file, bytes: saved.bytes, ...fields };
+	const fileMtimeMs = await fs.stat(path.join(workspace, file)).then((stat) => stat.mtimeMs, () => undefined);
+	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file,
+		bytes: saved.bytes, fileMtimeMs, ...fields };
 	await saveExportProfile(workspace, file, result).catch(() => { /* The export can be reviewed without a known profile. */ });
 	if (job) await job.finish({ ...result, updatedAt: new Date().toISOString() });
 	else await writeExportResult({ workspace, result });

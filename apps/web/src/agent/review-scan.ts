@@ -11,7 +11,7 @@ const frameBytes = REVIEW_WIDTH * REVIEW_HEIGHT;
 const scanFilter = `scale=${REVIEW_WIDTH}:${REVIEW_HEIGHT}:flags=area,format=gray`;
 const safeInput = ["-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm,avi,mpegts,mpeg,m4v,ogg,wav,mp3,aac,flac"];
 
-export type Probe = { duration: number; streamDuration: number | null; width: number; height: number; fps: number; fpsRatio: string; channels: number; sampleRate: number };
+export type Probe = { duration: number; streamDuration: number | null; width: number; height: number; fps: number; fpsRatio: string; channels: number; sampleRate: number; tick: number };
 export type Interval = { from: number; to: number; value: number };
 type Stamp = { at: number; duration: number };
 export type FileScan = {
@@ -20,14 +20,22 @@ export type FileScan = {
 	stamps: Stamp[]; videoDuration: number; videoEnd: number; fps: number; variable: boolean;
 };
 
-export function frameCadence(stamps: Stamp[], fallback: number) {
-	const steps = stamps.slice(1, stamps.length > 2 ? -1 : undefined).map((frame, i) => frame.at - stamps[i].at)
-		.filter((step) => step > 0).sort((a, b) => a - b);
-	const step = steps.length ? (steps[(steps.length - 1) >> 1] + steps[steps.length >> 1]) / 2 : 1 / fallback;
-	const variable = steps.some((value) => Math.abs(value - step) > 0.0015);
+export function frameCadence(stamps: Stamp[], fallback: number, tick = 0.001) {
+	const end = stamps.length > 2 ? stamps.length - 2 : stamps.length - 1;
+	const span = (stamps[end]?.at ?? 0) - (stamps[0]?.at ?? 0);
+	const estimated = end > 0 && span > 0 ? end / span : fallback;
+	const step = Math.abs(span - end / fallback) <= tick + 1e-6 ? 1 / fallback : 1 / estimated;
+	const variable = stamps.slice(1, end + 1).some((frame, i) => Math.abs(frame.at - stamps[i].at - step) > tick + 2e-6);
 	const last = stamps.at(-1);
 	const fps = frameRateToFloat(floatToFrameRate(1 / step));
 	return { videoDuration: last ? last.at + (last.duration || step) - stamps[0].at : 0, fps, variable };
+}
+
+export function cutFrames(stamps: Stamp[], time: number) {
+	if (stamps[0].at >= time - 1e-6) return { before: 0, after: 0 };
+	const preceding = frameAt(stamps, time);
+	const after = preceding + Number(stamps[preceding].at < time - 1e-6);
+	return { before: Math.max(0, after - 1), after: after < stamps.length ? after : undefined };
 }
 
 export function frameAt(stamps: Stamp[], time: number) {
@@ -55,8 +63,9 @@ async function readStamps(file: string, signal: AbortSignal) {
 	return result;
 }
 
-const grayOutputs = (video: string, timing: string) => [
-	"-filter_complex", `[0:v:0]${scanFilter},settb=AVTB,split[raw][timing]`,
+export type SourceCrop = { x: number; y: number; width: number; height: number };
+const grayOutputs = (video: string, timing: string, crop?: SourceCrop) => [
+	"-filter_complex", `[0:v:0]${crop ? `crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}:exact=1,` : ""}${scanFilter},settb=AVTB,split[raw][timing]`,
 	"-map", "[raw]", "-fps_mode", "passthrough", "-enc_time_base", "1:1000000", "-c:v", "rawvideo", "-threads", "1", "-f", "rawvideo", video,
 	"-map", "[timing]", "-fps_mode", "passthrough", "-enc_time_base", "1:1000000", "-c:v", "rawvideo", "-threads", "1", "-f", "framecrc", timing,
 ];
@@ -65,9 +74,9 @@ export async function probeReviewFile(file: string, signal: AbortSignal, root: s
 	const [ffmpeg] = toolsFromEnv().ffmpeg;
 	const [exe, ...args] = fileProbeCommand(ffmpeg);
 	const { stdout } = await runProcess(exe, [...args, "-v", "error", ...safeInput,
-		"-show_entries", "format=duration:stream=codec_type,width,height,avg_frame_rate,r_frame_rate,duration,channels,sample_rate", "-of", "json", file], signal, root);
+		"-show_entries", "format=duration:stream=codec_type,width,height,avg_frame_rate,r_frame_rate,duration,channels,sample_rate,time_base", "-of", "json", file], signal, root);
 	const info = JSON.parse(stdout) as { format?: { duration: string }; streams?: {
-		codec_type: string; width?: number; height?: number; channels?: number; sample_rate?: string; avg_frame_rate?: string; r_frame_rate?: string; duration?: string;
+		codec_type: string; width?: number; height?: number; channels?: number; sample_rate?: string; avg_frame_rate?: string; r_frame_rate?: string; duration?: string; time_base?: string;
 	}[] };
 	const video = info.streams?.find((stream) => stream.codec_type === "video");
 	const fpsRatio = video?.avg_frame_rate ?? "";
@@ -83,8 +92,10 @@ export async function probeReviewFile(file: string, signal: AbortSignal, root: s
 	const sampleRate = Number(audio?.sample_rate ?? 48000);
 	if (!Number.isSafeInteger(sampleRate) || sampleRate < 1000 || sampleRate > 384000) throw new Error("Unsupported audio sample rate.");
 	const streamDuration = Number(video.duration);
+	const [tickNumerator, tickDenominator] = (video.time_base ?? "").split("/").map(Number);
+	const tick = tickNumerator / tickDenominator;
 	return { duration, streamDuration: Number.isFinite(streamDuration) && streamDuration > 0 ? streamDuration : null,
-		width: video.width, height: video.height, fps, fpsRatio, channels, sampleRate };
+		width: video.width, height: video.height, fps, fpsRatio, channels, sampleRate, tick: Number.isFinite(tick) && tick > 0 ? tick : 0.001 };
 }
 
 async function ffmpeg(args: string[], signal: AbortSignal, root: string) {
@@ -114,16 +125,12 @@ export async function scanReviewFile(file: string, scratch: string, probe: Probe
 	const peak = /\bPeak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/g;
 	const last = (pattern: RegExp) => Number([...logs.matchAll(pattern)].at(-1)?.[1] ?? NaN);
 	const i = last(loudness), p = last(peak);
-	const handle = await fs.open(video, "r").catch((error: NodeJS.ErrnoException) => {
-		if (decodeError && error.code === "ENOENT") return null;
-		throw error;
-	});
 	const black: Interval[] = [], frozen: Interval[] = [];
 	const stamps = await readStamps(timing, signal).catch((error: NodeJS.ErrnoException) => {
 		if (decodeError && error.code === "ENOENT") return [];
 		throw error;
 	});
-	const cadence = frameCadence(stamps, probe.fps);
+	const cadence = frameCadence(stamps, probe.fps, probe.tick);
 	const videoStart = stamps[0]?.at ?? 0;
 	const lastAt = stamps.at(-1)?.at;
 	const probedEnd = probe.streamDuration === null ? null : probe.streamDuration + videoStart;
@@ -131,6 +138,10 @@ export async function scanReviewFile(file: string, scratch: string, probe: Probe
 		cadence.videoDuration = probe.streamDuration!;
 	}
 	const videoEnd = videoStart + cadence.videoDuration;
+	const handle = await fs.open(video, "r").catch((error: NodeJS.ErrnoException) => {
+		if (decodeError && error.code === "ENOENT") return null;
+		throw error;
+	});
 	let frames = 0;
 	if (handle) try {
 		const bytes = Buffer.alloc(frameBytes * 64);
@@ -164,13 +175,13 @@ export async function scanReviewFile(file: string, scratch: string, probe: Probe
 		loudness: Number.isFinite(i) ? i : null, truePeak: Number.isFinite(p) ? p : null };
 }
 
-export async function sourceFrames(file: string, times: number[], output: string, signal: AbortSignal, safeRoot: string, still = false) {
+export async function sourceFrames(file: string, times: number[], output: string, signal: AbortSignal, safeRoot: string, still = false, crop?: SourceCrop) {
 	const seek = Math.max(0, times[0] - 0.3);
 	const timing = output + ".crc";
 	const end = Math.max(0.1, times.at(-1)! - seek + 0.15);
 	const formats = still ? [...safeInput.slice(0, -1), safeInput.at(-1) + ",image2,png_pipe,jpeg_pipe,webp_pipe"] : safeInput;
 	await ffmpeg(["-loglevel", "error", "-y", ...formats, "-ss", String(seek), "-t", String(end), "-i", file,
-		...grayOutputs(output, timing)], signal, safeRoot);
+		...grayOutputs(output, timing, crop)], signal, safeRoot);
 	const data = await fs.readFile(output);
 	const stamps = await readStamps(timing, signal);
 	if (!stamps.length || (!still && times.some((time) => time - seek > stamps.at(-1)!.at + stamps.at(-1)!.duration + 0.001))) return [];
@@ -180,10 +191,13 @@ export async function sourceFrames(file: string, times: number[], output: string
 	});
 }
 
-export async function sourcePeak(file: string, from: number, to: number, signal: AbortSignal, root: string) {
-	const { stderr } = await ffmpeg(["-loglevel", "info", "-nostats", ...safeInput, "-ss", String(Math.max(0, from)),
-		"-t", String(to - from), "-i", file, "-map", "0:a:0", "-vn", "-af", "volumedetect", "-f", "null", "-"], signal, root);
-	return Number(/max_volume:\s*(-?\d+(?:\.\d+)?) dB/.exec(stderr)?.[1] ?? -Infinity);
+export async function sourcePeaks(file: string, from: number, to: number, step: number, signal: AbortSignal, root: string) {
+	const n = Math.max(1, Math.round(48000 * step));
+	const filter = `aresample=48000,asetnsamples=n=${n}:p=0,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.Peak_level:file=-`;
+	const { stdout } = await ffmpeg(["-loglevel", "error", ...safeInput, "-ss", String(Math.max(0, from)),
+		"-t", String(to - from), "-i", file, "-map", "0:a:0", "-vn", "-af", filter, "-f", "null", "-"], signal, root);
+	return [...stdout.matchAll(/pts_time:([\d.]+)[^\n]*\r?\n[ \t]*lavfi\.astats\.Overall\.Peak_level=([^\r\n]+)/g)]
+		.map((entry) => ({ at: Number(entry[1]), peak: Number(entry[2]) }));
 }
 
 export async function inspectAudio(scan: FileScan, cuts: { at: number; elementIds: string[] }[], signal: AbortSignal, silent: Interval[] = []) {
@@ -191,9 +205,6 @@ export async function inspectAudio(scan: FileScan, cuts: { at: number; elementId
 	if (!scan.audio) return findings;
 	const { duration, channels, sampleRate: rate } = scan.probe;
 	const { loudness, truePeak } = scan;
-	const outside = loudness !== null && (loudness < L.loudnessLow || loudness > L.loudnessHigh) || truePeak !== null && truePeak > L.truePeak;
-	findings.push(finding("audio-levels", outside ? "warning" : "info", 0, duration,
-		{ integratedLufs: loudness, truePeakDbtp: truePeak, minLufs: L.loudnessLow, maxLufs: L.loudnessHigh, maxTruePeak: L.truePeak }));
 	const handle = await fs.open(scan.audio, "r").catch((error: NodeJS.ErrnoException) => {
 		if (scan.decodeError && error.code === "ENOENT") return null;
 		throw error;
@@ -202,6 +213,7 @@ export async function inspectAudio(scan: FileScan, cuts: { at: number; elementId
 	try {
 		const bytesPerFrame = channels * 4;
 		const total = Math.floor((await handle.stat()).size / bytesPerFrame);
+		let digitalSilence = true;
 		const read = async (start: number, count: number) => {
 			const samples = new Float32Array(count * channels);
 			await handle.read(new Uint8Array(samples.buffer), 0, samples.byteLength, start * bytesPerFrame);
@@ -225,6 +237,7 @@ export async function inspectAudio(scan: FileScan, cuts: { at: number; elementId
 			for (let index = 0; index < count; index += blockSize) {
 				let peak = 0;
 				for (let i = index * channels, end = Math.min(pcm.length, (index + blockSize) * channels); i < end; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+				if (peak !== 0) digitalSilence = false;
 				const at = (base + index) / rate;
 				if (peak < 0.001) quietFrom ??= at;
 				else if (quietFrom !== undefined) {
@@ -234,6 +247,10 @@ export async function inspectAudio(scan: FileScan, cuts: { at: number; elementId
 			}
 		}
 		if (quietFrom !== undefined && total / rate - quietFrom >= 1 - 1e-8) silent.push({ from: quietFrom, to: total / rate, value: -60 });
+		const outside = !digitalSilence && (loudness !== null && (loudness < L.loudnessLow || loudness > L.loudnessHigh) ||
+			truePeak !== null && truePeak > L.truePeak);
+		findings.unshift(finding("audio-levels", outside ? "warning" : "info", 0, duration,
+			{ integratedLufs: loudness, truePeakDbtp: truePeak, digitalSilence, minLufs: L.loudnessLow, maxLufs: L.loudnessHigh, maxTruePeak: L.truePeak }));
 		for (const trailing of [false, true]) {
 			let seconds = 0;
 			const block = blockSize;

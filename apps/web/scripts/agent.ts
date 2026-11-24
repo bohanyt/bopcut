@@ -87,7 +87,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		if (!projectId || !file?.trim() || (values.pictures !== undefined && values.pictures !== "none")) {
 			throw new Error("Use review --project-id ID --file PATH [--pictures none].");
 		}
-		return { command: "review" as const, projectId, file, pictures: values.pictures !== "none", origin: url.origin, timeoutMs };
+		return { command: "review" as const, projectId, file, pictures: values.pictures !== "none", origin: url.origin,
+			timeoutMs: values.timeout === undefined ? undefined : timeoutMs };
 	}
 	let request: Record<string, unknown> | undefined;
 	if (rangeView) request = rangeView;
@@ -148,7 +149,7 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 			const response = await fetch(target, { method: "POST", redirect: "error",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ file: options.file, pictures: options.pictures, timeoutMs: options.timeoutMs }),
-				signal: AbortSignal.any([stop.signal, AbortSignal.timeout(options.timeoutMs + 2000)]) });
+				signal: options.timeoutMs === undefined ? stop.signal : AbortSignal.any([stop.signal, AbortSignal.timeout(options.timeoutMs + 2000)]) });
 			const result = await response.json();
 			if (!response.ok) throw new Error(result?.error ?? "Could not review the export.");
 			return result;

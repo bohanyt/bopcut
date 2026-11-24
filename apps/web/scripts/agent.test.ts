@@ -85,7 +85,8 @@ test("range view validates limits and requires exactly one source", () => {
 
 test("finished review requires a project and file and permits opting out of pictures", () => {
 	expect(parseArgs(["review", "--project-id", "demo", "--file", "out.mp4", "--pictures", "none"]))
-		.toMatchObject({ command: "review", projectId: "demo", file: "out.mp4", pictures: false, timeoutMs: 180000 });
+		.toMatchObject({ command: "review", projectId: "demo", file: "out.mp4", pictures: false, timeoutMs: undefined });
+	expect(parseArgs(["review", "--project-id", "demo", "--file", "out.mp4", "--timeout", "300"])).toMatchObject({ timeoutMs: 300000 });
 	expect(() => parseArgs(["review", "--file", "out.mp4"])).toThrow("--project-id");
 	expect(() => parseArgs(["review", "--project-id", "demo", "--file", "out.mp4", "--pictures", "all"])).toThrow("--pictures none");
 });

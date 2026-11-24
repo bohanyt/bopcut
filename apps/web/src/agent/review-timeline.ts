@@ -97,11 +97,45 @@ function projectBounds(bounds: ElementBounds, canvas: Canvas, parents: ReturnTyp
 	return { x, y, w: Math.max(...points.map((p) => p.x)) - x, h: Math.max(...points.map((p) => p.y)) - y };
 }
 
-export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMedia[], canvas: Canvas, duration: number, fps: number) {
+/** Source rectangle visible through the canvas for a static axis-aligned placement. */
+export function reviewSourceCrop(item: Instance, canvas: Canvas, media: ReviewMedia) {
+	const { element, chain } = item;
+	if ((element.type !== "video" && element.type !== "image") || !media.width || !media.height) return null;
+	const parts = [...chain, element];
+	if (parts.some((part) => {
+		const { rotate, scaleX, scaleY } = buildTransformFromParams({ params: part.params });
+		return rotate || !scaleX || !scaleY || Object.keys(part.animations ?? {}).some((key) => key.startsWith("transform")) ||
+			("masks" in part && part.masks?.length) || ("effects" in part && part.effects?.length) ||
+			(part.params.blendMode && part.params.blendMode !== "normal") ||
+			(part.params["animation.in"] && part.params["animation.in"] !== "none") ||
+			(part.params["animation.out"] && part.params["animation.out"] !== "none");
+	})) return null;
+	const bounds = getElementBounds({ element, canvasSize: canvas, localTime: 0, mediaAsset: media });
+	if (!bounds) return null;
+	const placed = projectBounds(bounds, canvas, chain.slice().reverse().map((part) => buildTransformFromParams({ params: part.params })));
+	const x0 = Math.max(0, placed.x), x1 = Math.min(canvas.width, placed.x + placed.w);
+	const y0 = Math.max(0, placed.y), y1 = Math.min(canvas.height, placed.y + placed.h);
+	if (x1 <= x0 || y1 <= y0) return null;
+	const x = Math.max(0, Math.ceil((x0 - placed.x) / placed.w * media.width - 1e-8));
+	const y = Math.max(0, Math.ceil((y0 - placed.y) / placed.h * media.height - 1e-8));
+	const right = Math.min(media.width, Math.floor((x1 - placed.x) / placed.w * media.width + 1e-8));
+	const bottom = Math.min(media.height, Math.floor((y1 - placed.y) / placed.h * media.height + 1e-8));
+	if (right <= x || bottom <= y) return null;
+	const scale = parts.map((part) => buildTransformFromParams({ params: part.params }));
+	const flippedX = scale.reduce((sign, transform) => sign * Math.sign(transform.scaleX), 1) < 0;
+	const flippedY = scale.reduce((sign, transform) => sign * Math.sign(transform.scaleY), 1) < 0;
+	return { x: flippedX ? media.width - right : x, y: flippedY ? media.height - bottom : y,
+		width: right - x, height: bottom - y, coverage: (x1 - x0) * (y1 - y0) / (canvas.width * canvas.height) };
+}
+
+export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMedia[], canvas: Canvas, duration: number, fps: number,
+	{ from: windowStart, to: windowEnd } = { from: 0, to: duration }) {
 	const assets = new Map(media.map((asset) => [asset.id, asset]));
-	const instances = [...visibleRangeElements(root, scenes, { from: 0, to: duration, rows: 1 })];
+	const instances = Array.from(visibleRangeElements(root, scenes, { from: windowStart, to: windowEnd, rows: 1 }),
+		(item) => ({ ...item, start: Math.max(item.start, windowStart), end: Math.min(item.end, windowEnd) }));
 	const instancesByKey = new Map(instances.map((item) => [instanceKey(item), item]));
-	const sounds = collectAudibleCandidates({ tracks: root.tracks, scenes, mediaAssets: media.filter((asset) => asset.present !== false)
+	const sounds = collectAudibleCandidates({ tracks: root.tracks, scenes, rangeStart: windowStart * TICKS_PER_SECOND,
+		duration: windowEnd * TICKS_PER_SECOND, mediaAssets: media.filter((asset) => asset.present !== false)
 		.map((asset) => ({ ...asset, type: asset.type ?? "audio" as const })) }).flatMap(({ element, mediaAsset }) => {
 			if (isElementMuted({ element })) return [];
 			if (!(element.type === "audio" && element.sourceType === "library") && (!mediaAsset || !SUPPORTS_AUDIO.includes(mediaAsset.type))) return [];
@@ -117,7 +151,7 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 	});
 	const cuts = new Map<number, Set<string>>();
 	const addCut = (time: number, id: string) => {
-		if (time <= 1e-8 || time >= duration - 1e-8) return;
+		if (time <= windowStart + 1e-8 || time >= windowEnd - 1e-8) return;
 		const stamp = Math.round(time * TICKS_PER_SECOND) / TICKS_PER_SECOND;
 		const ids = cuts.get(stamp) ?? new Set<string>();
 		ids.add(id); cuts.set(stamp, ids);
@@ -141,6 +175,7 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 		const words = parseSourceWords(assets.get(sound.mediaId)?.words) ?? [];
 		for (const entering of [true, false]) {
 			const at = entering ? sound.from : sound.to;
+			if (at < windowStart || at > windowEnd) continue;
 			const source = entering ? sound.src : sound.srcEnd;
 			if (!sound.audible(at + (entering ? 0.005 : -0.005))) continue;
 			const word = words.find((w) => w.start + 0.001 < source && source < w.end - 0.001);
@@ -160,7 +195,7 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 					instance: sound.element.id }, [placed?.element.id ?? sound.element.id]));
 		}
 	}
-	const words = timelineTranscript(root, scenes, media, { groupWords: false }).flatMap((clip) =>
+	const words = timelineTranscript(root, scenes, media, { from: windowStart, to: windowEnd, groupWords: false }).flatMap((clip) =>
 		clip.phrases.filter((word) => sounds.some((sound) => sound.element.id === clip.id &&
 			sampleTimes(word.start, word.end, fps).some(sound.audible))).map((word) => ({ ...word, clipId: clip.id })))
 		.sort((a, b) => a.start - b.start);

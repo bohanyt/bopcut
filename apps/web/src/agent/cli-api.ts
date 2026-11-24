@@ -40,7 +40,7 @@ export async function handleCli(req: Request, action: string, workspace: string)
 		if (action === "review" && req.method === "POST") {
 			const options = await req.json();
 			if (!requested || typeof options?.file !== "string" || !options.file || typeof options.pictures !== "boolean" ||
-				!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 86400000) {
+				(options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 86400000))) {
 				return json({ error: "Use review --project-id ID --file PATH [--pictures none]." }, 400);
 			}
 			const release = reserveReview(isCliRenderRunning());
