@@ -30,13 +30,19 @@ export function loadFontAtlas(): Promise<FontAtlas | null> {
 
 	atlasFetchPromise = fetch(FONT_ATLAS_PATH)
 		.then(async (response) => {
-			if (!response.ok) return null;
+			if (!response.ok) {
+				atlasFetchPromise = null;
+				return null;
+			}
 			const data: FontAtlas = await response.json();
 			cachedAtlas = data;
 			preloadChunkImages({ atlas: data });
 			return data;
 		})
-		.catch(() => null);
+		.catch(() => {
+			atlasFetchPromise = null;
+			return null;
+		});
 
 	return atlasFetchPromise;
 }
