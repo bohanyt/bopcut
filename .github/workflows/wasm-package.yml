@@ -1,0 +1,109 @@
+name: WASM package
+
+on:
+  pull_request:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/wasm-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install verified toolchain
+        run: |
+          prefix="$RUNNER_TEMP/wasm-tools"
+          mkdir -p "$prefix/bin"
+          cd "$(mktemp -d)"
+          fetch() {
+            local url="$1" digest="$2" file="${1##*/}"
+            curl --fail --silent --show-error --location --retry 3 "$url" -o "$file"
+            printf '%s  %s\n' "$digest" "$file" | sha256sum --check
+            tar -xf "$file"
+          }
+          rust_dist=https://static.rust-lang.org/dist/2026-11-12
+          while read -r component target digest; do
+            name="$component-1.100.0-$target"
+            fetch "$rust_dist/$name.tar.xz" "$digest"
+            "./$name/install.sh" --prefix="$prefix" --disable-ldconfig
+          done <<'RUST'
+          rustc x86_64-unknown-linux-gnu f1d0b1dec81dab6f523cd098507763487b0d4bd7fd2c87582f154128719be03b
+          cargo x86_64-unknown-linux-gnu 7e29ce07d7c6e92d1826870575ba27d57fff6cb3e754aa57d99099cb88fab35d
+          rust-std x86_64-unknown-linux-gnu 4591b6486594ded52ecd6135db95bf9355bbd3ca7a380888b141528bbcf9a5d4
+          rust-std wasm32-unknown-unknown 19b7954d650fc0d22767eceb76b8e03d07ce0d6a9f4234f33c32a17ee8d6d7b9
+          RUST
+          fetch https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.116/wasm-bindgen-0.2.116-x86_64-unknown-linux-musl.tar.gz f10d233eb87aaaed4a6a3af3d52ab9a3420ab35103c18fe2c6a69527bfbf7035
+          fetch https://github.com/WebAssembly/binaryen/releases/download/version_129/binaryen-version_129-x86_64-linux.tar.gz 50b9fa62b9abea752da92ec57e0c555fee578760cd237c40107957715d2976ba
+          cp wasm-bindgen-0.2.116-x86_64-unknown-linux-musl/wasm-bindgen "$prefix/bin/"
+          mv binaryen-version_129 "$prefix/binaryen"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "$prefix/binaryen/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: wasm-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '.github/workflows/wasm-package.yml') }}
+
+      - name: Test crates that do not require a GPU
+        run: cargo test --locked -p bridge -p time
+
+      - name: Build and pack WebAssembly
+        run: |
+          rustc --version
+          cargo --version
+          wasm-bindgen --version
+          wasm-opt --version
+          export RUSTFLAGS="--remap-path-prefix=$PWD=/source --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/build-tools/cargo"
+          cargo build --release --locked -p opencut-wasm --target wasm32-unknown-unknown
+          pkg="$RUNNER_TEMP/pkg"
+          wasm-bindgen --target bundler --out-dir "$pkg" target/wasm32-unknown-unknown/release/opencut_wasm.wasm
+          wasm-opt -O --all-features --strip-debug "$pkg/opencut_wasm_bg.wasm" -o "$pkg/opencut_wasm_bg.wasm"
+          cp rust/wasm/package.template.json "$pkg/package.json"
+          cp LICENSE "$pkg/"
+          mkdir "$RUNNER_TEMP/dist"
+          npm pack "$pkg" --pack-destination "$RUNNER_TEMP/dist"
+          (cd "$RUNNER_TEMP/dist" && sha256sum ./*.tgz | tee SHA256SUMS)
+
+      - name: Compare with the committed package
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          version=$(git show "$BASE_SHA:rust/wasm/package.template.json" | node -pe 'JSON.parse(require("fs").readFileSync(0)).version')
+          mkdir "$RUNNER_TEMP/reference"
+          git show "$BASE_SHA:rust/wasm/opencut-wasm-$version.tgz" | tar -xz -C "$RUNNER_TEMP/reference" --strip-components=1
+          for file in opencut_wasm.js opencut_wasm_bg.js opencut_wasm.d.ts; do
+            diff -u "$RUNNER_TEMP/reference/$file" "$RUNNER_TEMP/pkg/$file"
+          done
+          node <<'JS'
+          const { readFileSync } = require("node:fs");
+          const assert = require("node:assert/strict");
+          const wasm = (dir) => readFileSync(`${process.env.RUNNER_TEMP}/${dir}/opencut_wasm_bg.wasm`);
+          const reference = wasm("reference");
+          const built = wasm("pkg");
+          const exportNames = (bytes) => WebAssembly.Module.exports(new WebAssembly.Module(bytes))
+            .map(({ name, kind }) => `${name}:${kind}`).sort();
+          assert.deepEqual(exportNames(built), exportNames(reference));
+          console.log("JavaScript bindings and declarations match. WASM exports match.");
+          console.log(`WASM byte-identical: ${built.equals(reference)}`);
+          JS
+          sha256sum "$RUNNER_TEMP/"{reference,pkg}/opencut_wasm_bg.wasm
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: opencut-wasm
+          path: ${{ runner.temp }}/dist
+          if-no-files-found: error
