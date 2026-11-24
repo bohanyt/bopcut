@@ -229,6 +229,7 @@ export const en = {
 	"recording.disconnected": "The microphone disconnected. Saving the audio captured so far.",
 	"recording.silentStart": "No audio arrived from the microphone. Check your input and try again.",
 	"recording.emptyTake": "The take was too short to save. Record again after the count-in.",
+	"recording.incompleteTake": "Some audio at the end may be missing. Listen to the take before you keep it.",
 	"recording.silentTake": "The microphone captured silence. You can save the WAV.",
 	"recording.saveFailed": "Could not add the take to the timeline. Retry or save the WAV.",
 	"recording.takeInMemory": "The scene changed before the take could be added. Save the WAV or return to the original scene to retry.",

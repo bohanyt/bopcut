@@ -294,7 +294,7 @@ export class VoiceOver {
 		this.timer = setTimeout(() => {
 			toast.error(getBrowserTranslator()("recording.silentStart"));
 			this.leaveCapture();
-		}, 1500);
+		}, 5000);
 		mic.start((firstFrame) => {
 			if (this.state.phase !== "starting" || this.mic !== mic) return;
 			clearTimeout(this.timer);
@@ -317,9 +317,11 @@ export class VoiceOver {
 		const closing = mic.stop();
 		if (this.isCurrent(session.scope) && this.editor.playback.getIsPlaying()) this.editor.playback.pause();
 		this.unmute();
-		const chunks = trimPcmStart(await closing, trimFrames);
+		const { chunks: captured, complete } = await closing;
+		const chunks = trimPcmStart(captured, trimFrames);
 		this.disconnect();
 		if (this.disposed) return;
+		if (!complete) toast.warning(getBrowserTranslator()("recording.incompleteTake"), { duration: 10_000 });
 		const frames = chunks.reduce((total, chunk) => total + chunk.length, 0);
 		const duration = mediaTimeFromSeconds({ seconds: frames / mic.sampleRate });
 		if (duration <= 0) {

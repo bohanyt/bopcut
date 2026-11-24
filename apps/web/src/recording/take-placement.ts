@@ -36,14 +36,15 @@ export function placeTake({
 
 	const { duration } = take;
 	const timeSpans = [{ startTime, duration }];
-	const preferred = available.audio.find((track) => track.id === (previous?.trackId ?? preferredTrackId));
+	// A new take on a muted track would be silent in playback and export.
+	const free = available.audio.filter((track) =>
+		(!track.muted || track.id === previous?.trackId) && canPlaceTimeSpansOnTrack({ track, timeSpans }));
+	const target = free.find((track) => track.id === (previous?.trackId ?? preferredTrackId)) ?? free[0];
 	const placementResult = resolveTrackPlacement({
 		tracks: available,
 		trackType: "audio",
 		timeSpans,
-		strategy: preferred && canPlaceTimeSpansOnTrack({ track: preferred, timeSpans })
-			? { type: "explicit", trackId: preferred.id }
-			: { type: "firstAvailable" },
+		strategy: target ? { type: "explicit", trackId: target.id } : { type: "alwaysNew", position: "highest" },
 	});
 	if (!placementResult) return null;
 

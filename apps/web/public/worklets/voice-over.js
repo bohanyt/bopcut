@@ -5,6 +5,7 @@ class VoiceOverProcessor extends AudioWorkletProcessor {
 		this.pendingStart = false;
 		this.chunk = new Int16Array(4096);
 		this.used = 0;
+		this.sent = 0;
 		this.peak = 0;
 		this.nextMeterFrame = 0;
 		this.port.onmessage = ({ data }) => {
@@ -13,7 +14,7 @@ class VoiceOverProcessor extends AudioWorkletProcessor {
 				this.recording = false;
 				this.pendingStart = false;
 				this.flush();
-				this.port.postMessage({ type: "stopped" });
+				this.port.postMessage({ type: "stopped", frames: this.sent });
 			}
 		};
 	}
@@ -21,6 +22,7 @@ class VoiceOverProcessor extends AudioWorkletProcessor {
 	flush() {
 		if (!this.used) return;
 		const samples = this.used === this.chunk.length ? this.chunk : this.chunk.slice(0, this.used);
+		this.sent += samples.length;
 		this.port.postMessage({ type: "samples", samples }, [samples.buffer]);
 		this.chunk = new Int16Array(4096);
 		this.used = 0;

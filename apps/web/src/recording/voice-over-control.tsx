@@ -144,7 +144,7 @@ function LevelMeter({ voiceOver }: { voiceOver: VoiceOver }) {
 		if (meter.current) meter.current.value = Math.min(1, Math.sqrt(peak));
 	}), [voiceOver]);
 	return <meter ref={meter} min={0} max={1} high={0.9} optimum={0.6} defaultValue={0}
-		className="h-2 w-full" aria-label={t("recording.inputLevel")} />;
+		className="h-3 w-full" aria-label={t("recording.inputLevel")} />;
 }
 
 function Elapsed({ startedAt }: { startedAt: number }) {

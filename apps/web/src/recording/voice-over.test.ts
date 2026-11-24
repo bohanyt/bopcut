@@ -107,6 +107,18 @@ test("a longer take finds a free track; moving, trimming, splitting or deleting 
 	}
 });
 
+test("a new take skips muted tracks, while a retake keeps its own track", () => {
+	const original = fixture()[0].tracks;
+	const muted = { ...original, audio: original.audio.map((track) => ({ ...track, muted: true })) };
+	const first = placeTake({ tracks: muted, take: asset(1), startTime: t(20), candidates: [], preferredTrackId: "t-music" })!;
+	expect(muted.audio.some(({ id }) => id === first.anchor.trackId)).toBe(false);
+	const track = first.tracks.audio.find(({ id }) => id === first.anchor.trackId)!;
+	expect(track.muted).toBe(false);
+	const reviewed = { ...first.tracks, audio: first.tracks.audio.map((item) => item === track ? { ...track, muted: true } : item) };
+	const second = placeTake({ tracks: reviewed, take: asset(2), startTime: t(20), candidates: [first.anchor] })!;
+	expect(second.anchor.trackId).toBe(first.anchor.trackId);
+});
+
 function harness({ samples = Int16Array.of(500, 10, -500), failImport = false } = {}) {
 	const editor = setup({ empty: true });
 	let onLost = () => {};
@@ -115,7 +127,7 @@ function harness({ samples = Int16Array.of(500, 10, -500), failImport = false } 
 		sampleRate: 48000, inputLatency: 0, outputLatency: 0, deviceId: "",
 		getTime: () => 1,
 		start: (callback) => callback(48000),
-		stop: async () => { close(); return [samples]; },
+		stop: async () => { close(); return { chunks: [samples], complete: true }; },
 		close,
 	};
 	const manager = new VoiceOver(editor, async (_options, _signal, _level, lost) => {

@@ -6,7 +6,10 @@ type WorkletMessage =
 	| { type: "level"; peak: number }
 	| { type: "started"; frame: number }
 	| { type: "samples"; samples: Int16Array<ArrayBuffer> }
-	| { type: "stopped" };
+	| { type: "stopped"; frames: number };
+
+const FLUSH_CHECKS = 8;
+const MAX_FLUSH_CHECKS = 10 * FLUSH_CHECKS;
 
 export class Microphone {
 	readonly sampleRate: number;
@@ -15,7 +18,8 @@ export class Microphone {
 	readonly deviceId: string;
 	private chunks: Int16Array<ArrayBuffer>[] = [];
 	private onStart?: (frame: number) => void;
-	private onStop?: () => void;
+	private onStop?: (frames: number | null) => void;
+	private messages = 0;
 	private closed = false;
 
 	private constructor(
@@ -35,10 +39,11 @@ export class Microphone {
 		stream.getAudioTracks()[0].addEventListener("ended", onLost, { once: true });
 		node.addEventListener("processorerror", onLost, { once: true });
 		node.port.onmessage = ({ data }: MessageEvent<WorkletMessage>) => {
+			this.messages++;
 			if (data.type === "level") onLevel(data.peak);
 			else if (data.type === "samples") this.chunks.push(data.samples);
 			else if (data.type === "started") this.onStart?.(data.frame);
-			else this.onStop?.();
+			else this.onStop?.(data.frames);
 		};
 	}
 
@@ -102,30 +107,45 @@ export class Microphone {
 		this.node.port.postMessage("start");
 	}
 
-	async stop(): Promise<Int16Array<ArrayBuffer>[]> {
+	/** The samples captured, and whether the worklet confirmed that all of them arrived. */
+	async stop({ quietMs = 2000 } = {}): Promise<{ chunks: Int16Array<ArrayBuffer>[]; complete: boolean }> {
 		this.onStart = undefined;
-		await new Promise<void>((resolve) => {
-			const timeout = setTimeout(resolve, 500);
-			this.onStop = () => {
-				clearTimeout(timeout);
-				resolve();
+		const sent = await new Promise<number | null>((resolve) => {
+			let timer: ReturnType<typeof setTimeout>;
+			let seen = this.messages;
+			let quiet = 0;
+			let checks = 0;
+			this.onStop = (frames) => {
+				clearTimeout(timer);
+				this.onStop = undefined;
+				resolve(frames);
 			};
+			// After a stalled main thread, an expired timer can run ahead of the queued samples and
+			// acknowledgment. Only a worklet that stays quiet over several turns has failed.
+			const check = () => {
+				quiet = this.messages === seen ? quiet + 1 : 0;
+				seen = this.messages;
+				if (quiet >= FLUSH_CHECKS || ++checks >= MAX_FLUSH_CHECKS) this.onStop?.(null);
+				else timer = setTimeout(check, quietMs / FLUSH_CHECKS);
+			};
+			timer = setTimeout(check, quietMs / FLUSH_CHECKS);
 			try {
 				this.node.port.postMessage("stop");
 			} catch {
-				this.onStop();
+				this.onStop(null);
 			}
 		});
 		this.close();
 		const chunks = this.chunks;
 		this.chunks = [];
-		return chunks;
+		const received = chunks.reduce((total, chunk) => total + chunk.length, 0);
+		return { chunks, complete: received === sent };
 	}
 
 	close(): void {
 		if (this.closed) return;
 		this.closed = true;
-		this.onStop?.();
+		this.onStop?.(null);
 		this.stream.getTracks().forEach((track) => track.stop());
 		this.source.disconnect();
 		this.node.disconnect();

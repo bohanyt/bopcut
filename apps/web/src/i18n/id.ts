@@ -231,6 +231,7 @@ export const id = {
 	"recording.disconnected": "Mikrofon terputus. Audio yang sempat direkam sedang disimpan.",
 	"recording.silentStart": "Tidak ada audio dari mikrofon. Periksa input dan coba lagi.",
 	"recording.emptyTake": "Rekaman terlalu pendek untuk disimpan. Rekam lagi setelah hitung mundur.",
+	"recording.incompleteTake": "Bagian akhir rekaman mungkin ada yang hilang. Dengarkan dulu sebelum dipakai.",
 	"recording.silentTake": "Mikrofon merekam tanpa suara. Kamu bisa menyimpan file WAV.",
 	"recording.saveFailed": "Rekaman tidak bisa ditambahkan ke timeline. Coba lagi atau simpan file WAV.",
 	"recording.takeInMemory": "Scene berubah sebelum rekaman bisa ditambahkan. Simpan file WAV atau kembali ke scene awal untuk mencoba lagi.",
