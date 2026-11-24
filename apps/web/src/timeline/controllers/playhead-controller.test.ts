@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Bookmark, SceneTracks } from "@/timeline";
 import { mediaTimeFromSeconds, type MediaTime } from "@/wasm";
 import { PlayheadController } from "./playhead-controller";
@@ -10,10 +10,18 @@ afterEach(() => cleanup?.());
 
 function setup({ autoScroll = false, isPlaying = false } = {}) {
 	const events = new EventTarget();
+	const page = Object.assign(new EventTarget(), { hidden: false });
+	const captured = new Set<number>();
+	const target = Object.assign(new EventTarget(), {
+		setPointerCapture: (id: number) => captured.add(id),
+		hasPointerCapture: (id: number) => captured.has(id),
+		releasePointerCapture: (id: number) => captured.delete(id),
+	});
 	const frames = new Map<number, FrameRequestCallback>();
 	let id = 0;
 	const replacements = {
 		window: events,
+		document: page,
 		requestAnimationFrame: (callback: FrameRequestCallback) => {
 			frames.set(++id, callback);
 			return id;
@@ -44,7 +52,11 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 		setAttribute: (name: string, value: string) => attrs.set(name, value),
 	} as unknown as HTMLDivElement;
 	let edgeReads = 0;
-	const tracks: SceneTracks = {
+	let currentTime = time(0);
+	let sceneId = 'main';
+	let projectSession = 1;
+	let duration = time(10);
+	let tracks: SceneTracks = {
 		main: {
 			id: "main", name: "Main", type: "video", muted: false, hidden: false,
 			get elements() {
@@ -60,7 +72,10 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 	const controller = new PlayheadController({
 		configRef: { current: {
 			zoomLevel: 1,
-			duration: time(10),
+			getDuration: () => duration,
+			getCurrentTime: () => currentTime,
+			getSceneId: () => sceneId,
+			getProjectSession: () => projectSession,
 			getActiveProjectFps: () => ({ numerator: 30, denominator: 1 }),
 			isShiftHeld: () => shift,
 			getIsPlaying: () => isPlaying,
@@ -71,6 +86,7 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 			getSceneTracks: () => tracks,
 			getSceneBookmarks: () => bookmarks,
 			seek: (value) => {
+				currentTime = value;
 				seek.push(value);
 				drawnAtSeek.push(attrs.get("aria-valuenow"));
 			},
@@ -85,24 +101,37 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 			else Reflect.deleteProperty(globalThis, key);
 		}
 	};
-	const event = (clientX: number) => ({ clientX, button: 0, preventDefault() {}, stopPropagation() {} }) as ReactMouseEvent;
-	const send = (type: string, clientX: number) => {
-		events.dispatchEvent(Object.assign(new Event(type), { clientX }));
+	const event = (clientX: number) => ({ target, currentTarget: target, clientX, button: 0, buttons: 1, pointerId: 1, isPrimary: true, preventDefault() {}, stopPropagation() {} }) as unknown as ReactPointerEvent;
+	const send = (type: string, clientX: number, { buttons = 1, pointerId = 1, receiver = events } = {}) => {
+		receiver.dispatchEvent(Object.assign(new Event(type), { clientX, buttons, pointerId }));
 	};
 	return {
 		controller, event, seek, saved, scrubbing, drawnAtSeek, rulerViewport, tracksViewport,
-		move: (x: number) => send("mousemove", x),
-		release: (x: number) => send("mouseup", x),
+		move: (x: number, buttons = 1) => send("pointermove", x, { buttons }),
+		release: (x: number) => send("pointerup", x, { buttons: 0 }),
 		frame() { for (const [frame, callback] of [...frames]) { frames.delete(frame); callback(0); } },
 		edgeReads: () => edgeReads,
 		setBookmarks: (value: Bookmark[]) => { bookmarks = value; },
 		holdShift: () => { shift = true; },
+		seekExternally: (value: MediaTime) => { currentTime = value; },
+		setScene: (id: string) => { sceneId = id; controller.stopIfScopeChanged(); },
+		setProjectSession: (id: number) => { projectSession = id; controller.stopIfScopeChanged(); },
+		replaceTracks: () => { tracks = { ...tracks }; controller.stopIfScopeChanged(); },
+		setDuration: (value: MediaTime) => { duration = value; },
+		lineTime: () => attrs.get("aria-valuenow"),
+		pointerCaptured: () => captured.has(1),
+		cancel: () => send("pointercancel", 400),
+		loseCapture: () => send("lostpointercapture", 400, { receiver: target }),
+		blur: () => events.dispatchEvent(new Event("blur")),
+		pagehide: () => events.dispatchEvent(new Event("pagehide")),
+		hide: () => { page.hidden = true; page.dispatchEvent(new Event("visibilitychange")); },
+		moveOtherPointer: (x: number) => send("pointermove", x, { pointerId: 2 }),
 	};
 }
 
 test("scrub seeks once per frame and flushes the last position before saving", () => {
 	const scrub = setup();
-	scrub.controller.onRulerMouseDown(scrub.event(0));
+	scrub.controller.onRulerPointerDown(scrub.event(0));
 	scrub.move(70);
 	scrub.move(100);
 	expect(scrub.seek).toEqual([time(0)]);
@@ -119,7 +148,7 @@ test("scrub seeks once per frame and flushes the last position before saving", (
 
 test("snap points are reused until the scene data changes and Shift bypasses the cache", () => {
 	const scrub = setup();
-	scrub.controller.onRulerMouseDown(scrub.event(47));
+	scrub.controller.onRulerPointerDown(scrub.event(47));
 	expect(scrub.seek[0]).not.toBe(time(1));
 	scrub.move(47);
 	scrub.frame();
@@ -141,7 +170,7 @@ test("snap points are reused until the scene data changes and Shift bypasses the
 
 test("the scrub session scrolls both viewports at an edge and stops on release", () => {
 	const scrub = setup({ autoScroll: true });
-	scrub.controller.onRulerMouseDown(scrub.event(100));
+	scrub.controller.onRulerPointerDown(scrub.event(100));
 	scrub.move(190);
 	scrub.frame();
 	const scrollLeft = scrub.rulerViewport.scrollLeft;
@@ -154,8 +183,84 @@ test("the scrub session scrolls both viewports at an edge and stops on release",
 
 test("scrubbing while playing can seek back to the same snapped frame", () => {
 	const scrub = setup({ isPlaying: true });
-	scrub.controller.onRulerMouseDown(scrub.event(50));
+	scrub.controller.onRulerPointerDown(scrub.event(50));
+	scrub.seekExternally(time(1.1));
 	scrub.move(51);
 	scrub.frame();
 	expect(scrub.seek).toEqual([time(1), time(1)]);
+});
+
+test("playback draws the live time during a scrub without centering the viewport", () => {
+	const scrub = setup({ isPlaying: true, autoScroll: true });
+	scrub.controller.onRulerPointerDown(scrub.event(50));
+	scrub.controller.handlePlaybackUpdate(time(9), true);
+	scrub.controller.handleScroll(time(9));
+	expect(scrub.lineTime()).toBe(String(time(9)));
+	expect(scrub.rulerViewport.scrollLeft).toBe(0);
+	scrub.controller.handlePlaybackUpdate(time(9), false);
+	expect(scrub.rulerViewport.scrollLeft).toBeGreaterThan(0);
+});
+
+test("a paused drag can seek back to a cached snap point after an external seek", () => {
+	const scrub = setup();
+	scrub.controller.onRulerPointerDown(scrub.event(50));
+	scrub.move(51);
+	scrub.frame();
+	expect(scrub.seek).toEqual([time(1)]);
+	scrub.seekExternally(time(3));
+	scrub.move(52);
+	scrub.frame();
+	expect(scrub.seek).toEqual([time(1), time(1)]);
+});
+
+for (const interrupt of ["cancel", "loseCapture", "blur", "pagehide", "hide", "noButtons"] as const) {
+	test(`ends the captured scrub on ${interrupt}, preserving the last pointer sample`, () => {
+		const scrub = setup({ autoScroll: true });
+		scrub.controller.onRulerPointerDown(scrub.event(50));
+		expect(scrub.pointerCaptured()).toBe(true);
+		scrub.move(145);
+		scrub.moveOtherPointer(32);
+		if (interrupt === "noButtons") scrub.move(400, 0);
+		else scrub[interrupt]();
+		expect(scrub.pointerCaptured()).toBe(false);
+		expect(scrub.seek.at(-1)).toBe(time(2.9));
+		expect(scrub.saved).toEqual([time(2.9)]);
+		expect(scrub.scrubbing).toEqual([true, false]);
+		const left = scrub.rulerViewport.scrollLeft;
+		scrub.frame();
+		expect(scrub.rulerViewport.scrollLeft).toBe(left);
+	});
+}
+
+test("scene and project navigation discard queued pointer samples from the old scope", () => {
+	const scrub = setup();
+	for (const navigate of [
+		() => scrub.setScene("compound"),
+		() => scrub.setProjectSession(2),
+	]) {
+		scrub.controller.onRulerPointerDown(scrub.event(50));
+		scrub.move(145);
+		scrub.seekExternally(time(4));
+		navigate();
+		scrub.release(145);
+		scrub.frame();
+		expect(scrub.controller.isActive).toBe(false);
+		expect(scrub.seek.at(-1)).toBe(time(1));
+		expect(scrub.saved).toEqual([]);
+	}
+});
+
+test("edits in the same scene invalidate snapping and use the new duration", () => {
+	const scrub = setup();
+	scrub.controller.onRulerPointerDown(scrub.event(50));
+	scrub.move(49);
+	scrub.frame();
+	const reads = scrub.edgeReads();
+	scrub.replaceTracks();
+	scrub.setDuration(time(2));
+	scrub.move(300);
+	scrub.frame();
+	expect(scrub.controller.isActive).toBe(true);
+	expect(scrub.edgeReads()).toBeGreaterThan(reads);
+	expect(scrub.seek.at(-1)).toBe(time(2));
 });

@@ -9,6 +9,7 @@ import { defaultExportName, parseExportRequest } from "./export";
 import type { ExportResult } from "@/export";
 import type { MediaLoadFailure } from "@/media/types";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
+import { createSelectionWriter } from "./selection-writer";
 import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
@@ -203,30 +204,29 @@ export function installAgentBridge() {
 	editor.timeline.subscribe(push);
 	editor.scenes.subscribe(push);
 	// selection.json: what the user points at, written shortly after the selection or the playhead settles.
-	let selectionTimer: ReturnType<typeof setTimeout> | undefined;
-	let lastSelection = "";
-	const pushSelection = () => {
-		clearTimeout(selectionTimer);
-		selectionTimer = setTimeout(() => {
-			if (editor.playback.getIsScrubbing()) return;
-			// No open project: an empty selection, so an agent never acts on a closed project's selection.
-			const body = JSON.stringify(agentSelection() ?? NO_SELECTION);
-			if (body === lastSelection) return;
-			lastSelection = body;
-			fetch("/api/agent/selection", { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {
-				lastSelection = "";
+	const { schedule: pushSelection, flushOnHide } = createSelectionWriter({
+		isScrubbing: () => editor.playback.getIsScrubbing(),
+		readBody: () => JSON.stringify(agentSelection() ?? NO_SELECTION),
+		send: async (body, keepalive) => {
+			const response = await fetch("/api/agent/selection", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body,
+				keepalive,
 			});
-		}, 250);
-	};
+			if (!response.ok) throw new Error("Could not sync agent selection");
+		},
+	});
 	editor.selection.subscribe(pushSelection);
-	const pushSettledPlayhead = () => {
-		if (!editor.playback.getIsScrubbing()) pushSelection();
-	};
-	editor.playback.subscribeState(pushSettledPlayhead);
-	editor.playback.onSeek(pushSettledPlayhead);
+	editor.playback.subscribeState(pushSelection);
+	editor.playback.onSeek(pushSelection);
 	editor.timeline.subscribe(pushSelection);
 	editor.scenes.subscribe(pushSelection);
 	editor.project.subscribe(pushSelection);
+	document.addEventListener("visibilitychange", () => {
+		if (document.hidden) flushOnHide();
+	});
+	window.addEventListener("pagehide", flushOnHide);
 	pushSelection();
 	// Re-sync when readiness changes (media finished loading, a save landed) so the snapshot tells the truth.
 	let readiness = "";

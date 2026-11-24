@@ -5,6 +5,8 @@ import { audio, fixture, scene, t } from "@/timeline/__tests__/compound-fixtures
 import { runMigrations } from "@/actions/keybindings/migrations";
 import { isStorageQuotaExceededError } from "@/services/storage/quota";
 import type { MicrophoneInput } from "./microphone";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { PlayheadController } from "@/timeline/controllers/playhead-controller";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({
@@ -174,6 +176,80 @@ test("count-in cancellation releases the mic and creates no timeline history", a
 		expect(importFile).not.toHaveBeenCalled();
 		expect(editor.command.canUndo()).toBe(false);
 	} finally { manager.dispose(); }
+});
+
+test("a coalesced scrub seek interrupts the recorder through PlaybackManager", async () => {
+	const { editor, manager, start, importFile } = harness();
+	const events = new EventTarget();
+	const target = Object.assign(new EventTarget(), {
+		setPointerCapture() {},
+		hasPointerCapture: () => true,
+		releasePointerCapture() {},
+	});
+	const frames = new Map<number, FrameRequestCallback>();
+	let nextFrame = 0;
+	const globals = {
+		window: events, document: new EventTarget(),
+		requestAnimationFrame: (callback: FrameRequestCallback) => {
+			frames.set(++nextFrame, callback);
+			return nextFrame;
+		},
+		cancelAnimationFrame: (id: number) => frames.delete(id),
+	};
+	const descriptors = Object.entries(globals).map(([key, value]) => {
+		const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
+		Object.defineProperty(globalThis, key, { value, configurable: true });
+		return [key, descriptor] as const;
+	});
+	const controller = new PlayheadController({ configRef: { current: {
+		zoomLevel: 1,
+		getDuration: () => editor.timeline.getTotalDuration(),
+		getProjectSession: () => editor.project.getSession(),
+		getSceneId: () => editor.scenes.getActiveScene().id,
+		getCurrentTime: () => editor.playback.getCurrentTime(),
+		getActiveProjectFps: () => editor.project.getActive().settings.fps,
+		isShiftHeld: () => true,
+		getIsPlaying: () => editor.playback.getIsPlaying(),
+		getRulerEl: () => ({ getBoundingClientRect: () => ({ left: 0 }) }) as HTMLDivElement,
+		getRulerScrollEl: () => null,
+		getTracksScrollEl: () => null,
+		getPlayheadEl: () => null,
+		getSceneTracks: () => editor.scenes.getActiveScene().tracks,
+		getSceneBookmarks: () => [],
+		seek: (time) => editor.playback.seek({ time }),
+		setScrubbing: (isScrubbing) => editor.playback.setScrubbing({ isScrubbing }),
+		setTimelineViewState: () => {},
+	} } });
+	try {
+		controller.onRulerPointerDown({
+			target, currentTarget: target, clientX: 0, button: 0, buttons: 1,
+			pointerId: 1, isPrimary: true, preventDefault() {},
+		} as unknown as ReactPointerEvent);
+		await start();
+		const interrupt = spyOn(editor.playback, "seek");
+		events.dispatchEvent(Object.assign(new Event("pointermove"), { clientX: 50, buttons: 1, pointerId: 1 }));
+		// The empty fixture clamps the seek back to zero. Give the queued move
+		// a different live time so the controller emits an explicit seek.
+		const readTime = spyOn(editor.playback, "getCurrentTime").mockReturnValueOnce(t(0.5));
+		expect(manager.getSnapshot().phase).toBe("recording");
+		for (const [id, frame] of [...frames]) {
+			frames.delete(id);
+			frame(0);
+		}
+		readTime.mockRestore();
+		expect(interrupt).toHaveBeenCalledTimes(1);
+		expect(manager.getSnapshot().phase).toBe("saving");
+		await manager.stop();
+		expect(manager.getSnapshot().phase).toBe("review");
+		expect(importFile).toHaveBeenCalledTimes(1);
+	} finally {
+		controller.destroy();
+		manager.dispose();
+		for (const [key, descriptor] of descriptors) {
+			if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+			else Reflect.deleteProperty(globalThis, key);
+		}
+	}
 });
 
 test.each(["stop", "pause", "seek", "unplug", "navigation", "empty", "silent", "import failure", "originally muted"] as const)(

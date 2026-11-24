@@ -1,4 +1,4 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import type { FrameRate } from "opencut-wasm";
 import {
 	mediaTime,
@@ -30,10 +30,12 @@ interface ScrubSession {
 	kind: "scrubbing";
 	/** True when scrub started from a ruler click (not the playhead handle). */
 	didStartFromRuler: boolean;
-	/** True once the mouse has moved during a ruler drag. */
+	/** True once the pointer has moved since the press. */
 	hasMoved: boolean;
-	/** Most recent frame-snapped time set by scrub(). */
-	currentTime: MediaTime | null;
+	pointerId: number;
+	captureTarget: Element;
+	projectSession: number;
+	sceneId: string | undefined;
 	snapCache?: {
 		tracks: SceneTracks;
 		bookmarks: Bookmark[];
@@ -47,7 +49,10 @@ type Session = { kind: "idle" } | ScrubSession;
 
 export interface PlayheadConfig {
 	zoomLevel: number;
-	duration: MediaTime;
+	getDuration: () => MediaTime;
+	getProjectSession: () => number;
+	getSceneId: () => string | undefined;
+	getCurrentTime: () => MediaTime;
 	getActiveProjectFps: () => FrameRate | null;
 	isShiftHeld: () => boolean;
 	getIsPlaying: () => boolean;
@@ -111,10 +116,6 @@ export class PlayheadController {
 
 	constructor(deps: { configRef: PlayheadConfigRef }) {
 		this.configRef = deps.configRef;
-		this.onPlayheadMouseDown = this.onPlayheadMouseDown.bind(this);
-		this.onRulerMouseDown = this.onRulerMouseDown.bind(this);
-		this.handleMouseMove = this.handleMouseMove.bind(this);
-		this.handleMouseUp = this.handleMouseUp.bind(this);
 	}
 
 	private get config(): PlayheadConfig {
@@ -126,44 +127,44 @@ export class PlayheadController {
 	}
 
 	destroy(): void {
-		if (this.isActive) {
-			this.session = { kind: "idle" };
-			this.config.setScrubbing(false);
+		if (this.session.kind === "scrubbing") this.endSession(this.session);
+	}
+
+	stopIfScopeChanged = (): void => {
+		if (this.session.kind === "scrubbing" && !this.isCurrentScope(this.session)) {
+			this.endSession(this.session);
 		}
-		this.deactivate();
-	}
+	};
 
-	// --- Public event handlers (bound, stable references) ---
+	onPlayheadPointerDown = (event: ReactPointerEvent): void => {
+		if (this.beginScrub(event, false)) event.stopPropagation();
+	};
 
-	onPlayheadMouseDown(event: ReactMouseEvent): void {
-		event.preventDefault();
-		event.stopPropagation();
-		this.session = {
-			kind: "scrubbing",
-			didStartFromRuler: false,
-			hasMoved: false,
-			currentTime: null,
-		};
-		this.config.setScrubbing(true);
-		this.scrub({ clientX: event.clientX, isElementSnappingEnabled: true });
-		this.activate();
-	}
-
-	onRulerMouseDown(event: ReactMouseEvent): void {
-		if (event.button !== 0) return;
+	onRulerPointerDown = (event: ReactPointerEvent): void => {
 		if (this.config.getPlayheadEl()?.contains(event.target as Node)) return;
+		this.beginScrub(event, true);
+	};
 
+	private beginScrub(event: ReactPointerEvent, didStartFromRuler: boolean): boolean {
+		if (!event.isPrimary || event.button !== 0 || this.isActive) return false;
 		event.preventDefault();
-		this.session = {
+		const captureTarget = event.currentTarget;
+		const session: ScrubSession = {
 			kind: "scrubbing",
-			didStartFromRuler: true,
+			didStartFromRuler,
 			hasMoved: false,
-			currentTime: null,
+			pointerId: event.pointerId,
+			captureTarget,
+			projectSession: this.config.getProjectSession(),
+			sceneId: this.config.getSceneId(),
 		};
+		captureTarget.setPointerCapture(event.pointerId);
+		this.session = session;
+		this.activate(session);
 		this.config.setScrubbing(true);
 		// No element-edge snapping on initial ruler click — avoids a jarring jump.
-		this.scrub({ clientX: event.clientX, isElementSnappingEnabled: false });
-		this.activate();
+		this.scrub({ clientX: event.clientX, isElementSnappingEnabled: !didStartFromRuler, forceSeek: true });
+		return true;
 	}
 
 	// --- Public non-session methods ---
@@ -191,11 +192,9 @@ export class PlayheadController {
 	}
 
 	handleScroll(time: MediaTime): void {
-		if (this.session.kind === "scrubbing") {
-			this.updatePlayheadLeft(this.session.currentTime ?? time);
-			if (this.session.hasMoved) this.scheduleScrub();
-		} else {
-			this.updatePlayheadLeft(time);
+		this.updatePlayheadLeft(time);
+		if (this.session.kind === "scrubbing" && this.session.hasMoved) {
+			this.scheduleScrub();
 		}
 	}
 
@@ -203,11 +202,11 @@ export class PlayheadController {
 	 * Updates the playhead position and auto-scrolls to keep the playhead
 	 * visible during playback.
 	 */
-	handlePlaybackUpdate(time: MediaTime): void {
+	handlePlaybackUpdate(time: MediaTime, isScrubbing: boolean): void {
 		this.updatePlayheadLeft(time);
 
 		// Auto-scroll only during playback, not while scrubbing.
-		if (!this.config.getIsPlaying() || this.session.kind === "scrubbing")
+		if (!this.config.getIsPlaying() || isScrubbing)
 			return;
 
 		const rulerViewport = this.config.getRulerScrollEl();
@@ -237,27 +236,48 @@ export class PlayheadController {
 
 	// --- Private ---
 
-	private activate(): void {
-		window.addEventListener("mousemove", this.handleMouseMove);
-		window.addEventListener("mouseup", this.handleMouseUp);
-		this.stopAutoScroll?.();
+	private activate(session: ScrubSession): void {
+		window.addEventListener("pointermove", this.handlePointerMove, true);
+		window.addEventListener("pointerup", this.handlePointerUp, true);
+		window.addEventListener("pointercancel", this.handlePointerCancel, true);
+		window.addEventListener("lostpointercapture", this.handlePointerCancel, true);
+		window.addEventListener("blur", this.finishAtLastPosition);
+		window.addEventListener("pagehide", this.finishAtLastPosition, true);
+		document.addEventListener("visibilitychange", this.handleVisibilityChange, true);
+		session.captureTarget.addEventListener("lostpointercapture", this.handlePointerCancel);
 		this.stopAutoScroll = startEdgeAutoScroll({
 			getMouseClientX: () => this.lastMouseClientX,
 			getRulerViewport: () => this.config.getRulerScrollEl(),
 			getTracksViewport: () => this.config.getTracksScrollEl(),
 			getContentWidth: () => timelineTimeToPixels({
-				time: this.config.duration,
+				time: this.config.getDuration(),
 				zoomLevel: this.config.zoomLevel,
 			}),
 		});
 	}
 
-	private deactivate(): void {
+	private endSession(session: ScrubSession): void {
+		this.session = { kind: "idle" };
 		this.cancelScrubFrame();
 		this.stopAutoScroll?.();
 		this.stopAutoScroll = undefined;
-		window.removeEventListener("mousemove", this.handleMouseMove);
-		window.removeEventListener("mouseup", this.handleMouseUp);
+		window.removeEventListener("pointermove", this.handlePointerMove, true);
+		window.removeEventListener("pointerup", this.handlePointerUp, true);
+		window.removeEventListener("pointercancel", this.handlePointerCancel, true);
+		window.removeEventListener("lostpointercapture", this.handlePointerCancel, true);
+		window.removeEventListener("blur", this.finishAtLastPosition);
+		window.removeEventListener("pagehide", this.finishAtLastPosition, true);
+		document.removeEventListener("visibilitychange", this.handleVisibilityChange, true);
+		session.captureTarget.removeEventListener("lostpointercapture", this.handlePointerCancel);
+		if (session.captureTarget.hasPointerCapture(session.pointerId)) {
+			session.captureTarget.releasePointerCapture(session.pointerId);
+		}
+		this.config.setScrubbing(false);
+	}
+
+	private isCurrentScope(session: ScrubSession): boolean {
+		return session.projectSession === this.config.getProjectSession() &&
+			session.sceneId === this.config.getSceneId();
 	}
 
 	/**
@@ -276,6 +296,10 @@ export class PlayheadController {
 	}): void {
 		const session = this.session;
 		if (session.kind !== "scrubbing") return;
+		if (!this.isCurrentScope(session)) {
+			this.endSession(session);
+			return;
+		}
 		this.lastMouseClientX = clientX;
 		const ruler = this.config.getRulerEl();
 		if (!ruler) return;
@@ -283,7 +307,8 @@ export class PlayheadController {
 		const fps = this.config.getActiveProjectFps();
 		if (!fps) return;
 
-		const { zoomLevel, duration } = this.config;
+		const { zoomLevel } = this.config;
+		const duration = this.config.getDuration();
 		const rawTime = pixelToTime({
 			clientX,
 			rulerEl: ruler,
@@ -323,9 +348,7 @@ export class PlayheadController {
 		})();
 
 		this.updatePlayheadLeft(time);
-		// Playback time may advance between moves even when the pointer snaps to the same frame.
-		if (forceSeek || session.currentTime !== time || this.config.getIsPlaying()) {
-			session.currentTime = time;
+		if (forceSeek || this.config.getCurrentTime() !== time) {
 			this.config.seek(time);
 		}
 	}
@@ -347,36 +370,57 @@ export class PlayheadController {
 		this.scrubFrame = null;
 	}
 
-	private handleMouseMove(event: MouseEvent): void {
-		if (this.session.kind !== "scrubbing") return;
+	private handlePointerMove = (event: PointerEvent): void => {
+		if (this.session.kind !== "scrubbing" || this.session.pointerId !== event.pointerId) return;
+		if (!(event.buttons & 1)) {
+			this.finishAtLastPosition();
+			return;
+		}
 		this.lastMouseClientX = event.clientX;
 		this.session.hasMoved = true;
 		this.scheduleScrub();
-	}
+	};
 
-	private handleMouseUp(event: MouseEvent): void {
-		if (this.session.kind !== "scrubbing") return;
+	private handlePointerUp = (event: PointerEvent): void => {
+		if (this.session.kind !== "scrubbing" || this.session.pointerId !== event.pointerId) return;
+		this.finishScrub(event.clientX);
+	};
 
+	private handlePointerCancel = (event: Event): void => {
+		if (this.session.kind === "scrubbing" && this.session.pointerId === (event as PointerEvent).pointerId) {
+			this.finishAtLastPosition();
+		}
+	};
+
+	private handleVisibilityChange = (): void => {
+		if (document.hidden) this.finishAtLastPosition();
+	};
+
+	private finishAtLastPosition = (): void => this.finishScrub();
+
+	private finishScrub(releaseX?: number): void {
 		const session = this.session;
-		this.cancelScrubFrame();
-		this.config.setScrubbing(false);
-		// Flush the release position before saving. The final seek also resumes audio
-		// if the controller was scrubbing while playback was running.
-		this.scrub({
-			clientX: event.clientX,
-			isElementSnappingEnabled: !session.didStartFromRuler || session.hasMoved,
-			forceSeek: true,
-		});
-
-		if (session.currentTime !== null) {
-			this.config.setTimelineViewState({
-				zoomLevel: this.config.zoomLevel,
-				scrollLeft: this.config.getTracksScrollEl()?.scrollLeft ?? 0,
-				playheadTime: session.currentTime,
+		if (session.kind !== "scrubbing") return;
+		if (this.isCurrentScope(session) &&
+			(releaseX !== undefined || this.scrubFrame !== null)) {
+			this.scrub({
+				clientX: releaseX ?? this.lastMouseClientX,
+				isElementSnappingEnabled: !session.didStartFromRuler || session.hasMoved,
 			});
 		}
+		if (this.session !== session) return;
+		this.endSession(session);
+		if (!this.isCurrentScope(session)) return;
 
-		this.session = { kind: "idle" };
-		this.deactivate();
+		const playheadTime = this.config.getCurrentTime();
+		// Resume audio from the settled position when scrubbing during playback.
+		if (this.config.getIsPlaying()) {
+			this.config.seek(playheadTime);
+		}
+		this.config.setTimelineViewState({
+			zoomLevel: this.config.zoomLevel,
+			scrollLeft: this.config.getTracksScrollEl()?.scrollLeft ?? 0,
+			playheadTime,
+		});
 	}
 }

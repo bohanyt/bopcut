@@ -26,7 +26,10 @@ export function useTimelinePlayhead({
 	const isShiftHeldRef = useShiftKey();
 	const config: PlayheadConfig = {
 		zoomLevel,
-		duration: editor.timeline.getTotalDuration(),
+		getDuration: () => editor.timeline.getTotalDuration(),
+		getProjectSession: () => editor.project.getSession(),
+		getSceneId: () => editor.scenes.getActiveSceneOrNull()?.id,
+		getCurrentTime: () => editor.playback.getCurrentTime(),
 		getActiveProjectFps: () => editor.project.getActive()?.settings.fps ?? null,
 		isShiftHeld: () => isShiftHeldRef.current,
 		getIsPlaying: () => editor.playback.getIsPlaying(),
@@ -67,23 +70,30 @@ export function useTimelinePlayhead({
 	// Playback events → update playhead position and auto-scroll during playback.
 	useEffect(() => {
 		ctrl.updatePlayheadLeft(editor.playback.getCurrentTime());
-		const unsubscribeUpdate = editor.playback.onUpdate((time) => {
-			if (!editor.playback.getIsScrubbing()) ctrl.handlePlaybackUpdate(time);
-		});
-		const unsubscribeSeek = editor.playback.onSeek((time) => {
-			if (editor.playback.getIsScrubbing()) ctrl.updatePlayheadLeft(time);
-			else ctrl.handlePlaybackUpdate(time);
-		});
+		const unsubscribeUpdate = editor.playback.onUpdate((time) =>
+			ctrl.handlePlaybackUpdate(time, editor.playback.getIsScrubbing()),
+		);
+		const unsubscribeSeek = editor.playback.onSeek((time) =>
+			ctrl.handlePlaybackUpdate(time, editor.playback.getIsScrubbing()),
+		);
 		return () => {
 			unsubscribeUpdate();
 			unsubscribeSeek();
 		};
 	}, [ctrl, editor.playback]);
 
-	useEffect(() => () => ctrl.destroy(), [ctrl]);
+	useEffect(() => {
+		const stopScene = editor.scenes.subscribe(ctrl.stopIfScopeChanged);
+		const stopProject = editor.project.subscribe(ctrl.stopIfScopeChanged);
+		return () => {
+			stopScene();
+			stopProject();
+			ctrl.destroy();
+		};
+	}, [ctrl, editor]);
 
 	return {
-		handlePlayheadMouseDown: ctrl.onPlayheadMouseDown,
-		handleRulerMouseDown: ctrl.onRulerMouseDown,
+		handlePlayheadPointerDown: ctrl.onPlayheadPointerDown,
+		handleRulerPointerDown: ctrl.onRulerPointerDown,
 	};
 }
