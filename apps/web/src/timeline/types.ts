@@ -10,6 +10,7 @@ export type ElementRef = {
 };
 
 export interface Bookmark {
+	box?: import("./bookmarks/area").BookmarkBox;
 	id?: string;
 	author?: "user" | "agent";
 	resolved?: boolean;

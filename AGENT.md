@@ -94,7 +94,7 @@ The user selects what is wrong in the editor, switches to their agent and says "
 - `updatedAt` is set by the server when it writes the file. A selection is only valid for its `projectId`: compare it with the snapshot's project before using it. If the editor tab was closed, the file keeps the last selection, so an old `updatedAt` means the user may have moved on.
 
 Resolve "this" in this order:
-1. Unresolved notes the user just added (`notes`, newest first). A note with a duration marks a time range.
+1. Unresolved notes the user just added (`notes`, newest first). A duration marks a time range. A `box` marks an area of the picture, and `elements` lists the visible candidates under it at the note's start, topmost first.
 2. The `selected` elements.
 3. The element or elements under the `playhead`.
 
@@ -241,9 +241,17 @@ Human edits are logged in `AGENT_WORKSPACE/edits/<projectId>.jsonl`. Run `bun ap
 
 Ruler bookmarks also serve as notes: press the bookmark button at the playhead (select an element first to associate it), then double-click the marker to enter text, duration, color, resolve, or delete it. Agent markers are orange; resolved markers are gray. Snapshot `notes` contain `{id,text,start,end?,elementIds,replies,author,resolved,createdAt}`; times are in seconds. Old bookmarks without text are excluded from the notes list.
 
-Add `{op:"note", text, start, end?, match?:[{agentId}|{id}]}`, `{op:"resolve-note", id}`, or `{op:"reply-note", id, text}` to draft `ops`. The result includes the note ID and status per operation in `draft-result.json`, and the whole draft remains one Undo. Because bookmarks use one position per frame, additions at an existing position are rejected and reported.
+Choose **Point at an area** in the preview toolbar or an open note, draw on the paused image, enter text, and save. Escape cancels the draft. The corner handles can be dragged or adjusted with the arrow keys. A note's box appears when its marker is open or hovered. The saved `box:{x,y,width,height}` uses fractions of the canvas measured from its top-left corner, so preview zoom, pan, and canvas resizing do not change it. Older builds can open the timeline. A save from an older build that strips unknown bookmark fields can remove the box.
+
+Starting playback, seeking, changing scenes, or starting a voice-over cancels an unsaved area. Timeline shortcuts are suspended during area editing. The form sits below the picture, and Enter confirms.
+
+Area notes also carry `sceneId` and `elements:[{id,name,type}]`. This list is separate from manually associated `elementIds`. It omits hidden tracks, hidden elements, and zero-opacity elements. A track's audio mute setting has no effect on its visual candidates. Overlap uses transformed element bounds and sampled coverage of the active mask, including feather. The list describes candidates under the box, including covered candidates behind the topmost one. Compound area-note times are relative to their content scene.
+
+Add `{op:"note", text, start, end?, match?:[{agentId}|{id}]}`, `{op:"resolve-note", id, sceneId?}`, or `{op:"reply-note", id, text, sceneId?}` to draft `ops`. Replies and resolutions search reachable scenes, including compound contents. Include the note's `sceneId` when its ID is shared by copies. With `basedOn`, the owning scene's note is checked for changes. The result includes the note ID and status per operation in `draft-result.json`, and the whole draft remains one Undo. Because bookmarks use one position per frame, additions at an existing position are rejected and reported.
 
 Write `frames-request.json`: `{rev:"capture-1", times:[0,1,2], width:960}`. `rev` may contain only letters, digits, `_`, or `-`; times must be within the timeline. `width` is optional (default 960, maximum 4096). Frames are rendered at the project's resolution, then resized with their aspect ratio preserved. The saved frame may be narrower than requested if its height would exceed the device limit. Frames show the root timeline (see *Compound clips for agents*) with compound clips rendered from their content, also while the human has a compound open. The active editor processes requests when no drag is in progress; `frames-result.json` contains `{rev,files:["frames/capture-1/0.jpg",...],projectId}` after all frames are saved. Use a new `rev` for each request.
+
+To capture a note, use `{rev:"note-view", noteId:"<id>", sceneId:"<scene id>"}` or `bun run agent frames --note <id> --scene-id <scene id>`. The scene ID is optional when the note ID is unique. The render uses the note's start in its own scene. Area notes return an outlined full frame in `files`, the normalized `box`, and a clean `crop` JPEG path with an edge up to 768 pixels. A note without a box returns the ordinary full frame. Use a note ID in place of times, elements, or a comparison request.
 
 Frames of the current timeline use the root, scene contents, canvas, background, and frame rate held when the request was picked up. Edits and scene switches during the batch do not change these inputs. Closing, switching, or reopening the project before the batch finishes returns an error with `files:[]`. Media removed during rendering are reported in the affected frames' errors.
 

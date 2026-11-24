@@ -9,6 +9,8 @@ import { isForOtherProject, parseStateRef, resolveState, type TimelineState } fr
 import { markAnswered, wasAnswered } from "./answered";
 import { readRenderRequest, renderTransport, type RenderFetch, type RenderTransport } from "./render-transport";
 import { MAX_FRAMES } from "./render-input";
+import { noteId } from "./notes";
+import type { BookmarkBox } from "@/timeline/bookmarks/area";
 
 export { MAX_FRAMES } from "./render-input";
 
@@ -58,7 +60,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 	try {
 		const response = source ?? await readRenderRequest("frames", before?.metadata.id ?? "", !pendingCancellation);
 		const request = await response.json() as {
-			rev?: string; times?: unknown; elements?: string[]; width?: number; projectId?: unknown; allowMissing?: boolean; state?: unknown; compare?: unknown;
+			rev?: string; times?: unknown; elements?: string[]; noteId?: string; sceneId?: string; width?: number; projectId?: unknown; allowMissing?: boolean; state?: unknown; compare?: unknown;
 		} | null;
 		if (!request || typeof request.rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.rev)) return;
 		// The workspace has a single result file. Retry a failed cancellation while its request is current.
@@ -69,7 +71,8 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const { request: send, signal: jobSignal, reportStage } = transport ?? renderTransport(response);
 		const signal = jobSignal ? AbortSignal.any([session, jobSignal]) : session;
 		const elements = jobSignal ? request.elements : undefined;
-		if (!elements && (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0))) return;
+		const requestedNote = typeof request.noteId === "string" && request.noteId.length > 0;
+		if (!elements && !requestedNote && (!Array.isArray(request.times) || !request.times.length || request.times.some((t: unknown) => typeof t !== "number" || !Number.isFinite(t) || t < 0))) return;
 		if (request.width !== undefined && (!Number.isInteger(request.width) || request.width < 1 || request.width > 4096)) return;
 		// A request read across a session switch has not been picked up by either project yet.
 		const project = editor.project.getActiveOrNull();
@@ -119,7 +122,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const { canvasSize, background, fps } = project.settings;
 		const settings = { canvasSize, background, fps };
 		const root = getRootScene(scenes, activeSceneId);
-		const times = request.times as number[] ?? [];
+		const times = requestedNote ? [] : (request.times as number[] ?? []);
 		if (elements) {
 			const items = root ? [...root.tracks.overlay, root.tracks.main, ...root.tracks.audio].flatMap<TimelineElement>((track) => track.elements) : [];
 			for (const id of elements) {
@@ -128,9 +131,24 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 				times.push(matches[0].startTime / TICKS_PER_SECOND);
 			}
 		}
-		const live = root ? { projectId, scenes, rootSceneId: root.id, settings, media: new Map(assets.map((asset) => [asset.id, asset.name])) } : null;
-		const primary = states.state ?? live;
+		let live: TimelineState | null = root ? { projectId, scenes, rootSceneId: root.id, settings, media: new Map(assets.map((asset) => [asset.id, asset.name])) } : null;
+		let primary = states.state ?? live;
 		if (!primary) return await refuse("No scene");
+		let box: BookmarkBox | undefined;
+		if (requestedNote) {
+			if (request.times || elements || states.compare) return await refuse("Use noteId without times, elements or compare");
+			const candidates = primary.scenes.filter((entry) => request.sceneId ? entry.id === request.sceneId : true)
+				.flatMap((scene) => scene.bookmarks.filter((b) => noteId(b) === request.noteId && b.note?.trim()).map((bookmark) => ({ scene, bookmark })));
+			if (candidates.length !== 1) return await refuse("Expected one note matching noteId; use sceneId to disambiguate");
+			const [{ scene, bookmark }] = candidates;
+			if (scene.id !== primary.rootSceneId) {
+				const scoped = { ...primary, rootSceneId: scene.id };
+				if (primary === live) live = scoped;
+				primary = scoped;
+			}
+			times.push(bookmark.time / TICKS_PER_SECOND);
+			box = bookmark.box;
+		}
 		const passes: [TimelineState, "compare"?][] = [[primary]];
 		if (states.compare) passes.push([states.compare, "compare"]);
 		if (times.length * passes.length > MAX_FRAMES) return await refuse(`at most ${MAX_FRAMES} frames per request (times x states)`);
@@ -145,6 +163,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		}
 		const files: string[] = [];
 		const compared: string[] = [];
+		let crop: string | undefined;
 		// A time a state cannot show (outside its timeline, or an empty one) is reported; the others go on.
 		const errors: { time: number; variant?: string; error: string }[] = [];
 		for (const [index, time] of times.entries()) {
@@ -155,10 +174,12 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 					const error = missing(state);
 					if (error) throw new Error(error);
 					const before = editor.media.getAssets();
-					(variant ? compared : files).push(await renderFrame({
-						request: { rev, width }, time, state, variant, settings: state.settings ?? settings, signal, send,
+					const captured = await renderFrame({
+						request: { rev, width }, time, state, variant, box, settings: state.settings ?? settings, signal, send,
 						checkMedia: () => editor.media.getAssets() === before ? null : missing(state),
-					}));
+					});
+					(variant ? compared : files).push(captured.file);
+					crop = captured.crop ?? crop;
 				} catch (error) {
 					if (editor.renderOnly && rendererDevice.status.state !== "ready") {
 						return await refuse("Graphics became unavailable in the hidden browser. Open the editor once and retry.");
@@ -168,7 +189,7 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 			}
 		}
 		if (signal.aborted) return await cancel();
-		await finish({ files, ...(states.compare ? { compare: compared } : {}), ...(errors.length ? { errors } : {}) });
+		await finish({ files, ...(crop && { crop, box }), ...(states.compare ? { compare: compared } : {}), ...(errors.length ? { errors } : {}) });
 	} catch (error) { console.error("Agent frame failed:", error); }
 	finally { busy = false; }
 }
@@ -204,10 +225,10 @@ export function removedMedia(state: TimelineState, onlyPreviouslyPresent = false
 }
 
 /** Renders and saves one frame from the state chosen for this pass. */
-async function renderFrame({ request, time, state, variant, settings, signal, checkMedia, send }: {
+async function renderFrame({ request, time, state, variant, box, settings, signal, checkMedia, send }: {
 	request: { rev: string; width?: number }; time: number; state: TimelineState; variant?: string;
-	settings: NonNullable<TimelineState["settings"]>; signal: AbortSignal; checkMedia: () => string | null; send: RenderFetch;
-}): Promise<string> {
+	box?: BookmarkBox; settings: NonNullable<TimelineState["settings"]>; signal: AbortSignal; checkMedia: () => string | null; send: RenderFetch;
+}): Promise<{ file: string; crop?: string }> {
 	const editor = EditorCore.getInstance();
 	const { scenes, rootSceneId } = state;
 	const root = scenes.find((scene) => scene.id === rootSceneId);
@@ -224,6 +245,7 @@ async function renderFrame({ request, time, state, variant, settings, signal, ch
 	if (!snapshot.success) throw new Error(snapshot.error);
 	const image = await createImageBitmap(snapshot.blob);
 	const canvas = document.createElement("canvas");
+	let crop: HTMLCanvasElement | undefined;
 	try {
 		const requestedWidth = request.width ?? 960;
 		const { width, height } = fitSurfaceSize(
@@ -236,6 +258,23 @@ async function renderFrame({ request, time, state, variant, settings, signal, ch
 		const context = canvas.getContext("2d");
 		if (!context) throw new Error("Canvas unavailable");
 		context.drawImage(image, 0, 0, canvas.width, canvas.height);
+		if (box) {
+			crop = document.createElement("canvas");
+			const sw = box.width * image.width, sh = box.height * image.height;
+			const scale = Math.min(768, maxSurfaceDimension) / Math.max(sw, sh);
+			crop.width = Math.max(1, Math.round(sw * scale));
+			crop.height = Math.max(1, Math.round(sh * scale));
+			const cropContext = crop.getContext("2d");
+			if (!cropContext) throw new Error("Canvas unavailable");
+			cropContext.drawImage(image, box.x * image.width, box.y * image.height, sw, sh, 0, 0, crop.width, crop.height);
+			const rect = [box.x * width, box.y * height, box.width * width, box.height * height] as const;
+			context.strokeStyle = "#111";
+			context.lineWidth = 5;
+			context.strokeRect(...rect);
+			context.strokeStyle = "#67e8f9";
+			context.lineWidth = 3;
+			context.strokeRect(...rect);
+		}
 	} finally {
 		image.close();
 	}
@@ -243,9 +282,14 @@ async function renderFrame({ request, time, state, variant, settings, signal, ch
 	if (!blob) throw new Error("Failed to create JPEG");
 	const form = new FormData();
 	form.set("rev", request.rev); form.set("time", String(time)); form.set("image", blob);
+	if (crop) {
+		const jpeg = await new Promise<Blob | null>((resolve) => crop.toBlob(resolve, "image/jpeg", 0.9));
+		if (!jpeg) throw new Error("Failed to create crop JPEG");
+		form.set("crop", jpeg);
+	}
 	if (variant) form.set("variant", variant);
 	signal.throwIfAborted();
 	const response = await send("/api/agent/frame", { method: "POST", body: form, signal });
 	if (!response.ok) throw new Error(await response.text());
-	return (await response.json()).file;
+	return response.json();
 }

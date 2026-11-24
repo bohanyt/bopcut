@@ -26,6 +26,8 @@ import { usePreviewStore } from "@/preview/preview-store";
 import { previewQualityScale } from "@/preview/quality";
 import { createPreviewFrameScheduler } from "@/preview/frame-scheduler";
 import { PreviewToolbar } from "./toolbar";
+import { BookmarkAreaLayer } from "./bookmark-area";
+import { useBookmarkArea } from "@/timeline/bookmarks/area-state";
 import {
 	PreviewViewportProvider,
 	PreviewFramingProvider,
@@ -155,6 +157,8 @@ function PreviewCanvas({
 	}) => void;
 }) {
 	const canvasMountRef = useRef<HTMLDivElement>(null);
+	const [areaFormHost, setAreaFormHost] = useState<HTMLDivElement | null>(null);
+	const areaEditing = useBookmarkArea((state) => state.editing !== null);
 	const viewportRef = useRef<HTMLDivElement>(null);
 	const lastFrameRef = useRef(-1);
 	const lastSceneRef = useRef<RootNode | null>(null);
@@ -422,6 +426,7 @@ function PreviewCanvas({
 									instances={overlayInstances}
 									plane="over-interaction"
 								/>
+								<BookmarkAreaLayer formHost={areaFormHost} />
 							</div>
 						</ContextMenuTrigger>
 						<PreviewContextMenu
@@ -432,6 +437,7 @@ function PreviewCanvas({
 						/>
 					</ContextMenu>
 				</div>
+				<div ref={setAreaFormHost} className={areaEditing ? "min-h-14 shrink-0 px-2 pt-1" : undefined} />
 				<PreviewToolbar
 					compact={fitRenderToViewport}
 					onToggleFullscreen={onToggleFullscreen}

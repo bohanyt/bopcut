@@ -111,17 +111,25 @@ function getElementBounds({
 	canvasSize,
 	mediaAsset,
 	localTime,
+	includeCompound,
 }: {
 	element: TimelineElement;
 	canvasSize: { width: number; height: number };
 	mediaAsset?: MediaAsset | null;
 	localTime: number;
+	includeCompound?: boolean;
 }): ElementBounds | null {
 	if (element.type === "audio" || element.type === "effect") return null;
 	if ("hidden" in element && element.hidden) return null;
 
 	const { width: canvasWidth, height: canvasHeight } = canvasSize;
 
+	if (includeCompound && element.type === "compound") {
+		const transform = resolveTransformAtTime({
+			baseTransform: buildTransformFromParams({ params: element.params }), animations: element.animations, localTime,
+		});
+		return getVisualElementBounds({ canvasWidth, canvasHeight, sourceWidth: canvasWidth, sourceHeight: canvasHeight, transform });
+	}
 	if (element.type === "video" || element.type === "image") {
 		const transform = resolveTransformAtTime({
 			baseTransform: buildTransformFromParams({ params: element.params }),
@@ -251,12 +259,14 @@ export function getVisibleElementsWithBounds({
 	canvasSize,
 	mediaAssets,
 	onlyElements,
+	includeCompound,
 }: {
 	tracks: SceneTracks;
 	currentTime: number;
 	canvasSize: { width: number; height: number };
 	mediaAssets: MediaAsset[];
 	onlyElements?: readonly ElementRef[];
+	includeCompound?: boolean;
 }): ElementWithBounds[] {
 	const mediaMap = onlyElements ? null : new Map(mediaAssets.map((m) => [m.id, m]));
 	const orderedTracks = [
@@ -305,6 +315,7 @@ export function getVisibleElementsWithBounds({
 				canvasSize,
 				mediaAsset,
 				localTime,
+				includeCompound,
 			});
 			if (bounds) {
 				result.push({

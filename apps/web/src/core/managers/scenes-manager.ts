@@ -255,11 +255,13 @@ export class ScenesManager {
 	async updateBookmark({
 		time,
 		updates,
+		create,
 	}: {
 		time: MediaTime;
 		updates: Partial<Omit<Bookmark, "time">>;
+		create?: boolean;
 	}): Promise<void> {
-		const command = new UpdateBookmarkCommand({ time, updates });
+		const command = new UpdateBookmarkCommand({ time, updates, create });
 		this.editor.command.execute({ command });
 	}
 

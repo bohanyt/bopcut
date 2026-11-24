@@ -32,7 +32,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			...(!transcript && { url: { type: "string" } }),
 			...(render && { "allow-missing": { type: "boolean" } }),
 			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
-			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" } }),
+			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" }, note: { type: "string" }, "scene-id": { type: "string" } }),
 		},
 	});
 	const seconds = Number(values.timeout ?? (render ? 600 : 30));
@@ -77,7 +77,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		const times = typeof values.times === "string" ? values.times.split(",").map((time) => time.trim() ? Number(time) : NaN) : undefined;
 		const elements = Array.isArray(values.element) || typeof values.elements === "string"
 			? [...(Array.isArray(values.element) ? values.element : []), ...(typeof values.elements === "string" ? values.elements.split(",") : [])] : undefined;
-		request = parseFrameInput({ times, elements, width: values.width === undefined ? undefined : Number(values.width), allowMissing });
+		request = parseFrameInput({ times, elements, noteId: values.note, sceneId: values["scene-id"], width: values.width === undefined ? undefined : Number(values.width), allowMissing });
 	}
 	return { command: command as Exclude<Command, "transcript">, projectId, timeoutMs, origin: url.origin, ...(request && { request }) };
 }

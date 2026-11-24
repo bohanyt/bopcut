@@ -76,12 +76,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	if (slug[0] === "frame") {
 		const form = await req.formData();
 		const rev = form.get("rev"); const time = form.get("time"); const image = form.get("image"); const variant = form.get("variant");
+		const crop = form.get("crop");
 		if (typeof rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(rev) || typeof time !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(time) || !(image instanceof File) || image.type !== "image/jpeg" || (variant !== null && variant !== "compare")) return Response.json({ error: "Invalid frame" }, { status: 400 });
+		if (crop !== null && (!(crop instanceof File) || crop.type !== "image/jpeg" || variant !== null)) return Response.json({ error: "Invalid crop" }, { status: 400 });
 		// A compared state's frame (before/after pairs) sits next to the frame of the same time.
 		const name = variant === "compare" ? `${time}-compare.jpg` : `${time}.jpg`;
 		const file = `frames/${rev}/${name}`;
 		await fs.mkdir(path.join(WORKSPACE, "frames", rev), { recursive: true });
 		await fs.writeFile(path.join(WORKSPACE, "frames", rev, name), Buffer.from(await image.arrayBuffer()));
+		if (crop instanceof File) {
+			await fs.writeFile(path.join(WORKSPACE, "frames", rev, `${time}-crop.jpg`), Buffer.from(await crop.arrayBuffer()));
+			return Response.json({ file, crop: `frames/${rev}/${time}-crop.jpg` });
+		}
 		return Response.json({ file });
 	}
 	if (slug[0] === "frames-result") {

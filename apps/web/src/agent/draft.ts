@@ -16,7 +16,7 @@ import { buildCompoundFromElements, isCompoundElement, relocateVisualCompounds, 
 import { applyRippleAdjustments, computeRippleAdjustments } from "@/ripple";
 import type { FrameRate } from "opencut-wasm";
 import { generateUUID } from "@/utils/id";
-import { validNote } from "./notes";
+import { noteId, validNote } from "./notes";
 import { type AgentElement, type AgentKeyframe, type AgentTrackRef, type LoadedMedia, createAgentTrack, secs } from "./elements";
 import { type BuildContext, applyAgentKeyframes, cloneTracks, placeAgentElement, upsertAgentKeyframe } from "./compound-content";
 import { type AgentMatch, type ElementHit, addressOf, getReachableScenes, getScenePaths, orderedTracks, resolveCompoundTarget, resolveMatch } from "./scene-graph";
@@ -45,8 +45,8 @@ export type DraftOp = { onConflict?: ConflictPolicy; take?: string[] } & (
 	/** Deletes the matched element and puts `element` in its place, as one op (all or nothing). */
 	| { op: "replace"; match: AgentMatch; element: Partial<AgentElement>; track?: AgentTrackRef }
 	| { op: "note"; text: string; start: number; end?: number; match?: AgentMatch[] }
-	| { op: "resolve-note"; id: string }
-	| { op: "reply-note"; id: string; text: string }
+	| { op: "resolve-note"; id: string; sceneId?: string }
+	| { op: "reply-note"; id: string; sceneId?: string; text: string }
 	| { op: "add"; track: DraftTrackRef; element: AgentElement }
 	| { op: "group"; agent_id?: string; name?: string; match: AgentMatch[] }
 	| { op: "ungroup"; match: AgentMatch }
@@ -257,6 +257,15 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	};
 	const bookmarksOfRoot = () => [...sceneOf(rootSceneId).bookmarks];
 	const setRootBookmarks = (bookmarks: Bookmark[]) => replace({ ...sceneOf(rootSceneId), bookmarks });
+	const findNote = ({ id, sceneId }: { id: string; sceneId?: string }) => {
+		const hits = getReachableScenes(list, rootSceneId)
+			.filter((scene) => sceneId === undefined || scene.id === sceneId)
+			.flatMap((scene) => scene.bookmarks.flatMap((bookmark, index) =>
+				noteId(bookmark) === id && bookmark.note?.trim() ? [{ scene, index }] : []));
+		if (hits.length > 1) throw new Error("note ID is ambiguous; include sceneId");
+		if (!hits.length) throw new Error("note not found");
+		return hits[0];
+	};
 
 	const add = (track: DraftTrackRef | undefined, element: AgentElement, result: any) => {
 		if (!track || typeof track.name !== "string") throw new Error("add needs track:{name}");
@@ -783,25 +792,25 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				return;
 			}
 			case "reply-note": {
-				const bookmarks = bookmarksOfRoot();
-				const index = bookmarks.findIndex((b) => (b.id ?? `legacy-${b.time}`) === op.id && b.note?.trim());
+				const { scene, index } = findNote(op);
+				const bookmarks = [...scene.bookmarks];
 				result.id = op.id;
-				if (index < 0 || typeof op.text !== "string" || !op.text.trim()) throw new Error("invalid note or reply");
+				if (typeof op.text !== "string" || !op.text.trim()) throw new Error("invalid note or reply");
+				assertNoteNotStale({ base, now, sceneId: scene.id, noteId: op.id });
 				const reply = { id: generateUUID(), text: op.text, author: "agent" as const, createdAt: new Date().toISOString() };
 				bookmarks[index] = { ...bookmarks[index], replies: [...(bookmarks[index].replies ?? []), reply] };
-				setRootBookmarks(bookmarks);
+				replace({ ...scene, bookmarks });
 				result.replyId = reply.id;
 				return;
 			}
 			case "resolve-note": {
-				const bookmarks = bookmarksOfRoot();
-				const index = bookmarks.findIndex((b) => (b.id ?? `legacy-${b.time}`) === op.id && b.note?.trim());
+				const { scene, index } = findNote(op);
+				const bookmarks = [...scene.bookmarks];
 				result.id = op.id;
-				if (index < 0) throw new Error("note not found");
 				// Not a note the user reopened (or changed) since basedOn.
-				assertNoteNotStale({ base, now, sceneId: rootSceneId, noteId: op.id });
+				assertNoteNotStale({ base, now, sceneId: scene.id, noteId: op.id });
 				bookmarks[index] = { ...bookmarks[index], resolved: true };
-				setRootBookmarks(bookmarks);
+				replace({ ...scene, bookmarks });
 				return;
 			}
 			default:
