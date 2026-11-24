@@ -123,7 +123,7 @@ function keyframeTargets(el: any, k: AgentKeyframe): { propertyPath: string; val
 	if (!k || typeof k !== "object" || typeof k.path !== "string" || !k.path || typeof k.time !== "number" || !Number.isFinite(k.time)
 		|| !((typeof k.value === "number" && Number.isFinite(k.value)) || typeof k.value === "string")
 		|| (k.interpolation !== undefined && !INTERPOLATIONS.includes(k.interpolation))) {
-		throw new Error(`invalid keyframe: ${JSON.stringify(k)}`);
+		throw new Error(`invalid keyframe: ${JSON.stringify(k)} (${el.agentId ?? el.name})`);
 	}
 	if (k.path === "scale") {
 		return ["transform.scaleX", "transform.scaleY"].map((propertyPath) => ({ propertyPath, value: Number(k.value) * (typeof el.params?.[propertyPath] === "number" ? el.params[propertyPath] : 1) }));
@@ -168,7 +168,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				if (index < 0) continue;
 				const el = track.elements[index];
 				// What was built (a text or compound with a mediaId has no cuts to snap).
-				if (el.type !== "video" && el.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
+				if (el.type !== "video" && el.type !== "audio") throw new Error(`cut: "words" is for video and audio clips (${el.agentId ?? el.name})`);
 				let snapped = null;
 				if (at) {
 					const cut = cutAtWords(el, words, fps, { startWord: at.startWord, endWord: at.endWord });
@@ -281,12 +281,13 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		if (content) refuseNestedCut([...(content.main ?? []), ...(content.overlay ?? []).flatMap((t) => t.elements ?? []), ...(content.audio ?? []), ...(content.elements ?? [])]);
 		let words: SourceWord[] | undefined;
 		const atWords = element.startAtWord !== undefined || element.endAfterWord !== undefined;
-		if (atWords && cutWords) throw new Error("startAtWord/endAfterWord already cut at words (no cut needed)");
-		if (element.startAtWord !== undefined && element.trimStart !== undefined) throw new Error("startAtWord replaces trimStart");
-		if (element.endAfterWord !== undefined && element.duration !== undefined) throw new Error("endAfterWord replaces duration");
+		const addTag = element.agent_id ?? element.name;
+		if (atWords && cutWords) throw new Error(`startAtWord/endAfterWord already cut at words (no cut needed) (${addTag})`);
+		if (element.startAtWord !== undefined && element.trimStart !== undefined) throw new Error(`startAtWord replaces trimStart (${addTag})`);
+		if (element.endAfterWord !== undefined && element.duration !== undefined) throw new Error(`endAfterWord replaces duration (${addTag})`);
 		if (cutWords || atWords) {
 			const loaded = mediaFor(element);
-			if (!loaded || (loaded.type !== "video" && loaded.type !== "audio")) throw new Error('cut: "words" is for video and audio clips');
+			if (!loaded || (loaded.type !== "video" && loaded.type !== "audio")) throw new Error(`cut: "words" is for video and audio clips (${addTag})`);
 			words = needWords(draftWords.get(loaded.id) ?? loaded.words ?? wordsOf?.(loaded.id));
 		}
 		const ctx: BuildContext = { canvas, keyframes: [], mediaFor, existing: list, created: [] };
@@ -373,15 +374,15 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				if (keepSet) operation.hit = hit;
 				let setWords: SourceWord[] | undefined;
 				const atWords = op.startAtWord !== undefined || op.endAfterWord !== undefined;
-				if (atWords && (op.trimStart !== undefined || op.duration !== undefined || cutWords)) throw new Error("startAtWord/endAfterWord replace trimStart, duration and cut");
+				if (atWords && (op.trimStart !== undefined || op.duration !== undefined || cutWords)) throw new Error(`startAtWord/endAfterWord replace trimStart, duration and cut (${hit.element.agentId ?? hit.element.name})`);
 				const stale = staleFor(hit);
 				const protectedFields = protection(hit, stale);
 				if (cutWords || atWords) {
-					if (hit.element.type !== "video" && hit.element.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
+					if (hit.element.type !== "video" && hit.element.type !== "audio") throw new Error(`cut: "words" is for video and audio clips (${hit.element.agentId ?? hit.element.name})`);
 					for (const field of wordCutFields) if (protectedFields.has(field)) kept.add(field);
 					if (kept.size) {
 						reportKept();
-						throw new Error("word cuts cannot change protected timing; take the protected fields or cut without keep");
+						throw new Error(`word cuts cannot change protected timing; take the protected fields or cut without keep (${hit.element.agentId ?? hit.element.name})`);
 					}
 					setWords = needWords(wordsFor((hit.element as { mediaId?: unknown }).mediaId));
 				}
@@ -403,9 +404,13 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						patch.trimEnd = Math.max(0, el.sourceDuration - (patch.trimStart ?? el.trimStart) - (patch.duration ?? el.duration));
 					}
 					// Animation presets written as raw params are checked like an animate op.
-					checkPresetParams(el, op.params as ParamValues | undefined);
+					try {
+						checkPresetParams(el, op.params as ParamValues | undefined);
+					} catch (error) {
+						throw new Error(`${message(error)} (${el.agentId ?? el.name})`);
+					}
 					if (op.params) patch.params = { ...el.params, ...op.params };
-					if (op.caption && el.type !== "text") throw new Error("caption can only update a text element");
+					if (op.caption && el.type !== "text") throw new Error(`caption can only update a text element (${el.agentId ?? el.name})`);
 					let next = { ...el, ...patch };
 					const applyWordCut = (wordPatch: Pick<TimelineElement, "duration" | "trimStart" | "trimEnd">) => {
 						if (!keepSet) assertRoomForEnd(track.elements, hit.index, next.startTime + next.duration, next.startTime + wordPatch.duration);
@@ -426,9 +431,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					};
 					if (keepSet) applyWords();
 					if (op.keyframes !== undefined || op.keyframesMode !== undefined) {
-						if (!Array.isArray(op.keyframes)) throw new Error("set: keyframes must be a list");
+						if (!Array.isArray(op.keyframes)) throw new Error(`set: keyframes must be a list (${hit.element.agentId ?? hit.element.name})`);
 						const mode = op.keyframesMode ?? "merge";
-						if (mode !== "merge" && mode !== "replace") throw new Error(`set: unknown keyframesMode ${mode}`);
+						if (mode !== "merge" && mode !== "replace") throw new Error(`set: unknown keyframesMode ${mode} (${hit.element.agentId ?? hit.element.name})`);
 						if (mode === "replace") {
 							const { animations: _dropped, ...rest } = next;
 							next = rest;
@@ -436,7 +441,13 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						// Every key is checked against its animation target (strict) before the op counts:
 						// one invalid key fails the op, so a `replace` never ends with keys dropped.
 						for (const k of op.keyframes) {
-							for (const target of keyframeTargets(next, k)) next = upsertAgentKeyframe(next, { ...target, time: k.time, interpolation: k.interpolation }, { strict: true });
+							for (const target of keyframeTargets(next, k)) {
+								try {
+									next = upsertAgentKeyframe(next, { ...target, time: k.time, interpolation: k.interpolation }, { strict: true });
+								} catch (error) {
+									throw new Error(`${message(error)} (${el.agentId ?? el.name})`);
+								}
+							}
 						}
 					}
 					if (!keepSet) applyWords();
@@ -456,7 +467,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						let source: number | undefined;
 						if (isCompoundElement(merged) && (op.duration !== undefined || op.trimStart !== undefined)) {
 							source = compoundSourceDuration(merged);
-							if (source === undefined) throw new Error("cannot check the compound's source range because its content is missing");
+							if (source === undefined) throw new Error(`cannot check the compound's source range because its content is missing (${hit.element.agentId ?? hit.element.name})`);
 						} else if (trimChanged && (el.type === "video" || el.type === "audio")) {
 							source = el.sourceDuration ?? secs(sourceEnd(el));
 						}
@@ -678,7 +689,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				)) {
 					kept.add("content");
 					reportKept();
-					throw new Error("the compound contains protected elements; edit its children instead");
+					throw new Error(`the compound contains protected elements; edit its children instead (${old.agentId ?? old.name})`);
 				}
 				if (keepReplacement) assertNotStale({
 					base, now, sceneId: hit.sceneId, element: old, fields: ["unmanaged", "content", "trackSettings"], scenes: list,
@@ -778,7 +789,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			}
 			case "ungroup": {
 				const hit = find(op.match);
-				if (!isCompoundElement(hit.element)) throw new Error("ungroup: not a compound clip");
+				if (!isCompoundElement(hit.element)) throw new Error(`ungroup: not a compound clip (${hit.element.agentId ?? hit.element.name})`);
 				// Ungrouping can give the content new ids (later ops would see it as new) and drops the content
 				// scene with its notes: refused if the user changed the compound or anything in it since basedOn.
 				assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: "all", scenes: list });
