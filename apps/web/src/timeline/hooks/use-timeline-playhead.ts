@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
@@ -14,7 +14,7 @@ interface UseTimelinePlayheadProps {
 	rulerRef: React.RefObject<HTMLDivElement | null>;
 	rulerScrollRef: React.RefObject<HTMLDivElement | null>;
 	tracksScrollRef: React.RefObject<HTMLDivElement | null>;
-	playheadRef?: React.RefObject<HTMLDivElement | null>;
+	playheadRef: React.RefObject<HTMLDivElement | null>;
 }
 
 export function useTimelinePlayhead({
@@ -39,7 +39,7 @@ export function useTimelinePlayhead({
 		getRulerEl: () => rulerRef.current,
 		getRulerScrollEl: () => rulerScrollRef.current,
 		getTracksScrollEl: () => tracksScrollRef.current,
-		getPlayheadEl: () => playheadRef?.current ?? null,
+		getPlayheadEl: () => playheadRef.current,
 		getSceneTracks: () => editor.scenes.getActiveScene().tracks,
 		getSceneBookmarks: () => editor.scenes.getActiveScene()?.bookmarks ?? [],
 		seek: (time) => editor.playback.seek({ time }),
@@ -56,6 +56,10 @@ export function useTimelinePlayhead({
 	};
 	const configRef = useCommittedRef(config);
 	const [ctrl] = useState(() => new PlayheadController({ configRef }));
+
+	useLayoutEffect(() => {
+		ctrl.updatePlayheadPosition(editor.playback.getCurrentTime());
+	}, [ctrl, editor.playback, zoomLevel]);
 
 	// Scroll → keep playhead position in sync with scroll offset.
 	useEffect(() => {

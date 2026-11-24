@@ -175,15 +175,16 @@ export class PlayheadController {
 	 * Called on scroll and playback events to avoid React re-renders
 	 * during animation frame updates.
 	 */
-	updatePlayheadPosition(time: MediaTime, scrollLeft = this.config.getRulerScrollEl()?.scrollLeft ?? 0): void {
+	updatePlayheadPosition(time: MediaTime, scrollLeft?: number): void {
 		const playheadEl = this.config.getPlayheadEl();
 		if (!playheadEl) return;
 
+		const resolvedScrollLeft = scrollLeft ?? this.config.getRulerScrollEl()?.scrollLeft ?? 0;
 		const centerPixel = timelineTimeToSnappedPixels({
 			time,
 			zoomLevel: this.config.zoomLevel,
 		});
-		const offset = getCenteredLineLeft({ centerPixel }) - scrollLeft;
+		const offset = getCenteredLineLeft({ centerPixel }) - resolvedScrollLeft;
 		const transform = `translateX(${offset}px)`;
 		if (playheadEl.style.transform !== transform) playheadEl.style.transform = transform;
 		const value = String(time);

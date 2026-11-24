@@ -293,6 +293,48 @@ test("scene and project navigation discard queued pointer samples from the old s
 	}
 });
 
+test("updatePlayheadPosition without a line element does not read scrollLeft", () => {
+	let scrollLeftReads = 0;
+	const rulerViewport = {
+		get scrollLeft() {
+			scrollLeftReads++;
+			return 0;
+		},
+	} as HTMLDivElement;
+	const controller = new PlayheadController({
+		configRef: { current: {
+			zoomLevel: 1,
+			getDuration: () => time(10),
+			getCurrentTime: () => time(0),
+			getSceneId: () => "main",
+			getProjectSession: () => 1,
+			getActiveProjectFps: () => ({ numerator: 30, denominator: 1 }),
+			isShiftHeld: () => false,
+			isSnappingEnabled: () => true,
+			getIsPlaying: () => false,
+			getRulerEl: () => null,
+			getRulerScrollEl: () => rulerViewport,
+			getTracksScrollEl: () => null,
+			getPlayheadEl: () => null,
+			getSceneTracks: () => ({
+				main: {
+					id: "main", name: "Main", type: "video", muted: false, hidden: false,
+					elements: [],
+				},
+				audio: [],
+				overlay: [],
+			}),
+			getSceneBookmarks: () => [],
+			seek: () => {},
+			setScrubbing: () => {},
+			setTimelineViewState: () => {},
+		} },
+	});
+	controller.updatePlayheadPosition(time(1));
+	expect(scrollLeftReads).toBe(0);
+	controller.destroy();
+});
+
 test("edits in the same scene invalidate snapping and use the new duration", () => {
 	const scrub = setup();
 	scrub.controller.onRulerPointerDown(scrub.event(50));
