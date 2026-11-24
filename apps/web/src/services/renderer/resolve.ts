@@ -62,6 +62,22 @@ type ResolveContext = {
 	scrubCache?: ExactScrubCache;
 };
 
+export function hasSameVisibleVideoClips(node: AnyBaseNode, first: number | null, second: number | null): boolean {
+	if (first === second) return true;
+	if (node instanceof VideoNode || node instanceof CompoundNode ||
+		(node instanceof BlurBackgroundNode && node.params.mediaType === "video")) {
+		const { timeOffset, duration, trimStart } = node.params;
+		const local = (time: number | null) => time !== null && time >= timeOffset && time < timeOffset + duration
+			? time - timeOffset + trimStart
+			: null;
+		const left = local(first);
+		const right = local(second);
+		if (node instanceof CompoundNode) return hasSameVisibleVideoClips(node.params.content, left, right);
+		if ((left === null) !== (right === null)) return false;
+	}
+	return node.children.every((child) => hasSameVisibleVideoClips(child, first, second));
+}
+
 export async function resolveRenderTree({
 	node,
 	renderer,

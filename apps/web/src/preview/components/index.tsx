@@ -7,6 +7,7 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+import { hasSameVisibleVideoClips } from "@/services/renderer/resolve";
 import { ExactScrubCache } from "@/services/video-cache/exact-scrub-cache";
 import { previewCanvasSize } from "@/canvas/sizes";
 import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
@@ -155,7 +156,7 @@ function PreviewCanvas({
 	const lastSceneRef = useRef<RootNode | null>(null);
 	const schedulerRef = useRef<ReturnType<typeof createPreviewFrameScheduler> | null>(null);
 	const renderSignalRef = useRef<AbortSignal | null>(null);
-	const pausedDraw = useRef<AbortController | null>(null);
+	const pausedDraw = useRef<{ controller: AbortController; tree: RootNode; time: number } | null>(null);
 	const [scrubCache] = useState(() => new ExactScrubCache());
 	const lastRendererRef = useRef<CanvasRenderer | null>(null);
 	const { width: nativeWidth, height: nativeHeight } = usePreviewSize();
@@ -248,7 +249,7 @@ function PreviewCanvas({
 		const session = renderSignalRef.current;
 		if (!session || session.aborted || editor.renderer.isExportRunning()) return;
 		const paused = !editor.playback.getIsPlaying() ? new AbortController() : null;
-		pausedDraw.current = paused;
+		pausedDraw.current = paused ? { controller: paused, tree: renderTree, time: renderTime } : null;
 		const signal = paused ? AbortSignal.any([session, paused.signal]) : session;
 		const graphics = rendererDevice.signal;
 		const task = paused && editor.playback.getIsScrubbing()
@@ -287,7 +288,7 @@ function PreviewCanvas({
 			scheduler.request();
 		};
 		const clearScrub = () => {
-			pausedDraw.current?.abort();
+			pausedDraw.current?.controller.abort();
 			scrubCache.clear();
 		};
 		const onVisibility = () => { if (document.hidden) clearScrub(); else redraw(); };
@@ -298,14 +299,16 @@ function PreviewCanvas({
 		document.addEventListener("visibilitychange", onVisibility);
 		const unsubscribe = [
 			editor.playback.onUpdate(scheduler.playbackTick),
-			editor.playback.onSeek(() => {
-				if (isPointerScrubbing()) pausedDraw.current?.abort();
+			editor.playback.onSeek((time) => {
+				const pending = pausedDraw.current;
+				const target = Math.min(time, editor.timeline.getLastFrameTime());
+				if (pending && isPointerScrubbing() && !hasSameVisibleVideoClips(pending.tree, pending.time, target)) pending.controller.abort();
 				scheduler.request();
 			}),
 			editor.playback.subscribeState(() => {
 				const next = isPointerScrubbing();
 				if (scrubbing && !next) {
-					pausedDraw.current?.abort();
+					pausedDraw.current?.controller.abort();
 					scrubCache.stop();
 					scheduler.request();
 				}

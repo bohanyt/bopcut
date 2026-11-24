@@ -55,8 +55,7 @@ export class ExactScrubCache {
 			width: track.displayWidth, height: track.displayHeight,
 		}), options.maxTextureDimension);
 		let cursor = this.cursor;
-		if (cursor && (cursor.source !== source || (cursor.clip !== clip && cursor.time !== time) ||
-			time < (cursor.start ?? cursor.time))) {
+		if (cursor && (cursor.source !== source || (cursor.clip !== clip && cursor.time !== time))) {
 			this.retire(cursor);
 			cursor = undefined;
 		}
@@ -68,14 +67,15 @@ export class ExactScrubCache {
 			this.entries.add(hit);
 			return hit.frame;
 		}
-		if (cursor?.work && time >= cursor.end) {
-			// Let the running read complete. The next GOP can then start from its own keyframe.
+		const behind = !!cursor && time < (cursor.start ?? cursor.time);
+		if (cursor?.work && (behind || time >= cursor.end)) {
+			// Finish the same clip's in-flight read before seeking to the coalesced target.
 			await cursor.work;
 			options.signal?.throwIfAborted();
 			if (this.cursor !== cursor) return null;
 			return this.getFrameAt(file, clip, time, options);
 		}
-		if (!cursor || (!cursor.work && time >= cursor.end)) {
+		if (!cursor || behind || (!cursor.work && time >= cursor.end)) {
 			if (cursor) this.retire(cursor);
 			cursor = this.cursor = { source, clip, time, end: Infinity };
 		}
