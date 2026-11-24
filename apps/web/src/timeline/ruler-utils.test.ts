@@ -25,6 +25,10 @@ test("NTSC ruler labels", () => {
 		for (let frame = 0; frame <= Math.floor(120 * rate); frame++) {
 			expect(formatRulerLabel({ timeInSeconds: frame / rate, fps })).not.toBe("0f");
 		}
+		for (let second = 0; second < 120; second++) {
+			const label = `${String(Math.floor(second / 60)).padStart(2, "0")}:${String(second % 60).padStart(2, "0")}`;
+			expect(formatRulerLabel({ timeInSeconds: second, fps })).toBe(label);
+		}
 		const s1 = Math.ceil(rate - 1e-6);
 		expect(formatRulerLabel({ timeInSeconds: s1 / rate, fps })).toBe("00:01");
 		expect(formatRulerLabel({ timeInSeconds: (s1 + 1) / rate, fps })).toBe("1f");
