@@ -22,7 +22,7 @@ import {
 	RotateClockwiseIcon,
 	TextFontIcon,
 } from "@hugeicons/core-free-icons";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ColorPicker } from "@/components/ui/color-picker";
 import { FontPicker } from "@/components/ui/font-picker";
@@ -137,45 +137,25 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 			fallback: element,
 		});
 	const maskDefs = getMaskDefinitionsForMenu();
-	const tracks = useEditor(
-		(e) => e.timeline.getPreviewTracks() ?? e.scenes.getActiveScene().tracks,
-	);
-	const currentTime = useEditor((e) => e.playback.getCurrentTime());
-	const mediaAssets = useEditor((e) => e.media.getAssets());
-	const canvasSize = useEditor(
-		(e) => e.project.getActive().settings.canvasSize,
-	);
 	const masks = element.masks ?? [];
 	const renderMasks = renderElement.masks ?? masks;
 	const hasMask = masks.length > 0;
 	const { onPointerLeave, onOpenChange, markCommitted } = useMenuPreview();
 	const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-	const elementBounds = useMemo(() => {
+	const getElementSize = () => {
 		const clampedTime = Math.min(
-			Math.max(currentTime, element.startTime),
+			Math.max(editor.playback.getCurrentTime(), element.startTime),
 			element.startTime + element.duration - 1,
 		);
-
-		return (
-			getVisibleElementsWithBounds({
-				tracks,
-				currentTime: clampedTime,
-				canvasSize,
-				mediaAssets,
-			}).find(
-				(item) => item.trackId === trackId && item.elementId === element.id,
-			)?.bounds ?? null
-		);
-	}, [
-		canvasSize,
-		currentTime,
-		element.duration,
-		element.id,
-		element.startTime,
-		mediaAssets,
-		trackId,
-		tracks,
-	]);
+		const [entry] = getVisibleElementsWithBounds({
+			tracks: editor.timeline.getPreviewTracks() ?? editor.scenes.getActiveScene().tracks,
+			currentTime: clampedTime,
+			canvasSize: editor.project.getActive().settings.canvasSize,
+			mediaAssets: editor.media.getAssets(),
+			onlyElements: [{ trackId, elementId: element.id }],
+		});
+		return entry && { width: entry.bounds.width, height: entry.bounds.height };
+	};
 
 	const handleDropdownOpenChange = (open: boolean) => {
 		if (hasMask && open) return;
@@ -193,12 +173,7 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 						masks: [
 							buildDefaultMaskInstance({
 								maskType,
-								elementSize: elementBounds
-									? {
-											width: elementBounds.width,
-											height: elementBounds.height,
-										}
-									: undefined,
+								elementSize: getElementSize(),
 							}),
 						],
 					} as Partial<MaskableElement>,
@@ -220,12 +195,7 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 							masks: [
 								buildDefaultMaskInstance({
 									maskType,
-									elementSize: elementBounds
-										? {
-												width: elementBounds.width,
-												height: elementBounds.height,
-											}
-										: undefined,
+									elementSize: getElementSize(),
 								}),
 							],
 						} as Partial<MaskableElement>,

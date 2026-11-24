@@ -152,14 +152,17 @@ export function agentSelection(view?: ReturnType<typeof buildSceneSnapshot>) {
 	const active = editor.scenes.getActiveSceneOrNull();
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
+	const refs = editor.selection.getSelectedElements();
+	const location = { projectId: project.metadata.id, sceneId: scene.id, activeSceneId: active.id, playhead: s(editor.playback.getCurrentTime()) };
+	if (refs.length === 0) return { ...location, selected: [] };
 	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords() });
 	const lanes = active.id === scene.id ? snapshot.tracks : (snapshot.compounds.find((c) => c.sceneId === active.id)?.tracks ?? []);
-	const selected = editor.selection.getSelectedElements().flatMap(({ trackId, elementId }) => {
+	const selected = refs.flatMap(({ trackId, elementId }) => {
 		const lane = lanes.find((l) => l.id === trackId);
 		const element = lane?.elements.find((e) => e.id === elementId);
 		return element && lane ? [{ ...element, track: { id: lane.id, name: lane.name, type: lane.type } }] : [];
 	});
-	return { projectId: project.metadata.id, sceneId: scene.id, activeSceneId: active.id, playhead: s(editor.playback.getCurrentTime()), selected };
+	return { ...location, selected };
 }
 
 function editSnapshot(): EditSnapshot | null {
@@ -205,6 +208,7 @@ export function installAgentBridge() {
 	const pushSelection = () => {
 		clearTimeout(selectionTimer);
 		selectionTimer = setTimeout(() => {
+			if (editor.playback.getIsScrubbing()) return;
 			// No open project: an empty selection, so an agent never acts on a closed project's selection.
 			const body = JSON.stringify(agentSelection() ?? NO_SELECTION);
 			if (body === lastSelection) return;
@@ -215,7 +219,11 @@ export function installAgentBridge() {
 		}, 250);
 	};
 	editor.selection.subscribe(pushSelection);
-	editor.playback.subscribe(pushSelection);
+	const pushSettledPlayhead = () => {
+		if (!editor.playback.getIsScrubbing()) pushSelection();
+	};
+	editor.playback.subscribeState(pushSettledPlayhead);
+	editor.playback.onSeek(pushSettledPlayhead);
 	editor.timeline.subscribe(pushSelection);
 	editor.scenes.subscribe(pushSelection);
 	editor.project.subscribe(pushSelection);

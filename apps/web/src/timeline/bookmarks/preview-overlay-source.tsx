@@ -1,11 +1,11 @@
 import type { Bookmark } from "@/timeline";
+import { useEditor } from "@/editor/use-editor";
 import {
 	EMPTY_PREVIEW_OVERLAY_SOURCE_RESULT,
 	type PreviewOverlayDefinition,
 	type PreviewOverlaySourceResult,
 } from "@/preview/overlays";
 import { getBookmarksActiveAtTime } from "./utils";
-import type { MediaTime } from "@/wasm";
 
 export const bookmarkNotesPreviewOverlay: PreviewOverlayDefinition = {
 	id: "bookmark-notes",
@@ -13,14 +13,23 @@ export const bookmarkNotesPreviewOverlay: PreviewOverlayDefinition = {
 	defaultVisible: true,
 };
 
-function BookmarkNotesOverlay({
-	bookmarks,
-}: {
-	bookmarks: Array<{ time: MediaTime; note: string; color?: string }>;
-}) {
+function BookmarkNotesOverlay() {
+	const bookmarks = useEditor((editor) =>
+		(editor.scenes.getActiveSceneOrNull()?.bookmarks ?? []).filter(
+			(bookmark) => bookmark.note?.trim(),
+		),
+	);
+	return bookmarks.length > 0 && <ActiveBookmarkNotes bookmarks={bookmarks} />;
+}
+
+function ActiveBookmarkNotes({ bookmarks }: { bookmarks: Bookmark[] }) {
+	const active = useEditor((editor) =>
+		getBookmarksActiveAtTime({ bookmarks, time: editor.playback.getCurrentTime() }),
+	);
+	if (active.length === 0) return null;
 	return (
 		<div className="flex flex-col gap-1.5" aria-live="polite">
-			{bookmarks.map((bookmark) => (
+			{active.map((bookmark) => (
 				<div
 					key={bookmark.time}
 					className="flex max-w-[min(200px,50vw)] px-2.5 py-1.5 text-left text-white text-xs shadow-md backdrop-blur-sm"
@@ -39,32 +48,11 @@ function BookmarkNotesOverlay({
 }
 
 export function getBookmarkPreviewOverlaySource({
-	bookmarks,
-	time,
 	isVisible,
 }: {
-	bookmarks: Bookmark[];
-	time: MediaTime;
 	isVisible: boolean;
 }): PreviewOverlaySourceResult {
-	const bookmarksWithNotes = getBookmarksActiveAtTime({
-		bookmarks,
-		time,
-	}).flatMap((bookmark) => {
-		if (bookmark.note == null || bookmark.note.trim() === "") {
-			return [];
-		}
-
-		return [
-			{
-				time: bookmark.time,
-				note: bookmark.note,
-				color: bookmark.color,
-			},
-		];
-	});
-
-	if (!isVisible || bookmarksWithNotes.length === 0) {
+	if (!isVisible) {
 		return {
 			...EMPTY_PREVIEW_OVERLAY_SOURCE_RESULT,
 			definitions: [bookmarkNotesPreviewOverlay],
@@ -79,7 +67,7 @@ export function getBookmarkPreviewOverlaySource({
 				mount: { kind: "hud", anchor: "top-left", order: 0 },
 				plane: "over-interaction",
 				pointerEvents: "none",
-				render: () => <BookmarkNotesOverlay bookmarks={bookmarksWithNotes} />,
+				render: () => <BookmarkNotesOverlay />,
 			},
 		],
 	};

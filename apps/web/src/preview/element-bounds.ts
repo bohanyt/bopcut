@@ -1,4 +1,4 @@
-import type { SceneTracks, TimelineElement } from "@/timeline";
+import type { ElementRef, SceneTracks, TimelineElement } from "@/timeline";
 import type { MediaAsset } from "@/media/types";
 import { STICKER_INTRINSIC_SIZE_FALLBACK } from "@/stickers/intrinsic-size";
 import { DEFAULT_GRAPHIC_SOURCE_SIZE } from "@/graphics";
@@ -250,13 +250,15 @@ export function getVisibleElementsWithBounds({
 	currentTime,
 	canvasSize,
 	mediaAssets,
+	onlyElements,
 }: {
 	tracks: SceneTracks;
 	currentTime: number;
 	canvasSize: { width: number; height: number };
 	mediaAssets: MediaAsset[];
+	onlyElements?: readonly ElementRef[];
 }): ElementWithBounds[] {
-	const mediaMap = new Map(mediaAssets.map((m) => [m.id, m]));
+	const mediaMap = onlyElements ? null : new Map(mediaAssets.map((m) => [m.id, m]));
 	const orderedTracks = [
 		...tracks.overlay.filter((track) => !("hidden" in track && track.hidden)),
 		...(!tracks.main.hidden ? [tracks.main] : []),
@@ -265,8 +267,16 @@ export function getVisibleElementsWithBounds({
 	const result: ElementWithBounds[] = [];
 
 	for (const track of orderedTracks) {
+		const elementIds = onlyElements && new Set(
+			onlyElements.filter((ref) => ref.trackId === track.id).map((ref) => ref.elementId),
+		);
+		if (elementIds?.size === 0) continue;
 		const elements = track.elements
-			.filter((element) => !("hidden" in element && element.hidden))
+			.filter(
+				(element) =>
+					(!elementIds || elementIds.has(element.id)) &&
+					!("hidden" in element && element.hidden),
+			)
 			.filter(
 				(element) =>
 					currentTime >= element.startTime &&
@@ -286,7 +296,9 @@ export function getVisibleElementsWithBounds({
 			});
 			const mediaAsset =
 				element.type === "video" || element.type === "image"
-					? mediaMap.get(element.mediaId)
+					? mediaMap
+						? mediaMap.get(element.mediaId)
+						: mediaAssets.find((asset) => asset.id === element.mediaId)
 					: undefined;
 			const bounds = getElementBounds({
 				element,

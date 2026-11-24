@@ -1,5 +1,10 @@
 import type { EditorCore } from "@/core";
 import {
+	PLAYBACK_STATE,
+	PLAYBACK_TIME,
+	recordPlaybackRead,
+} from "@/core/playback-reads";
+import {
 	clampMediaTime,
 	type MediaTime,
 	mediaTimeFromSeconds,
@@ -19,6 +24,7 @@ export class PlaybackManager {
 	private previousVolume = 1;
 	private isScrubbing = false;
 	private listeners = new Set<() => void>();
+	private stateListeners = new Set<() => void>();
 	private updateListeners = new Set<(time: MediaTime) => void>();
 	private seekListeners = new Set<(time: MediaTime) => void>();
 	private interruptListeners = new Set<() => void>();
@@ -98,7 +104,7 @@ export class PlaybackManager {
 			this.playbackStartClockTime = this.readClock();
 			this.playbackStartTime = this.currentTime / TICKS_PER_SECOND;
 		}
-		this.notify();
+		this.notify({ stateChanged: false });
 		this.notifySeek(this.currentTime);
 	}
 
@@ -136,14 +142,17 @@ export class PlaybackManager {
 	}
 
 	getIsPlaying(): boolean {
+		recordPlaybackRead(PLAYBACK_STATE);
 		return this.isPlaying;
 	}
 
 	getCurrentTime(): MediaTime {
+		recordPlaybackRead(PLAYBACK_TIME);
 		return this.currentTime;
 	}
 
 	getPlaybackTime(): number {
+		recordPlaybackRead(PLAYBACK_STATE | PLAYBACK_TIME);
 		if (!this.isPlaying) return this.currentTime / TICKS_PER_SECOND;
 		return this.playbackStartTime + (this.readClock() - this.playbackStartClockTime);
 	}
@@ -158,10 +167,12 @@ export class PlaybackManager {
 	}
 
 	getVolume(): number {
+		recordPlaybackRead(PLAYBACK_STATE);
 		return this.volume;
 	}
 
 	getOutputVolume(): number {
+		recordPlaybackRead(PLAYBACK_STATE);
 		return this.recordingMute ? 0 : this.volume;
 	}
 
@@ -175,6 +186,7 @@ export class PlaybackManager {
 	}
 
 	isMuted(): boolean {
+		recordPlaybackRead(PLAYBACK_STATE);
 		return this.muted;
 	}
 
@@ -184,12 +196,27 @@ export class PlaybackManager {
 	}
 
 	getIsScrubbing(): boolean {
+		recordPlaybackRead(PLAYBACK_STATE);
 		return this.isScrubbing;
 	}
 
 	subscribe(listener: () => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
+	}
+
+	subscribeState(listener: () => void): () => void {
+		this.stateListeners.add(listener);
+		return () => this.stateListeners.delete(listener);
+	}
+
+	subscribeTime(listener: () => void): () => void {
+		const stopSeeking = this.onSeek(listener);
+		const stopPlaying = this.onUpdate(listener);
+		return () => {
+			stopSeeking();
+			stopPlaying();
+		};
 	}
 
 	onUpdate(listener: (time: MediaTime) => void): () => void {
@@ -224,7 +251,7 @@ export class PlaybackManager {
 		}
 
 		this.currentTime = nextTime;
-		this.notify();
+		this.notify({ stateChanged: shouldPause });
 
 		if (timeChanged) {
 			this.notifySeek(this.currentTime);
@@ -232,10 +259,11 @@ export class PlaybackManager {
 		}
 	}
 
-	private notify(): void {
+	private notify({ stateChanged = true } = {}): void {
 		this.listeners.forEach((fn) => {
 			fn();
 		});
+		if (stateChanged) this.stateListeners.forEach((fn) => fn());
 	}
 
 	private notifyUpdate(time: MediaTime): void {

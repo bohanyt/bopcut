@@ -10,10 +10,12 @@ import {
 	buildTimelineSnapPoints,
 	getTimelineSnapThresholdInTicks,
 	resolveTimelineSnap,
+	type SnapPoint,
 } from "@/timeline/snapping";
-import { getBookmarkSnapPoints } from "@/timeline/bookmarks/index";
+import { getBookmarkSnapPoints } from "@/timeline/bookmarks/snap-source";
 import { getElementEdgeSnapPoints } from "@/timeline/element-snap-source";
 import { getAnimationKeyframeSnapPointsForTimeline } from "@/timeline/animation-snap-points";
+import { startEdgeAutoScroll } from "@/timeline/edge-auto-scroll";
 import {
 	getCenteredLineLeft,
 	timelineTimeToPixels,
@@ -32,6 +34,11 @@ interface ScrubSession {
 	hasMoved: boolean;
 	/** Most recent frame-snapped time set by scrub(). */
 	currentTime: MediaTime | null;
+	snapCache?: {
+		tracks: SceneTracks;
+		bookmarks: Bookmark[];
+		points: SnapPoint[];
+	};
 }
 
 type Session = { kind: "idle" } | ScrubSession;
@@ -96,6 +103,8 @@ function pixelToTime({
 
 export class PlayheadController {
 	private lastMouseClientX = 0;
+	private scrubFrame: number | null = null;
+	private stopAutoScroll: (() => void) | undefined;
 
 	private session: Session = { kind: "idle" };
 	private readonly configRef: PlayheadConfigRef;
@@ -116,11 +125,11 @@ export class PlayheadController {
 		return this.session.kind !== "idle";
 	}
 
-	getLastMouseClientX(): number {
-		return this.lastMouseClientX;
-	}
-
 	destroy(): void {
+		if (this.isActive) {
+			this.session = { kind: "idle" };
+			this.config.setScrubbing(false);
+		}
 		this.deactivate();
 	}
 
@@ -136,7 +145,7 @@ export class PlayheadController {
 			currentTime: null,
 		};
 		this.config.setScrubbing(true);
-		this.scrub({ event, isElementSnappingEnabled: true });
+		this.scrub({ clientX: event.clientX, isElementSnappingEnabled: true });
 		this.activate();
 	}
 
@@ -153,7 +162,7 @@ export class PlayheadController {
 		};
 		this.config.setScrubbing(true);
 		// No element-edge snapping on initial ruler click — avoids a jarring jump.
-		this.scrub({ event, isElementSnappingEnabled: false });
+		this.scrub({ clientX: event.clientX, isElementSnappingEnabled: false });
 		this.activate();
 	}
 
@@ -173,7 +182,21 @@ export class PlayheadController {
 			zoomLevel: this.config.zoomLevel,
 		});
 		const scrollLeft = this.config.getRulerScrollEl()?.scrollLeft ?? 0;
-		playheadEl.style.left = `${getCenteredLineLeft({ centerPixel }) - scrollLeft}px`;
+		const left = `${getCenteredLineLeft({ centerPixel }) - scrollLeft}px`;
+		if (playheadEl.style.left !== left) playheadEl.style.left = left;
+		const value = String(time);
+		if (playheadEl.getAttribute("aria-valuenow") !== value) {
+			playheadEl.setAttribute("aria-valuenow", value);
+		}
+	}
+
+	handleScroll(time: MediaTime): void {
+		if (this.session.kind === "scrubbing") {
+			this.updatePlayheadLeft(this.session.currentTime ?? time);
+			if (this.session.hasMoved) this.scheduleScrub();
+		} else {
+			this.updatePlayheadLeft(time);
+		}
 	}
 
 	/**
@@ -217,9 +240,22 @@ export class PlayheadController {
 	private activate(): void {
 		window.addEventListener("mousemove", this.handleMouseMove);
 		window.addEventListener("mouseup", this.handleMouseUp);
+		this.stopAutoScroll?.();
+		this.stopAutoScroll = startEdgeAutoScroll({
+			getMouseClientX: () => this.lastMouseClientX,
+			getRulerViewport: () => this.config.getRulerScrollEl(),
+			getTracksViewport: () => this.config.getTracksScrollEl(),
+			getContentWidth: () => timelineTimeToPixels({
+				time: this.config.duration,
+				zoomLevel: this.config.zoomLevel,
+			}),
+		});
 	}
 
 	private deactivate(): void {
+		this.cancelScrubFrame();
+		this.stopAutoScroll?.();
+		this.stopAutoScroll = undefined;
 		window.removeEventListener("mousemove", this.handleMouseMove);
 		window.removeEventListener("mouseup", this.handleMouseUp);
 	}
@@ -230,12 +266,17 @@ export class PlayheadController {
 	 * is always applied.
 	 */
 	private scrub({
-		event,
+		clientX,
 		isElementSnappingEnabled,
+		forceSeek = false,
 	}: {
-		event: MouseEvent | ReactMouseEvent;
+		clientX: number;
 		isElementSnappingEnabled: boolean;
+		forceSeek?: boolean;
 	}): void {
+		const session = this.session;
+		if (session.kind !== "scrubbing") return;
+		this.lastMouseClientX = clientX;
 		const ruler = this.config.getRulerEl();
 		if (!ruler) return;
 
@@ -244,7 +285,7 @@ export class PlayheadController {
 
 		const { zoomLevel, duration } = this.config;
 		const rawTime = pixelToTime({
-			clientX: event.clientX,
+			clientX,
 			rulerEl: ruler,
 			zoomLevel,
 			duration,
@@ -255,61 +296,84 @@ export class PlayheadController {
 			if (!isElementSnappingEnabled || this.config.isShiftHeld())
 				return frameTime;
 
-			const snapPoints = buildTimelineSnapPoints({
-				sources: [
-					() =>
-						getElementEdgeSnapPoints({ tracks: this.config.getSceneTracks() }),
-					() =>
-						getBookmarkSnapPoints({
-							bookmarks: this.config.getSceneBookmarks(),
-						}),
-					() =>
-						getAnimationKeyframeSnapPointsForTimeline({
-							tracks: this.config.getSceneTracks(),
-						}),
-				],
-			});
+			const tracks = this.config.getSceneTracks();
+			const bookmarks = this.config.getSceneBookmarks();
+			if (
+				session.snapCache?.tracks !== tracks ||
+				session.snapCache.bookmarks !== bookmarks
+			) {
+				session.snapCache = {
+					tracks,
+					bookmarks,
+					points: buildTimelineSnapPoints({
+						sources: [
+							() => getElementEdgeSnapPoints({ tracks }),
+							() => getBookmarkSnapPoints({ bookmarks }),
+							() => getAnimationKeyframeSnapPointsForTimeline({ tracks }),
+						],
+					}),
+				};
+			}
 			const result = resolveTimelineSnap({
 				targetTime: frameTime,
-				snapPoints,
+				snapPoints: session.snapCache.points,
 				maxSnapDistance: getTimelineSnapThresholdInTicks({ zoomLevel }),
 			});
 			return result.snapPoint ? result.snappedTime : frameTime;
 		})();
 
-		if (this.session.kind === "scrubbing") {
-			this.session.currentTime = time;
+		this.updatePlayheadLeft(time);
+		// Playback time may advance between moves even when the pointer snaps to the same frame.
+		if (forceSeek || session.currentTime !== time || this.config.getIsPlaying()) {
+			session.currentTime = time;
+			this.config.seek(time);
 		}
-		this.config.seek(time);
-		this.lastMouseClientX = event.clientX;
+	}
+
+	private scheduleScrub(): void {
+		if (this.scrubFrame !== null) return;
+		this.scrubFrame = requestAnimationFrame(() => {
+			this.scrubFrame = null;
+			this.scrub({
+				clientX: this.lastMouseClientX,
+				isElementSnappingEnabled: true,
+			});
+		});
+	}
+
+	private cancelScrubFrame(): void {
+		if (this.scrubFrame === null) return;
+		cancelAnimationFrame(this.scrubFrame);
+		this.scrubFrame = null;
 	}
 
 	private handleMouseMove(event: MouseEvent): void {
 		if (this.session.kind !== "scrubbing") return;
-		this.scrub({ event, isElementSnappingEnabled: true });
-		if (this.session.didStartFromRuler) {
-			this.session.hasMoved = true;
-		}
+		this.lastMouseClientX = event.clientX;
+		this.session.hasMoved = true;
+		this.scheduleScrub();
 	}
 
 	private handleMouseUp(event: MouseEvent): void {
 		if (this.session.kind !== "scrubbing") return;
 
 		const session = this.session;
+		this.cancelScrubFrame();
 		this.config.setScrubbing(false);
+		// Flush the release position before saving. The final seek also resumes audio
+		// if the controller was scrubbing while playback was running.
+		this.scrub({
+			clientX: event.clientX,
+			isElementSnappingEnabled: !session.didStartFromRuler || session.hasMoved,
+			forceSeek: true,
+		});
 
 		if (session.currentTime !== null) {
-			this.config.seek(session.currentTime);
 			this.config.setTimelineViewState({
 				zoomLevel: this.config.zoomLevel,
 				scrollLeft: this.config.getTracksScrollEl()?.scrollLeft ?? 0,
 				playheadTime: session.currentTime,
 			});
-		}
-
-		// Ruler click without drag: snap to clicked position on mouseup.
-		if (session.didStartFromRuler && !session.hasMoved) {
-			this.scrub({ event, isElementSnappingEnabled: false });
 		}
 
 		this.session = { kind: "idle" };

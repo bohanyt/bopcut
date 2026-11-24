@@ -348,9 +348,11 @@ export class TransformHandleController {
 	}
 
 	get selectedWithBounds(): ElementWithBounds | null {
+		const selectedElements = this.deps.scene.getSelectedElements();
+		if (selectedElements.length === 0) return null;
 		return buildSelectedWithBounds({
-			selectedElements: this.deps.scene.getSelectedElements(),
-			elementsWithBounds: this.getVisibleElementsWithBounds(),
+			selectedElements,
+			elementsWithBounds: this.getVisibleElementsWithBounds(selectedElements),
 		});
 	}
 
@@ -586,12 +588,13 @@ export class TransformHandleController {
 		this.deps.preview.onSnapLinesChange?.([]);
 	}
 
-	private getVisibleElementsWithBounds(): ElementWithBounds[] {
+	private getVisibleElementsWithBounds(onlyElements?: readonly ElementRef[]): ElementWithBounds[] {
 		return getVisibleElementsWithBounds({
 			tracks: this.deps.scene.getTracks(),
 			currentTime: this.deps.scene.getCurrentTime(),
 			canvasSize: this.deps.scene.getCanvasSize(),
 			mediaAssets: this.deps.scene.getMediaAssets(),
+			onlyElements,
 		});
 	}
 

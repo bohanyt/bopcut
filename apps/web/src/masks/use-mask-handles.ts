@@ -111,31 +111,27 @@ export function useMaskHandles({
 	const tracks = useEditor(
 		(e) => e.timeline.getPreviewTracks() ?? e.scenes.getActiveScene().tracks,
 	);
-	const currentTime = useEditor((e) => e.playback.getCurrentTime());
 	const mediaAssets = useEditor((e) => e.media.getAssets());
 	const canvasSize = useEditor(
 		(e) => e.project.getActive().settings.canvasSize,
 	);
 	const selectedElements = useEditor((e) => e.selection.getSelectedElements());
+	const selected = selectedElements.length === 1 ? selectedElements[0] : null;
+	const currentTime = useEditor((e) => selected ? e.playback.getCurrentTime() : null);
 	const selectedMaskPointSelection = useEditor((e) =>
 		e.selection.getSelectedMaskPointSelection(),
 	);
 
-	const elementsWithBounds = getVisibleElementsWithBounds({
-		tracks,
-		currentTime,
-		canvasSize,
-		mediaAssets,
-	});
-
 	const selectedWithMask =
-		selectedElements.length === 1
+		selected && currentTime !== null
 			? (() => {
-					const sel = selectedElements[0];
-					const entry = elementsWithBounds.find(
-						(item) =>
-							item.trackId === sel.trackId && item.elementId === sel.elementId,
-					);
+					const [entry] = getVisibleElementsWithBounds({
+						tracks,
+						currentTime,
+						canvasSize,
+						mediaAssets,
+						onlyElements: [selected],
+					});
 					if (!entry) return null;
 					if (!isMaskableElement(entry.element)) return null;
 					const element = entry.element;

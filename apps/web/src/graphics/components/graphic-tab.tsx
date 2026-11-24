@@ -2,14 +2,15 @@
 
 import { useI18n } from "@/i18n/provider";
 import { useRef } from "react";
+import { buildGraphicParamPath, hasKeyframesForPath, resolveAnimationPathValueAtTime } from "@/animation";
 import { useElementPlayhead } from "@/components/editor/panels/properties/hooks/use-element-playhead";
 import {
 	useKeyframedParamProperty,
 	type KeyframedParamPropertyResult,
 } from "@/components/editor/panels/properties/hooks/use-keyframed-param-property";
-import type { ParamDefinition, ParamValues } from "@/params";
+import type { ParamDefinition } from "@/params";
 import type { GraphicElement } from "@/timeline";
-import { graphicsRegistry, registerDefaultGraphics, resolveGraphicElementParamsAtTime } from "@/graphics";
+import { graphicsRegistry, registerDefaultGraphics } from "@/graphics";
 import { useElementPreview } from "@/timeline/hooks/use-element-preview";
 import { useEditor } from "@/editor/use-editor";
 import {
@@ -24,7 +25,6 @@ import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { cn } from "@/utils/ui";
-import type { MediaTime } from "@/wasm";
 
 registerDefaultGraphics();
 
@@ -39,10 +39,6 @@ export function GraphicTab({
 }) {
 	const { t } = useI18n();
 	const definition = graphicsRegistry.get(element.definitionId);
-	const { localTime, isPlayheadWithinElementRange } = useElementPlayhead({
-		startTime: element.startTime,
-		duration: element.duration,
-	});
 	const { renderElement } = useElementPreview({
 		trackId,
 		elementId: element.id,
@@ -50,10 +46,6 @@ export function GraphicTab({
 	});
 
 	const liveElement = renderElement as GraphicElement;
-	const resolvedParams = resolveGraphicElementParamsAtTime({
-		element: liveElement,
-		localTime,
-	});
 
 	const shapeParams = definition.params.filter((p) => p.group !== "stroke" && !(definition.id === "icon" && (p.key === "svg" || p.key === "iconName")));
 	const hasStrokeParams = definition.params.some((p) => p.group === "stroke");
@@ -72,9 +64,6 @@ export function GraphicTab({
 								param={param}
 								trackId={trackId}
 								element={liveElement}
-								localTime={localTime}
-								isPlayheadWithinElementRange={isPlayheadWithinElementRange}
-								resolvedParams={resolvedParams}
 							/>
 						))}
 					</SectionFields>
@@ -95,10 +84,6 @@ function StrokeSection({
 	const { t } = useI18n();
 	const editor = useEditor();
 	const definition = graphicsRegistry.get(element.definitionId);
-	const { localTime, isPlayheadWithinElementRange } = useElementPlayhead({
-		startTime: element.startTime,
-		duration: element.duration,
-	});
 	const { renderElement } = useElementPreview({
 		trackId,
 		elementId: element.id,
@@ -106,10 +91,6 @@ function StrokeSection({
 	});
 
 	const liveElement = renderElement as GraphicElement;
-	const resolvedParams = resolveGraphicElementParamsAtTime({
-		element: liveElement,
-		localTime,
-	});
 	const strokeParams = definition.params.filter((p) => p.group === "stroke");
 	const lastStrokeWidth = useRef(DEFAULT_STROKE_WIDTH);
 	const isStrokeEnabled = Number(element.params.strokeWidth ?? 0) > 0;
@@ -181,9 +162,6 @@ function StrokeSection({
 							param={param}
 							trackId={trackId}
 							element={liveElement}
-							localTime={localTime}
-							isPlayheadWithinElementRange={isPlayheadWithinElementRange}
-							resolvedParams={resolvedParams}
 						/>
 					))}
 				</SectionFields>
@@ -196,18 +174,24 @@ function AnimatedGraphicParamField({
 	param,
 	trackId,
 	element,
-	localTime,
-	isPlayheadWithinElementRange,
-	resolvedParams,
 }: {
 	key?: string;
 	param: ParamDefinition;
 	trackId: string;
 	element: GraphicElement;
-	localTime: MediaTime;
-	isPlayheadWithinElementRange: boolean;
-	resolvedParams: ParamValues;
 }) {
+	const propertyPath = buildGraphicParamPath({ paramKey: param.key });
+	const { localTime, isPlayheadWithinElementRange, getLocalTime } = useElementPlayhead({
+		startTime: element.startTime,
+		duration: element.duration,
+		hasKeyframes: hasKeyframesForPath({ animations: element.animations, propertyPath }),
+	});
+	const resolvedValue = resolveAnimationPathValueAtTime({
+		animations: element.animations,
+		propertyPath,
+		localTime,
+		fallbackValue: element.params[param.key] ?? param.default,
+	});
 	const animatedParam: KeyframedParamPropertyResult = useKeyframedParamProperty(
 		{
 			param,
@@ -215,8 +199,9 @@ function AnimatedGraphicParamField({
 			elementId: element.id,
 			animations: element.animations,
 			localTime,
+			getLocalTime,
 			isPlayheadWithinElementRange,
-			resolvedValue: resolvedParams[param.key] ?? param.default,
+			resolvedValue,
 			buildBaseUpdates: ({ value }) => ({
 				params: {
 					...element.params,
@@ -229,7 +214,7 @@ function AnimatedGraphicParamField({
 	return (
 		<PropertyParamField
 			param={param}
-			value={resolvedParams[param.key] ?? param.default}
+			value={resolvedValue}
 			onPreview={animatedParam.onPreview}
 			onCommit={animatedParam.onCommit}
 			keyframe={{

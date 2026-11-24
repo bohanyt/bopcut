@@ -98,10 +98,6 @@ function EditorLayout() {
 	usePasteMedia();
 	const editor = useEditor();
 	const isPreviewRight = usePanelStore((state) => state.layout === "preview-right");
-	const activeScene = useEditor((editor) =>
-		editor.scenes.getActiveSceneOrNull(),
-	);
-	const currentTime = useEditor((editor) => editor.playback.getCurrentTime());
 	const activeGuide = usePreviewStore((state) => state.activeGuide);
 	const overlays = usePreviewStore((state) => state.overlays);
 	const setOverlayVisibility = usePreviewStore(
@@ -126,19 +122,10 @@ function EditorLayout() {
 					getGuidePreviewOverlaySource({
 						guideId: activeGuide,
 					}),
-					activeScene
-						? getBookmarkPreviewOverlaySource({
-								bookmarks: activeScene.bookmarks,
-								time: currentTime,
-								isVisible: showBookmarkNotes,
-							})
-						: {
-								definitions: [bookmarkNotesPreviewOverlay],
-								instances: [],
-							},
+					getBookmarkPreviewOverlaySource({ isVisible: showBookmarkNotes }),
 				],
 			}),
-		[activeGuide, activeScene, currentTime, showBookmarkNotes],
+		[activeGuide, showBookmarkNotes],
 	);
 
 	const overlayControls = useMemo(
