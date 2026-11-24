@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useParams } from "next/navigation";
 import { agentReadiness, agentRootScene, pollExport } from "@/agent/bridge";
 import { pollFrames } from "@/agent/frames";
+import { renderRangeView } from "@/agent/range-view-worker";
 import { renderAdapterStage, renderGpuWorkaround } from "@/agent/render-gpu";
 import { waitingForGraphics } from "@/agent/render-timeout";
 import { renderTransport } from "@/agent/render-transport";
@@ -26,7 +27,8 @@ async function render(key: string) {
 	});
 	try {
 		const kind = claimed.headers.get("x-bopencut-render-kind");
-		const { projectId, includeAudio } = await claimed.clone().json();
+		const options = await claimed.clone().json();
+		const { projectId, includeAudio } = options;
 		const editor = EditorCore.createRenderOnly();
 		await editor.project.loadForRender(projectId, async () => { await send("stage", { stage: "loading media" }); });
 		const scenes = editor.scenes.getScenes();
@@ -36,7 +38,7 @@ async function render(key: string) {
 			throw new Error("This project uses GIF media. Open the editor to render it.");
 		}
 		const root = agentRootScene();
-		if (root && kind === "export" && includeAudio !== false && collectAudibleCandidates({
+		if (root && (kind === "export" || kind === "view") && includeAudio !== false && collectAudibleCandidates({
 			tracks: root.tracks, scenes, mediaAssets: assets, duration: calculateTotalDuration({ tracks: root.tracks }),
 		}).some(({ element }) => element.type === "audio" && element.sourceType === "library" &&
 			!isElementMuted({ element }) && !/^\/api\/agent\/(?:sfx|music)-file\?/.test(element.sourceUrl ?? ""))) {
@@ -51,6 +53,7 @@ async function render(key: string) {
 		}
 		const stage = renderAdapterStage(await getRendererAdapter());
 		await send("stage", { stage }, AbortSignal.timeout(1000)).catch(() => { /* Render even if reporting fails. */ });
+		if (kind === "view") return await renderRangeView(options, job);
 		if (kind === "export") await pollExport(claimed, job);
 		else await pollFrames(agentReadiness, claimed, job);
 		if (!job.signal?.aborted) await send("failure", { error: "The hidden browser could not finish the render. Open the editor once and retry." });

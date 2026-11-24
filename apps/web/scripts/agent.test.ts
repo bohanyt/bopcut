@@ -70,3 +70,15 @@ test("the CLI rejects deferred commands, unexpected options, and remote addresse
 	expect(() => parseArgs(["status", "--timeout", "0"])).toThrow("timeout");
 	expect(() => parseArgs(["status", "--url", "https://example.com"])).toThrow("local editor origin");
 });
+
+test("range view validates limits and requires exactly one source", () => {
+	expect(parseArgs(["view", "--project-id", "demo", "--from", "10", "--to", "25"])).toMatchObject({
+		command: "view", request: { from: 10, to: 25, rows: 8 },
+	});
+	expect(parseArgs(["view", "--file", "demo.mp4", "--from", "0", "--to", "2", "--rows", "2"])).toMatchObject({
+		command: "file-view", file: "demo.mp4", rangeView: { from: 0, to: 2, rows: 2 },
+	});
+	expect(() => parseArgs(["view", "--from", "0", "--to", "1"])).toThrow("either --project-id");
+	expect(() => parseArgs(["view", "--project-id", "demo", "--from", "0", "--to", "121"])).toThrow("120 seconds");
+	expect(() => parseArgs(["transcript-view", "--project-id", "demo", "--media", "name", "--timeline"])).toThrow("transcript-view");
+});

@@ -107,11 +107,13 @@ class AudioBufferCache<K, V extends DecodedAudioWindow> {
 }
 
 export async function* mixTimelineAudio({
-	tracks, mediaAssets, duration, scenes, sampleRate = EXPORT_SAMPLE_RATE, onFailure, signal,
+	tracks, mediaAssets, duration, scenes, rangeStart = 0, sampleRate = EXPORT_SAMPLE_RATE, onFailure, signal,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
 	duration: number;
+	/** First timeline tick to emit. Duration remains the exclusive end tick. */
+	rangeStart?: number;
 	scenes?: TScene[];
 	sampleRate?: number;
 	onFailure?: (failure: MediaLoadFailure) => void;
@@ -225,7 +227,7 @@ export async function* mixTimelineAudio({
 	let active: typeof clips = [];
 	let silentBlock: AudioBuffer | undefined;
 	try {
-		for (let start = 0; start < length; start += BLOCK_SECONDS * sampleRate) {
+		for (let start = Math.floor(rangeStart / TICKS_PER_SECOND * sampleRate); start < length; start += BLOCK_SECONDS * sampleRate) {
 			signal?.throwIfAborted();
 			const end = Math.min(length, start + BLOCK_SECONDS * sampleRate);
 			active = active.filter((clip) => {

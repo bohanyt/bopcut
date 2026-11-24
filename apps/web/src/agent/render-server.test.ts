@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { renderPresence, renderRequest, renderWorker, startRender } from "./render-server";
 import { profileDirectory, recordOutput, recoverRenderJobs } from "./render-output";
+import { MAX_RANGE_PNG } from "./range-view";
 
 const url = "http://127.0.0.1/api/agent/cli/render";
 const tokenHeader = "x-bopencut-render-token";
@@ -18,6 +19,49 @@ const begin = (signal?: AbortSignal, timeoutMs = 10_000) => new Request(url, {
 const visible = (project = "project") => new Request(url, { headers: {
 	"x-bopencut-project": project, "x-bopencut-render-tab": "visible", "x-bopencut-ready": "1",
 } });
+
+test("a range view bypasses the visible editor and accepts one bounded PNG from its hidden worker", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-range-render-"));
+	const beginView = (to: number) => new Request(url, {
+		method: "POST", body: JSON.stringify({ command: "view", request: { from: 1, to, rows: 2 }, timeoutMs: 10_000 }),
+	});
+	let reader: ReadableStreamDefaultReader<string> | undefined;
+	try {
+		expect((await startRender(beginView(150), workspace, async () => "project")).status).toBe(400);
+		renderPresence(visible());
+		const response = await startRender(beginView(3), workspace, async () => "project", { profileRoot: workspace });
+		reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+		const next = async () => JSON.parse((await reader!.read()).value!);
+		expect(await next()).toEqual({ stage: "waiting for a tab" });
+		const offer = await next();
+		const key = new URL(offer.launch).pathname.split("/").at(-1);
+		expect(await (await renderRequest(visible(), "frames", workspace)).json()).toBeNull();
+		expect(await (await renderRequest(visible(), "export", workspace)).json()).toBeNull();
+		const claim = await renderWorker(new Request(`${url}?key=${key}`), workspace);
+		const { rev } = await claim.json();
+		expect(claim.headers.get("x-bopencut-render-kind")).toBe("view");
+		expect(await next()).toEqual({ stage: "loading project" });
+		const headers = { [tokenHeader]: claim.headers.get(tokenHeader)! };
+		const watch = renderWorker(new Request(`${url}?action=watch`, { headers }), workspace);
+		const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==", "base64");
+		const upload = (size: number) => renderWorker(new Request(`${url}?action=view-file`, {
+			method: "POST", headers: { ...headers, "Content-Type": "image/png", "Content-Length": String(size) },
+			body: new Blob([png], { type: "image/png" }),
+		}), workspace);
+		expect((await upload(MAX_RANGE_PNG + 1)).status).toBe(400);
+		const result = upload(png.length);
+		expect(await next()).toEqual({ stage: "saving range picture" });
+		const file = `views/${rev}.png`;
+		expect((await next()).result).toMatchObject({ file, from: 1, to: 3, rows: 2, bytes: png.length });
+		expect((await result).ok).toBe(true);
+		expect(await readFile(path.join(workspace, file))).toEqual(png);
+		expect(await reader.read()).toMatchObject({ done: true });
+		expect((await watch).ok).toBe(true);
+	} finally {
+		await reader?.cancel();
+		await rm(workspace, { recursive: true, force: true });
+	}
+});
 
 test.each(["completes", "stalls"] as const)("a server render %s according to stage changes", async (outcome) => {
 	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-deadline-"));

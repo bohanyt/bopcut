@@ -19,6 +19,9 @@ bun run agent selection
 bun run agent notes
 bun run agent export --name "Final" --format mp4
 bun run agent frames --times 0,1,2 --width 960
+bun run agent transcript-view --project-id ID --timeline
+bun run agent view --project-id ID --from 12 --to 32 --rows 8
+bun run agent view --file media/take.mp4 --from 8 --to 16
 ```
 
 `status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. A chosen project (`--project-id`) answers from its own snapshot, or from the last synced one when that is the same project. Reads stay inside the agent workspace: a link that leads out of it is refused. Read the preference files directly (see *Preferences*).
@@ -38,7 +41,11 @@ Run `bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout
 
 Times are seconds in the original video. A range returns overlapping cues with their full source times. The command picks the original language when known, or the first available track, and prefers creator captions for the selected language. Automatic captions use JSON3 when offered and VTT otherwise. Repeated lines and sound-effect cues are kept. Word times are included when the caption track supplies them. Automatic captions can be off by a few seconds, so verify openings with frames or audio before cutting. If captions are unavailable, try a different language or use manual ranges. Speech-to-text requires a configured command in a later release.
 
-Use the file protocol below for drafts, changes, historical frames, and comparisons.
+**Read saved words with `transcript-view`.** Start the local server and pass the project ID. The editor can stay closed. The default `--timeline` reads the saved root timeline, including audible clips inside compounds. Use `--media NAME` for the entire source, where NAME is an exact media name or ID. The command writes plain text to stdout. Clip entries show their timeline and source edges. A shared media name appears once with an `@` reference. Each phrase row shows timeline seconds, source seconds, the gap since the preceding known words, and its clip number. Pauses of at least 0.5 seconds split phrases. The timeline follows trims, speed, and mute settings. A gap means no known words in that interval. Stored words are required, and sources without words are marked. Output stays under 20 KB and ends with a marker if it reaches the cap.
+
+**Make a range picture with `view`.** The command saves a PNG under `AGENT_WORKSPACE/views/` and prints the relative path, byte count, time range, and row count as JSON. Each row shows a midpoint frame, mixed audio peaks across the row's interval, known words, and any visible text and clip edges. Specify seconds with `--from` and `--to`, and choose 1–12 rows (default 8). Ranges must be 0.1–120 seconds long and wholly inside the saved timeline. PNGs are 960 pixels wide and capped at 8 MiB. Project views use the saved project and hidden browser described under *Export*, with no open editor needed. Project views share the render slot and progress timeout with other CLI render jobs. For a local video, `--file` takes a path under `AGENT_FILES_ROOT` and uses FFmpeg with the same picture layout. This mode works with the server closed. An optional `<file>.words.json` sidecar has the source word format below. Interrupt either view with Ctrl+C.
+
+Start with a transcript to find the relevant words or a pause. Use a range picture to check the cuts, titles, and sound around it. Use the file protocol below for drafts, changes, historical frames, and comparisons.
 
 ## Agent workspace (`apps/web/.env.local`)
 ```

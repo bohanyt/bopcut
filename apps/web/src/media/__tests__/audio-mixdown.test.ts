@@ -76,6 +76,20 @@ test("overlapping cuts share one late decode window and muted clips do not reque
 	expect(blocks[1].getChannelData(0)[0]).toBeCloseTo(0.5);
 });
 
+test("a late range mixes only that interval and preserves leading silence inside it", async () => {
+	installBuffer();
+	const buffers = stubPackets(async function* () { yield packet(10, sampleRate, 0); });
+	const tracks = timeline(clip("earlier", 0, 0, 5), clip("in-range", 101, 10, 1));
+	const [block] = await Array.fromAsync(mixTimelineAudio({
+		tracks, mediaAssets: [asset], rangeStart: t(100.5), duration: t(101.5), sampleRate,
+	}));
+	expect(buffers).toHaveBeenCalledTimes(1);
+	expect(buffers.mock.calls[0][0]).toBeCloseTo(10, 2);
+	expect(block.length).toBe(sampleRate);
+	expect(block.getChannelData(0)[0]).toBe(0);
+	expect(block.getChannelData(0)[sampleRate / 2]).toBeCloseTo(0.5);
+});
+
 test("a two-hour, loud timeline starts with bounded PCM and does not open a live audio context", async () => {
 	installBuffer();
 	stubPackets(async function* (start) { yield packet(Math.round(start), sampleRate, 0); });

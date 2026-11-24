@@ -5,12 +5,13 @@ import { atomicWrite, readJson } from "@/services/storage/server/files";
 import { CLAIM_MS, handleExportFile } from "./export-server";
 import { parseExportRequest } from "./export";
 import { parseFrameInput } from "./render-input";
+import { MAX_RANGE_PNG, parseRangeInput } from "./range-view";
 import { renderTimeoutMessage, waitingForGraphics, waitingForRender } from "./render-timeout";
 import { isRenderAdapterStage, renderGpuWorkaround } from "./render-gpu";
 import { isForeignOrigin } from "./origin";
 import { profileDirectory, recordOutput, recoverRenderJobs, removeRenderJob, renderJobDir, rollbackOutput } from "./render-output";
 
-type Kind = "export" | "frames";
+type Kind = "export" | "frames" | "view";
 const json = Response.json;
 const tabHeader = "x-bopencut-render-tab";
 const tokenHeader = "x-bopencut-render-token";
@@ -47,7 +48,7 @@ export function renderPresence(req: Request) {
 	return projectId;
 }
 
-export async function renderRequest(req: Request, kind: Kind, workspace: string) {
+export async function renderRequest(req: Request, kind: Exclude<Kind, "view">, workspace: string) {
 	const job = active;
 	const projectId = renderPresence(req);
 	const tab = req.headers.get(tabHeader);
@@ -71,12 +72,13 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 	try {
 		const handshake = AbortSignal.any([req.signal, AbortSignal.timeout(10_000)]);
 		const { command: kind, request: options, timeoutMs } = await requestBody(req, handshake).json();
-		if ((kind !== "export" && kind !== "frames") || !options || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) {
+		if ((kind !== "export" && kind !== "frames" && kind !== "view") || !options || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) {
 			throw new Error("Invalid render request.");
 		}
 		const projectId = await resolveProject();
 		const rev = `cli-${randomUUID()}`;
-		const parsed = kind === "export" ? parseExportRequest({ ...options, rev, projectId }) : parseFrameInput(options);
+		const parsed = kind === "export" ? parseExportRequest({ ...options, rev, projectId })
+			: kind === "view" ? parseRangeInput(options) : parseFrameInput(options);
 		if (!parsed || typeof parsed === "string") throw new Error(parsed ?? "Invalid export.");
 		if (options.state !== undefined || options.compare !== undefined) throw new Error("For historical or comparison frames, open the editor.");
 		const request = { ...parsed, rev, projectId };
@@ -199,7 +201,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 				stream = output;
 				job.reportStage(waitingForRender);
 				const recentlySeen = Date.now() - (presence.get(projectId) ?? 0) < presenceMs;
-				handoff = setTimeout(() => void offer(), recentlySeen ? seen : grace);
+				handoff = setTimeout(() => void offer(), kind === "view" ? 0 : recentlySeen ? seen : grace);
 				req.signal.addEventListener("abort", close, { once: true });
 				if (req.signal.aborted) close();
 			},
@@ -272,7 +274,7 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 			);
 			const valid = typeof stage === "string" && (job.kind === "export"
 				? stage === "mixing audio" || stage === "starting encoding" || stage === "finalizing video" || /^checking video \d{1,12}\/\d{1,12}$/.test(stage)
-				: /^rendering frame \d{1,3}\/\d{1,3}$/.test(stage));
+				: /^rendering frame \d{1,3}\/\d{1,3}$/.test(stage) || (job.kind === "view" && stage === "mixing range audio"));
 			if (startup || valid) reportStage(stage);
 			return json({ ok: true });
 		}
@@ -356,6 +358,45 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 				job.finishing = false;
 			}
 			return json({ ok: true });
+		}
+		if (job.kind === "view" && action === "view-file" && job.owner === "hidden") {
+			const length = req.headers.get("content-length");
+			const size = length === null ? MAX_RANGE_PNG : Number(length);
+			if (!req.body || !Number.isSafeInteger(size) || size < 8 || size > MAX_RANGE_PNG || req.headers.get("content-type") !== "image/png") {
+				return json({ error: "Invalid PNG size or type." }, { status: 400 });
+			}
+			job.finishing = true;
+			try {
+				reportStage("saving range picture");
+				let received = 0;
+				const bounded = req.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+					transform(chunk, stream) {
+						received += chunk.byteLength;
+						if (received > size) stream.error(new Error("The PNG upload exceeds its size limit."));
+						else stream.enqueue(chunk);
+					},
+				}), { signal });
+				const bytes = new Uint8Array(await new Response(bounded).arrayBuffer());
+				if ((length !== null && bytes.length !== size) || ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, i) => bytes[i] === byte)) {
+					return json({ error: "Invalid PNG." }, { status: 400 });
+				}
+				const views = path.join(workspace, "views");
+				await fs.mkdir(views, { recursive: true });
+				if (!(await fs.lstat(views)).isDirectory()) throw new Error("The views folder must be a directory.");
+				const source = path.join(job.scratch, "view.png");
+				const target = path.join(views, `${job.rev}.png`);
+				await atomicWrite(source, bytes, signal);
+				await recordOutput(workspace, job.scratch, target, source);
+				signal.throwIfAborted();
+				await fs.rename(source, target);
+				await job.finish({ rev: job.rev, projectId: job.projectId, file: `views/${job.rev}.png`, bytes: bytes.length, ...parseRangeInput(job.request) }, signal);
+				return json({ ok: true });
+			} catch (error) {
+				await rollbackOutput(workspace, job.scratch);
+				throw error;
+			} finally {
+				job.finishing = false;
+			}
 		}
 		return json({ error: "This action does not belong to the render job." }, { status: 403 });
 	} catch (error) {
