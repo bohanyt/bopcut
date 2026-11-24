@@ -146,6 +146,35 @@ test("the exact scrub ring reuses a backward GOP decode, including gaps, at the 
 		expect(closed.sort()).toEqual([0, 1, 2, 2]);
 	}, { width: 1920, height: 1080 }));
 
+test("a newer forward scrub target reuses the same in-flight decoder request", () =>
+	withVideo(constantRate(2), async ({ file, starts }) => {
+		const cache = new ExactScrubCache();
+		const clip = {};
+		const entered = Promise.withResolvers<void>();
+		const packet = Promise.withResolvers<EncodedPacket>();
+		const key = spyOn(EncodedPacketSink.prototype, "getKeyPacket").mockImplementation(() => {
+			entered.resolve();
+			return packet.promise;
+		});
+		const nextKey = spyOn(EncodedPacketSink.prototype, "getNextKeyPacket").mockResolvedValue(null);
+		const options = { getScale: () => 0.5, maxTextureDimension: 1920 };
+		try {
+			const old = cache.getFrameAt(file, clip, 1, options);
+			await entered.promise;
+			const newest = cache.getFrameAt(file, clip, 1.2, options);
+			await Promise.resolve();
+			packet.resolve(new EncodedPacket(Uint8Array.of(1), "key", 0, 0.03));
+			expect(await old).toBeNull();
+			expect((await newest)?.timestamp).toBe(1.2);
+			expect(starts).toEqual([1.2]);
+		} finally {
+			cache.clear();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			key.mockRestore();
+			nextKey.mockRestore();
+		}
+	}, { width: 1920, height: 1080 }));
+
 test.each(["preview", "export"])("%s video textures retain alpha when a frame surface is reused", (mode) =>
 	withVideo(constantRate(1), async ({ file }) => {
 		const renderer = rendererAt(mode === "preview" ? 0.25 : 1, mode === "export");

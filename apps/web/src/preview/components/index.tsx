@@ -155,7 +155,7 @@ function PreviewCanvas({
 	const lastSceneRef = useRef<RootNode | null>(null);
 	const schedulerRef = useRef<ReturnType<typeof createPreviewFrameScheduler> | null>(null);
 	const renderSignalRef = useRef<AbortSignal | null>(null);
-	const scrubDraw = useRef<AbortController | null>(null);
+	const pausedDraw = useRef<AbortController | null>(null);
 	const [scrubCache] = useState(() => new ExactScrubCache());
 	const lastRendererRef = useRef<CanvasRenderer | null>(null);
 	const { width: nativeWidth, height: nativeHeight } = usePreviewSize();
@@ -247,11 +247,11 @@ function PreviewCanvas({
 
 		const session = renderSignalRef.current;
 		if (!session || session.aborted || editor.renderer.isExportRunning()) return;
-		const scrub = editor.playback.getIsScrubbing() && !editor.playback.getIsPlaying() ? new AbortController() : null;
-		scrubDraw.current = scrub;
-		const signal = scrub ? AbortSignal.any([session, scrub.signal]) : session;
+		const paused = !editor.playback.getIsPlaying() ? new AbortController() : null;
+		pausedDraw.current = paused;
+		const signal = paused ? AbortSignal.any([session, paused.signal]) : session;
 		const graphics = rendererDevice.signal;
-		const task = scrub
+		const task = paused && editor.playback.getIsScrubbing()
 			? renderer.render({ node: renderTree, time: renderTime, signal, scrubCache })
 			: editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
 		if (!task) return;
@@ -287,7 +287,7 @@ function PreviewCanvas({
 			scheduler.request();
 		};
 		const clearScrub = () => {
-			scrubDraw.current?.abort();
+			pausedDraw.current?.abort();
 			scrubCache.clear();
 		};
 		const onVisibility = () => { if (document.hidden) clearScrub(); else redraw(); };
@@ -299,13 +299,13 @@ function PreviewCanvas({
 		const unsubscribe = [
 			editor.playback.onUpdate(scheduler.playbackTick),
 			editor.playback.onSeek(() => {
-				scrubDraw.current?.abort();
+				if (isPointerScrubbing()) pausedDraw.current?.abort();
 				scheduler.request();
 			}),
 			editor.playback.subscribeState(() => {
 				const next = isPointerScrubbing();
 				if (scrubbing && !next) {
-					scrubDraw.current?.abort();
+					pausedDraw.current?.abort();
 					scrubCache.stop();
 					scheduler.request();
 				}

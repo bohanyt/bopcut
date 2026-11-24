@@ -63,10 +63,18 @@ export class ExactScrubCache {
 			this.entries.add(hit);
 			return hit.frame;
 		}
+		if (cursor?.work && time >= cursor.end) {
+			// Let the running read complete. The next GOP can then start from its own keyframe.
+			await cursor.work;
+			options.signal?.throwIfAborted();
+			if (this.cursor !== cursor) return null;
+			return this.getFrameAt(file, clip, time, options);
+		}
 		if (!cursor || (!cursor.work && time >= cursor.end)) {
 			this.stop();
 			cursor = this.cursor = { source, clip, time, backfill: backward, end: Infinity };
 		}
+		if (time > cursor.time) cursor.backfill = false;
 		cursor.time = time;
 		if (!cursor.work) {
 			const active = cursor;
@@ -137,10 +145,10 @@ export class ExactScrubCache {
 		}
 	}
 
-	private rasterize(sample: VideoSample, track: InputVideoTrack, { width, height }: { width: number; height: number }): VideoFrame {
-		const canvas = new OffscreenCanvas(width, height);
+	private rasterize(sample: VideoSample, track: InputVideoTrack, { width, height }: { width: number; height: number }, canvas = new OffscreenCanvas(width, height)): VideoFrame {
 		const ctx = canvas.getContext("2d");
 		if (!ctx) throw new Error("Failed to get 2d context for video frame");
+		ctx.clearRect(0, 0, width, height);
 		sample.drawWithFit(ctx, { fit: "fill", rotation: track.rotation });
 		return { canvas, timestamp: sample.timestamp, sourceWidth: track.displayWidth, sourceHeight: track.displayHeight };
 	}
@@ -148,12 +156,17 @@ export class ExactScrubCache {
 	private remember(source: Source, start: number, end: number, sample: VideoSample, track: InputVideoTrack, size: { width: number; height: number }): void {
 		const bytes = size.width * size.height * 4;
 		if (bytes > FRAME_BYTES || this.find(source, start, size)) return;
+		let canvas: OffscreenCanvas | undefined;
 		while (this.entries.size >= FRAME_LIMIT || this.bytes + bytes > FRAME_BYTES) {
 			const oldest = [...this.entries].find((entry) => !this.pinned.has(entry));
 			if (!oldest) return;
-			this.drop(oldest);
+			if (!canvas && oldest.frame.canvas.width === size.width && oldest.frame.canvas.height === size.height) {
+				canvas = oldest.frame.canvas;
+				this.entries.delete(oldest);
+				this.bytes -= oldest.bytes;
+			} else this.drop(oldest);
 		}
-		this.entries.add({ source, start, end, bytes, frame: this.rasterize(sample, track, size) });
+		this.entries.add({ source, start, end, bytes, frame: this.rasterize(sample, track, size, canvas) });
 		this.bytes += bytes;
 	}
 
