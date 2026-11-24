@@ -84,12 +84,12 @@ export async function decodeAudioToFloat32({
 	return { samples, sampleRate: audioBuffer.sampleRate };
 }
 
-export interface AudibleElementCandidate {
+export interface AudibleElementCandidate<T = MediaAsset> {
 	element: AudioElement | VideoElement;
-	mediaAsset: MediaAsset | null;
+	mediaAsset: T | null;
 }
 
-export function collectAudibleCandidates({
+export function collectAudibleCandidates<T extends Pick<MediaAsset, "id" | "type" | "hasAudio">>({
 	tracks: sceneTracks,
 	mediaAssets,
 	scenes = [],
@@ -99,7 +99,7 @@ export function collectAudibleCandidates({
 	silentMissingVideoIds,
 }: {
 	tracks: SceneTracks;
-	mediaAssets: MediaAsset[];
+	mediaAssets: T[];
 	/** All project scenes; needed to mix the audio inside compound clips. */
 	scenes?: TScene[];
 	rangeStart?: number;
@@ -107,11 +107,11 @@ export function collectAudibleCandidates({
 	/** Include enabled video audio even when its file is absent, for export preflight. */
 	includeMissingVideo?: boolean;
 	silentMissingVideoIds?: ReadonlySet<string>;
-}): AudibleElementCandidate[] {
+}): AudibleElementCandidate<T>[] {
 	const tracks = expandCompoundAudioTracks({ tracks: sceneTracks, scenes });
 	const allTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
 	const mediaMap = new Map(mediaAssets.map((a) => [a.id, a]));
-	const candidates: AudibleElementCandidate[] = [];
+	const candidates: AudibleElementCandidate<T>[] = [];
 
 	for (const track of allTracks) {
 		if (canTrackHaveAudio(track) && track.muted) continue;

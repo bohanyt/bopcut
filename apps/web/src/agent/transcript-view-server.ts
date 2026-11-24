@@ -73,7 +73,7 @@ export async function readReviewableProject(projectId: string, signal: AbortSign
 	const scenes = timeline ? transcriptScenes(project) : [];
 	const active = typeof saved?.currentSceneId === "string" && scenes.some((scene) => scene.id === saved.currentSceneId)
 		? saved.currentSceneId : project.currentSceneId ?? null;
-	return { project, projectFile, dir, root: getRootScene(scenes, active), scenes, media };
+	return { project, projectFile, dir, activeSceneId: active, root: getRootScene(scenes, active), scenes, media };
 }
 
 export async function readTranscriptView(projectId: string, name: string | null, signal: AbortSignal): Promise<string> {

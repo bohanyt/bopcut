@@ -456,6 +456,7 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 	// The server writes the final answer together with the file.
 	const done = {
 		format: request.format, quality: request.quality, width: settings.canvasSize.width, height: settings.canvasSize.height,
+		sceneId: root.id, includeAudio: request.includeAudio,
 		fps: fps.numerator / fps.denominator, duration: Math.round(duration * 1000) / 1000, seconds: Math.round((Date.now() - started) / 100) / 10,
 	};
 	try {

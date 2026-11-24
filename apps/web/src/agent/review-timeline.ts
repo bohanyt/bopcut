@@ -8,18 +8,18 @@ import { resolveTransformAtTime } from "@/rendering/animation-values";
 import { getEffectiveRateAt } from "@/retime/resolve";
 import { textNumber } from "@/text/style";
 import { FONT_SIZE_SCALE_REFERENCE } from "@/text/typography";
-import { isSourceAudioEnabled } from "@/timeline/audio-separation";
-import { resolveEffectiveAudioGain } from "@/timeline/audio-state";
-import { expandCompoundAudioTracks } from "@/timeline/compound";
+import { collectAudibleCandidates } from "@/media/audio";
+import type { MediaType } from "@/media/types";
+import { SUPPORTS_AUDIO } from "@/media/media-utils";
+import { isElementMuted, resolveEffectiveAudioGain } from "@/timeline/audio-state";
 import type { TimelineElement, TScene } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { timelineTranscript, type TranscriptMedia } from "./packed-transcript";
 import { visibleRangeElements } from "./range-view-project";
 import { finding, REVIEW_LIMITS as L, unusualPauses, type ReviewFinding } from "./review-findings";
-import { orderedTracks } from "./scene-graph";
 
 type Canvas = { width: number; height: number };
-export type ReviewMedia = TranscriptMedia & { width?: number; height?: number; fileType?: string; present?: boolean; sourceFile?: string };
+export type ReviewMedia = TranscriptMedia & { width?: number; height?: number; fileType?: string; present?: boolean; sourceFile?: string; type?: MediaType };
 type Instance = ReturnType<typeof visibleRangeElements> extends Generator<infer T> ? T : never;
 const instanceKey = (item: Instance) => [...item.chain.map((parent) => parent.id), item.element.id].join("/");
 type Rect = { x: number; y: number; w: number; h: number };
@@ -35,6 +35,17 @@ const transformAt = (element: TimelineElement, localTime: number) =>
 const opacityAt = (element: TimelineElement, localTime: number, height: number) =>
 	resolveOpacityAtTime({ baseOpacity: readOpacityFromParams({ params: element.params }), animations: element.animations, localTime }) *
 	presetLayerAt(readPresetSettings(element.params), localTime, element.duration, height).opacity;
+
+export function reviewOpacity(item: Instance, at: number, height: number) {
+	let ticks = at * TICKS_PER_SECOND;
+	let opacity = 1;
+	for (const parent of item.chain) {
+		const local = ticks - parent.startTime;
+		opacity *= opacityAt(parent, local, height);
+		ticks = local + parent.trimStart;
+	}
+	return opacity * opacityAt(item.element, ticks - item.element.startTime, height);
+}
 
 function sampleTimes(from: number, to: number, fps: number) {
 	const count = Math.min(13, Math.max(2, Math.ceil((to - from) * fps)));
@@ -90,20 +101,19 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 	const assets = new Map(media.map((asset) => [asset.id, asset]));
 	const instances = [...visibleRangeElements(root, scenes, { from: 0, to: duration, rows: 1 })];
 	const instancesByKey = new Map(instances.map((item) => [instanceKey(item), item]));
-	const sounds = orderedTracks(expandCompoundAudioTracks({ tracks: root.tracks, scenes })).flatMap((track) => {
-		if ("muted" in track && track.muted) return [];
-		return track.elements.flatMap((element) => {
-			if (element.type !== "audio" && element.type !== "video") return [];
+	const sounds = collectAudibleCandidates({ tracks: root.tracks, scenes, mediaAssets: media.filter((asset) => asset.present !== false)
+		.map((asset) => ({ ...asset, type: asset.type ?? "audio" as const })) }).flatMap(({ element, mediaAsset }) => {
+			if (isElementMuted({ element })) return [];
+			if (!(element.type === "audio" && element.sourceType === "library") && (!mediaAsset || !SUPPORTS_AUDIO.includes(mediaAsset.type))) return [];
 			const mediaId = "mediaId" in element ? element.mediaId : element.sourceUrl;
-			if (element.type === "video" && (!isSourceAudioEnabled({ element }) || assets.get(mediaId)?.hasAudio !== true)) return [];
 			const rate = getEffectiveRateAt({ retime: element.retime });
 			const from = element.startTime / TICKS_PER_SECOND, length = element.duration / TICKS_PER_SECOND;
 			if (length <= 0) return [];
 			const src = element.trimStart / TICKS_PER_SECOND;
 			return [{ element, mediaId, from, to: from + length, src, srcEnd: src + length * rate,
+				rate, gain: (time: number) => time >= from && time <= from + length ? resolveEffectiveAudioGain({ element, localTime: time - from }) : 0,
 				audible: (time: number) => time >= from && time <= from + length &&
-					resolveEffectiveAudioGain({ element, localTime: time - from }) >= 0.01 }];
-		});
+					resolveEffectiveAudioGain({ element, localTime: time - from }) > 0.001 }];
 	});
 	const cuts = new Map<number, Set<string>>();
 	const addCut = (time: number, id: string) => {
@@ -150,10 +160,11 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 					instance: sound.element.id }, [placed?.element.id ?? sound.element.id]));
 		}
 	}
-	const phrases = timelineTranscript(root, scenes, media).filter((clip) => sounds.some((sound) => sound.element.id === clip.id &&
-		sound.audible((clip.start + clip.end) / 2)));
-	findings.push(...unusualPauses(phrases.flatMap((clip) => clip.phrases.flatMap((phrase) => phrase.words ?? [phrase]))
-		.map((word) => ({ from: word.start, to: word.end })).sort((a, b) => a.from - b.from)));
+	const words = timelineTranscript(root, scenes, media, { groupWords: false }).flatMap((clip) =>
+		clip.phrases.filter((word) => sounds.some((sound) => sound.element.id === clip.id &&
+			sampleTimes(word.start, word.end, fps).some(sound.audible))).map((word) => ({ ...word, clipId: clip.id })))
+		.sort((a, b) => a.start - b.start);
+	findings.push(...unusualPauses(words.map((word) => ({ from: word.start, to: word.end }))));
 
 	const clips = instances.filter(({ element }) => element.type === "video" || element.type === "image" || element.type === "audio");
 	const byMedia = new Map<string, Array<{ instance: Instance; start: number; end: number }>>();
@@ -210,10 +221,10 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 		if (item.element.type !== "text") continue;
 		const content = String(item.element.params.content ?? "");
 		if (!content.trim()) continue;
-		const words = normalized(content);
-		const followsSpeech = !!item.element.caption?.words?.length || (!!words && phrases.some((clip) =>
-			clip.phrases.some((phrase) => phrase.start < item.end + 0.15 && phrase.end > item.start - 0.15 &&
-				` ${normalized(phrase.text)} `.includes(` ${words} `))));
+		const contentWords = normalized(content);
+		const spoken = normalized(words.filter((word) => word.start < item.end + 0.15 && word.end > item.start - 0.15)
+			.map((word) => word.text).join(" "));
+		const followsSpeech = !!item.element.caption?.words?.length || (!!contentWords && ` ${spoken} `.includes(` ${contentWords} `));
 		const samples = sampleTimes(item.start, item.end, fps).flatMap((at) => sample(item, at) ?? []);
 		findings.push(...textFindings(samples, canvas, item.start, item.end, item.element.id, content, followsSpeech));
 		const layer = instances.indexOf(item);
@@ -235,7 +246,7 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 			});
 			const ids = [item.element.id, other.element.id];
 			if (other.element.type === "text") {
-				if (normalized(String(other.element.params.content ?? "")) === words && pairs.every((p) => p.smaller >= L.layeredBox)) continue;
+				if (normalized(String(other.element.params.content ?? "")) === contentWords && pairs.every((p) => p.smaller >= L.layeredBox)) continue;
 				const overlaps = pairs.filter((p) => p.smaller >= L.overlap);
 				if (overlaps.length >= 2) findings.push(finding("text-overlap", "warning", from, to,
 					{ overlap: Math.max(...overlaps.map((p) => p.smaller)), threshold: L.overlap, samples: overlaps.length, ...overlaps[0].evidence }, ids));
@@ -254,5 +265,5 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 			}
 		}
 	}
-	return { cuts: [...cuts].sort(([a], [b]) => a - b).map(([at, ids]) => ({ at, elementIds: [...ids] })), findings, instances };
+	return { cuts: [...cuts].sort(([a], [b]) => a - b).map(([at, ids]) => ({ at, elementIds: [...ids] })), findings, instances, sounds, words };
 }

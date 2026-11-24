@@ -17,7 +17,7 @@ const RESULT_FILE = "export-result.json";
 const REV = /^[a-zA-Z0-9_-]{1,100}$/;
 const STATUSES = new Set(["exporting", "done", "error", "release"]);
 /** The fields of a final answer the editor sends along with the video. */
-const DONE_FIELDS = ["format", "quality", "width", "height", "fps", "duration", "seconds"] as const;
+const DONE_FIELDS = ["format", "quality", "width", "height", "fps", "duration", "seconds", "sceneId", "includeAudio", "range"] as const;
 
 /** Errors of `fs.link` on file systems without hard links (FAT, exFAT, some network drives). */
 const NO_HARD_LINKS = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "ENOSYS", "EINVAL", "EMLINK"]);

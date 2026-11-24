@@ -7,17 +7,17 @@ import { atomicWrite, readJson } from "@/services/storage/server/files";
 import { calculateTotalDuration } from "@/timeline";
 import { getEffectiveRateAt } from "@/retime/resolve";
 import { TICKS_PER_SECOND } from "@/wasm";
+import { libraryPreviewFile } from "@/sounds/sfx-server";
+import { MUSIC_LIBRARY } from "@/sounds/music-server";
 import { fileInside, inside } from "./inside";
-import { knownExportProfile } from "./export-profile";
-import { timelineTranscript } from "./packed-transcript";
+import { exportSceneSettings, knownExportProfile } from "./export-profile";
 import { accumulatePeaks, drawRangeView, RANGE_BUCKETS, RANGE_HEADER, RANGE_ROW_HEIGHT, RANGE_WIDTH } from "./range-view";
-import { finding, REVIEW_LIMITS as L, summarizeReview, type ReviewFinding } from "./review-findings";
-import { inspectAudio, probeReviewFile, REVIEW_HEIGHT, REVIEW_WIDTH, scanReviewFile, sourceMotion, type FileScan } from "./review-scan";
-import { inspectTimeline, type ReviewMedia } from "./review-timeline";
+import { decibels, finding, meanDelta, REVIEW_LIMITS as L, summarizeReview, type ReviewFinding } from "./review-findings";
+import { frameAt, inspectAudio, probeReviewFile, REVIEW_HEIGHT, REVIEW_WIDTH, scanReviewFile, sourceFrames, sourcePeak, type FileScan, type Interval } from "./review-scan";
+import { inspectTimeline, reviewOpacity, type ReviewMedia } from "./review-timeline";
 import { readReviewableProject } from "./transcript-view-server";
 
 const missingTool = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
-const sampleRate = 8000;
 const frameBytes = REVIEW_WIDTH * REVIEW_HEIGHT;
 
 type EvidenceRow = { at: number; elementIds: string[]; picture?: string; before?: number; after?: number };
@@ -32,9 +32,23 @@ export async function writeReview({
 	if (!file) throw new Error("The export was not found under AGENT_FILES_ROOT.");
 	const start = performance.now();
 	const active = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
-	const { project, projectFile, scenes, root, media, dir } = await readReviewableProject(projectId, active);
+	const { project, projectFile, scenes, root: defaultRoot, activeSceneId, media, dir } = await readReviewableProject(projectId, active);
+	const [saved, exported] = await Promise.all([fs.stat(projectFile), fs.stat(file)]);
+	const exportResult = await fileInside(workspace, "export-result.json");
+	const recorded = exportResult ? await readJson(exportResult).catch(() => null) : null;
+	const profile = await knownExportProfile(workspace, projectId, file, exported) ?? (recorded?.status === "done" && recorded.projectId === projectId && recorded.bytes === exported.size &&
+		typeof recorded.file === "string" && await fileInside(workspace, recorded.file) === file ? {
+			width: typeof recorded.width === "number" ? recorded.width : null,
+			height: typeof recorded.height === "number" ? recorded.height : null,
+			fps: typeof recorded.fps === "number" ? recorded.fps : null,
+			...exportSceneSettings(recorded),
+		} : null);
+	const root = profile?.sceneId ? scenes.find((scene) => scene.id === profile.sceneId) : scenes.find((scene) => scene.id === activeSceneId) ?? defaultRoot;
 	if (!root) throw new Error("No timeline was saved for this project.");
-	const duration = calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND;
+	const fullDuration = calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND;
+	const timelineStart = profile?.range?.from ?? 0, timelineEnd = profile?.range?.to ?? fullDuration;
+	const duration = timelineEnd - timelineStart;
+	const sceneNotice = profile?.sceneId ? undefined : "Export scene unknown. Using the current saved scene.";
 	const { canvasSize, fps = { numerator: 30, denominator: 1 } } = project.settings;
 	if (!canvasSize?.width || !canvasSize.height || !(fps.numerator > 0 && fps.denominator > 0)) throw new Error("The saved export settings are incomplete.");
 	const assets: ReviewMedia[] = [];
@@ -42,7 +56,8 @@ export async function writeReview({
 		active.throwIfAborted();
 		const sourceFile = asset.diskFile && /^[-\w]+\.[a-z0-9]{1,10}$/i.test(asset.diskFile) &&
 			path.parse(asset.diskFile).name === asset.id && await fileInside(dir, "media", asset.diskFile);
-		assets.push({ ...asset, present: !!sourceFile, sourceFile: sourceFile || undefined });
+		const type = asset.fileType?.startsWith("video/") ? "video" : asset.fileType?.startsWith("image/") ? "image" : "audio";
+		assets.push({ ...asset, type, present: !!sourceFile, sourceFile: sourceFile || undefined });
 	}
 	for (const scene of scenes) {
 		for (const track of [...scene.tracks.overlay, scene.tracks.main, ...scene.tracks.audio]) for (const item of track.elements) {
@@ -52,29 +67,31 @@ export async function writeReview({
 			}
 		}
 	}
-	const timeline = inspectTimeline(root, scenes, assets, canvasSize, duration, fps.numerator / fps.denominator);
-	const findings = timeline.findings;
-	const cuts: EvidenceRow[] = timeline.cuts;
+	const timeline = inspectTimeline(root, scenes, assets, canvasSize, fullDuration, fps.numerator / fps.denominator);
+	const findings = timeline.findings.filter((hit) => hit.from < timelineEnd && hit.to >= timelineStart);
+	for (const hit of findings) {
+		hit.from = Math.max(0, hit.from - timelineStart);
+		hit.to = Math.min(duration, hit.to - timelineStart);
+		if (typeof hit.values.sampledAt === "number") hit.values.sampledAt = Math.max(hit.from, Math.min(hit.to, hit.values.sampledAt - timelineStart));
+	}
+	const cuts: EvidenceRow[] = timeline.cuts.filter((cut) => cut.at > timelineStart && cut.at < timelineEnd)
+		.map((cut) => ({ ...cut, at: cut.at - timelineStart }));
 	const skipped: string[] = [];
-	const [saved, exported] = await Promise.all([fs.stat(projectFile), fs.stat(file)]);
 	const stale = saved.mtimeMs > exported.mtimeMs + 1;
 	if (stale) findings.unshift(finding("stale-export", "info", 0, duration, {
 		message: "The project was saved after this file was exported. All other findings may be off.",
 		savedAt: saved.mtimeMs, fileAt: exported.mtimeMs,
 	}));
-	const exportResult = await fileInside(workspace, "export-result.json");
-	const recorded = exportResult ? await readJson(exportResult).catch(() => null) : null;
-	const profile = await knownExportProfile(workspace, projectId, file, exported) ?? (recorded?.status === "done" && recorded.projectId === projectId && recorded.bytes === exported.size &&
-		typeof recorded.file === "string" && await fileInside(workspace, recorded.file) === file ? {
-			width: typeof recorded.width === "number" ? recorded.width : null,
-			height: typeof recorded.height === "number" ? recorded.height : null,
-			fps: typeof recorded.fps === "number" ? recorded.fps : null,
-		} : null);
 	const groups: string[] = [];
 	const toolsSkipped = ["file-integrity", "frame-count", "black", "freeze", "loudness", "true-peak", "edge-silence", "cut-click", "pictures"];
 	let observed: Record<string, number | string | boolean | null> | null = null;
 	let scanSeconds = 0, pictureSeconds = 0, omittedPictures = 0;
 	const reviewId = `review-${randomUUID()}`;
+	const staged = path.join(workspace, "reviews", `.${reviewId}`);
+	const published = path.join(workspace, "reviews", reviewId);
+	let startedPictures = false;
+	let promoted = false;
+	let committed = false;
 	const run = async (scratch: string, cancellation: AbortSignal) => {
 		let scan: FileScan;
 		try {
@@ -93,72 +110,146 @@ export async function writeReview({
 			return;
 		}
 		const probe = scan.probe;
-		observed = { ...probe, frames: scan.frames };
-		if (scan.decodeError || !scan.frames) findings.push(finding("broken-file", "error", scan.frames / probe.fps, probe.duration,
+		observed = { ...probe, fps: scan.fps, frames: scan.frames, videoDuration: scan.videoDuration, variable: scan.variable };
+		if (scan.decodeError || !scan.frames) findings.push(finding("broken-file", "error", scan.stamps.at(-1)?.at ?? 0, probe.duration,
 			{ message: scan.decodeError ?? "No frames decoded.", frames: scan.frames }));
-		const expectedFrames = Math.ceil(duration * (profile?.fps ?? probe.fps) - 1e-7);
-		if (!stale && !scan.decodeError && (Math.abs(probe.duration - duration) > Math.max(0.05, 1 / probe.fps + 0.005) ||
-			(!probe.variable && scan.frames !== expectedFrames))) findings.push(finding("timeline-length", "warning", 0, probe.duration,
-				{ timelineSeconds: duration, fileSeconds: probe.duration, frames: scan.frames, expectedFrames }));
+		const expectedFrames = Math.ceil(duration * (profile?.fps ?? scan.fps) - 1e-4);
+		if (!stale && !scan.decodeError && (Math.abs(scan.videoDuration - duration) > 1 / scan.fps + 0.005 ||
+			(!scan.variable && scan.frames !== expectedFrames))) findings.push(finding("timeline-length", "warning", 0, scan.videoDuration,
+				{ timelineSeconds: duration, fileSeconds: scan.videoDuration, frames: scan.frames, expectedFrames }));
 		if (!stale && profile && ((profile.width && profile.width !== probe.width) || (profile.height && profile.height !== probe.height) ||
-			(profile.fps && Math.abs(profile.fps - probe.fps) > 0.01))) findings.push(finding("export-profile", "warning", 0, probe.duration,
-				{ width: probe.width, height: probe.height, fps: probe.fps, expectedWidth: profile.width, expectedHeight: profile.height, expectedFps: profile.fps }));
-		if (probe.variable) skipped.push("precise-frame-alignment", "black", "freeze", "cut-pictures");
+			(profile.fps && Math.abs(profile.fps - scan.fps) > 0.08))) findings.push(finding("export-profile", "warning", 0, scan.videoDuration,
+				{ width: probe.width, height: probe.height, fps: scan.fps, expectedWidth: profile.width, expectedHeight: profile.height, expectedFps: profile.fps }));
+		const expectedSounds = profile?.includeAudio === false ? [] : timeline.sounds.filter((item) => item.to > timelineStart && item.from < timelineEnd);
+		const silent: Interval[] = [];
 		if (!probe.channels) skipped.push("loudness", "true-peak", "edge-silence", "cut-click");
-		else findings.push(...await inspectAudio(scan, cuts, cancellation));
-		const visual = timeline.instances.filter(({ element }) => element.type !== "audio" && element.type !== "effect" && element.type !== "compound");
-		if (!probe.variable) for (const interval of scan.black) {
-			// Sparse type on a black title card can cover less than the pixel threshold on purpose.
-			const visible = visual.filter((item) => (item.element.type === "video" || item.element.type === "image") &&
-				item.start < interval.to && item.end > interval.from);
-			const covered = visible.reduce((maximum, item) => Math.max(maximum, Math.min(interval.to, item.end) - Math.max(interval.from, item.start)), 0);
-			if (covered + 1e-8 >= L.blackSeconds) findings.push(finding("black-picture", "error", interval.from, interval.to,
-				{ fraction: interval.value, minimumSeconds: L.blackSeconds, threshold: L.blackFraction }, [...new Set(visible.map((item) => item.element.id))]));
+		else findings.push(...await inspectAudio(scan, cuts, cancellation, silent));
+		if (!probe.channels) findings.push(finding(expectedSounds.length ? "missing-audio" : "silent-export",
+			expectedSounds.length ? "error" : "info", 0, scan.videoDuration, { expected: expectedSounds.length > 0, includeAudio: profile?.includeAudio ?? null },
+			[...new Set(expectedSounds.map((sound) => sound.element.id.split("/").at(-1)!))]));
+		for (const quiet of silent) {
+			for (const sound of expectedSounds) {
+				const from = Math.max(sound.from, quiet.from + timelineStart);
+				const end = Math.min(sound.to, quiet.to + timelineStart);
+				if (end <= from) continue;
+				const to = Math.min(end, from + 5);
+				const gain = Math.min(...[from + (to - from) / 4, (from + to) / 2, to - (to - from) / 4].map(sound.gain));
+				if (gain <= 0.001) continue;
+				let filename = assets.find(({ id }) => id === sound.mediaId)?.sourceFile;
+				if (!filename && /^\/api\/agent\/(?:sfx|music)-file\?/.test(sound.mediaId)) {
+					const url = new URL(sound.mediaId, "http://localhost");
+					filename = await libraryPreviewFile(url.searchParams.get("ref") ?? "", { filesRoot },
+						url.pathname.endsWith("/music-file") ? MUSIC_LIBRARY : undefined) ?? undefined;
+				}
+				if (!filename) continue;
+				const at = sound.src + (from - sound.from) * sound.rate;
+				const peak = await sourcePeak(filename, at, at + (to - from) * sound.rate, cancellation, filesRoot)
+					.catch(() => { cancellation.throwIfAborted(); return -Infinity; });
+				if (peak + decibels(gain) <= -60) continue;
+				findings.push(finding("unexpected-silence", "warning", quiet.from, quiet.to,
+					{ exportBelowDb: -60, expectedPeakDb: peak + decibels(gain), sourceStart: at, sourceEnd: at + (to - from) * sound.rate },
+					[sound.element.id.split("/").at(-1)!]));
+				break;
+			}
 		}
-		if (!probe.variable) for (const [index, interval] of scan.frozen.entries()) {
+		const visual = timeline.instances.filter(({ element }) => element.type !== "audio" && element.type !== "effect" && element.type !== "compound");
+		const sourceTime = (item: typeof visual[number], time: number) => {
+			const element = item.element;
+			const rate = getEffectiveRateAt({ retime: "retime" in element ? element.retime : undefined });
+			const shift = item.chain.reduce((sum, parent) => sum + (parent.startTime - parent.trimStart) / TICKS_PER_SECOND, 0);
+			return element.trimStart / TICKS_PER_SECOND + Math.max(0, time + timelineStart - shift - element.startTime / TICKS_PER_SECOND) * rate;
+		};
+		for (const [index, interval] of scan.black.entries()) {
+			const edge = interval.from <= (scan.stamps[0]?.at ?? 0) + 1e-6 || interval.to >= scan.videoEnd - 1e-6;
+			const values = { fraction: interval.value, minimumSeconds: L.blackSeconds, threshold: L.blackFraction };
+			if (interval.to - interval.from < L.blackSeconds - 1e-6) {
+				if (edge) findings.push(finding("black-edge", "info", interval.from, interval.to, values));
+				continue;
+			}
+			const from = interval.from + timelineStart, to = interval.to + timelineStart;
+			const visible = visual.filter((item) => item.start < to && item.end > from);
+			const boundaries = [...new Set([from, to, ...visible.flatMap((item) => [Math.max(from, item.start), Math.min(to, item.end)])])]
+				.sort((a, b) => a - b);
+			for (let piece = 1; piece < boundaries.length; piece++) {
+				const a = boundaries[piece - 1], b = boundaries[piece];
+				const midpoint = (a + b) / 2;
+				const item = visible.find((layer) => layer.start <= midpoint && layer.end > midpoint);
+				if (!item) {
+					findings.push(finding("black-gap", "warning", a - timelineStart, b - timelineStart, values));
+					continue;
+				}
+				const element = item.element;
+				const fade = [a, midpoint, b - 1e-6].some((time) => reviewOpacity(item, time, canvasSize.height) < 0.95);
+				if (fade || (element.type !== "image" && element.type !== "video") || element.masks?.length) continue;
+				const asset = assets.find(({ id }) => id === element.mediaId);
+				const times = element.type === "image" ? [0] : [sourceTime(item, midpoint - timelineStart)];
+				const frames = asset?.sourceFile && !stale
+					? await sourceFrames(asset.sourceFile, times, path.join(scratch, `black-${index}.gray`), cancellation, filesRoot, element.type === "image")
+						.catch(() => { cancellation.throwIfAborted(); return []; }) : [];
+				const reference = frames[0];
+				const blackFraction = reference ? reference.reduce((sum, pixel) => sum + Number(pixel <= 16), 0) / reference.length : null;
+				findings.push(finding("black-picture", blackFraction !== null && blackFraction < L.blackFraction ? "error" : "info",
+					a - timelineStart, b - timelineStart, { ...values, sourceBlackFraction: blackFraction }, [element.id]));
+			}
+		}
+		for (const [index, interval] of scan.frozen.entries()) {
 			cancellation.throwIfAborted();
-			const layers = visual.filter((item) => item.start < interval.to && item.end > interval.from);
+			const layers = visual.filter((item) => item.start < interval.to + timelineStart && item.end > interval.from + timelineStart);
 			const item = layers[0];
 			const source = item?.element;
 			const asset = source?.type === "video" ? assets.find(({ id }) => id === source.mediaId) : undefined;
 			let movement: number | null = null;
-			if (source?.type === "video" && source.retime?.rate !== 0 && item.start <= interval.from + 1 / probe.fps &&
-				item.end >= interval.to - 1 / probe.fps && asset?.sourceFile && !stale) {
-				const rate = getEffectiveRateAt({ retime: source.retime });
-				const shift = item.chain.reduce((sum, parent) => sum + (parent.startTime - parent.trimStart) / TICKS_PER_SECOND, 0);
-				const from = source.trimStart / TICKS_PER_SECOND + Math.max(0, interval.from - shift - source.startTime / TICKS_PER_SECOND) * rate;
-				const span = Math.min(6, interval.to - interval.from) * rate;
-				movement = await sourceMotion(asset.sourceFile, from, from + span, path.join(scratch, `motion-${index}.gray`), cancellation, filesRoot)
+			if (source?.type === "video" && source.retime?.rate !== 0 && item.start <= interval.from + timelineStart + 1e-6 &&
+				item.end >= interval.to + timelineStart - 1e-6 && asset?.sourceFile && !stale &&
+				reviewOpacity(item, interval.from + timelineStart, canvasSize.height) >= 0.95) {
+				const first = frameAt(scan.stamps, interval.from);
+				const last = frameAt(scan.stamps, Math.min(interval.to - 1e-6, interval.from + 6));
+				const times = scan.stamps.slice(first, last + 1).map((stamp) => sourceTime(item, stamp.at));
+				movement = await sourceFrames(asset.sourceFile, times, path.join(scratch, `motion-${index}.gray`), cancellation, filesRoot)
+					.then((frames) => frames.length < 2 ? null : frames.slice(1).reduce((max, frame, i) => Math.max(max, meanDelta(frames[i], frame)), 0))
 					.catch(() => { cancellation.throwIfAborted(); return null; });
 			}
 			findings.push(finding("frozen-picture", movement !== null && movement >= L.sourceMeanDelta ? "warning" : "info",
 				interval.from, interval.to, { exportMeanDelta: interval.value, sourceMeanDelta: movement, motionThreshold: L.sourceMeanDelta,
 					minimumSeconds: L.freezeSeconds }, source ? [source.id] : []));
 		}
-		if (scan.frames && !probe.variable) for (const cut of cuts) {
-			const at = Math.max(1, Math.min(scan.frames - 1, Math.ceil(cut.at * probe.fps - 1e-8)));
-			cut.before = (at - 1) / probe.fps;
-			cut.after = at / probe.fps;
+		if (scan.stamps.length) for (const cut of cuts) {
+			const at = frameAt(scan.stamps, cut.at);
+			cut.before = scan.stamps[Math.max(0, at - 1)].at;
+			cut.after = scan.stamps[at].at;
 		}
 		if (!pictures) skipped.push("pictures-disabled");
-		else if (scan.frames && !probe.variable) {
+		else if (scan.stamps.length) {
 			const beginPictures = performance.now();
-			const words = timelineTranscript(root, scenes, assets, { groupWords: false }).flatMap((clip) => clip.phrases);
-			omittedPictures = await evidencePictures(scan, workspace, reviewId, words, cuts, findings, groups, cancellation);
+			const words = timeline.words.map((word) => ({ ...word, start: word.start - timelineStart, end: word.end - timelineStart }));
+			const folder = path.join(workspace, "reviews");
+			await fs.mkdir(folder, { recursive: true });
+			if (!(await fs.lstat(folder)).isDirectory()) throw new Error("The reviews folder must be a directory.");
+			await fs.mkdir(staged);
+			startedPictures = true;
+			omittedPictures = await evidencePictures(scan, staged, reviewId, words, cuts, findings, groups, cancellation);
 			pictureSeconds = (performance.now() - beginPictures) / 1000;
 		}
 	};
-	await withToolScratch(active, filesRoot, run, workspace);
-	active.throwIfAborted();
-	const report = { version: 1, projectId, file: relative, stale, expected: { timelineDuration: duration, profile }, observed,
+	try {
+		await withToolScratch(active, filesRoot, run, workspace);
+		active.throwIfAborted();
+		const report = { version: 1, projectId, file: relative, stale, sceneId: root.id, sceneNotice,
+			expected: { timelineDuration: duration, profile }, observed,
 		findings, cuts, pictures: groups, omittedPictureRows: omittedPictures, skipped,
 		timing: { totalSeconds: (performance.now() - start) / 1000, scanSeconds, pictureSeconds } };
-	await atomicWrite(path.join(workspace, "review.json"), JSON.stringify(report, null, 2) + "\n", active);
-	return { ...summarizeReview("review.json", findings, skipped), ...(skipped.includes("file-integrity") ?
-		{ message: "FFmpeg and FFprobe are required for file checks. Only the saved timeline was checked." } : {}) };
+		if (groups.length) { await fs.rename(staged, published); promoted = true; }
+		await atomicWrite(path.join(workspace, "review.json"), JSON.stringify(report, null, 2) + "\n", active);
+		committed = true;
+		return { ...(sceneNotice && { sceneNotice }), ...summarizeReview("review.json", findings, skipped), ...(skipped.includes("file-integrity") ?
+			{ message: "FFmpeg and FFprobe are required for file checks. Only the saved timeline was checked." } : {}) };
+	} finally {
+		if (startedPictures && !promoted) await fs.rm(staged, { recursive: true, force: true });
+		if (promoted && !committed) await fs.rm(published, { recursive: true, force: true });
+	}
 }
 
-async function evidencePictures(scan: FileScan, workspace: string, id: string, words: Parameters<typeof drawRangeView>[2]["words"],
+async function evidencePictures(scan: FileScan, staged: string, id: string, words: Parameters<typeof drawRangeView>[2]["words"],
 	cuts: EvidenceRow[], findings: ReviewFinding[], files: string[], signal: AbortSignal) {
 	const rows = new Map<number, { cuts: EvidenceRow[]; findings: ReviewFinding[] }>();
 	const add = (at: number) => {
@@ -171,10 +262,6 @@ async function evidencePictures(scan: FileScan, workspace: string, id: string, w
 		add(typeof hit.values.sampledAt === "number" ? hit.values.sampledAt : hit.from).findings.push(hit);
 	}
 	if (!rows.size) return 0;
-	const folder = path.join(workspace, "reviews");
-	await fs.mkdir(folder, { recursive: true });
-	if (!(await fs.lstat(folder)).isDirectory()) throw new Error("The reviews folder must be a directory.");
-	await fs.mkdir(path.join(folder, id));
 	const handles = await Promise.all([fs.open(scan.video, "r"), scan.audio ? fs.open(scan.audio, "r").catch(() => null) : null]);
 	const [video, audio] = handles;
 	try {
@@ -193,7 +280,7 @@ async function evidencePictures(scan: FileScan, workspace: string, id: string, w
 			const tmp = tile.getContext("2d");
 			for (let i = 0; i < page.length; i++) {
 				signal.throwIfAborted();
-				const frame = Math.max(0, Math.min(scan.frames - 1, Math.ceil(page[i][0] * scan.probe.fps - 1e-8)));
+				const frame = frameAt(scan.stamps, page[i][0]);
 				const pair = createCanvas(REVIEW_WIDTH * 2, REVIEW_HEIGHT);
 				const pairCtx = pair.getContext("2d");
 				for (const [slot, index] of [Math.max(0, frame - 1), frame].entries()) {
@@ -223,6 +310,7 @@ async function evidencePictures(scan: FileScan, workspace: string, id: string, w
 				frames.push((x: number, y: number, w: number, h: number) => ctx.drawImage(pair, x, y, w, h));
 				if (audio) {
 					const { from, to } = intervals[i];
+					const sampleRate = scan.probe.sampleRate;
 					const samples = Math.max(1, Math.ceil((to - from) * sampleRate));
 					const pcm = new Float32Array(samples * scan.probe.channels);
 					await audio.read(new Uint8Array(pcm.buffer), 0, pcm.byteLength, Math.floor(from * sampleRate) * scan.probe.channels * 4);
@@ -233,7 +321,7 @@ async function evidencePictures(scan: FileScan, workspace: string, id: string, w
 			drawRangeView(ctx, { from: intervals[0].from, to: intervals.at(-1)!.to, rows: page.length }, {
 				title: "Export review · frame before / frame after", intervals, frames, peaks, words, spans: [],
 			});
-			await atomicWrite(path.join(workspace, name), await canvas.encode("png"), signal);
+			await atomicWrite(path.join(staged, path.basename(name)), await canvas.encode("png"), signal);
 			files.push(name);
 			for (const [, row] of page) for (const entry of [...row.cuts, ...row.findings]) entry.picture = name;
 		}
