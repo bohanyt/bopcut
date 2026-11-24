@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 import { useState } from "react";
 import { SOCIAL_LINKS } from "@/site/social";
 import { useLocalStorage } from "@/services/storage/use-local-storage";
+import { LoadBoundary } from "@/components/editor/load-boundary";
 import { Button } from "../ui/button";
 import { Dialog, DialogBody, DialogContent, DialogTitle } from "../ui/dialog";
 
@@ -18,12 +19,12 @@ const ReactMarkdown = dynamic(() => import("react-markdown"), {
 export function Onboarding() {
 	const { t } = useI18n();
 	const [step, setStep] = useState(0);
-	const [hasSeenOnboarding, setHasSeenOnboarding] = useLocalStorage({
+	const [hasSeenOnboarding, setHasSeenOnboarding, isReady] = useLocalStorage({
 		key: "hasSeenOnboarding",
 		defaultValue: false,
 	});
 
-	const isOpen = !hasSeenOnboarding;
+	const isOpen = isReady && !hasSeenOnboarding;
 
 	const handleNext = () => {
 		setStep(step + 1);
@@ -106,25 +107,28 @@ function Title({ title }: { title: string }) {
 }
 
 function Description({ description }: { description: string }) {
+	const markdown = (
+		<ReactMarkdown
+			components={{
+				p: ({ children }) => <p className="mb-0">{children}</p>,
+				a: ({ href, children }) => (
+					<a
+						href={href}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="text-foreground hover:text-foreground/80 underline"
+					>
+						{children}
+					</a>
+				),
+			}}
+		>
+			{description}
+		</ReactMarkdown>
+	);
 	return (
 		<div className="text-muted-foreground">
-			<ReactMarkdown
-				components={{
-					p: ({ children }) => <p className="mb-0">{children}</p>,
-					a: ({ href, children }) => (
-						<a
-							href={href}
-							target="_blank"
-							rel="noopener noreferrer"
-							className="text-foreground hover:text-foreground/80 underline"
-						>
-							{children}
-						</a>
-					),
-				}}
-			>
-				{description}
-			</ReactMarkdown>
+			<LoadBoundary key={description}>{markdown}</LoadBoundary>
 		</div>
 	);
 }

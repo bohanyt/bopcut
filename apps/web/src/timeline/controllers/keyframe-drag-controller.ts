@@ -26,6 +26,7 @@ import { finishFocusedField } from "@/utils/browser";
 interface PendingSession {
 	kind: "pending";
 	keyframeRefs: SelectedKeyframeRef[];
+	grabbedKeyframeRef: SelectedKeyframeRef;
 	startMouseX: number;
 }
 
@@ -160,6 +161,7 @@ export class KeyframeDragController {
 			kind: "pending",
 			keyframeRefs: (anySelected ? this.config.selectedKeyframes : keyframes)
 				.filter((ref) => ref.elementId === this.config.element.id),
+			grabbedKeyframeRef: keyframes[0],
 			startMouseX: event.clientX,
 		};
 		this.activate();
@@ -321,7 +323,7 @@ export class KeyframeDragController {
 				latest = Math.max(latest, keyframe.time);
 			}
 
-			const anchorRef = this.session.keyframeRefs[0];
+			const anchorRef = this.session.grabbedKeyframeRef;
 			const anchorKeyframe = anchorRef
 				? getKeyframeById({
 						animations: element.animations,

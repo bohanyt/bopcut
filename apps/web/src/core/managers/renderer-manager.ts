@@ -17,6 +17,7 @@ import { lastFrameMediaTime } from "@/wasm";
 import { holdMediaUrls } from "@/media/url-release";
 import { describeCanvasSizeIssue, getCanvasSizeIssue, rendererDevice } from "@/services/renderer/renderer-device";
 import { verifyVideoFile } from "@/media/video-probe";
+import { waitWithAbort } from "@/utils/abort";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
@@ -373,7 +374,8 @@ export class RendererManager {
 				scenes,
 			});
 
-			const { SceneExporter } = await import("@/services/renderer/scene-exporter");
+			const { SceneExporter } = await waitWithAbort(import("@/services/renderer/scene-exporter"), signal);
+			signal.throwIfAborted();
 			const exporter = new SceneExporter({
 				width: canvasSize.width,
 				height: canvasSize.height,
