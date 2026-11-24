@@ -21,8 +21,9 @@ What you can build with:
 5. **Draft on the editable timeline.** Import a bundle for a new project or write `draft.json` with `basedOn` for changes and set its `projectId` to the target project ID. Keep the editor tab open to apply the draft and check that it saved. Use the [file protocol](AGENT.md#agent-workspace-appswebenvlocal) for the formats and apply results.
 6. **Check the opening and key beats.** Capture frames with `bun run agent frames --project-id PROJECT_ID --times 0,1,2`, using the target project ID and times within the video. Inspect the 0 s frame and review the first spoken words and when they start. The first 1–2 seconds should carry a strong line, an on-screen claim, or a visible reaction. Cut any dead air before the first word. If the opening is uncertain, offer two or three alternatives as separate drafts.
 7. **Export MP4.** Run `bun run agent export --project-id PROJECT_ID --format mp4` after the draft saves. The server must be running, and the editor tab can be closed.
-8. **Report.** Give the MP4 path, summarize your main choices, list any alternative drafts, and say what the human should check. They can watch the export and fix individual items on the same timeline.
-9. **Refine.** Read new notes and human edits, then change the requested parts. Reply to or resolve the notes you addressed. Record preference rules only when the same pattern appears at least three times, with evidence.
+8. **Review the finished export.** Run `bun run agent review --project-id PROJECT_ID --file PATH`. Read `review.json` and the evidence for errors and warnings. Fix confirmed issues by draft, export again, and repeat for at most three review passes. Keep informational findings as context. Report anything that remains, including skipped checks.
+9. **Report.** Give the MP4 path, summarize your main choices, list any alternative drafts, and say what the human should check. They can watch the export and fix individual items on the same timeline.
+10. **Refine.** Read new notes and human edits, then change the requested parts. Reply to or resolve the notes you addressed. Record preference rules only when the same pattern appears at least three times, with evidence.
 
 See [AGENT.md](AGENT.md) for protocol details. Footage and assets live under `AGENT_FILES_ROOT`; never modify source files there.
 

@@ -1,4 +1,5 @@
 import type { EditorCore } from "@/core";
+import { editorActivity } from "@/agent/review-activity-client";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import type { ExportOptions, ExportResult } from "@/export";
 import { getExportFailure } from "@/export/failure";
@@ -234,10 +235,18 @@ export class RendererManager {
 		const signal = job.signal ? AbortSignal.any([job.signal, sessionSignal]) : sessionSignal;
 		const releaseMedia = holdMediaUrls();
 		this.exportRunning = true;
+		let releaseActivity: (() => void) | null | undefined;
 		try {
 			this.notify();
+			const activity = editorActivity();
+			if (activity) {
+				releaseActivity = await activity;
+				if (!releaseActivity) return { success: false, error: "An export review is running or the local server is unavailable.",
+					issue: { kind: "reviewRunning" } };
+			}
 			return await this.runExport({ ...job, signal });
 		} finally {
+			releaseActivity?.();
 			this.exportRunning = false;
 			try {
 				releaseMedia();

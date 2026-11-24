@@ -9,9 +9,9 @@ import { isHttpUrl, parseTime } from "../src/retrieval/time";
 import { runRender } from "./agent-render";
 import { loadEnvLocal } from "./retrieval-cli";
 
-const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "view"] as const;
+const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "view", "review"] as const;
 type Command = typeof commands[number];
-const usage = "Use: bun run agent <status|selection|notes|export|frames|transcript|transcript-view|view> [--project-id ID] [--timeout SECONDS]";
+const usage = "Use: bun run agent <status|selection|notes|export|frames|transcript|transcript-view|view|review> [--project-id ID] [--timeout SECONDS]";
 const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
 
 /** Renders report progress at most every two seconds, so a shorter stall limit would stop a working job. */
@@ -33,12 +33,13 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			...(!transcript && { url: { type: "string" } }),
 			...(render && command !== "view" && { "allow-missing": { type: "boolean" } }),
 			...(command === "view" && { from: { type: "string" }, to: { type: "string" }, rows: { type: "string" }, file: { type: "string" } }),
+			...(command === "review" && { file: { type: "string" }, pictures: { type: "string" } }),
 			...(command === "transcript-view" && { media: { type: "string" }, timeline: { type: "boolean" } }),
 			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
 			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" }, note: { type: "string" }, "scene-id": { type: "string" } }),
 		},
 	});
-	const seconds = Number(values.timeout ?? (render ? 600 : 30));
+	const seconds = Number(values.timeout ?? (render ? 600 : command === "review" ? 180 : 30));
 	if (!Number.isFinite(seconds) || seconds < 0.001 || seconds > 86400) throw new Error("Set --timeout to a positive number of seconds, up to 86400.");
 	if (render && !values.file && seconds < minRenderSeconds) throw new Error(`Set --timeout to at least ${minRenderSeconds} seconds for a render.`);
 	const projectId = values["project-id"];
@@ -82,6 +83,12 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
 		throw new Error("Set --url to the local editor origin, for example http://127.0.0.1:3000.");
 	}
+	if (command === "review") {
+		if (!projectId || !file?.trim() || (values.pictures !== undefined && values.pictures !== "none")) {
+			throw new Error("Use review --project-id ID --file PATH [--pictures none].");
+		}
+		return { command: "review" as const, projectId, file, pictures: values.pictures !== "none", origin: url.origin, timeoutMs };
+	}
 	let request: Record<string, unknown> | undefined;
 	if (rangeView) request = rangeView;
 	const allowMissing = values["allow-missing"] === true;
@@ -97,7 +104,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			? [...(Array.isArray(values.element) ? values.element : []), ...(typeof values.elements === "string" ? values.elements.split(",") : [])] : undefined;
 		request = parseFrameInput({ times, elements, noteId: values.note, sceneId: values["scene-id"], width: values.width === undefined ? undefined : Number(values.width), allowMissing });
 	}
-	return { command: command as Exclude<Command, "transcript">, projectId, timeoutMs, origin: url.origin,
+	return { command: command as Exclude<Command, "transcript" | "review">, projectId, timeoutMs, origin: url.origin,
 		...(media !== undefined && { media }), ...(request && { request }) };
 }
 
@@ -130,6 +137,26 @@ async function transcriptCommand(request: TranscriptRequest, timeoutMs: number) 
 export async function main(args: string[], minRenderSeconds = minRenderTimeout) {
 	const options = parseArgs(args, minRenderSeconds);
 	if (options.command === "transcript") return transcriptCommand(options.request, options.timeoutMs);
+	if (options.command === "review") {
+		const target = new URL("/api/agent/cli/review", options.origin);
+		target.searchParams.set("projectId", options.projectId);
+		const stop = new AbortController();
+		const cancel = () => stop.abort(new Error("Review interrupted."));
+		process.on("SIGINT", cancel);
+		process.on("SIGTERM", cancel);
+		try {
+			const response = await fetch(target, { method: "POST", redirect: "error",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ file: options.file, pictures: options.pictures, timeoutMs: options.timeoutMs }),
+				signal: AbortSignal.any([stop.signal, AbortSignal.timeout(options.timeoutMs + 2000)]) });
+			const result = await response.json();
+			if (!response.ok) throw new Error(result?.error ?? "Could not review the export.");
+			return result;
+		} finally {
+			process.removeListener("SIGINT", cancel);
+			process.removeListener("SIGTERM", cancel);
+		}
+	}
 	if (options.command === "file-view") {
 		const webDir = path.resolve(import.meta.dir, "..");
 		loadEnvLocal(path.join(webDir, ".env.local"));

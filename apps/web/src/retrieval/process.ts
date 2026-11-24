@@ -52,8 +52,10 @@ const unixSupervisor = String.raw `
 		if (tool || stopping) return;
 		input += chunk;
 		if (!input.endsWith("\n")) return;
-		const [command, args] = JSON.parse(input);
-		tool = spawn(command, args, { detached: true, stdio: ["ignore", "inherit", "inherit"] });
+	const [command, args] = JSON.parse(input);
+	const low = process.env.BOPENCUT_TOOL_LOW_PRIORITY === "1";
+	tool = spawn(low ? "nice" : command, low ? ["-n", "5", command, ...args] : args,
+		{ detached: true, stdio: ["ignore", "inherit", "inherit"] });
 		tool.once("error", (error) => { console.error(error.message); finish(error.code === "ENOENT" ? 127 : 1); });
 		tool.once("exit", waitForGroup);
 	});
@@ -61,8 +63,9 @@ const unixSupervisor = String.raw `
 	process.stdin.on("error", stop);
 `;
 
-export function runProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string) {
-	return withToolScratch(signal, filesRoot, (temp, activeSignal) => supervise(command, args, activeSignal, temp));
+export function runProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string, options?: { lowPriority?: boolean }) {
+	return withToolScratch(signal, filesRoot, (temp, activeSignal) => supervise(command, args, activeSignal, temp,
+		options?.lowPriority ? { BOPENCUT_TOOL_LOW_PRIORITY: "1" } : undefined));
 }
 
 export function runYtDlpProcess(command: string, args: string[], signal?: AbortSignal, filesRoot?: string, workspace?: string) {

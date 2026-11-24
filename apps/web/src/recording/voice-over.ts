@@ -1,4 +1,5 @@
 import type { EditorCore } from "@/core";
+import { editorActivity } from "@/agent/review-activity-client";
 import type { MediaImportSession } from "@/core/managers/media-manager";
 import { getBrowserTranslator } from "@/i18n/browser";
 import { en } from "@/i18n/en";
@@ -61,6 +62,7 @@ export class VoiceOver {
 	private opening: AbortController | null = null;
 	private timer?: ReturnType<typeof setTimeout>;
 	private releaseMute?: () => void;
+	private releaseActivity?: () => void;
 	private session: Session | null = null;
 	private trimFrames = 0;
 	private pending: PendingTake | null = null;
@@ -293,6 +295,22 @@ export class VoiceOver {
 		const session = this.session;
 		if (!mic || !session || !this.isCurrent(session.scope)) return this.leaveCapture();
 		this.update({ phase: "starting" });
+		const activity = editorActivity();
+		if (activity) {
+			void activity.then((release) => {
+				if (this.state.phase !== "starting" || this.session !== session || this.mic !== mic) { release?.(); return; }
+				if (!release) {
+					toast.error(getBrowserTranslator()("recording.reviewRunning"));
+					this.leaveCapture();
+					return;
+				}
+				this.releaseActivity = release;
+				this.beginCapture(mic, session);
+			});
+		} else this.beginCapture(mic, session);
+	}
+
+	private beginCapture(mic: MicrophoneInput, session: Session): void {
 		this.timer = setTimeout(() => {
 			toast.error(getBrowserTranslator()("recording.silentStart"));
 			this.leaveCapture();
@@ -503,6 +521,10 @@ export class VoiceOver {
 
 	private update(change: Partial<Snapshot>): void {
 		this.state = { ...this.state, ...change };
+		if (this.state.phase !== "starting" && this.state.phase !== "recording") {
+			this.releaseActivity?.();
+			this.releaseActivity = undefined;
+		}
 		const guard = !this.disposed && ["starting", "recording", "saving", "recovery"].includes(this.state.phase);
 		if (typeof window !== "undefined" && this.guardAttached !== guard) {
 			this.guardAttached = guard;

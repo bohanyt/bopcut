@@ -6,6 +6,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { atomicWrite, renameWithRetry } from "@/services/storage/server/files";
 import { safeName } from "./export";
+import { saveExportProfile } from "./export-profile";
 
 /** The largest export saved (8 GiB). */
 export const MAX_EXPORT_BYTES = 8 * 1024 ** 3;
@@ -117,6 +118,7 @@ export async function handleExportFile(req: Request, workspace: string, job?: {
 	const file = `exports/${saved.file}`;
 	const fields = Object.fromEntries(DONE_FIELDS.filter((key) => key in done).map((key) => [key, done[key]]));
 	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file, bytes: saved.bytes, ...fields };
+	await saveExportProfile(workspace, file, result).catch(() => { /* The export can be reviewed without a known profile. */ });
 	if (job) await job.finish({ ...result, updatedAt: new Date().toISOString() });
 	else await writeExportResult({ workspace, result });
 	return Response.json({ file, bytes: saved.bytes });

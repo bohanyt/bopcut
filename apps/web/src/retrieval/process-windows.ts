@@ -104,6 +104,10 @@ export const windowsSupervisor = String.raw`
 			try {
 				var limits = new ExtendedLimits();
 				limits.Basic.Flags = KillOnJobClose;
+				if (Environment.GetEnvironmentVariable("BOPENCUT_TOOL_LOW_PRIORITY") == "1") {
+					limits.Basic.Flags |= 0x20; // JOB_OBJECT_LIMIT_PRIORITY_CLASS
+					limits.Basic.Priority = 0x4000; // BELOW_NORMAL_PRIORITY_CLASS
+				}
 				if (!SetInformationJobObject(job, ExtendedLimitInformation, ref limits, Marshal.SizeOf(limits)))
 					throw new Win32Exception();
 				var start = new ProcessStartInfo(executable, "-e \"eval(process.env.BOPENCUT_TOOL_WORKER)\"") {
