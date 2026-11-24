@@ -100,7 +100,10 @@ export async function acquireProxyWriter(dir: string): Promise<boolean> {
 		throw error;
 	}
 	const updated = await generations(dir);
-	if (!updated) return false;
+	if (!updated) {
+		if (await readLock(file) === claim.record) await fs.unlink(file).catch(() => {});
+		return false;
+	}
 	if (!isHighest(updated, claim)) {
 		if (await readLock(file) === claim.record) await fs.unlink(file).catch(() => {});
 		return false;

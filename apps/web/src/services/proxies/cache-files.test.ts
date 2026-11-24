@@ -11,6 +11,25 @@ async function removeLocks(dir: string) {
 	await fs.rmdir(dir);
 }
 
+test("readdir failure after writing lock removes own file and allows retry", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-readdir-"));
+	await fs.writeFile(path.join(dir, "writer-1.lock"), lockRecord(process.pid, 0));
+	let calls = 0;
+	const originalReaddir = fs.readdir.bind(fs);
+	const readdir = spyOn(fs, "readdir").mockImplementation((async (...args: Parameters<typeof originalReaddir>) => {
+		calls++;
+		if (calls === 2) throw new Error("readdir failed");
+		return originalReaddir(...args);
+	}) as typeof fs.readdir);
+	try {
+		expect(await acquireProxyWriter(dir)).toBe(false);
+		expect(await fs.readdir(dir)).toEqual(["writer-1.lock"]);
+		readdir.mockRestore();
+		expect(await acquireProxyWriter(dir)).toBe(true);
+		expect(await fs.readdir(dir)).toEqual(["writer-2.lock"]);
+	} finally { readdir.mockRestore(); await removeLocks(dir); }
+});
+
 test("a live writer is exclusive and a stopped writer's lock can be reclaimed", async () => {
 	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-"));
 	const lock = path.join(dir, "writer-1.lock");

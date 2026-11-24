@@ -22,6 +22,7 @@ COPY apps/web/ apps/web/
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV BOPENCUT_STANDALONE=1
 
 # Build-time env stubs to pass zod validation
 ENV DATABASE_URL="postgresql://opencut:opencut@localhost:5432/opencut"

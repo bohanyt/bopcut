@@ -6,7 +6,7 @@ import { parseSourceWords } from "@/media/words";
 import { getElementBounds, type ElementBounds } from "@/preview/element-bounds";
 import { buildTransformFromParams, readOpacityFromParams } from "@/rendering";
 import { resolveTransformAtTime } from "@/rendering/animation-values";
-import { readShakeSettings } from "@/rendering/shake";
+import { peakShakeIntensity, readShakeSettings } from "@/rendering/shake";
 import { getEffectiveRateAt } from "@/retime/resolve";
 import { textNumber } from "@/text/style";
 import { FONT_SIZE_SCALE_REFERENCE } from "@/text/typography";
@@ -109,7 +109,8 @@ export function reviewSourceCrop(item: Instance, canvas: Canvas, media: ReviewMe
 	if (chain.some((parent) => {
 		const { rotate, scaleX, scaleY, position } = buildTransformFromParams({ params: parent.params });
 		const shake = readShakeSettings(parent.params);
-		return rotate || scaleX !== 1 || scaleY !== 1 || position.x || position.y || shake?.intensity || shake?.rotation;
+		return rotate || scaleX !== 1 || scaleY !== 1 || position.x || position.y ||
+			(shake && peakShakeIntensity(shake, parent.animations)) || shake?.rotation;
 	})) return null;
 	if ([...chain, element].some((part) =>
 		Object.keys(part.animations ?? {}).some((key) => key.startsWith("transform")) ||

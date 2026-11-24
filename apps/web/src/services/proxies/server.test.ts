@@ -16,7 +16,9 @@ test("proxy cache identity follows content across copies and hard links", async 
 	const link = path.join(dir, "two.mp4");
 	const copy = path.join(dir, "three.mp4");
 	try {
-		await fs.writeFile(original, Buffer.alloc(32 * 1024 * 1024, 3));
+		const huge = 32 * 1024 * 1024;
+		const created = await fs.open(original, "w");
+		try { await created.truncate(huge); } finally { await created.close(); }
 		await fs.link(original, link);
 		await fs.copyFile(original, copy);
 		expect((await fingerprint(original)).key).toBe((await fingerprint(link)).key);
