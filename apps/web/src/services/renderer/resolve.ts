@@ -24,6 +24,7 @@ import type { Transform } from "@/rendering";
 import { applyShake, readShakeSettings } from "@/rendering/shake";
 import { waitWithAbort } from "@/utils/abort";
 import type { CanvasRenderer } from "./canvas-renderer";
+import type { ScrubVideoCache } from "@/services/video-cache/scrub-cache";
 import type { AnyBaseNode } from "./nodes/base-node";
 import {
 	BlurBackgroundNode,
@@ -58,6 +59,7 @@ type ResolveContext = {
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
+	scrubCache?: ScrubVideoCache;
 };
 
 export async function resolveRenderTree({
@@ -65,13 +67,15 @@ export async function resolveRenderTree({
 	renderer,
 	time,
 	signal,
+	scrubCache,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
+	scrubCache?: ScrubVideoCache;
 }): Promise<void> {
-	await resolveNode({ node, context: { renderer, time, signal } });
+	await resolveNode({ node, context: { renderer, time, signal, scrubCache } });
 }
 
 async function resolveNode({
@@ -359,9 +363,14 @@ function readVideoFrame(
 	context: ResolveContext,
 	getScale: (source: { width: number; height: number }) => number,
 ) {
+	const seconds = mediaTimeToSeconds({ time: roundMediaTime({ time }) });
+	if (context.scrubCache) {
+		context.signal?.throwIfAborted();
+		return context.scrubCache.getFrameAt(file, seconds);
+	}
 	return readMediaSource(mediaId, context, () => context.renderer.videoCache.getFrameAt({
 		file,
-		time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
+		time: seconds,
 		getScale: context.renderer.exactFrames ? undefined : getScale,
 		maxTextureDimension: getRendererLimits().maxTextureDimension,
 		throwOnSeekError: context.renderer.strictVideoDecoding,

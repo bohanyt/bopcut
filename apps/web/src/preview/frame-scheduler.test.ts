@@ -92,3 +92,51 @@ test("updates during a render schedule one follow-up, and disposal prevents late
 	expect(renders).toBe(2);
 	expect(clock.pending()).toBe(0);
 });
+
+test("a burst cancels the old exact seek and settles at the same time on release", async () => {
+	const clock = frameClock();
+	const renders: { signal: AbortSignal; approximate: boolean }[] = [];
+	const exact = Promise.withResolvers<void>();
+	let now = 0;
+	const scheduler = createPreviewFrameScheduler({
+		...clock,
+		now: () => now,
+		render(options) {
+			renders.push(options);
+			return renders.length === 1 ? exact.promise : undefined;
+		},
+	});
+	scheduler.seek(12, false, false);
+	clock.tick();
+	now = 16;
+	scheduler.seek(12, false, false);
+	expect(renders[0].signal.aborted).toBe(true);
+	exact.resolve();
+	await exact.promise;
+	clock.tick();
+	expect(renders.map(({ approximate }) => approximate)).toEqual([false, true]);
+	scheduler.settle();
+	clock.tick();
+	expect(renders.map(({ approximate }) => approximate)).toEqual([false, true, false]);
+	scheduler.scrubFrameReady();
+	expect(clock.pending()).toBe(0);
+	scheduler.dispose();
+});
+
+test("holding the pointer still requests an exact render during a drag", () => {
+	const clock = frameClock();
+	let fire: (() => void) | undefined;
+	const modes: boolean[] = [];
+	const scheduler = createPreviewFrameScheduler({
+		...clock,
+		setTimer(callback) { fire = callback; return 1 as unknown as ReturnType<typeof setTimeout>; },
+		clearTimer() { fire = undefined; },
+		render({ approximate }) { modes.push(approximate); },
+	});
+	scheduler.seek(12, true, false);
+	clock.tick();
+	fire?.();
+	clock.tick();
+	expect(modes).toEqual([true, false]);
+	scheduler.dispose();
+});

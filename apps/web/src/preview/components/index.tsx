@@ -25,6 +25,7 @@ import { PreviewContextMenu } from "./context-menu";
 import { usePreviewStore } from "@/preview/preview-store";
 import { previewQualityScale } from "@/preview/quality";
 import { createPreviewFrameScheduler } from "@/preview/frame-scheduler";
+import { ScrubVideoCache } from "@/services/video-cache/scrub-cache";
 import { PreviewToolbar } from "./toolbar";
 import {
 	PreviewViewportProvider,
@@ -151,6 +152,7 @@ function PreviewCanvas({
 	const canvasMountRef = useRef<HTMLDivElement>(null);
 	const viewportRef = useRef<HTMLDivElement>(null);
 	const lastFrameRef = useRef(-1);
+	const lastExactTimeRef = useRef(-1);
 	const lastSceneRef = useRef<RootNode | null>(null);
 	const schedulerRef = useRef<ReturnType<typeof createPreviewFrameScheduler> | null>(null);
 	const renderSignalRef = useRef<AbortSignal | null>(null);
@@ -194,6 +196,7 @@ function PreviewCanvas({
 			renderScale: outputScale,
 		});
 	}, [nativeWidth, nativeHeight, activeProject.settings.fps, outputScale]);
+	const scrubCache = useMemo(() => new ScrubVideoCache(), [renderer]);
 
 	// Each renderer owns its output so snapshots and exports cannot resize the preview.
 	useEffect(() => {
@@ -201,7 +204,10 @@ function PreviewCanvas({
 		if (!mount) return;
 		const controller = new AbortController();
 		const signal = AbortSignal.any([controller.signal, sessionSignal]);
-		const clearVideo = () => renderer.videoCache.clear();
+		const clearVideo = () => {
+			renderer.videoCache.clear();
+			scrubCache.clear();
+		};
 		signal.addEventListener("abort", clearVideo, { once: true });
 		renderSignalRef.current = signal;
 		lastFrameRef.current = -1;
@@ -214,10 +220,15 @@ function PreviewCanvas({
 			renderSignalRef.current = null;
 			controller.abort();
 		};
-	}, [renderer, sessionSignal]);
+	}, [renderer, scrubCache, sessionSignal]);
 
-	const render = useCallback(() => {
-		if (!renderTree || rendererDevice.status.state !== "ready") return;
+	const render = useCallback(({ signal: seekSignal, approximate }: {
+		signal: AbortSignal;
+		approximate: boolean;
+	}) => {
+		if (!renderTree || document.hidden || rendererDevice.status.state !== "ready" || editor.renderer.isExportRunning()) {
+			return;
+		}
 		if (lastRendererRef.current !== renderer) {
 			lastRendererRef.current = renderer;
 			lastFrameRef.current = -1;
@@ -232,19 +243,29 @@ function PreviewCanvas({
 		);
 		const frame = Math.floor(renderTime / ticksPerFrame);
 
+		if (!approximate) scrubCache.stop();
 		if (
+			!approximate &&
 			frame === lastFrameRef.current &&
-			renderTree === lastSceneRef.current
+			renderTree === lastSceneRef.current &&
+			(editor.playback.getIsPlaying() || renderTime === lastExactTimeRef.current)
 		) {
 			return;
 		}
 
-		const signal = renderSignalRef.current;
-		if (!signal) return;
+		const session = renderSignalRef.current;
+		if (!session || session.aborted) return;
+		const signal = AbortSignal.any([session, seekSignal]);
 		const graphics = rendererDevice.signal;
-		const task = editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
-		if (!task) return;
-		return task
+		return renderer.render({
+			node: renderTree,
+			time: renderTime,
+			signal,
+			scrub: approximate ? {
+				cache: scrubCache,
+				onReady: () => schedulerRef.current?.scrubFrameReady(),
+			} : undefined,
+		})
 			.then(() => {
 				// Keep the previous frame visible while the new render target is waiting.
 				const mount = canvasMountRef.current;
@@ -252,7 +273,8 @@ function PreviewCanvas({
 				const outputCanvas = renderer.getOutputCanvas();
 				if (outputCanvas.parentElement !== mount) mount.replaceChildren(outputCanvas);
 				lastSceneRef.current = renderTree;
-				lastFrameRef.current = frame;
+				lastFrameRef.current = approximate ? -1 : frame;
+				lastExactTimeRef.current = approximate ? -1 : renderTime;
 			})
 			.catch((error) => {
 				if (!signal.aborted && !graphics.aborted && error instanceof RecoverableSurfaceError) throw error;
@@ -260,12 +282,12 @@ function PreviewCanvas({
 					console.error("Preview render failed:", error);
 				}
 			});
-	}, [renderer, renderTree, editor.playback, editor.renderer, editor.timeline]);
+	}, [renderer, scrubCache, renderTree, editor.playback, editor.renderer, editor.timeline]);
 
 	const renderRef = useCommittedRef(render);
 	useEffect(() => {
 		const scheduler = createPreviewFrameScheduler({
-			render: () => renderRef.current(),
+			render: (options) => renderRef.current(options),
 			requestFrame: requestAnimationFrame,
 			cancelFrame: cancelAnimationFrame,
 			shouldRetry: (error) => error instanceof RecoverableSurfaceError,
@@ -275,13 +297,56 @@ function PreviewCanvas({
 			lastFrameRef.current = -1;
 			scheduler.request();
 		};
-		const onVisibility = () => { if (!document.hidden) redraw(); };
+		const clearVideo = () => {
+			scheduler.suspend();
+			renderer.videoCache.clear();
+			scrubCache.clear();
+			lastFrameRef.current = -1;
+		};
+		const onVisibility = () => {
+			if (document.hidden) clearVideo();
+			else redraw();
+		};
+		let scrubbing = editor.playback.getIsScrubbing();
+		let playing = editor.playback.getIsPlaying();
+		let sceneId = editor.scenes.getActiveSceneOrNull()?.id;
+		let assets = editor.media.getAssets();
 		document.addEventListener("visibilitychange", onVisibility);
 		const unsubscribe = [
 			editor.playback.onUpdate(scheduler.playbackTick),
-			editor.playback.onSeek(scheduler.request),
-			editor.renderer.subscribe(scheduler.request),
-			rendererDevice.subscribe(() => { if (rendererDevice.status.state === "ready") redraw(); }),
+			editor.playback.onSeek((time) => scheduler.seek(time, scrubbing, playing)),
+			editor.playback.subscribe(() => {
+				const wasScrubbing = scrubbing;
+				const wasPlaying = playing;
+				scrubbing = editor.playback.getIsScrubbing();
+				playing = editor.playback.getIsPlaying();
+				if ((wasScrubbing && !scrubbing) || playing !== wasPlaying) scheduler.settle();
+			}),
+			editor.scenes.subscribe(() => {
+				const next = editor.scenes.getActiveSceneOrNull()?.id;
+				if (next === sceneId) return;
+				sceneId = next;
+				clearVideo();
+				redraw();
+			}),
+			editor.media.subscribe(() => {
+				const next = editor.media.getAssets();
+				if (next === assets) return;
+				const files = new Set(next.map((asset) => asset.file));
+				if (assets.some((asset) => !files.has(asset.file))) {
+					clearVideo();
+					redraw();
+				}
+				assets = next;
+			}),
+			editor.renderer.subscribe(() => {
+				if (editor.renderer.isExportRunning()) scrubCache.stop();
+				scheduler.invalidate();
+			}),
+			rendererDevice.subscribe(() => {
+				if (rendererDevice.status.state === "ready") redraw();
+				else clearVideo();
+			}),
 			modelGraphics.subscribe(() => { if (!modelGraphics.getSnapshot()) redraw(); }),
 		];
 		return () => {
@@ -290,7 +355,7 @@ function PreviewCanvas({
 			document.removeEventListener("visibilitychange", onVisibility);
 			for (const remove of unsubscribe) remove();
 		};
-	}, [editor, renderRef]);
+	}, [editor, renderer, scrubCache, renderRef]);
 	useEffect(() => {
 		schedulerRef.current?.request();
 	}, [render, sessionSignal]);

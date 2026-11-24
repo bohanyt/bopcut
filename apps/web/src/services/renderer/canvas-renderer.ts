@@ -6,6 +6,7 @@ import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
 import { waitWithAbort } from "@/utils/abort";
 import { VideoCache } from "@/services/video-cache/service";
+import type { ScrubVideoCache } from "@/services/video-cache/scrub-cache";
 import { MIN_GPU_CANVAS_DIMENSION, previewCanvasSize } from "@/canvas/sizes";
 import { canvasSizeError, checkGraphicsContext, getRendererLimits, rendererDevice, rethrowGraphicsFailure } from "./renderer-device";
 import {
@@ -33,6 +34,9 @@ export type CanvasRendererParams = {
 
 // The WASM compositor and its textures are shared by all renderers.
 let renderQueue: Promise<void> = Promise.resolve();
+
+type RenderRequest = { node: AnyBaseNode; time: number; signal?: AbortSignal };
+type ScrubPreview = { cache: ScrubVideoCache; onReady: () => void };
 
 export class CanvasRenderer {
 	width: number;
@@ -90,8 +94,8 @@ export class CanvasRenderer {
 		return this.outputCanvas;
 	}
 
-	async render({ node, time, signal }: { node: AnyBaseNode; time: number; signal?: AbortSignal }) {
-		return this.renderToCanvas({ node, time, signal, targetCanvas: this.outputCanvas });
+	async render({ node, time, signal, scrub }: RenderRequest & { scrub?: ScrubPreview }) {
+		return this.renderToCanvas({ node, time, signal, scrub, targetCanvas: this.outputCanvas });
 	}
 
 	private async renderFrame({
@@ -99,11 +103,13 @@ export class CanvasRenderer {
 		time,
 		signal,
 		targetCanvas,
+		scrub,
 	}: {
 		node: AnyBaseNode;
 		time: number;
 		signal: AbortSignal;
 		targetCanvas: HTMLCanvasElement;
+		scrub?: ScrubPreview;
 	}) {
 		const { maxSurfaceDimension, maxTextureDimension } = getRendererLimits();
 		this.target = this.getRenderTarget(maxSurfaceDimension);
@@ -113,7 +119,7 @@ export class CanvasRenderer {
 		}
 		await measureSpanAsync({
 			name: "resolve",
-			fn: () => resolveRenderTree({ node, renderer: this, time, signal }),
+			fn: () => resolveRenderTree({ node, renderer: this, time, signal, scrubCache: scrub?.cache }),
 		});
 		signal.throwIfAborted();
 		checkGraphicsContext();
@@ -154,11 +160,10 @@ export class CanvasRenderer {
 		time,
 		targetCanvas,
 		signal,
-	}: {
-		node: AnyBaseNode;
-		time: number;
+		scrub,
+	}: RenderRequest & {
 		targetCanvas: HTMLCanvasElement;
-		signal?: AbortSignal;
+		scrub?: ScrubPreview;
 	}) {
 		signal?.throwIfAborted();
 		const generation = rendererDevice.requireReady();
@@ -166,7 +171,13 @@ export class CanvasRenderer {
 		const task = renderQueue.then(async () => {
 			frameSignal.throwIfAborted();
 			checkGraphicsContext();
-			await this.renderFrame({ node, time, signal: frameSignal, targetCanvas });
+			try {
+				await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, scrub });
+			} catch (error) {
+				scrub?.cache.finishFrame();
+				throw error;
+			}
+			scrub?.cache.finishFrame(scrub.onReady);
 		}).catch((error: unknown) => {
 			frameSignal.throwIfAborted();
 			rethrowGraphicsFailure(error);
