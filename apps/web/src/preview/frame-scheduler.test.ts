@@ -169,9 +169,10 @@ test("a continuously held preview falls back to exact without restarting its dea
 		render({ approximate }) { modes.push(approximate); },
 	});
 	scheduler.seek(12, true, false);
+	const deadline = timers.get(250);
+	expect(deadline).toBeDefined();
 	clock.tick();
 	scheduler.scrubFrameBlocked();
-	const deadline = timers.get(250);
 	scheduler.seek(13, true, false);
 	clock.tick();
 	scheduler.scrubFrameBlocked();
@@ -180,4 +181,57 @@ test("a continuously held preview falls back to exact without restarting its dea
 	clock.tick();
 	expect(modes).toEqual([true, true, false]);
 	scheduler.dispose();
+});
+
+test("retained redraws during random back-and-forth jumps share one 250 ms deadline", () => {
+	for (let seed = 1; seed <= 8; seed++) {
+		const clock = frameClock();
+		let now = 0;
+		let picture = 5.07;
+		let target = picture;
+		let staleSince: number | undefined;
+		let recovered = 0;
+		let random = seed;
+		const timers = new Map<number, { at: number; run: () => void }>();
+		let timerId = 0;
+		const scheduler = createPreviewFrameScheduler({
+			...clock,
+			setTimer(run, delay) {
+				timers.set(++timerId, { at: now + delay, run });
+				return timerId as unknown as ReturnType<typeof setTimeout>;
+			},
+			clearTimer(id) { timers.delete(Number(id)); },
+			render({ approximate }) {
+				if (approximate && picture !== target) {
+					staleSince ??= now;
+					scheduler.scrubFramePresented(true);
+				} else {
+					if (!approximate && staleSince !== undefined) {
+						expect(now - staleSince).toBeLessThanOrEqual(250);
+						recovered++;
+						scheduler.scrubRecoveryFinished();
+					}
+					staleSince = undefined;
+					picture = target;
+					scheduler.scrubFramePresented();
+				}
+			},
+		});
+		for (now = 0; now <= 2_000; now += 5) {
+			for (const [id, timer] of timers) {
+				if (timer.at > now) continue;
+				timers.delete(id);
+				timer.run();
+			}
+			if (now % 20 === 0) {
+				random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
+				target = (random % 1000) / 100 + now / 100_000;
+				scheduler.seek(target, true, false);
+			} else scheduler.scrubFrameReady();
+			clock.tick();
+			if (staleSince !== undefined) expect(now - staleSince).toBeLessThan(250);
+		}
+		expect(recovered).toBeGreaterThan(4);
+		scheduler.dispose();
+	}
 });

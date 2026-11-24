@@ -40,6 +40,7 @@ type ScrubPreview = {
 	cache: ScrubVideoCache;
 	onReady?: () => void;
 	onBlocked?: () => void;
+	onRetained?: () => void;
 	shouldPresent?: () => boolean;
 };
 
@@ -189,7 +190,11 @@ export class CanvasRenderer {
 				else scrub?.cache.stop();
 				throw error;
 			}
-			if (scrub?.onReady) scrub.cache.finishFrame(scrub.onReady, presented);
+			if (scrub?.onReady) {
+				const retained = scrub.cache.isRetainingFrame;
+				scrub.cache.finishFrame(scrub.onReady, presented);
+				if (presented && retained) scrub.onRetained?.();
+			}
 			else scrub?.cache.stop();
 			if (!presented) scrub?.onBlocked?.();
 		}).catch((error: unknown) => {

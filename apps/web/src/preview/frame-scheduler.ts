@@ -94,6 +94,17 @@ export function createPreviewFrameScheduler({
 		invalidate();
 	}
 
+	function holdForScrubFrame(): void {
+		if (!approximate || holdTimer !== undefined) return;
+		holdTimer = setTimer(() => {
+			holdTimer = undefined;
+			clearSettle();
+			approximate = false;
+			recovering = true;
+			invalidate();
+		}, holdDelay);
+	}
+
 	return {
 		request: () => {
 			retried = false;
@@ -115,24 +126,22 @@ export function createPreviewFrameScheduler({
 			approximate = nextMode;
 			lastSeekTime = playheadTime;
 			clearSettle();
-			if (approximate) settleTimer = setTimer(settle, settleDelay);
+			if (approximate) {
+				// Start at the seek even when the renderer cannot draw before the next move.
+				if (changed) holdForScrubFrame();
+				settleTimer = setTimer(settle, settleDelay);
+			}
 			if (changed) {
 				if (recovering) queueFrame();
 				else invalidate();
 			}
 		},
 		settle,
-		scrubFrameBlocked: () => {
-			if (!approximate || holdTimer !== undefined) return;
-			holdTimer = setTimer(() => {
-				holdTimer = undefined;
-				clearSettle();
-				approximate = false;
-				recovering = true;
-				invalidate();
-			}, holdDelay);
+		scrubFrameBlocked: holdForScrubFrame,
+		scrubFramePresented: (retained = false) => {
+			if (retained) holdForScrubFrame();
+			else clearHold();
 		},
-		scrubFramePresented: () => { clearHold(); },
 		scrubRecoveryFinished: () => { recovering = false; },
 		scrubFrameReady: () => {
 			if (approximate) queueFrame();

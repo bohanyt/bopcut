@@ -9,7 +9,7 @@ async function withCache(run: (fixture: {
 	disposed: () => number;
 	reads: number[];
 	closed: number[];
-	stream: (enable: boolean) => void;
+	stream: (enable: boolean, gate?: Promise<void>) => void;
 	streamStarts: number[];
 	decode: (read: (time: number) => Promise<VideoSample | null>, cancel: () => void) => void;
 	sample: (time: number) => VideoSample;
@@ -40,6 +40,7 @@ async function withCache(run: (fixture: {
 	let read = async (time: number): Promise<VideoSample | null> => sample(time);
 	let cancel = () => {};
 	let streaming = false;
+	let streamGate: Promise<void> | undefined;
 	const dispose = spyOn(Input.prototype, "dispose");
 	const spies = [
 		dispose,
@@ -49,6 +50,7 @@ async function withCache(run: (fixture: {
 		spyOn(VideoSampleSink.prototype, "samples").mockImplementation(async function* (start = 0) {
 			if (!streaming) throw new Error("Sequential decode is disabled in this fixture");
 			streamStarts.push(start);
+			await streamGate;
 			for (let i = Math.floor(start * 20); i < 200; i++) yield sample(i / 20);
 		}),
 		spyOn(VideoSampleSink.prototype, "samplesAtTimestamps").mockImplementation((timestamps) => {
@@ -73,7 +75,7 @@ async function withCache(run: (fixture: {
 		await run({
 			cache, reads, closed, sample,
 			streamStarts,
-			stream: (enable) => { streaming = enable; },
+			stream: (enable, gate) => { streaming = enable; streamGate = gate; },
 			disposed: () => dispose.mock.calls.length,
 			decode: (next, close) => { read = next; cancel = close; },
 		});
@@ -247,4 +249,32 @@ test("a frozen overlapping layer holds the composite until its own frame is deco
 		expect(cache.getFrameAt(main, 1, mainClip)?.timestamp).toBe(1);
 		expect(cache.getFrameAt(overlay, 1.4, overlayClip)?.timestamp).toBe(1.4);
 		expect(cache.needsFrame).toBe(false);
+	}));
+
+test("jumping from 5.07 s to 1.10 s and reversing accepts fresh frames before 2.37 s", () =>
+	withCache(async ({ cache, stream }) => {
+		const file = new File([], "long-gop.mp4");
+		const clip = {};
+		const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+		const draw = (time: number) => {
+			const frame = cache.getFrameAt(file, time, clip);
+			const retained = cache.isRetainingFrame;
+			cache.finishFrame(() => {}, !!frame);
+			return { frame, retained };
+		};
+		stream(true);
+		draw(5.07);
+		await tick();
+		expect(draw(5.07).frame?.timestamp).toBe(5.05);
+		const decode = Promise.withResolvers<void>();
+		stream(true, decode.promise);
+		draw(1.10);
+		await tick();
+		expect(draw(1.2)).toMatchObject({ frame: { timestamp: 5.05 }, retained: true });
+		decode.resolve();
+		await tick();
+		expect(draw(1.25)).toMatchObject({ frame: { timestamp: 1.2 }, retained: false });
+		draw(2.37);
+		await tick();
+		expect(draw(2.37)).toMatchObject({ frame: { timestamp: 2.35 }, retained: false });
 	}));

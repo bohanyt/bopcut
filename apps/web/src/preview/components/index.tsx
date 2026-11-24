@@ -14,6 +14,7 @@ import { modelGraphics } from "@/model3d/render";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import { buildScene } from "@/services/renderer/scene-builder";
+import { hasSameVisibleVideoClips } from "@/services/renderer/resolve";
 import { PreviewOverlayLayer } from "./overlay-layer";
 import { PreviewInteractionOverlay } from "./preview-interaction-overlay";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -246,7 +247,7 @@ function PreviewCanvas({
 		const playing = editor.playback.getIsPlaying();
 		const pointerScrubbing = editor.playback.getIsScrubbing() && !playing;
 		const approximate = scheduledApproximation && pointerScrubbing;
-		if (playing) scrubCache.stop();
+		if (playing || (!approximate && !scrubCache.active)) scrubCache.stop();
 		if (
 			!approximate &&
 			frame === lastFrameRef.current &&
@@ -261,6 +262,7 @@ function PreviewCanvas({
 		const signal = AbortSignal.any([session, seekSignal]);
 		const graphics = rendererDevice.signal;
 		let held = false;
+		let retained = false;
 		const onBlocked = () => {
 			held = true;
 			if (approximate) schedulerRef.current?.scrubFrameBlocked();
@@ -273,22 +275,23 @@ function PreviewCanvas({
 				cache: scrubCache,
 				onReady: () => schedulerRef.current?.scrubFrameReady(),
 				onBlocked,
+				onRetained: () => { retained = true; },
 				shouldPresent: () => !editor.playback.getIsPlaying() && editor.playback.getIsScrubbing(),
 			} : scrubCache.active ? {
 				cache: scrubCache,
 				onBlocked,
-				shouldPresent: () => !pointerScrubbing || Math.min(
+				shouldPresent: () => !pointerScrubbing || hasSameVisibleVideoClips(renderTree, renderTime, Math.min(
 					editor.playback.getCurrentTime(), editor.timeline.getLastFrameTime(),
-				) === renderTime,
+				)),
 			} : undefined,
 		})
 			.then(() => {
 				// Keep the previous frame visible while the new render target is waiting.
 				const mount = canvasMountRef.current;
 				if (signal.aborted || graphics.aborted || !mount) return;
-				if (!approximate) schedulerRef.current?.scrubRecoveryFinished();
 				if (held) return;
-				if (approximate) schedulerRef.current?.scrubFramePresented();
+				if (!approximate) schedulerRef.current?.scrubRecoveryFinished();
+				if (approximate) schedulerRef.current?.scrubFramePresented(retained);
 				const outputCanvas = renderer.getOutputCanvas();
 				if (outputCanvas.parentElement !== mount) mount.replaceChildren(outputCanvas);
 				lastSceneRef.current = renderTree;

@@ -9,7 +9,7 @@ import { BlurBackgroundNode } from "@/services/renderer/nodes/blur-background-no
 import { CompoundNode } from "@/services/renderer/nodes/compound-node";
 import { RootNode } from "@/services/renderer/nodes/root-node";
 import { VideoNode } from "@/services/renderer/nodes/video-node";
-import { resolveRenderTree } from "@/services/renderer/resolve";
+import { hasSameVisibleVideoClips, resolveRenderTree } from "@/services/renderer/resolve";
 
 const ticks = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND);
 const fps = { numerator: 30, denominator: 1 };
@@ -100,6 +100,22 @@ function clip(file: File, trimStart = 0, zoom = 1, mediaId = "source") {
 		opacity: 1,
 	});
 }
+
+test("scrub recovery can present a completed time within a video clip and rejects cuts inside compounds", () => {
+	const first = clip(new File([], "first.mp4"));
+	first.params.duration = ticks(2);
+	const second = clip(new File([], "second.mp4"));
+	second.params.timeOffset = ticks(2);
+	const compound = new CompoundNode({
+		content: new RootNode({ duration: ticks(40) }).add(first).add(second),
+		timeOffset: ticks(3), duration: ticks(10), trimStart: ticks(1), trimEnd: 0,
+		transform: first.params.transform, opacity: 1,
+	});
+	const root = new RootNode({ duration: ticks(15) }).add(compound);
+	expect(hasSameVisibleVideoClips(root, ticks(3), ticks(3.5))).toBe(true);
+	expect(hasSameVisibleVideoClips(root, ticks(3.5), ticks(4))).toBe(false);
+	expect(hasSameVisibleVideoClips(root, ticks(2.9), ticks(3))).toBe(false);
+});
 
 async function resolveFrame(renderer: CanvasRenderer, node: RootNode, seconds: number) {
 	try {

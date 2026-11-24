@@ -44,7 +44,9 @@ type Motion = {
 	cursor?: VideoCursor;
 	pending?: Promise<unknown>;
 };
-type Presentation = { target: number; direction: number; frame: Frame | null };
+type ScrubTarget = { time: number; direction: number; run: number };
+type Presentation = { run: number; frame: Frame | null };
+const TARGET_JUMP_SECONDS = 0.75;
 type ExactOptions = {
 	getScale?: (source: { width: number; height: number }) => number;
 	maxTextureDimension?: number;
@@ -104,13 +106,16 @@ export class ScrubVideoCache {
 	private lastTarget?: { source: Source; time: number };
 	private presentations = new Map<object, Presentation>();
 	private framePresentations = new Map<object, Presentation>();
+	private targets?: WeakMap<object, ScrubTarget>;
 	private settling = false;
 	private missing = false;
+	private retained = false;
 	private exactRead?: { time: number; sample: ReturnType<VideoCursor["readAt"]> };
 	private onReady?: () => void;
 
 	get active(): boolean { return !!this.onReady; }
 	get needsFrame(): boolean { return this.missing; }
+	get isRetainingFrame(): boolean { return this.retained; }
 
 	getFrameAt(file: File, time: number, clip?: object): Frame | null {
 		const source = this.getSource(file);
@@ -122,9 +127,8 @@ export class ScrubVideoCache {
 		if (!times) this.reads.set(source, times = new Set());
 		if (times.size < FRAME_LIMIT) times.add(time);
 		const previous = clip && this.presentations.get(clip);
-		const direction = previous
-			? Math.sign(time - previous.target) || previous.direction
-			: 0;
+		const target = clip ? this.recordTarget(clip, time) : undefined;
+		const direction = target?.direction ?? 0;
 		const detail = this.nearestDetail(source, time, direction < 0 ? 0.09 : 0.5)
 			?? (direction < 0 ? this.followingDetail(source, time) : undefined);
 		const pool = detail?.frame ? this.details : this.keys;
@@ -132,12 +136,24 @@ export class ScrubVideoCache {
 		let frame = entry?.frame ?? null;
 		// A preceding keyframe cannot establish frame order in a backward drag.
 		if (clip && !detail && direction <= 0 && frame && frame.timestamp < time) frame = null;
-		if (previous?.frame?.canvas.width && (!frame ||
+		const sameRun = previous && previous.run === target?.run;
+		if (previous?.frame?.canvas.width && (!frame || ((sameRun || !detail) && (
 			(direction >= 0 && frame.timestamp < previous.frame.timestamp) ||
-			(direction < 0 && frame.timestamp > previous.frame.timestamp))) {
+			(direction < 0 && frame.timestamp > previous.frame.timestamp))))) {
 			frame = previous.frame;
+			this.retained = true;
 		}
-		if (clip) this.framePresentations.set(clip, { target: time, direction, frame });
+		if (clip && target) {
+			if (previous?.frame && frame?.timestamp === previous.frame.timestamp &&
+				!(detail && detail.frame === frame && contains(detail, time)) && frame.timestamp !== time) {
+				this.retained = true;
+			}
+			// A held picture can stay visible across a seek without becoming this run's ordering reference.
+			this.framePresentations.set(clip, {
+				run: previous?.frame && frame === previous.frame ? previous.run : target.run,
+				frame,
+			});
+		}
 		if (entry && frame === entry.frame) {
 			pool.entries.delete(entry);
 			pool.entries.add(entry);
@@ -147,8 +163,21 @@ export class ScrubVideoCache {
 		return frame;
 	}
 
+	private recordTarget(clip: object, time: number): ScrubTarget {
+		const targets = this.targets ??= new WeakMap<object, ScrubTarget>();
+		const previous = targets.get(clip);
+		const delta = previous ? time - previous.time : 0;
+		const direction = Math.sign(delta) || previous?.direction || 0;
+		const restart = previous && (Math.abs(delta) > TARGET_JUMP_SECONDS ||
+			(previous.direction !== 0 && direction !== previous.direction));
+		const target = { time, direction, run: (previous?.run ?? 0) + Number(!!restart) };
+		targets.set(clip, target);
+		return target;
+	}
+
 	finishFrame(onReady?: () => void, presented = true): void {
 		this.missing = false;
+		this.retained = false;
 		this.pinned.clear();
 		if (!onReady) {
 			this.reads.clear();
@@ -159,16 +188,11 @@ export class ScrubVideoCache {
 		this.exactRead = undefined;
 		this.motion?.cursor?.finishFrame();
 		if (!presented) {
-			for (const [clip, attempt] of this.framePresentations) {
-				attempt.frame = this.presentations.get(clip)?.frame ?? null;
-			}
-			// Preserve the last successfully drawn layer if a later attempt returns to it.
-			for (const [clip, previous] of this.presentations) {
-				if (previous.frame && !this.framePresentations.has(clip)) this.framePresentations.set(clip, previous);
-			}
+			this.framePresentations.clear();
+		} else {
+			this.presentations = this.framePresentations;
+			this.framePresentations = new Map();
 		}
-		this.presentations = this.framePresentations;
-		this.framePresentations = new Map();
 		this.onReady = onReady;
 		this.wanted = this.reads;
 		this.reads = new Map();
@@ -211,6 +235,7 @@ export class ScrubVideoCache {
 	}
 
 	stop(): void {
+		this.targets = undefined;
 		if (!this.onReady) return;
 		this.onReady = undefined;
 		this.settling = false;
