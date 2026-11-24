@@ -113,7 +113,7 @@ afterEach(() => {
 
 test("area editing pauses on entry and cancels on external playback, seeks, and scene changes", () => {
 	const { editor, scenes } = setup();
-	for (const [key, value] of Object.entries({ requestAnimationFrame: () => 1, cancelAnimationFrame: () => {} })) {
+	for (const [key, value] of Object.entries({ requestAnimationFrame: (): number => 1, cancelAnimationFrame: (): void => {} })) {
 		const original = Object.getOwnPropertyDescriptor(globalThis, key);
 		Object.defineProperty(globalThis, key, { value, configurable: true });
 		cleanups.push(() => original ? Object.defineProperty(globalThis, key, original) : Reflect.deleteProperty(globalThis, key));
