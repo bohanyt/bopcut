@@ -67,18 +67,20 @@ export function unusualPauses(spans: { from: number; to: number }[]) {
 export function summarizeReview(report: string, findings: ReviewFinding[], skipped: string[]) {
 	const counts = { error: 0, warning: 0, info: 0 };
 	const groups = new Map<string, { kind: string; severity: Severity; count: number; times: number[] }>();
+	let stale = false;
 	for (const hit of findings) {
 		counts[hit.severity]++;
+		if (hit.kind === "stale-export") { stale = true; continue; }
 		const key = hit.severity + hit.kind;
 		const group = groups.get(key) ?? { kind: hit.kind, severity: hit.severity, count: 0, times: [] };
 		group.count++;
-		if (group.times.length < 3) group.times.push(Math.round(hit.from * 1000) / 1000);
+		group.times.push(Math.round(hit.from * 1000) / 1000);
+		group.times.sort((a, b) => a - b);
+		if (group.times.length > 3) group.times.pop();
 		groups.set(key, group);
 	}
 	const order = { error: 0, warning: 1, info: 2 };
-	const entries = [...groups.values()].sort((a, b) => Number(b.kind === "stale-export") - Number(a.kind === "stale-export") ||
-		order[a.severity] - order[b.severity] || a.times[0] - b.times[0]);
-	const stale = entries.some((entry) => entry.kind === "stale-export");
+	const entries = [...groups.values()].sort((a, b) => order[a.severity] - order[b.severity] || a.times[0] - b.times[0]);
 	const summary = { report, ...(stale && { notice: "The export is stale. All other findings may be off." }),
 		counts, clean: counts.error + counts.warning === 0, skipped, findings: entries.slice(0, 25), omittedGroups: 0 };
 	while (Buffer.byteLength(JSON.stringify(summary)) >= 3800 && summary.findings.length) summary.findings.pop();

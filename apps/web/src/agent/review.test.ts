@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createCanvas } from "@napi-rs/canvas";
 import { fileProbeCommand, toolsFromEnv } from "@/retrieval/server";
 import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
 import { audio, fixture, t, text } from "@/timeline/__tests__/compound-fixtures";
@@ -133,7 +134,7 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 				caption("short", "This takes time to read", 8, 0.2),
 				caption("obscured", "Covered title", 9, 1),
 			] : short ? [
-				caption("word-title", "word0", 0.2, 0.25), caption("word-glow", "word0", 0.2, 0.25),
+				caption("word-title", "word0", 0.2, 0.25), caption("word-glow", "word0", 0.2, 0.25, { "shadow.opacity": 0.8, "shadow.blur": 6 }),
 				caption("next-word", "word1", 0.55, 0.2),
 			] : [caption("clean", "Opening title", 0.3, 1.5)];
 			root.tracks.overlay = [{ type: "text", id: "titles", name: "Titles", hidden: false, elements: titles }];
@@ -142,22 +143,43 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 			await fs.writeFile(path.join(projectDir, "project.json"), JSON.stringify({ version: CURRENT_PROJECT_VERSION,
 				metadata: { id: "fixture", name: "Review fixture" }, currentSceneId: root.id, scenes: [root],
 				settings: { canvasSize: { width: 1280, height: 720 }, fps: { numerator: 24, denominator: 1 }, background: { type: "color", color: "#000000" } } }));
+			return titles;
 		};
 		for (const mode of ["bad", "clean", "short"] as const) {
 			const bad = mode === "bad", short = mode === "short";
-			await save(bad, short);
+			const titles = await save(bad, short);
 			const audioExpression = bad ? "if(between(t,5.999,6.001),0.55,if(between(t,5.97,6.03),0.04,0.45)*sin(2*PI*220*t))"
 				: short ? "if(between(t,6,6.15),0.67,0.50)*sin(2*PI*220*t)" : "0.45*sin(2*PI*220*t)";
-			const video = bad ? ["-vf",
-				"drawbox=c=gray:t=fill:enable='between(t,4,5.2)',drawbox=c=black:t=fill:enable='between(t,2,2.6)'"]
-				: short ? ["-vf", "drawbox=c=gray:t=fill:enable='gte(t,4)*lt(t,5.25)',drawbox=c=red:t=fill:enable='gte(t,9)*lt(t,11)'"] : [];
+			const filters = short ? [
+				"[0:v]split[base][zoom]", "[zoom]crop=534:300,scale=640:360[punch]",
+				"[base][punch]overlay=enable='gte(t,2)*lt(t,4)',drawbox=c=gray:t=fill:enable='gte(t,4)*lt(t,5.25)'[v0]",
+			] : bad ? ["[0:v]drawbox=c=gray:t=fill:enable='between(t,4,5.2)',drawbox=c=black:t=fill:enable='between(t,2,2.6)'[v0]"] : ["[0:v]null[v0]"];
+			const inputs: string[] = [];
+			for (const [i, title] of titles.entries()) {
+				const tile = createCanvas(640, 360);
+				const ctx = tile.getContext("2d");
+				ctx.font = `${Number(title.params.fontSize) * 4}px Arial`;
+				ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "white";
+				if (title.id === "word-glow") { ctx.shadowBlur = 6; ctx.shadowColor = "white"; }
+				ctx.fillText(String(title.params.content), 320 + Number(title.params["transform.positionX"] ?? 0) / 2, 180);
+				const png = path.join(dir, `title-${i}.png`);
+				await fs.writeFile(png, await tile.encode("png"));
+				inputs.push("-i", png);
+				filters.push(`[v${i}][${i + 2}:v]overlay=enable='gte(t,${title.startTime / t(1)})*lt(t,${(title.startTime + title.duration) / t(1)})'[v${i + 1}]`);
+			}
+			filters.push(`[v${titles.length}]${bad || short ? `drawbox=c=red:t=fill:enable='gte(t,9)*lt(t,${bad ? 10 : 11})'` : "null"}[out]`);
 			await encode(["-i", source, "-f", "lavfi", "-i", `aevalsrc='${audioExpression}':s=48000:d=12`,
-				...video, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "pcm_s16le"], path.join(files, `${mode}.mov`));
+				...inputs, "-filter_complex_threads", "1", "-filter_complex", filters.join(";"), "-map", "[out]", "-map", "1:a:0",
+				"-c:a", "pcm_s16le"], path.join(files, `${mode}.mov`));
 			const { report, summary } = await read(`${mode}.mov`);
 			const actionable = report.findings.filter(({ severity }) => severity !== "info").map(({ kind }) => kind).sort();
 			if (bad) {
 				expect(actionable).toEqual(["black-picture", "covered-text", "cut-click", "cut-word", "frozen-picture",
 					"short-text", "small-text", "text-at-edge", "text-overlap"]);
+				for (const [kind, from] of Object.entries({ "black-picture": 2, "covered-text": 9, "cut-click": 6, "cut-word": 6,
+					"frozen-picture": 4, "short-text": 8, "small-text": 7, "text-at-edge": 0, "text-overlap": 1 })) {
+					expect(report.findings.find((hit) => hit.kind === kind)?.from).toBeCloseTo(from, 1);
+				}
 				expect(report.findings.some((hit) => hit.kind === "unusual-pause" && hit.severity === "info" && hit.from > 3 && hit.from < 4)).toBe(true);
 				expect(report.cuts.every((cut) => cut.before < cut.after)).toBe(true);
 				expect(report.pictures.length).toBeGreaterThan(0);

@@ -227,12 +227,11 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 				const area = intersects(a.bounds, b.bounds);
 				const smaller = Math.min(a.bounds.w * a.bounds.h, b.bounds.w * b.bounds.h);
 				return [{ smaller: smaller > 0 ? area / smaller : 0, text: a.bounds.w * a.bounds.h > 0 ? area / (a.bounds.w * a.bounds.h) : 0,
-					union: area / (a.bounds.w * a.bounds.h + b.bounds.w * b.bounds.h - area || 1),
 					evidence: geometry(a.bounds, canvas, time) }];
 			});
 			const ids = [item.element.id, other.element.id];
 			if (other.element.type === "text") {
-				if (normalized(String(other.element.params.content ?? "")) === words && pairs.every((p) => p.union >= L.layeredBox)) continue;
+				if (normalized(String(other.element.params.content ?? "")) === words && pairs.every((p) => p.smaller >= L.layeredBox)) continue;
 				const overlaps = pairs.filter((p) => p.smaller >= L.overlap);
 				if (overlaps.length >= 2) findings.push(finding("text-overlap", "warning", from, to,
 					{ overlap: Math.max(...overlaps.map((p) => p.smaller)), threshold: L.overlap, samples: overlaps.length, ...overlaps[0].evidence }, ids));

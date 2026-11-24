@@ -108,7 +108,9 @@ export async function writeReview({
 		else findings.push(...await inspectAudio(scan, cuts, cancellation));
 		const visual = timeline.instances.filter(({ element }) => element.type !== "audio" && element.type !== "effect" && element.type !== "compound");
 		if (!probe.variable) for (const interval of scan.black) {
-			const visible = visual.filter((item) => item.start < interval.to && item.end > interval.from);
+			// Sparse type on a black title card can cover less than the pixel threshold on purpose.
+			const visible = visual.filter((item) => (item.element.type === "video" || item.element.type === "image") &&
+				item.start < interval.to && item.end > interval.from);
 			const covered = visible.reduce((maximum, item) => Math.max(maximum, Math.min(interval.to, item.end) - Math.max(interval.from, item.start)), 0);
 			if (covered + 1e-8 >= L.blackSeconds) findings.push(finding("black-picture", "error", interval.from, interval.to,
 				{ fraction: interval.value, minimumSeconds: L.blackSeconds, threshold: L.blackFraction }, [...new Set(visible.map((item) => item.element.id))]));
