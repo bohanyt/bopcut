@@ -8,10 +8,7 @@ import {
 } from "@/wasm";
 import { buildClipIndex } from "./clip-window";
 import { createTrackClipIndexCache } from "./track-clip-index";
-import {
-	findTimelineFocusTarget,
-	recoverTimelineFocus,
-} from "./timeline-keyboard";
+import { findTimelineFocusTarget } from "./timeline-keyboard";
 import { hitTestTimelineElements } from "./selection-hit-testing";
 import {
 	TIMELINE_CONTENT_TOP_PADDING_PX,
@@ -206,40 +203,5 @@ describe("timeline keyboard order", () => {
 		expect(next({ trackId: "main" }, -1)).toEqual({ trackId: "empty" });
 		expect(next({ trackId: "empty" }, -1)).toBeUndefined();
 		expect(next({ trackId: "plain" }, 1)).toBeUndefined();
-	});
-
-	test("recovers deleted focus to a neighbor, track button, or surviving row", () => {
-		const recover = (surviving: TimelineTrack[], elementId: string) =>
-			recoverTimelineFocus({
-				before: tracks,
-				tracks: surviving,
-				from: { trackId: "main", elementId },
-				hasControl,
-			});
-		const onlyLast = {
-			...withControls,
-			elements: [elements[2]],
-		};
-		const onlyFirst = {
-			...withControls,
-			elements: [elements[1]],
-		};
-		expect(recover([empty, onlyLast, withoutControls], "first")).toEqual({
-			trackId: "main",
-			elementId: "last",
-		});
-		expect(recover([empty, onlyFirst, withoutControls], "last")).toEqual({
-			trackId: "main",
-			elementId: "first",
-		});
-		expect(
-			recover(
-				[empty, { ...withControls, elements: [] }, withoutControls],
-				"first",
-			),
-		).toEqual({ trackId: "main" });
-		expect(recover([empty, withoutControls], "first")).toEqual({
-			trackId: "plain",
-		});
 	});
 });

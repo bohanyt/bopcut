@@ -1,10 +1,4 @@
-import {
-	useLayoutEffect,
-	useRef,
-	useState,
-	type FocusEvent,
-	type KeyboardEvent,
-} from "react";
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
 	hasElementEffects,
 	type TimelineElement,
@@ -57,40 +51,6 @@ export function findTimelineFocusTarget({
 	return destination && { trackId: destination.id };
 }
 
-export function recoverTimelineFocus({
-	before,
-	tracks,
-	from,
-	hasControl,
-}: {
-	before: readonly TimelineTrack[];
-	tracks: readonly TimelineTrack[];
-	from: FocusLocation;
-	hasControl: HasControl;
-}): FocusLocation | undefined {
-	const oldIndex = before.findIndex(({ id }) => id === from.trackId);
-	const track = tracks.find(({ id }) => id === from.trackId);
-	if (!track) {
-		const fallback = tracks[Math.min(oldIndex, tracks.length - 1)];
-		return fallback && { trackId: fallback.id };
-	}
-	const oldElements = before[oldIndex]?.elements ?? [];
-	const position = oldElements.findIndex(({ id }) => id === from.elementId);
-	const candidates = new Map(
-		track.elements.map((element) => [element.id, element]),
-	);
-	const neighbors = [
-		...oldElements.slice(position + 1),
-		...oldElements.slice(0, Math.max(0, position)).reverse(),
-	];
-	for (const { id } of neighbors) {
-		const element = candidates.get(id);
-		if (element && hasControl(element))
-			return { trackId: track.id, elementId: id };
-	}
-	return { trackId: track.id };
-}
-
 const ROW = "[data-timeline-track-id]";
 const CLIP = "[data-timeline-element-id]";
 const BUTTON = 'button:not([disabled]):not([tabindex="-1"])';
@@ -100,10 +60,8 @@ export function useTimelineKeyboard(
 	getAssets: () => readonly MediaAsset[],
 ) {
 	const rootRef = useRef<HTMLDivElement>(null);
-	const lastFocus = useRef<FocusLocation | null>(null);
-	const previousTracks = useRef(tracks);
 	const [pending, setPending] = useState<
-		(FocusLocation & { direction: Direction }) | null
+		(FocusLocation & { direction: Direction; origin: HTMLButtonElement }) | null
 	>(null);
 
 	const controls = (root: HTMLElement) => {
@@ -153,67 +111,20 @@ export function useTimelineKeyboard(
 		return true;
 	};
 
-	const request = (
-		root: HTMLElement,
-		destination: FocusLocation,
-		direction: Direction,
-	) => {
-		if (!focus(root, destination, direction))
-			setPending({ ...destination, direction });
-	};
-
+	// A pending target exists only when a Tab press needs to mount a clip first.
 	useLayoutEffect(() => {
+		if (!pending) return;
 		const root = rootRef.current;
-		const before = previousTracks.current;
-		previousTracks.current = tracks;
-		if (!root) return;
-		if (pending) {
+		if (root && root.ownerDocument.activeElement === pending.origin) {
 			focus(root, pending, pending.direction);
-			setPending(null);
-			return;
 		}
-		const from = lastFocus.current;
-		if (!from || before === tracks || document.activeElement !== document.body)
-			return;
-		const row = tracks.find(({ id }) => id === from.trackId);
-		if (
-			row &&
-			(!from.elementId || row.elements.some(({ id }) => id === from.elementId))
-		)
-			return;
-		lastFocus.current = null;
-		const destination = recoverTimelineFocus({
-			before,
-			tracks,
-			from,
-			hasControl: controls(root),
-		});
-		if (destination) request(root, destination, 1);
-	});
+		setPending(null);
+	}, [pending]);
 
 	return {
 		pending,
 		bindings: {
 			ref: rootRef,
-			onFocusCapture(event: FocusEvent<HTMLDivElement>) {
-				const row = event.target.closest<HTMLElement>(ROW);
-				const trackId = row?.dataset.timelineTrackId;
-				if (trackId)
-					lastFocus.current = {
-						trackId,
-						elementId:
-							event.target.closest<HTMLElement>(CLIP)?.dataset
-								.timelineElementId,
-					};
-			},
-			onBlurCapture(event: FocusEvent<HTMLDivElement>) {
-				if (
-					event.relatedTarget &&
-					!event.currentTarget.contains(event.relatedTarget)
-				) {
-					lastFocus.current = null;
-				}
-			},
 			onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
 				if (
 					event.key !== "Tab" ||
@@ -224,14 +135,18 @@ export function useTimelineKeyboard(
 				)
 					return;
 				const target = event.target;
-				const from = lastFocus.current;
+				const root = event.currentTarget;
 				if (
-					!from ||
 					!(target instanceof HTMLButtonElement) ||
+					target !== root.ownerDocument.activeElement ||
+					!root.contains(target) ||
 					!target.matches(BUTTON)
 				)
 					return;
-				const clip = target.closest(CLIP);
+				const trackId =
+					target.closest<HTMLElement>(ROW)?.dataset.timelineTrackId;
+				if (!trackId) return;
+				const clip = target.closest<HTMLElement>(CLIP);
 				const direction = event.shiftKey ? -1 : 1;
 				const buttons = clip?.querySelectorAll(BUTTON);
 				if (
@@ -242,13 +157,15 @@ export function useTimelineKeyboard(
 				if (!clip && !target.hasAttribute("data-timeline-track-button")) return;
 				const destination = findTimelineFocusTarget({
 					tracks,
-					from,
+					from: { trackId, elementId: clip?.dataset.timelineElementId },
 					direction,
-					hasControl: controls(event.currentTarget),
+					hasControl: controls(root),
 				});
 				if (!destination) return;
 				event.preventDefault();
-				request(event.currentTarget, destination, direction);
+				if (!focus(root, destination, direction)) {
+					setPending({ ...destination, direction, origin: target });
+				}
 			},
 		},
 	};
