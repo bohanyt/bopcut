@@ -1,8 +1,11 @@
 import type { ParseSubtitleResult, SubtitleCue } from "./types";
 
 const TIMESTAMP_SEPARATOR = /\s*-->\s*/;
-const TIMESTAMP_PATTERN =
-	/^(\d{2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{1,3})/;
+const TIMESTAMP = String.raw`\d{2}:\d{2}:\d{2}[,.]\d{1,3}`;
+const TIMESTAMP_LINE = String.raw`${TIMESTAMP}[^\S\n]*-->[^\S\n]*${TIMESTAMP}[^\S\n]*`;
+const TIMESTAMP_PATTERN = new RegExp(`^${TIMESTAMP_LINE}$`);
+// Some files omit the blank line before a numbered cue.
+const CUE_SEPARATOR = new RegExp(String.raw`\n(?:\n+|(?=[^\S\n]*\d+[^\S\n]*\n[^\S\n]*${TIMESTAMP_LINE}(?:\n|$)))`);
 
 export function parseSrt({ input }: { input: string }): ParseSubtitleResult {
 	const normalized = input.replace(/\r\n?/g, "\n").trim();
@@ -14,7 +17,7 @@ export function parseSrt({ input }: { input: string }): ParseSubtitleResult {
 		};
 	}
 
-	const blocks = normalized.split(/\n{2,}/);
+	const blocks = normalized.split(CUE_SEPARATOR);
 	const cues: SubtitleCue[] = [];
 	let skippedCueCount = 0;
 
@@ -87,7 +90,7 @@ function parseSrtTimestamp({ input }: { input: string }): number {
 	const parsedHours = Number.parseInt(hours, 10);
 	const parsedMinutes = Number.parseInt(minutes, 10);
 	const parsedSeconds = Number.parseInt(seconds, 10);
-	const parsedMilliseconds = Number.parseInt(milliseconds.padEnd(3, "0"), 10);
+	const parsedMilliseconds = Number.parseInt(milliseconds, 10);
 
 	return (
 		parsedHours * 3600 +

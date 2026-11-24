@@ -14,6 +14,8 @@ import type {
 } from "@/timeline";
 import type { Transform } from "@/rendering";
 import { resolveTrackPlacement } from "@/timeline/placement";
+import { buildMoveGroup, resolveGroupMove } from "@/timeline/group-move";
+import { computeDropTarget } from "@/timeline/components/drop-target";
 import { mediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 
 function buildTransform(): Transform {
@@ -267,6 +269,60 @@ function buildSceneTracks({
 		audio,
 	};
 }
+
+test("moving two clips from the same source row keeps them together on the main track", () => {
+	const elements = [
+		buildElement({ id: "first", type: "video", startTime: 10, duration: 10 }),
+		buildElement({ id: "second", type: "video", startTime: 25, duration: 10 }),
+	];
+	const tracks: SceneTracks = {
+		overlay: [buildTrack({ id: "source", type: "video", elements })],
+		main: buildTrack({ id: "main", type: "video", elements: [] }),
+		audio: [],
+	};
+	const selection = elements.map(({ id }) => ({ trackId: "source", elementId: id }));
+	const group = buildMoveGroup({ anchorRef: selection[1], selectedElements: selection, tracks });
+	expect(group).not.toBeNull();
+	const result = resolveGroupMove({
+		group: group!,
+		tracks,
+		target: { kind: "existingTrack", anchorTargetTrackId: "main" },
+		anchorStartTime: mediaTime({ ticks: 40 }),
+	});
+	expect(result?.createTracks).toEqual([]);
+	expect(result?.moves).toEqual([
+		{ sourceTrackId: "source", targetTrackId: "main", elementId: "second", newStartTime: mediaTime({ ticks: 15 }) },
+		{ sourceTrackId: "source", targetTrackId: "main", elementId: "first", newStartTime: ZERO_MEDIA_TIME },
+	]);
+});
+
+test("the hovered row stays available when the drag crosses another selected clip", () => {
+	const duration = mediaTime({ ticks: 8000 });
+	const target = computeDropTarget({
+		tracks: {
+			main: buildTrack({
+				id: "main", type: "video",
+				elements: [
+					buildElement({ id: "anchor", type: "video", startTime: 0, duration }),
+					buildElement({ id: "neighbor", type: "video", startTime: 2 * duration, duration }),
+				],
+			}),
+			overlay: [],
+			audio: [],
+		},
+		elementType: "video",
+		mouseX: 0, mouseY: 10,
+		playheadTime: ZERO_MEDIA_TIME,
+		startTimeOverride: mediaTime({ ticks: 2 * duration }),
+		elementDuration: duration,
+		isExternalDrop: false,
+		pixelsPerSecond: 100,
+		zoomLevel: 1,
+		excludeElementId: "anchor",
+		excludeElementIds: new Set(["anchor", "neighbor"]),
+	});
+	expect(target).toMatchObject({ trackIndex: 0, isNewTrack: false });
+});
 
 describe("resolveTrackPlacement", () => {
 	test("explicit returns the requested compatible track", () => {

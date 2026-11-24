@@ -160,22 +160,21 @@ export function parseAss({ input }: { input: string }): ParseSubtitleResult {
 			continue;
 		}
 
-		if (!eventFormat) {
-			continue;
-		}
-
 		if (line.startsWith("Dialogue:")) {
+			const fields = eventFormat ?? [
+				"layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text",
+			];
 			const values = splitAssFields({
 				value: line.slice("Dialogue:".length).trim(),
-				expectedFieldCount: eventFormat.length,
+				expectedFieldCount: fields.length,
 			});
-			if (values.length !== eventFormat.length) {
+			if (values.length !== fields.length) {
 				skippedCueCount += 1;
 				continue;
 			}
 
 			const record = mapFieldsToRecord<Record<string, string>>({
-				fields: eventFormat,
+				fields,
 				values,
 			});
 			const startTime = parseAssTimestamp({ input: record.start });
@@ -328,7 +327,8 @@ function parseAssTimestamp({ input }: { input: string | undefined }): number {
 	const parsedHours = Number.parseInt(hours, 10);
 	const parsedMinutes = Number.parseInt(minutes, 10);
 	const parsedSeconds = Number.parseInt(seconds, 10);
-	const parsedMilliseconds = Number.parseInt(fraction.padEnd(3, "0"), 10);
+	// ASS stores centiseconds. Keep support for existing three-digit millisecond fields.
+	const parsedMilliseconds = Number.parseInt(fraction, 10) * (fraction.length === 3 ? 1 : 10);
 
 	return (
 		parsedHours * 3600 +

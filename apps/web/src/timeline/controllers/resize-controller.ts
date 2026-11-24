@@ -85,9 +85,6 @@ export function buildResizeMembers({
 	tracks: SceneTracks;
 	selectedElements: ElementRef[];
 }): GroupResizeMember[] {
-	const selectedElementIds = new Set(
-		selectedElements.map((el) => el.elementId),
-	);
 	const trackMap = new Map(
 		[...tracks.overlay, tracks.main, ...tracks.audio].map((track) => [
 			track.id,
@@ -100,9 +97,8 @@ export function buildResizeMembers({
 		const element = track?.elements.find((el) => el.id === elementId);
 		if (!track || !element) return [];
 
-		const otherElements = track.elements.filter(
-			(el) => !selectedElementIds.has(el.id),
-		);
+		// A group trim moves only one edge of each clip, so selected neighbors still bound it.
+		const otherElements = track.elements.filter((el) => el.id !== elementId);
 		const leftNeighborBound = otherElements
 			.filter(
 				(el) =>

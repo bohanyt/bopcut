@@ -10,14 +10,16 @@ function wouldElementOverlap({
 	startTime,
 	endTime,
 	excludeElementId,
+	excludeElementIds,
 }: {
 	elements: TimelineElement[];
 	startTime: number;
 	endTime: number;
 	excludeElementId?: string;
+	excludeElementIds?: ReadonlySet<string>;
 }): boolean {
 	return elements.some((element) => {
-		if (excludeElementId && element.id === excludeElementId) {
+		if (element.id === excludeElementId || excludeElementIds?.has(element.id)) {
 			return false;
 		}
 
@@ -33,12 +35,13 @@ export function canPlaceTimeSpansOnTrack({
 	track: TrackWithElements;
 	timeSpans: PlacementTimeSpan[];
 }): boolean {
-	return timeSpans.every(({ startTime, duration, excludeElementId }) => {
+	return timeSpans.every(({ startTime, duration, excludeElementId, excludeElementIds }) => {
 		return !wouldElementOverlap({
 			elements: track.elements,
 			startTime,
 			endTime: startTime + duration,
 			excludeElementId,
+			excludeElementIds,
 		});
 	});
 }

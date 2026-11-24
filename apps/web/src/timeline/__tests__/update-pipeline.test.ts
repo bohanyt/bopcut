@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { Transform } from "@/rendering";
 import type { SceneTracks, VideoElement } from "@/timeline";
 import { applyElementUpdate } from "@/timeline/update-pipeline";
+import { buildResizeMembers } from "@/timeline/controllers/resize-controller";
+import { computeGroupResize } from "@/timeline/group-resize";
 import { mediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 
 function buildTransform(): Transform {
@@ -71,4 +73,32 @@ describe("applyElementUpdate", () => {
 		expect(updatedElement.duration).toBe(mediaTime({ ticks: 7 }));
 		expect(Number.isInteger(updatedElement.duration)).toBe(true);
 	});
+});
+
+test("group trim stops at the gap between selected clips on one track", () => {
+	const frame = 4000;
+	const left = buildVideoElement({ id: "left", duration: mediaTime({ ticks: 2 * frame }) });
+	const right = buildVideoElement({
+		id: "right",
+		startTime: mediaTime({ ticks: 3 * frame }),
+		duration: left.duration,
+	});
+	const tracks = buildTracks(left);
+	tracks.main.elements.push(right);
+	const members = buildResizeMembers({
+		tracks,
+		selectedElements: tracks.main.elements.map((element) => ({ trackId: tracks.main.id, elementId: element.id })),
+	});
+	const result = computeGroupResize({
+		members,
+		side: "right",
+		deltaTime: mediaTime({ ticks: 4 * frame }),
+		fps: { numerator: 30, denominator: 1 },
+	});
+	expect(result.deltaTime).toBe(mediaTime({ ticks: frame }));
+	const boundary = right.startTime;
+	expect(result.updates.map(({ patch }) => [patch.startTime, patch.duration])).toEqual([
+		[ZERO_MEDIA_TIME, boundary],
+		[boundary, boundary],
+	]);
 });

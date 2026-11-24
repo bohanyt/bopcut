@@ -9,6 +9,7 @@ import { formatLinearRgba } from "@/params";
 import {
 	getChannelEntriesFromData,
 	isAnimationStorageKey,
+	isLeafChannelData,
 } from "./channel-data";
 import {
 	getChannelValueAtTime,
@@ -186,10 +187,9 @@ function toElementKeyframe({
 	propertyPath: AnimationPath;
 	keyframeMatch: ChannelKeyframeMatch;
 }): ElementKeyframe | null {
-	const value = getComposedChannelDataValueAtTime({
-		data,
-		time: keyframeMatch.keyframe.time,
-	});
+	const value = isLeafChannelData(data)
+		? keyframeMatch.keyframe.value
+		: getComposedChannelDataValueAtTime({ data, time: keyframeMatch.keyframe.time });
 	if (value === null) {
 		return null;
 	}

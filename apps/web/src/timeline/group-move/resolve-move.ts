@@ -78,26 +78,25 @@ function resolveExistingTrackMove({
 		return null;
 	}
 
-	const targetTrackIdsByElementId = resolveExistingTrackIdsByElementId({
+	const targetTrackIdsBySourceTrackId = resolveExistingTrackIdsBySourceTrackId({
 		group,
 		tracks,
 		anchorTargetDisplayIndex: anchorTargetPlacement.displayIndex,
 	});
-	if (!targetTrackIdsByElementId) {
+	if (!targetTrackIdsBySourceTrackId) {
 		return null;
 	}
-
 	const clampedAnchorStartTime = clampAnchorStartTime({
 		group,
 		tracks,
 		anchorStartTime,
-		targetTrackIdsByElementId,
+		targetTrackIdsBySourceTrackId,
 	});
 
 	const moves = group.members.map((member) => ({
 		sourceTrackId: member.trackId,
 		targetTrackId:
-			targetTrackIdsByElementId.get(member.elementId) ?? member.trackId,
+			targetTrackIdsBySourceTrackId.get(member.trackId) ?? member.trackId,
 		elementId: member.elementId,
 		newStartTime: addMediaTime({
 			a: clampedAnchorStartTime,
@@ -157,7 +156,7 @@ function resolveNewTrackMove({
 		group,
 		tracks,
 		anchorStartTime,
-		targetTrackIdsByElementId: new Map(),
+		targetTrackIdsBySourceTrackId: new Map(),
 	});
 	const blockStartIndex = hasAudioMember
 		? clampAudioInsertIndex({
@@ -210,7 +209,7 @@ function clampAudioInsertIndex({
 	);
 }
 
-function resolveExistingTrackIdsByElementId({
+function resolveExistingTrackIdsBySourceTrackId({
 	group,
 	tracks,
 	anchorTargetDisplayIndex,
@@ -219,18 +218,19 @@ function resolveExistingTrackIdsByElementId({
 	tracks: SceneTracks;
 	anchorTargetDisplayIndex: number;
 }): Map<string, string> | null {
-	const sortedMembers = [...group.members].sort(
+	const sourceTracks = new Map(group.members.map((member) => [member.trackId, member]));
+	const sortedMembers = [...sourceTracks.values()].sort(
 		(leftMember, rightMember) =>
 			leftMember.displayIndex - rightMember.displayIndex,
 	);
 	const anchorMemberIndex = sortedMembers.findIndex(
-		(member) => member.elementId === group.anchor.elementId,
+		(member) => member.trackId === group.anchor.trackId,
 	);
 	if (anchorMemberIndex < 0) {
 		return null;
 	}
 
-	const targetTrackIdsByElementId = new Map<string, string>();
+	const targetTrackIdsBySourceTrackId = new Map<string, string>();
 	const usedTrackIds = new Set<string>();
 	const anchorPlacement = getTrackPlacementByDisplayIndex({
 		tracks,
@@ -240,8 +240,8 @@ function resolveExistingTrackIdsByElementId({
 		return null;
 	}
 
-	targetTrackIdsByElementId.set(
-		group.anchor.elementId,
+	targetTrackIdsBySourceTrackId.set(
+		group.anchor.trackId,
 		anchorPlacement.trackId,
 	);
 	usedTrackIds.add(anchorPlacement.trackId);
@@ -264,7 +264,7 @@ function resolveExistingTrackIdsByElementId({
 			return null;
 		}
 
-		targetTrackIdsByElementId.set(member.elementId, targetPlacement.trackId);
+		targetTrackIdsBySourceTrackId.set(member.trackId, targetPlacement.trackId);
 		usedTrackIds.add(targetPlacement.trackId);
 		upperBoundaryIndex = targetPlacement.displayIndex;
 	}
@@ -287,12 +287,12 @@ function resolveExistingTrackIdsByElementId({
 			return null;
 		}
 
-		targetTrackIdsByElementId.set(member.elementId, targetPlacement.trackId);
+		targetTrackIdsBySourceTrackId.set(member.trackId, targetPlacement.trackId);
 		usedTrackIds.add(targetPlacement.trackId);
 		lowerBoundaryIndex = targetPlacement.displayIndex;
 	}
 
-	return targetTrackIdsByElementId;
+	return targetTrackIdsBySourceTrackId;
 }
 
 function findCompatibleTrackPlacement({
@@ -337,12 +337,12 @@ function clampAnchorStartTime({
 	group,
 	tracks,
 	anchorStartTime,
-	targetTrackIdsByElementId,
+	targetTrackIdsBySourceTrackId,
 }: {
 	group: MoveGroup;
 	tracks: SceneTracks;
 	anchorStartTime: MediaTime;
-	targetTrackIdsByElementId: Map<string, string>;
+	targetTrackIdsBySourceTrackId: Map<string, string>;
 }): MediaTime {
 	const minimumAnchorStartTime = group.members.reduce(
 		(minimumStartTime, member) =>
@@ -362,11 +362,14 @@ function clampAnchorStartTime({
 			? minimumAnchorStartTime
 			: anchorStartTime;
 
-	const memberOnMainTrack = group.members.find(
-		(member) =>
-			targetTrackIdsByElementId.get(member.elementId) === tracks.main.id,
-	);
-	if (!memberOnMainTrack) {
+	let earliestMainOffset: MediaTime | null = null;
+	for (const member of group.members) {
+		if (targetTrackIdsBySourceTrackId.get(member.trackId) === tracks.main.id &&
+			(earliestMainOffset === null || member.timeOffset < earliestMainOffset)) {
+			earliestMainOffset = member.timeOffset;
+		}
+	}
+	if (earliestMainOffset === null) {
 		return clampedAnchorStartTime;
 	}
 
@@ -375,7 +378,7 @@ function clampAnchorStartTime({
 	);
 	const requestedMainStartTime = addMediaTime({
 		a: clampedAnchorStartTime,
-		b: memberOnMainTrack.timeOffset,
+		b: earliestMainOffset,
 	});
 	const earliestStationaryMainStartTime = tracks.main.elements
 		.filter((element) => !movingElementIds.has(element.id))
@@ -394,7 +397,7 @@ function clampAnchorStartTime({
 			a: minimumAnchorStartTime,
 			b: subMediaTime({
 				a: ZERO_MEDIA_TIME,
-				b: memberOnMainTrack.timeOffset,
+				b: earliestMainOffset,
 			}),
 		});
 	}
