@@ -15,12 +15,18 @@ export function buildCaptionChunks({
 }): CaptionChunk[] {
 	const captions: CaptionChunk[] = [];
 
-	for (const segment of segments) {
-		const words = segment.text.trim().split(/\s+/).filter(Boolean);
-		if (words.length === 0 || !Number.isFinite(segment.start) || !Number.isFinite(segment.end) || segment.end <= segment.start) continue;
+	const ordered = segments
+		.filter((segment) => segment.text.trim() !== "" && Number.isFinite(segment.start))
+		.sort((a, b) => a.start - b.start);
 
-		const segmentDuration = segment.end - segment.start;
-		const wordsPerSecond = words.length / segmentDuration;
+	for (const [i, segment] of ordered.entries()) {
+		const words = segment.text.trim().split(/\s+/);
+		// The model can leave the end out (it is then the start); speech goes on until the next segment.
+		const next = ordered[i + 1]?.start;
+		const end = segment.end > segment.start
+			? segment.end
+			: next !== undefined && next > segment.start ? next : segment.start + Math.max(minDuration, words.length * 0.35);
+		const wordsPerSecond = words.length / (end - segment.start);
 
 		const chunks: string[] = [];
 		for (let i = 0; i < words.length; i += wordsPerChunk) {

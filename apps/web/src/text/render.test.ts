@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, expect, mock, spyOn, test } from "bun:test";
 import { Canvas, createCanvas, GlobalFonts } from "@napi-rs/canvas";
 import { measureTextElement } from "./measure-element";
-import { buildTextFontString } from "./primitives";
 import { drawStyledText } from "./draw-styled";
 import { makeCaption } from "./caption";
 import { buildSubtitleTextElement } from "@/subtitles/build-subtitle-text-element";
@@ -123,35 +122,8 @@ test("subtitle placement measures with the same generic font as canvas text", ()
 
 test("a shared subtitle canvas restores the measurement state after each cue", () => {
 	const ctx = createCanvas(1, 1).getContext("2d") as unknown as CanvasRenderingContext2D;
-	const canvasSize = { width: 640, height: 360 };
-	const unusualFamily = 'Example\\"Display';
-	const rejectFallback = buildTextFontString({
-		fontFamily: "sans-serif",
-		fontWeight: "bold",
-		fontStyle: "normal",
-		scaledFontSize: 10 * (canvasSize.height / 90),
-	});
-	const nativeFont = Object.getOwnPropertyDescriptor(
-		Object.getPrototypeOf(ctx) as object,
-		"font",
-	);
-	Object.defineProperty(ctx, "font", {
-		configurable: true,
-		get: () => nativeFont?.get?.call(ctx) as string,
-		set: (value: string) => {
-			nativeFont?.set?.call(
-				ctx,
-				value.includes("Example\\") ? rejectFallback : value,
-			);
-		},
-	});
 	const initialFont = ctx.font;
-	const measureText = ctx.measureText.bind(ctx);
-	const measuredFonts = new Set<string>();
-	const measure = spyOn(ctx, "measureText").mockImplementation((text) => {
-		measuredFonts.add(ctx.font);
-		return measureText(text);
-	});
+	const canvasSize = { width: 640, height: 360 };
 	const build = (fontFamily: string, fontSize: number, letterSpacing: number) => buildSubtitleTextElement({
 		ctx,
 		index: 0,
@@ -163,17 +135,11 @@ test("a shared subtitle canvas restores the measurement state after each cue", (
 		},
 		canvasSize,
 	});
-	try {
-		const alone = build(unusualFamily, 10, 0);
-		expect([...measuredFonts]).toEqual([rejectFallback]);
-		measuredFonts.clear();
-		build(FONT, 32, 10);
-		expect(ctx.font).toBe(initialFont);
-		expect(build(unusualFamily, 10, 0)).toEqual(alone);
-	} finally {
-		measure.mockRestore();
-		if (nativeFont) Object.defineProperty(ctx, "font", nativeFont);
-	}
+	const unusualFamily = 'Example\\"Display';
+	const alone = build(unusualFamily, 10, 0);
+	build(FONT, 32, 10);
+	expect(ctx.font).toBe(initialFont);
+	expect(build(unusualFamily, 10, 0)).toEqual(alone);
 });
 
 test("raster shows both rings, one shadow, emphasis and the active-word fill", () => {

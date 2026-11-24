@@ -47,8 +47,6 @@ describe("buildCaptionChunks", () => {
 		const filtered = buildCaptionChunks({
 			segments: [
 				{ text: "ok", start: 0, end: 1 },
-				{ text: "bad", start: 1, end: 1 },
-				{ text: "rev", start: 3, end: 2 },
 				{ text: "nan", start: Number.NaN, end: 1 },
 				{ text: "   ", start: 0, end: 1 },
 			],
@@ -85,5 +83,10 @@ describe("buildCaptionChunks", () => {
 			const next = captions[i + 1];
 			if (next) expect(caption.startTime + caption.duration).toBeLessThanOrEqual(next.startTime + 1e-9);
 		}
+	});
+
+	test("a segment without a usable end keeps its words", () => {
+		expect(buildCaptionChunks({ segments: [{ text: "one two", start: 4, end: 4 }, { text: "three", start: 6, end: 5 }], minDuration: 0.8 }))
+			.toEqual([{ text: "one two", startTime: 4, duration: 2 }, { text: "three", startTime: 6, duration: 0.8 }]);
 	});
 });
