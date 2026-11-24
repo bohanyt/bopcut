@@ -34,10 +34,16 @@ export type CanvasRendererParams = {
 
 // The WASM compositor and its textures are shared by all renderers.
 let renderQueue: Promise<void> = Promise.resolve();
-type ProxyRender = {
-	proxies: ReadonlyMap<string, { info: ProxyInfo; file: File }>;
+type PreviewRender = {
+	proxies?: ReadonlyMap<string, { info: ProxyInfo; file: File }>;
+	onProxyUnavailable?: (key: string) => void;
+	originals?: VideoCache;
 	valid: () => boolean;
 };
+
+function checkPreviewTarget(preview?: PreviewRender) {
+	if (preview && !preview.valid()) throw new DOMException("Scrub target changed", "AbortError");
+}
 
 export class CanvasRenderer {
 	width: number;
@@ -95,8 +101,12 @@ export class CanvasRenderer {
 		return this.outputCanvas;
 	}
 
-	async render({ node, time, signal, proxy }: { node: AnyBaseNode; time: number; signal?: AbortSignal; proxy?: ProxyRender }) {
-		return this.renderToCanvas({ node, time, signal, proxy, targetCanvas: this.outputCanvas });
+	async render({ node, time, signal, preview }: { node: AnyBaseNode; time: number; signal?: AbortSignal; preview?: PreviewRender }) {
+		try {
+			return await this.renderToCanvas({ node, time, signal, preview, targetCanvas: this.outputCanvas });
+		} finally {
+			preview?.originals?.clear();
+		}
 	}
 
 	private async renderFrame({
@@ -104,14 +114,16 @@ export class CanvasRenderer {
 		time,
 		signal,
 		targetCanvas,
-		proxy,
+		preview,
 	}: {
 		node: AnyBaseNode;
 		time: number;
 		signal: AbortSignal;
 		targetCanvas: HTMLCanvasElement;
-		proxy?: ProxyRender;
+		preview?: PreviewRender;
 	}) {
+		checkPreviewTarget(preview);
+		if (preview?.originals) this.videoCache.takePreparedSources(preview.originals);
 		const { maxSurfaceDimension, maxTextureDimension } = getRendererLimits();
 		this.target = this.getRenderTarget(maxSurfaceDimension);
 		if (targetCanvas !== this.outputCanvas) {
@@ -120,17 +132,18 @@ export class CanvasRenderer {
 		}
 		await measureSpanAsync({
 			name: "resolve",
-			fn: () => resolveRenderTree({ node, renderer: this, time, signal, proxies: proxy?.proxies }),
+			fn: () => resolveRenderTree({ node, renderer: this, time, signal, proxies: preview?.proxies,
+				onProxyUnavailable: preview?.onProxyUnavailable }),
 		});
 		signal.throwIfAborted();
-		if (proxy && !proxy.valid()) throw new DOMException("Scrub target changed", "AbortError");
+		checkPreviewTarget(preview);
 		checkGraphicsContext();
 		const { frame, textures } = await measureSpanAsync({
 			name: "buildFrame",
 			fn: () => buildFrameDescriptor({ node, renderer: this, signal }),
 		});
 		signal.throwIfAborted();
-		if (proxy && !proxy.valid()) throw new DOMException("Scrub target changed", "AbortError");
+		checkPreviewTarget(preview);
 		checkGraphicsContext();
 		wasmCompositor.ensureInitialized({
 			width: this.outputWidth,
@@ -162,13 +175,13 @@ export class CanvasRenderer {
 		node,
 		time,
 		targetCanvas,
-		proxy,
+		preview,
 		signal,
 	}: {
 		node: AnyBaseNode;
 		time: number;
 		targetCanvas: HTMLCanvasElement;
-		proxy?: ProxyRender;
+		preview?: PreviewRender;
 		signal?: AbortSignal;
 	}) {
 		signal?.throwIfAborted();
@@ -177,7 +190,7 @@ export class CanvasRenderer {
 		const task = renderQueue.then(async () => {
 			frameSignal.throwIfAborted();
 			checkGraphicsContext();
-			await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, proxy });
+			await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, preview });
 		}).catch((error: unknown) => {
 			frameSignal.throwIfAborted();
 			rethrowGraphicsFailure(error);

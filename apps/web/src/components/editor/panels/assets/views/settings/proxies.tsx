@@ -7,7 +7,8 @@ import { useProxyStore } from "@/services/proxies/client";
 export function ProxySettings() {
 	const { t } = useI18n();
 	const { settings, update, save, clear } = useProxyStore();
-	const enabled = settings.enabled ?? (update?.state === "ready" || update?.state === "preparing" || update?.state === "disk");
+	const enabled = settings.enabled ?? (update?.state === "ready" || update?.state === "preparing" ||
+		update?.state === "disk" || update?.state === "readonly");
 	const status = update?.state ?? "off";
 	return (
 		<Section showTopBorder={false}>
@@ -25,7 +26,7 @@ export function ProxySettings() {
 					? t("proxies.preparing", { done: update?.done ?? 0, total: update?.total ?? 0 })
 					: t(`proxies.${status}`)}</p>
 				<p className="text-sm">{t("proxies.diskUsage", { size: ((update?.bytes ?? 0) / 1_000_000).toFixed(1) })}</p>
-				<Button variant="outline" size="sm" onClick={() => { void clear().catch(() => {}); }}>{t("proxies.deleteAll")}</Button>
+				<Button variant="outline" size="sm" disabled={status === "readonly"} onClick={() => { void clear().catch(() => {}); }}>{t("proxies.deleteAll")}</Button>
 			</SectionContent>
 		</Section>
 	);

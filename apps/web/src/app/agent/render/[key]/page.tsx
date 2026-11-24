@@ -33,7 +33,7 @@ async function render(key: string) {
 		if (kind === "export") {
 			void fetch("/api/proxies", {
 				method: "POST", signal: proxyPause.signal, headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ id: crypto.randomUUID(), project: projectId, ids: [], enabled: false, paused: true }),
+				body: JSON.stringify({ action: "pause", id: crypto.randomUUID() }),
 			}).catch(() => {});
 		}
 		const editor = EditorCore.createRenderOnly();

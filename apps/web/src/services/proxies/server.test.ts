@@ -14,8 +14,8 @@ test("proxy cache identity follows content across copies and hard links", async 
 		await fs.writeFile(original, Buffer.alloc(256 * 1024, 3));
 		await fs.link(original, link);
 		await fs.copyFile(original, copy);
-		expect(await fingerprint(original)).toEqual(await fingerprint(link));
-		expect(await fingerprint(original)).toEqual(await fingerprint(copy));
+		expect((await fingerprint(original)).key).toBe((await fingerprint(link)).key);
+		expect((await fingerprint(original)).key).toBe((await fingerprint(copy)).key);
 		const file = await fs.open(copy, "r+");
 		try { await file.write(Buffer.from([2]), 0, 1, 128 * 1024); }
 		finally { await file.close(); }
@@ -98,7 +98,7 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 		}
 		close = openSession("tab", { project: "fixture", ids, paused: false, software: false, send() {} });
 		expect(await started.promise).toBe("near.mp4");
-		expect(await fs.readdir(cache)).toEqual([]);
+		expect(await fs.readdir(cache)).toEqual([".writer"]);
 		updateSession("tab", { ids: ["near", "far", "middle"] });
 		firstFinished.resolve();
 		expect(await second.promise).toBe("far.mp4");
@@ -116,6 +116,7 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 			await fs.rm(path.join(meta, id + ".json"), { force: true });
 		}
 		for (const file of interrupted) await fs.rm(path.join(cache, file), { force: true });
+		await fs.rm(path.join(cache, ".writer"), { force: true });
 		for (const folder of [meta, dir, project, path.dirname(project), cache, root]) {
 			await fs.rmdir(folder).catch(() => {});
 		}

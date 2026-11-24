@@ -9,6 +9,7 @@ export const id = {
 	"proxies.disk": "Ruang penyimpanan tidak cukup",
 	"proxies.off": "Nonaktif",
 	"proxies.software": "Nonaktif · Pengode perangkat keras tidak tersedia",
+	"proxies.readonly": "Hanya baca · Server lain sedang menyiapkan proksi",
 	"proxies.diskUsage": "Penyimpanan proksi: {size} MB",
 	"proxies.deleteAll": "Hapus semua proksi",
 	"common.cancel": "Batal",

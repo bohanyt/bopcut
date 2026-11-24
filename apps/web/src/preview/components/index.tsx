@@ -7,8 +7,9 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
-import { visibleVideoNodes } from "@/services/renderer/resolve";
+import { preparePreviewOriginals, visibleVideoNodes } from "@/services/renderer/resolve";
 import { useProxySession, useProxyStore } from "@/services/proxies/client";
+import { VideoCache } from "@/services/video-cache/service";
 import { previewCanvasSize } from "@/canvas/sizes";
 import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
 import { RecoverableSurfaceError, rendererDevice } from "@/services/renderer/renderer-device";
@@ -27,6 +28,7 @@ import { PreviewContextMenu } from "./context-menu";
 import { usePreviewStore } from "@/preview/preview-store";
 import { previewQualityScale } from "@/preview/quality";
 import { createPreviewFrameScheduler } from "@/preview/frame-scheduler";
+import { createScrubSettle } from "@/preview/scrub-settle";
 import { PreviewToolbar } from "./toolbar";
 import { BookmarkAreaLayer } from "./bookmark-area";
 import { useBookmarkArea } from "@/timeline/bookmarks/area-state";
@@ -174,6 +176,34 @@ function PreviewCanvas({
 	const activeProject = useEditor((e) => e.project.getActive());
 	useProxySession(editor, activeProject.metadata.id);
 	const renderTree = useEditor((e) => e.renderer.getRenderTree());
+	const getRenderTime = useCallback(() => Math.min(
+		editor.playback.getCurrentTime(),
+		editor.timeline.getLastFrameTime(),
+	), [editor]);
+	const settle = useMemo(() => createScrubSettle<RootNode, VideoCache>({
+		async prepare(scene, time) {
+			const signal = renderSignalRef.current;
+			const ready = useProxyStore.getState().ready;
+			if (!signal || signal.aborted || rendererDevice.status.state !== "ready" ||
+				editor.renderer.isExportRunning() || !ready.size) return null;
+			const cache = new VideoCache();
+			const scope = AbortSignal.any([signal, rendererDevice.signal]);
+			const clear = () => cache.clear();
+			scope.addEventListener("abort", clear, { once: true });
+			try {
+				if (await preparePreviewOriginals(scene, time, cache, scope, ready)) return cache;
+				clear();
+				return null;
+			} catch (error) {
+				clear();
+				throw error;
+			} finally {
+				scope.removeEventListener("abort", clear);
+			}
+		},
+		onResult: () => schedulerRef.current?.request(),
+		discard: cache => cache.clear(),
+	}), [editor]);
 	const viewport = usePreviewViewportState({
 		canvasHeight: nativeHeight,
 		canvasWidth: nativeWidth,
@@ -227,8 +257,9 @@ function PreviewCanvas({
 		return () => {
 			renderSignalRef.current = null;
 			controller.abort();
+			settle.reset();
 		};
-	}, [renderer, sessionSignal]);
+	}, [renderer, sessionSignal, settle]);
 
 	const render = useCallback(() => {
 		if (!renderTree || rendererDevice.status.state !== "ready") return;
@@ -237,16 +268,17 @@ function PreviewCanvas({
 			lastFrameRef.current = -1;
 		}
 
-		const renderTime = Math.min(
-			editor.playback.getCurrentTime(),
-			editor.timeline.getLastFrameTime(),
-		);
+		const renderTime = getRenderTime();
 		const ticksPerFrame = Math.round(
 			(TICKS_PER_SECOND * renderer.fps.denominator) / renderer.fps.numerator,
 		);
 		const frame = Math.floor(renderTime / ticksPerFrame);
 		const ready = useProxyStore.getState().ready;
-		const proxy = ready.size > 0 && editor.playback.getIsScrubbing() && !editor.playback.getIsPlaying();
+		const playing = editor.playback.getIsPlaying();
+		const scrubbing = editor.playback.getIsScrubbing() && !playing;
+		const settled = !playing && settle.isPrepared(renderTree, renderTime);
+		const proxy = ready.size > 0 && scrubbing && !settled;
+		if (!scrubbing && !playing && settle.isPending(renderTree, renderTime)) return;
 
 		if (
 			frame === lastFrameRef.current &&
@@ -260,17 +292,23 @@ function PreviewCanvas({
 		if (!signal) return;
 		const graphics = rendererDevice.signal;
 		if (editor.renderer.isExportRunning()) return;
+		const originals = settled ? settle.take(renderTree, renderTime) : undefined;
 		const visible = proxy ? visibleVideoNodes(renderTree, renderTime) : undefined;
-		const task = visible ? renderer.render({ node: renderTree, time: renderTime, signal, proxy: {
+		const task = visible ? renderer.render({ node: renderTree, time: renderTime, signal, preview: {
 			proxies: ready,
+			onProxyUnavailable: key => useProxyStore.getState().invalidate(key),
 			valid() {
 				if (!editor.playback.getIsScrubbing() || editor.playback.getIsPlaying() ||
-					editor.renderer.getRenderTree() !== renderTree || useProxyStore.getState().ready.size === 0) return false;
-				const now = Math.min(editor.playback.getCurrentTime(), editor.timeline.getLastFrameTime());
+					editor.renderer.getRenderTree() !== renderTree || useProxyStore.getState().settings.enabled === false) return false;
+				const now = getRenderTime();
 				if (now === renderTime) return true;
 				const current = visibleVideoNodes(renderTree, now);
 				return current.size === visible.size && [...current].every(node => visible.has(node));
 			},
+		} }) : settled ? renderer.render({ node: renderTree, time: renderTime, signal, preview: {
+			originals,
+			valid: () => !editor.playback.getIsPlaying() && !editor.renderer.isExportRunning() &&
+				editor.renderer.getRenderTree() === renderTree && getRenderTime() === renderTime,
 		} }) : editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
 		if (!task) return;
 		return task
@@ -290,7 +328,7 @@ function PreviewCanvas({
 					console.error("Preview render failed:", error);
 				}
 			});
-	}, [renderer, renderTree, editor.playback, editor.renderer, editor.timeline]);
+	}, [renderer, renderTree, editor.playback, editor.renderer, getRenderTime, settle]);
 
 	const renderRef = useCommittedRef(render);
 	useEffect(() => {
@@ -305,23 +343,40 @@ function PreviewCanvas({
 			lastFrameRef.current = -1;
 			scheduler.request();
 		};
-		const onVisibility = () => { if (!document.hidden) redraw(); };
+		const updateTarget = () => {
+			const scene = editor.renderer.getRenderTree();
+			if (!scene) settle.reset();
+			else settle.update(scene, getRenderTime(), !document.hidden &&
+				editor.playback.getIsScrubbing() && !editor.playback.getIsPlaying() &&
+				!editor.renderer.isExportRunning() && useProxyStore.getState().ready.size > 0);
+			scheduler.request();
+		};
+		const onVisibility = () => {
+			if (document.hidden) settle.reset();
+			else { updateTarget(); redraw(); }
+		};
 		document.addEventListener("visibilitychange", onVisibility);
 		const unsubscribe = [
-			editor.playback.subscribeState(scheduler.request),
+			editor.playback.subscribeState(updateTarget),
 			editor.playback.onUpdate(scheduler.playbackTick),
-			editor.playback.onSeek(scheduler.request),
-			editor.renderer.subscribe(scheduler.request),
-			rendererDevice.subscribe(() => { if (rendererDevice.status.state === "ready") redraw(); }),
+			editor.playback.onSeek(updateTarget),
+			editor.renderer.subscribe(updateTarget),
+			useProxyStore.subscribe((state, previous) => { if (state.ready !== previous.ready) updateTarget(); }),
+			rendererDevice.subscribe(() => {
+				if (rendererDevice.status.state === "ready") { updateTarget(); redraw(); }
+				else settle.reset();
+			}),
 			modelGraphics.subscribe(() => { if (!modelGraphics.getSnapshot()) redraw(); }),
 		];
+		updateTarget();
 		return () => {
 			schedulerRef.current = null;
+			settle.reset();
 			scheduler.dispose();
 			document.removeEventListener("visibilitychange", onVisibility);
 			for (const remove of unsubscribe) remove();
 		};
-	}, [editor, renderRef]);
+	}, [editor, getRenderTime, renderRef, settle]);
 	useEffect(() => {
 		schedulerRef.current?.request();
 	}, [render, sessionSignal]);

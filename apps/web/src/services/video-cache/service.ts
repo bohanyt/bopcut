@@ -10,6 +10,7 @@ import {
 } from "mediabunny";
 import { getDecodableVideoTrack } from "@/media/video-probe";
 import { fitSurfaceSize } from "@/services/renderer/scale";
+import { waitWithAbort } from "@/utils/abort";
 
 type VideoSize = { width: number; height: number };
 type VideoFrame = {
@@ -19,6 +20,7 @@ type VideoFrame = {
 	sourceHeight: number;
 };
 type VideoRequest = { cursor: VideoCursor; sample: Promise<VideoSample | null> };
+type VideoSeek = { file: File | string; time: number; throwOnSeekError?: boolean; signal?: AbortSignal };
 type VideoSource = {
 	input: Input;
 	track: Promise<InputVideoTrack>;
@@ -174,25 +176,57 @@ class VideoCursor {
 export class VideoCache {
 	private sources = new Map<File | string, VideoSource>();
 	private failedSources = new WeakMap<File, { error: unknown }>();
-	private failedUrls = new Map<string, { error: unknown }>();
 
 	async getFrameAt({
-		file,
-		time,
 		getScale,
 		maxTextureDimension = Infinity,
-		throwOnSeekError = false,
-		signal,
-	}: {
-		file: File | string;
-		time: number;
+		...seek
+	}: VideoSeek & {
 		getScale?: (source: VideoSize) => number;
 		maxTextureDimension?: number;
-		throwOnSeekError?: boolean;
-		signal?: AbortSignal;
 	}): Promise<VideoFrame | null> {
+		const decoded = await this.readAt(seek);
+		seek.signal?.throwIfAborted();
+		if (!decoded) return null;
+		const { sample, track, cursor } = decoded;
+		const scale = getScale?.({ width: track.displayWidth, height: track.displayHeight }) ?? 1;
+		return cursor.rasterize(sample, track, scale, maxTextureDimension);
+	}
+
+	async prepareFrame(seek: VideoSeek): Promise<boolean> {
+		return (await this.readAt(seek)) !== null;
+	}
+
+	async getProxyFrameAt(file: string, time: number, maxTextureDimension: number, signal?: AbortSignal) {
+		const deadline = AbortSignal.timeout(1000);
+		const scope = signal ? AbortSignal.any([signal, deadline]) : deadline;
+		try {
+			const frame = await waitWithAbort(this.getFrameAt({ file, time, maxTextureDimension, signal: scope }), scope);
+			if (frame) return frame;
+		} catch {
+			signal?.throwIfAborted();
+		} finally {
+			if (scope.aborted) this.discardSource(file);
+		}
+		this.discardSource(file);
+		return null;
+	}
+
+	takePreparedSources(cache: VideoCache): void {
+		for (const [file, source] of cache.sources) {
+			const previous = this.sources.get(file);
+			if (previous) {
+				for (const cursor of previous.cursors) cursor.dispose();
+				previous.input.dispose();
+			}
+			this.sources.set(file, source);
+		}
+		cache.sources.clear();
+	}
+
+	private async readAt({ file, time, throwOnSeekError = false, signal }: VideoSeek) {
 		signal?.throwIfAborted();
-		const failed = typeof file === "string" ? this.failedUrls.get(file) : this.failedSources.get(file);
+		const failed = typeof file === "string" ? undefined : this.failedSources.get(file);
 		if (failed) {
 			if (throwOnSeekError) throw failed.error;
 			return null;
@@ -251,22 +285,21 @@ export class VideoCache {
 				throw new Error("Video decoding ended before the last packet");
 			}
 		}
-		const scale = getScale?.({ width: track.displayWidth, height: track.displayHeight }) ?? 1;
-		return request.cursor.rasterize(sample, track, scale, maxTextureDimension);
+		return { sample, track, cursor: request.cursor };
 	}
 
 	private getSource(file: File | string): VideoSource {
 		const existing = this.sources.get(file);
 		if (existing) return existing;
 
-		const input = new Input({ source: typeof file === "string" ? new UrlSource(file) : new BlobSource(file), formats: ALL_FORMATS });
+		const input = new Input({
+			source: typeof file === "string" ? new UrlSource(file, { getRetryDelay: () => null }) : new BlobSource(file),
+			formats: ALL_FORMATS,
+		});
 		const track = getDecodableVideoTrack(input).catch((error) => {
 			if (this.sources.get(file)?.input === input) {
 				this.sources.delete(file);
-				if (typeof file === "string") {
-					if (this.failedUrls.size >= 64) this.failedUrls.delete(this.failedUrls.keys().next().value!);
-					this.failedUrls.set(file, { error });
-				} else this.failedSources.set(file, { error });
+				if (typeof file !== "string") this.failedSources.set(file, { error });
 				input.dispose();
 				console.warn(`Failed to open video "${typeof file === "string" ? file : file.name}":`, error);
 			}
@@ -275,6 +308,14 @@ export class VideoCache {
 		const source: VideoSource = { input, track, cursors: [], requests: new Map(), used: new Set() };
 		this.sources.set(file, source);
 		return source;
+	}
+
+	discardSource(file: File | string) {
+		const source = this.sources.get(file);
+		if (!source) return;
+		this.sources.delete(file);
+		for (const cursor of source.cursors) cursor.dispose();
+		source.input.dispose();
 	}
 
 	finishFrame(): void {
@@ -300,6 +341,5 @@ export class VideoCache {
 		}
 		this.sources.clear();
 		this.failedSources = new WeakMap();
-		this.failedUrls.clear();
 	}
 }

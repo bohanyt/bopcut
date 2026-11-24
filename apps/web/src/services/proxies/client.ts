@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import type { EditorCore } from "@/core";
 import { ALL_FORMATS, BlobSource, Input } from "mediabunny";
 import type { ProxyInfo, ProxyUpdate } from "./mapping";
+import { proxyFingerprintRegions, proxyProfile } from "./identity";
 
 type Preferences = { enabled?: boolean; software: boolean };
 const settingsKey = "bopencut-scrub-proxies";
@@ -15,12 +16,21 @@ type State = {
 	settings: Preferences;
 	update?: ProxyUpdate;
 	ready: Map<string, { info: ProxyInfo; file: File }>;
+	missing?: { key: string; ids: string[] };
 	save: (settings: Preferences) => void;
 	clear: () => Promise<void>;
+	invalidate: (key: string, retry?: boolean) => void;
 };
 export const useProxyStore = create<State>((set, get) => ({
 	settings: typeof window === "undefined" ? { software: false } : preferences(),
 	ready: new Map(),
+	invalidate(key, retry = true) {
+		const ready = new Map(get().ready);
+		const ids = [...ready].filter(([, proxy]) => proxy.info.key === key).map(([id]) => id);
+		if (!ids.length) return;
+		for (const id of ids) ready.delete(id);
+		set({ ready, ...(retry ? { missing: { key, ids } } : {}) });
+	},
 	save(settings) { localStorage.setItem(settingsKey, JSON.stringify(settings)); set({ settings }); },
 	async clear() {
 		const response = await fetch("/api/proxies", { method: "DELETE" });
@@ -36,9 +46,7 @@ function fingerprint(file: File) {
 	let cached = hashes.get(file);
 	if (!cached) {
 		cached = (async () => {
-			const chunk = 64 * 1024;
-			const pieces = await Promise.all([0, Math.max(0, Math.floor((file.size - chunk) / 2)), Math.max(0, file.size - chunk)]
-				.map(start => file.slice(start, start + chunk).arrayBuffer()));
+			const pieces = proxyFingerprintRegions(file.size).map(({ start, end }) => file.slice(start, end));
 			const data = await new Blob([String(file.size), ...pieces]).arrayBuffer();
 			const sha = await crypto.subtle.digest("SHA-256", data);
 			return Array.from(new Uint8Array(sha), x => x.toString(16).padStart(2, "0")).join("");
@@ -74,6 +82,15 @@ function mediaOrder(editor: EditorCore) {
 export function useProxySession(editor: EditorCore, project: string) {
 	const settings = useProxyStore(state => state.settings);
 	useEffect(() => {
+		const syncSettings = (event: StorageEvent) => {
+			if (event.key === settingsKey) useProxyStore.setState({ settings: preferences() });
+		};
+		window.addEventListener("storage", syncSettings);
+		return () => window.removeEventListener("storage", syncSettings);
+	}, []);
+	useEffect(() => {
+		useProxyStore.setState({ ready: new Map(), update: undefined, missing: undefined });
+		if (settings.enabled === false) return;
 		const controller = new AbortController();
 		const id = crypto.randomUUID();
 		const paused = () => editor.renderer.isExportRunning() ||
@@ -81,23 +98,35 @@ export function useProxySession(editor: EditorCore, project: string) {
 		let queue = mediaOrder(editor);
 		let isPaused = paused();
 		let files = new Map(editor.media.getAssets().map(asset => [asset.id, asset.file]));
-		useProxyStore.setState({ ready: new Map(), update: undefined });
 		const post = (body: object) => fetch("/api/proxies", {
 			method: "POST", body: JSON.stringify({ id, ...body }), signal: controller.signal,
 			headers: { "Content-Type": "application/json" },
 		});
 		let opened = false;
+		const evicted = new Map<string, string[]>();
+		const announced = new Map<string, string>();
+		const rejected = new Map<string, number>();
 		const refresh = () => {
 			if (!opened) return;
 			const next = mediaOrder(editor);
 			const state = paused();
 			const updatedFiles = new Map(editor.media.getAssets().map(asset => [asset.id, asset.file]));
 			const replaced = next.filter(id => updatedFiles.get(id) !== files.get(id));
+			const previous = useProxyStore.getState().ready;
+			const ready = new Map([...previous].filter(([id, proxy]) => next.includes(id) && updatedFiles.get(id) === proxy.file));
+			if (ready.size !== previous.size) useProxyStore.setState({ ready });
 			files = updatedFiles;
-			if (state === isPaused && next.join() === queue.join() && !replaced.length) return;
+			const retry: string[] = [];
+			for (const [key, ids] of evicted) {
+				if (ids.includes(next[0]) && !state && Date.now() - (rejected.get(key) ?? 0) > 10_000) {
+					retry.push(next[0]);
+					evicted.delete(key);
+				}
+			}
+			if (state === isPaused && next.join() === queue.join() && !replaced.length && !retry.length) return;
 			queue = next;
 			isPaused = state;
-			void post({ action: "update", ids: queue, paused: isPaused, replaced }).catch(() => {});
+			void post({ action: "update", ids: queue, paused: isPaused, replaced: [...replaced, ...retry] }).catch(() => {});
 		};
 		void (async () => {
 			const response = await post({ project, ids: queue, paused: isPaused, ...settings });
@@ -113,21 +142,33 @@ export function useProxySession(editor: EditorCore, project: string) {
 					buffer += value;
 					let end: number;
 					while ((end = buffer.indexOf("\n")) >= 0) {
-						const update: ProxyUpdate = JSON.parse(buffer.slice(0, end));
+						const line = buffer.slice(0, end);
 						buffer = buffer.slice(end + 1);
+						if (!line) continue;
+						const update: ProxyUpdate = JSON.parse(line);
 						if (controller.signal.aborted) return;
 						useProxyStore.setState({ update });
+						if (update.evicted) {
+							evicted.set(update.evicted, [...announced]
+								.filter(([, key]) => key === update.evicted).map(([id]) => id));
+							useProxyStore.getState().invalidate(update.evicted, false);
+						}
 						const media = update.media;
 						const file = editor.media.getAssets().find(asset => asset.id === media?.id)?.file;
+						if (media) {
+							announced.set(media.id, media.info.key);
+							evicted.delete(media.info.key);
+						}
 						if (media && file) void fingerprint(file).then(async hash => {
-							if (controller.signal.aborted || !media.info.key.startsWith(hash + "-")) return;
+							if (controller.signal.aborted || media.info.key !== hash + "-" + proxyProfile) return;
 							const source = new Input({ formats: ALL_FORMATS, source: new BlobSource(file, { maxCacheSize: 1024 * 1024 }) });
 							try {
 								const track = await source.getPrimaryVideoTrack();
 								if (!track || track.displayWidth !== media.info.width || track.displayHeight !== media.info.height ||
 									Math.abs(await track.getFirstTimestamp() - media.info.source[0]) > 0.000002) return;
 							} finally { source.dispose(); }
-							if (controller.signal.aborted) return;
+							if (controller.signal.aborted || files.get(media.id) !== file || !queue.includes(media.id) ||
+								evicted.has(media.info.key)) return;
 							useProxyStore.setState(state => ({ ready: new Map(state.ready).set(media.id, { info: media.info, file }) }));
 						}).catch(() => {});
 					}
@@ -137,15 +178,19 @@ export function useProxySession(editor: EditorCore, project: string) {
 		let scrubbing = editor.playback.getIsScrubbing();
 		const dispose = [editor.timeline.subscribe(refresh), editor.scenes.subscribe(refresh), editor.media.subscribe(refresh),
 			editor.renderer.subscribe(refresh), editor.voiceOver.subscribe(refresh),
+			useProxyStore.subscribe((state, previous) => {
+				const missing = state.missing;
+				if (!opened || !missing || missing === previous.missing) return;
+				evicted.set(missing.key, missing.ids);
+				if (Date.now() - (rejected.get(missing.key) ?? 0) <= 10_000) return;
+				rejected.set(missing.key, Date.now());
+				void post({ action: "update", replaced: missing.ids }).catch(() => {});
+			}),
 			editor.playback.subscribeState(() => {
 				const next = editor.playback.getIsScrubbing();
 				if (scrubbing && !next) refresh();
 				scrubbing = next;
 			})];
-		const syncSettings = (event: StorageEvent) => {
-			if (event.key === settingsKey) useProxyStore.setState({ settings: preferences() });
-		};
-		window.addEventListener("storage", syncSettings);
-		return () => { controller.abort(); dispose.forEach(fn => fn()); window.removeEventListener("storage", syncSettings); };
+		return () => { controller.abort(); dispose.forEach(fn => fn()); };
 	}, [editor, project, settings]);
 }

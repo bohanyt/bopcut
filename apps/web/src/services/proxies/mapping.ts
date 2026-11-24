@@ -7,11 +7,12 @@
 };
 
 export type ProxyUpdate = {
-	state: "preparing" | "ready" | "missing" | "disk" | "off" | "software";
+	state: "preparing" | "ready" | "missing" | "disk" | "off" | "software" | "readonly";
 	done: number;
 	total: number;
 	bytes: number;
 	media?: { id: string; info: ProxyInfo };
+	evicted?: string;
 };
 
 export function proxyTime(info: ProxyInfo, time: number): number | undefined {

@@ -7,6 +7,7 @@ export const en = {
 	"proxies.disk": "Not enough disk space",
 	"proxies.off": "Off",
 	"proxies.software": "Off · Hardware encoder unavailable",
+	"proxies.readonly": "Read-only · Another server owns proxy preparation",
 	"proxies.diskUsage": "Proxy storage: {size} MB",
 	"proxies.deleteAll": "Delete all proxies",
 	"common.cancel": "Cancel",
