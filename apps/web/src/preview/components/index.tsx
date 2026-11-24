@@ -243,12 +243,13 @@ function PreviewCanvas({
 		);
 		const frame = Math.floor(renderTime / ticksPerFrame);
 
-		if (!approximate) scrubCache.stop();
+		const playing = editor.playback.getIsPlaying();
+		if (!approximate && playing) scrubCache.stop();
 		if (
 			!approximate &&
 			frame === lastFrameRef.current &&
 			renderTree === lastSceneRef.current &&
-			(editor.playback.getIsPlaying() || renderTime === lastExactTimeRef.current)
+			(playing || renderTime === lastExactTimeRef.current)
 		) {
 			return;
 		}
@@ -264,7 +265,7 @@ function PreviewCanvas({
 			scrub: approximate ? {
 				cache: scrubCache,
 				onReady: () => schedulerRef.current?.scrubFrameReady(),
-			} : undefined,
+			} : scrubCache.active ? { cache: scrubCache } : undefined,
 		})
 			.then(() => {
 				// Keep the previous frame visible while the new render target is waiting.

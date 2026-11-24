@@ -2,6 +2,7 @@ import { ALL_FORMATS, BlobSource, EncodedPacketSink, Input, VideoSampleSink, typ
 import { getDecodableVideoTrack } from "@/media/video-probe";
 import { fitSurfaceSize } from "@/services/renderer/scale";
 import { waitWithAbort } from "@/utils/abort";
+import { VideoCursor } from "./service";
 
 const SOURCE_LIMIT = 6;
 const SOURCE_BYTES = 32 * 1024 * 1024;
@@ -10,12 +11,10 @@ const FRAME_LIMIT = 16;
 const FRAME_BYTES = 8 * 1024 * 1024;
 const FRAME_DIMENSION = 640;
 const JOB_LIMIT = 2;
-const DETAIL_DWELL_MS = 140;
-const DETAIL_WINDOW_SECONDS = 2;
-const DETAIL_SAMPLES_PER_SECOND = 20;
-const DETAIL_DIMENSION = 320;
-const DETAIL_FRAME_LIMIT = 80;
-const DETAIL_FRAME_BYTES = 18 * 1024 * 1024;
+const DETAIL_DIMENSION = 240;
+const DETAIL_FRAME_LIMIT = 220;
+const DETAIL_FRAME_BYTES = 27 * 1024 * 1024;
+const LOOK_BEHIND = 2.5;
 
 type Frame = {
 	canvas: OffscreenCanvas;
@@ -33,7 +32,22 @@ type Source = {
 	track: Promise<InputVideoTrack>;
 	bytes: number;
 	job?: Job;
-	detailWindow?: TimeRange & { since: number; attempted?: boolean };
+};
+type Motion = {
+	source: Source;
+	target: number;
+	start: number;
+	at: number;
+	readTo: number;
+	fast: boolean;
+	cursor?: VideoCursor;
+	pending?: Promise<unknown>;
+};
+type Presentation = { target: number; direction: number; frame: Frame | null };
+type ExactOptions = {
+	getScale?: (source: { width: number; height: number }) => number;
+	maxTextureDimension?: number;
+	signal?: AbortSignal;
 };
 
 function contains({ start, end }: TimeRange, time: number): boolean {
@@ -84,64 +98,114 @@ export class ScrubVideoCache {
 	private wanted = new Map<Source, Set<number>>();
 	private sourceBytes = 0;
 	private jobs = 0;
-	private detailRunning = false;
+	private motion?: Motion;
+	private lastTarget?: { source: Source; time: number };
+	private presentations = new Map<object, Presentation>();
+	private framePresentations = new Map<object, Presentation>();
+	private settling = false;
+	private exactRead?: { time: number; sample: ReturnType<VideoCursor["readAt"]> };
 	private onReady?: () => void;
 
-	constructor(private clock = () => performance.now()) {}
+	get active(): boolean { return !!this.onReady; }
 
-	getFrameAt(file: File, time: number): Frame | null {
+	getFrameAt(file: File, time: number, clip?: object): Frame | null {
 		const source = this.getSource(file);
 		if (!source) return null;
 		let times = this.reads.get(source);
 		if (!times) this.reads.set(source, times = new Set());
 		if (times.size < FRAME_LIMIT) times.add(time);
-		const detail = this.find(this.details, source, time);
+		const previous = clip && this.presentations.get(clip);
+		const direction = previous
+			? Math.sign(time - previous.target) || previous.direction
+			: 0;
+		const detail = this.nearestDetail(source, time, direction < 0 ? 0.09 : 0.5)
+			?? (direction < 0 ? this.followingDetail(source, time) : undefined);
 		const pool = detail?.frame ? this.details : this.keys;
 		const entry = detail?.frame ? detail : this.find(this.keys, source, time);
-		if (!entry) return null;
-		pool.entries.delete(entry);
-		pool.entries.add(entry);
-		this.pinned.add(entry);
-		return entry.frame;
+		let frame = entry?.frame ?? null;
+		// A preceding keyframe cannot establish frame order in a backward drag.
+		if (clip && !detail && direction <= 0 && frame && frame.timestamp < time) frame = null;
+		if (previous?.frame?.canvas.width && (!frame ||
+			(direction >= 0 && frame.timestamp < previous.frame.timestamp) ||
+			(direction < 0 && frame.timestamp > previous.frame.timestamp))) {
+			frame = previous.frame;
+		}
+		if (clip) this.framePresentations.set(clip, { target: time, direction, frame });
+		if (entry && frame === entry.frame) {
+			pool.entries.delete(entry);
+			pool.entries.add(entry);
+			this.pinned.add(entry);
+		}
+		return frame;
 	}
 
 	finishFrame(onReady?: () => void): void {
 		this.pinned.clear();
 		if (!onReady) {
 			this.reads.clear();
+			this.framePresentations.clear();
 			return;
 		}
+		this.settling = false;
+		this.exactRead = undefined;
+		this.motion?.cursor?.finishFrame();
+		this.presentations = this.framePresentations;
+		this.framePresentations = new Map();
 		this.onReady = onReady;
 		this.wanted = this.reads;
 		this.reads = new Map();
-		const now = this.clock();
 		for (const source of this.sources.values()) {
-			const { job, detailWindow } = source;
+			const { job } = source;
 			const times = this.wanted.get(source);
-			const time = times?.size === 1 ? times.values().next().value : undefined;
-			if (time === undefined) {
-				source.detailWindow = undefined;
-			} else if (!detailWindow || !contains(detailWindow, time)) {
-				const start = Math.floor(time / DETAIL_WINDOW_SECONDS) * DETAIL_WINDOW_SECONDS;
-				source.detailWindow = { start, end: start + DETAIL_WINDOW_SECONDS, since: now };
-			}
 			const range = job?.range;
 			if (job && (!times || (range && ![...times].some((time) => contains(range, time))))) {
 				job.controller.abort();
 			}
 		}
+		this.updateMotion();
 		this.pump();
+	}
+
+	async getExactFrameAt(file: File, time: number, options: ExactOptions): Promise<Frame | null> {
+		const motion = this.motion;
+		if (!motion || this.sources.get(file) !== motion.source) return null;
+		this.settling = true;
+		const { signal, getScale, maxTextureDimension = Infinity } = options;
+		await waitWithAbort(Promise.resolve(motion.pending), signal);
+		if (this.motion !== motion || !motion.cursor) return null;
+		const track = await waitWithAbort(motion.source.track, signal);
+		if (this.motion !== motion) return null;
+		if (!this.exactRead) {
+			const key = this.find(this.keys, motion.source, time);
+			const window = key && contains(key, motion.at) ? 4 : 2;
+			const sample = motion.cursor.readAt(time, undefined, window).catch(() => null).finally(() => {
+				if (motion.pending === sample) motion.pending = undefined;
+			});
+			this.exactRead = { time, sample };
+			motion.pending = sample;
+		}
+		if (this.exactRead.time !== time) return null;
+		const sample = await waitWithAbort(this.exactRead.sample, signal);
+		signal?.throwIfAborted();
+		if (this.motion !== motion || !sample) return null;
+		const scale = getScale?.({ width: track.displayWidth, height: track.displayHeight }) ?? 1;
+		return motion.cursor.rasterize(sample, track, scale, maxTextureDimension);
 	}
 
 	stop(): void {
 		if (!this.onReady) return;
 		this.onReady = undefined;
+		this.settling = false;
+		this.exactRead = undefined;
+		this.lastTarget = undefined;
+		this.closeMotion();
+		this.presentations.clear();
 		this.wanted.clear();
 		this.finishFrame();
 		for (const source of this.sources.values()) {
-			source.detailWindow = undefined;
 			source.job?.controller.abort();
 		}
+		for (const entry of this.details.entries) this.dropFrame(this.details, entry);
 	}
 
 	clear(): void {
@@ -177,6 +241,7 @@ export class ScrubVideoCache {
 	}
 
 	private dropSource(file: File, source: Source): void {
+		if (this.motion?.source === source) this.closeMotion();
 		source.job?.controller.abort();
 		source.input.dispose();
 		this.sources.delete(file);
@@ -195,6 +260,25 @@ export class ScrubVideoCache {
 		}
 	}
 
+	private nearestDetail(source: Source, time: number, maxDistance = 0.5): Entry | undefined {
+		let best: Entry | undefined;
+		for (const entry of this.details.entries) {
+			if (entry.source !== source || entry.start > time ||
+				(time >= entry.end && time - entry.start > maxDistance)) continue;
+			if (!best || entry.start > best.start) best = entry;
+		}
+		return best;
+	}
+
+	private followingDetail(source: Source, time: number): Entry | undefined {
+		let best: Entry | undefined;
+		for (const entry of this.details.entries) {
+			if (entry.source !== source || entry.start < time || entry.start - time > 0.2) continue;
+			if (!best || entry.start < best.start) best = entry;
+		}
+		return best;
+	}
+
 	private dropFrame(pool: FramePool, entry: Entry): void {
 		pool.entries.delete(entry);
 		pool.bytes -= entry.bytes;
@@ -207,7 +291,8 @@ export class ScrubVideoCache {
 	private store(pool: FramePool, source: Source, range: TimeRange, frame: Frame | null): boolean {
 		const bytes = frame ? frame.canvas.width * frame.canvas.height * 4 : 0;
 		while (pool.entries.size >= pool.maxCount || pool.bytes + bytes > pool.maxBytes) {
-			const oldest = [...pool.entries].find((entry) => !this.pinned.has(entry));
+			const previous = new Set([...this.presentations.values()].map((presentation) => presentation.frame));
+			const oldest = [...pool.entries].find((entry) => !this.pinned.has(entry) && (!entry.frame || !previous.has(entry.frame)));
 			if (!oldest) {
 				if (frame) frame.canvas.width = 0;
 				return false;
@@ -220,15 +305,16 @@ export class ScrubVideoCache {
 	}
 
 	private pump(): void {
+		if (this.settling) return;
 		for (const [source, times] of this.wanted) {
-			if (this.jobs >= JOB_LIMIT) return;
+			if (this.jobs + Number(!!this.motion) >= JOB_LIMIT) break;
 			if (source.job) continue;
 			const time = [...times].find((time) => !this.find(this.keys, source, time));
 			if (time === undefined) continue;
 			const job: Job = { controller: new AbortController() };
 			this.startJob(source, job, () => this.decodeKey(source, time, job));
 		}
-		if (this.jobs < JOB_LIMIT && !this.detailRunning) this.pumpDetail();
+		this.advanceMotion();
 	}
 
 	private startJob(source: Source, job: Job, run: () => Promise<void>): void {
@@ -241,45 +327,68 @@ export class ScrubVideoCache {
 		});
 	}
 
-	private pumpDetail(): void {
-		const now = this.clock();
-		for (const [source, times] of this.wanted) {
-			const window = source.detailWindow;
-			const time = times.values().next().value;
-			if (source.job || !window || window.attempted || time === undefined || now - window.since < DETAIL_DWELL_MS) continue;
-			const key = this.find(this.keys, source, time);
-			// Keep speculative work within roughly one long GOP of the moving pointer.
-			if (!key?.frame || time - key.frame.timestamp > 9) continue;
-			const points: number[] = [];
-			for (let i = window.start * DETAIL_SAMPLES_PER_SECOND; i < window.end * DETAIL_SAMPLES_PER_SECOND; i++) {
-				const point = i / DETAIL_SAMPLES_PER_SECOND;
-				if (point >= 0 && !this.find(this.details, source, point)) points.push(point);
-			}
-			if (!points.length) continue;
-			window.attempted = true;
-			const job = { controller: new AbortController(), range: window };
-			this.detailRunning = true;
-			this.startJob(source, job, async () => {
-				const { signal } = job.controller;
-				try {
-					const track = await waitWithAbort(source.track, signal);
-					await readSamples(track, points, signal, (sample, start) => {
-						const end = (Math.round(start * DETAIL_SAMPLES_PER_SECOND) + 1) / DETAIL_SAMPLES_PER_SECOND;
-						const range = { start, end };
-						const frame = sample && rasterize(sample, track, DETAIL_DIMENSION);
-						if (this.store(this.details, source, range, frame) && frame &&
-							[...(this.wanted.get(source) ?? [])].some((time) => contains(range, time))) {
-							this.onReady?.();
-						}
-					});
-				} catch {
-					// The keyframe stays available if an intermediate decode fails.
-				} finally {
-					this.detailRunning = false;
-				}
-			});
+	private closeMotion(): void {
+		const motion = this.motion;
+		this.motion = undefined;
+		motion?.cursor?.dispose();
+	}
+
+	private updateMotion(): void {
+		if (this.settling) return;
+		// Overlapping reads have independent keyframes and settle through exact decode.
+		const request = this.wanted.entries().next().value;
+		const time = request?.[1].values().next().value;
+		if (!request || time === undefined) {
+			this.closeMotion();
+			this.lastTarget = undefined;
 			return;
 		}
+		const [source] = request;
+		const backward = this.lastTarget?.source === source && time < this.lastTarget.time;
+		const fast = this.lastTarget?.source === source && time - this.lastTarget.time > 0.14;
+		this.lastTarget = { source, time };
+		const motion = this.motion;
+		if (motion?.source === source) {
+			const key = this.find(this.keys, source, time);
+			const jump = key && key.start - Math.max(motion.at, motion.readTo) > 0.75;
+			if (!jump && (!backward || motion.at === -Infinity || time >= motion.start || this.nearestDetail(source, time, 0.045))) {
+				motion.fast = fast || (time === motion.target && motion.fast);
+				motion.target = time;
+				return;
+			}
+		}
+		this.closeMotion();
+		if (this.jobs >= JOB_LIMIT) return;
+		const start = Math.max(0, time - (backward ? LOOK_BEHIND : 0));
+		this.motion = { source, target: time, start, at: -Infinity, readTo: -Infinity, fast };
+	}
+
+	private advanceMotion(): void {
+		const motion = this.motion;
+		if (!motion || motion.pending || this.settling || motion.readTo >= motion.target) return;
+		const target = motion.readTo < motion.start ? motion.start : Math.min(motion.target, motion.readTo + 1.5);
+		motion.readTo = target;
+		const task = (async () => {
+			const track = await motion.source.track;
+			if (this.motion !== motion) return;
+			const cursor = motion.cursor ??= new VideoCursor(track);
+			await cursor.readAt(target, (sample) => {
+				if (this.motion !== motion) return;
+				motion.at = sample.timestamp;
+				if (motion.fast && motion.target - sample.timestamp > 0.65) return;
+				const range = { start: sample.timestamp, end: sample.timestamp + Math.max(sample.duration, 0.000001) };
+				if (this.find(this.details, motion.source, range.start)?.start === range.start) return;
+				const frame = rasterize(sample, track, DETAIL_DIMENSION);
+				if (frame && this.store(this.details, motion.source, range, frame) &&
+					Math.abs(motion.target - range.start) <= 0.5) this.onReady?.();
+			});
+		})().catch(() => {
+			if (this.motion === motion) this.closeMotion();
+		}).finally(() => {
+			motion.pending = undefined;
+			this.pump();
+		});
+		motion.pending = task;
 	}
 
 	private async decodeKey(source: Source, time: number, job: Job): Promise<void> {

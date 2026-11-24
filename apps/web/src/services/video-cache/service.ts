@@ -27,7 +27,7 @@ type VideoSource = {
 	lastPacketTime?: Promise<number | undefined>;
 };
 
-class VideoCursor {
+export class VideoCursor {
 	private iterator: AsyncGenerator<VideoSample, void, unknown> | null = null;
 	private currentStart = 0;
 	private current: VideoSample | null = null;
@@ -45,13 +45,13 @@ class VideoCursor {
 		return Math.abs(time - this.currentStart);
 	}
 
-	async readAt(time: number): Promise<VideoSample | null> {
+	async readAt(time: number, observe?: (sample: VideoSample) => void, sequentialWindow = 2): Promise<VideoSample | null> {
 		const start = this.currentStart;
 		const iterator = this.iterator;
 		if (iterator && time >= start) {
 			if (this.current && time < this.current.timestamp) return this.current;
 			try {
-				if (time < start + 2) return await this.advanceTo(time);
+				if (time < start + sequentialWindow) return await this.advanceTo(time, observe);
 				const next = await this.next;
 				if (iterator !== this.iterator) return null;
 				// A known gap or end of stream is cheaper to hold than to seek again.
@@ -66,10 +66,10 @@ class VideoCursor {
 		this.currentStart = time;
 		this.iterator = this.sink.samples(time);
 		this.prefetch(this.iterator);
-		return this.advanceTo(time);
+		return this.advanceTo(time, observe);
 	}
 
-	private async advanceTo(time: number): Promise<VideoSample | null> {
+	private async advanceTo(time: number, observe?: (sample: VideoSample) => void): Promise<VideoSample | null> {
 		const iterator = this.iterator;
 		while (iterator && this.next && this.current?.timestamp !== time) {
 			const next = await this.next;
@@ -85,6 +85,7 @@ class VideoCursor {
 			// A seek before the first presentation timestamp displays the first sample immediately.
 			this.currentStart = Math.min(next.timestamp, time);
 			this.prefetch(iterator);
+			observe?.(next);
 			if (next.timestamp >= time) break;
 		}
 		// A frame remains active until the next presentation timestamp, including VFR gaps.

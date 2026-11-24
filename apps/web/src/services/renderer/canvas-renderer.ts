@@ -36,7 +36,7 @@ export type CanvasRendererParams = {
 let renderQueue: Promise<void> = Promise.resolve();
 
 type RenderRequest = { node: AnyBaseNode; time: number; signal?: AbortSignal };
-type ScrubPreview = { cache: ScrubVideoCache; onReady: () => void };
+type ScrubPreview = { cache: ScrubVideoCache; onReady?: () => void };
 
 export class CanvasRenderer {
 	width: number;
@@ -119,7 +119,9 @@ export class CanvasRenderer {
 		}
 		await measureSpanAsync({
 			name: "resolve",
-			fn: () => resolveRenderTree({ node, renderer: this, time, signal, scrubCache: scrub?.cache }),
+			fn: () => resolveRenderTree({
+				node, renderer: this, time, signal, scrubCache: scrub?.cache, settleScrub: !!scrub && !scrub.onReady,
+			}),
 		});
 		signal.throwIfAborted();
 		checkGraphicsContext();
@@ -174,10 +176,12 @@ export class CanvasRenderer {
 			try {
 				await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, scrub });
 			} catch (error) {
-				scrub?.cache.finishFrame();
+				if (scrub?.onReady || frameSignal.aborted) scrub?.cache.finishFrame();
+				else scrub?.cache.stop();
 				throw error;
 			}
-			scrub?.cache.finishFrame(scrub.onReady);
+			if (scrub?.onReady) scrub.cache.finishFrame(scrub.onReady);
+			else scrub?.cache.stop();
 		}).catch((error: unknown) => {
 			frameSignal.throwIfAborted();
 			rethrowGraphicsFailure(error);

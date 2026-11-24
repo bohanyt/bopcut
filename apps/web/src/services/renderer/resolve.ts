@@ -60,6 +60,7 @@ type ResolveContext = {
 	time: number;
 	signal?: AbortSignal;
 	scrubCache?: ScrubVideoCache;
+	settleScrub?: boolean;
 };
 
 export async function resolveRenderTree({
@@ -68,14 +69,16 @@ export async function resolveRenderTree({
 	time,
 	signal,
 	scrubCache,
+	settleScrub,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
 	scrubCache?: ScrubVideoCache;
+	settleScrub?: boolean;
 }): Promise<void> {
-	await resolveNode({ node, context: { renderer, time, signal, scrubCache } });
+	await resolveNode({ node, context: { renderer, time, signal, scrubCache, settleScrub } });
 }
 
 async function resolveNode({
@@ -326,7 +329,7 @@ async function resolveVideoNode({
 		});
 	const { width, height, outputWidth, outputHeight } = context.renderer;
 	const { scaleX, scaleY } = placement.transform;
-	const frame = await readVideoFrame(node.params, sourceTimeTicks, context, (source) => {
+	const frame = await readVideoFrame(node, sourceTimeTicks, context, (source) => {
 		const containScale = Math.min(width / source.width, height / source.height);
 		return containScale * Math.max(
 			(Math.abs(scaleX) * outputWidth) / width,
@@ -358,24 +361,32 @@ async function resolveVideoNode({
 }
 
 function readVideoFrame(
-	{ mediaId, file }: { mediaId: string; file: File },
+	clip: { params: { mediaId: string; file: File } },
 	time: number,
 	context: ResolveContext,
 	getScale: (source: { width: number; height: number }) => number,
 ) {
 	const seconds = mediaTimeToSeconds({ time: roundMediaTime({ time }) });
-	if (context.scrubCache) {
+	const { mediaId, file } = clip.params;
+	if (context.scrubCache && !context.settleScrub) {
 		context.signal?.throwIfAborted();
-		return context.scrubCache.getFrameAt(file, seconds);
+		return context.scrubCache.getFrameAt(file, seconds, clip);
 	}
-	return readMediaSource(mediaId, context, () => context.renderer.videoCache.getFrameAt({
-		file,
-		time: seconds,
+	const options = {
 		getScale: context.renderer.exactFrames ? undefined : getScale,
 		maxTextureDimension: getRendererLimits().maxTextureDimension,
-		throwOnSeekError: context.renderer.strictVideoDecoding,
 		signal: context.signal,
-	}));
+	};
+	const readExact = () => context.renderer.videoCache.getFrameAt({
+		file,
+		time: seconds,
+		...options,
+		throwOnSeekError: context.renderer.strictVideoDecoding,
+	});
+	const scrub = context.scrubCache;
+	return readMediaSource(mediaId, context, scrub
+		? async () => (await scrub.getExactFrameAt(file, seconds, options)) ?? readExact()
+		: readExact);
 }
 
 async function readMediaSource<T>(
@@ -634,7 +645,7 @@ async function resolveBackdropSource({
 				retime: node.params.retime,
 			});
 		const { outputWidth, outputHeight } = context.renderer;
-		const frame = await readVideoFrame(node.params, sourceTimeTicks, context, ({ width, height }) =>
+		const frame = await readVideoFrame(node, sourceTimeTicks, context, ({ width, height }) =>
 			Math.max(outputWidth / width, outputHeight / height),
 		);
 		if (!frame) {

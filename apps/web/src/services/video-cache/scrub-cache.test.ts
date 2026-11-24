@@ -9,7 +9,8 @@ async function withCache(run: (fixture: {
 	disposed: () => number;
 	reads: number[];
 	closed: number[];
-	elapse: (ms: number) => void;
+	stream: (enable: boolean) => void;
+	streamStarts: number[];
 	decode: (read: (time: number) => Promise<VideoSample | null>, cancel: () => void) => void;
 	sample: (time: number) => VideoSample;
 }) => Promise<void>) {
@@ -18,7 +19,7 @@ async function withCache(run: (fixture: {
 		configurable: true,
 		value: class {
 			constructor(public width: number, public height: number) {}
-			getContext() { return {}; }
+			getContext() { return { clearRect() {} }; }
 		},
 	});
 	const track: InputVideoTrack = Object.create(InputVideoTrack.prototype, {
@@ -29,19 +30,27 @@ async function withCache(run: (fixture: {
 	});
 	const reads: number[] = [];
 	const closed: number[] = [];
+	const streamStarts: number[] = [];
 	const sample = (time: number): VideoSample => Object.create(VideoSample.prototype, {
 		timestamp: { value: time },
+		duration: { value: 0.05 },
 		drawWithFit: { value: (_canvas: unknown, options: object) => expect(options).toEqual({ fit: "fill", rotation: 90 }) },
 		close: { value: () => closed.push(time) },
 	});
 	let read = async (time: number): Promise<VideoSample | null> => sample(time);
 	let cancel = () => {};
+	let streaming = false;
 	const dispose = spyOn(Input.prototype, "dispose");
 	const spies = [
 		dispose,
 		spyOn(Input.prototype, "getPrimaryVideoTrack").mockResolvedValue(track),
 		spyOn(EncodedPacketSink.prototype, "getKeyPacket").mockImplementation(async (time) => keyPacket(Math.floor(time / 2) * 2)),
 		spyOn(EncodedPacketSink.prototype, "getNextKeyPacket").mockImplementation(async (packet) => keyPacket(packet.timestamp + 2)),
+		spyOn(VideoSampleSink.prototype, "samples").mockImplementation(async function* (start = 0) {
+			if (!streaming) throw new Error("Sequential decode is disabled in this fixture");
+			streamStarts.push(start);
+			for (let i = Math.floor(start * 20); i < 200; i++) yield sample(i / 20);
+		}),
 		spyOn(VideoSampleSink.prototype, "samplesAtTimestamps").mockImplementation((timestamps) => {
 			const points = Array.from(timestamps as Iterable<number>);
 			reads.push(points[0]);
@@ -59,12 +68,12 @@ async function withCache(run: (fixture: {
 			return iterator;
 		}),
 	];
-	let elapsed = 0;
-	const cache = new ScrubVideoCache(() => elapsed);
+	const cache = new ScrubVideoCache();
 	try {
 		await run({
 			cache, reads, closed, sample,
-			elapse: (ms) => { elapsed += ms; },
+			streamStarts,
+			stream: (enable) => { streaming = enable; },
 			disposed: () => dispose.mock.calls.length,
 			decode: (next, close) => { read = next; cancel = close; },
 		});
@@ -175,22 +184,48 @@ test("overlapping sources share the bounded decoder pool", () =>
 		expect(files.every((file) => cache.getFrameAt(file, 0))).toBe(true);
 	}));
 
-test("a sustained scrub switches from the keyframe to nearby decoded frames", () =>
-	withCache(async ({ cache, reads, elapse }) => {
+test("forward motion retains its cursor, backward reads reuse its frames, and rest rasterizes the warm sample", () =>
+	withCache(async ({ cache, stream, streamStarts }) => {
 		const file = new File([], "source.mp4");
-		const fallback = await load(cache, file, 1.02);
-		expect(fallback?.timestamp).toBe(0);
-		cache.finishFrame(() => {});
-		expect(reads).toEqual([0]);
-		elapse(160);
-		const ready = Promise.withResolvers<void>();
-		expect(cache.getFrameAt(file, 1.02)).toBe(fallback);
-		cache.finishFrame(ready.resolve);
-		await ready.promise;
-		const detail = cache.getFrameAt(file, 1.02);
-		expect(detail?.timestamp).toBe(1);
-		expect(detail?.canvas.width).toBe(320);
-		expect(cache.getFrameAt(file, 0.51)?.timestamp).toBe(0.5);
-		expect(cache.getFrameAt(file, 2)).toBeNull();
+		stream(true);
+		const seek = async (time: number) => {
+			cache.getFrameAt(file, time);
+			cache.finishFrame(() => {});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		};
+		await seek(1);
+		await seek(1.2);
+		expect(cache.getFrameAt(file, 1.2)?.timestamp).toBe(1.2);
+		expect(cache.getFrameAt(file, 1.1)?.timestamp).toBe(1.1);
+		expect(streamStarts).toEqual([1]);
+		const settled = await cache.getExactFrameAt(file, 1.2, { getScale: () => 0.5 });
+		expect(settled).toMatchObject({ timestamp: 1.2, canvas: { width: 960, height: 540 } });
+		expect(streamStarts).toEqual([1]);
 		cache.stop();
+		expect(cache.getFrameAt(file, 1.2)?.timestamp).toBe(0);
+	}));
+
+test("a missing forward frame holds the previous picture instead of jumping back to a keyframe", () =>
+	withCache(async ({ cache, stream }) => {
+		const file = new File([], "source.mp4");
+		const clip = {};
+		stream(true);
+		cache.getFrameAt(file, 1, clip);
+		cache.finishFrame(() => {});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const current = cache.getFrameAt(file, 1, clip);
+		expect(current?.timestamp).toBe(1);
+		cache.finishFrame(() => {});
+		expect(cache.getFrameAt(file, 1.8, clip)).toBe(current);
+		expect(cache.getFrameAt(file, 1.8)?.timestamp).toBe(0);
+	}));
+
+test("a cold backward drag skips a preceding keyframe that would reverse picture order", () =>
+	withCache(async ({ cache }) => {
+		const file = new File([], "source.mp4");
+		const clip = {};
+		expect((await load(cache, file, 1.6))?.timestamp).toBe(0);
+		expect(cache.getFrameAt(file, 1.6, clip)).toBeNull();
+		cache.finishFrame(() => {});
+		expect(cache.getFrameAt(file, 1.55, clip)).toBeNull();
 	}));
