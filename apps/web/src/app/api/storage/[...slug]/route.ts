@@ -26,6 +26,7 @@ import {
 	isEmbeddedMediaThumbnail,
 	mediaThumbnailReference,
 	readMediaThumbnail,
+	resolveMediaThumbnailReference,
 	storeMissingMediaThumbnail,
 } from "@/services/storage/server/media-thumbnails";
 import type { MediaAssetData } from "@/services/storage/types";
@@ -202,7 +203,7 @@ async function handle(
 							return null;
 						});
 						if (typeof metadata?.name !== "string" || typeof metadata.type !== "string") return null;
-						metadata.thumbnailUrl = mediaThumbnailReference(id, name.slice(0, -5), metadata.thumbnailUrl);
+						metadata.thumbnailUrl = await resolveMediaThumbnailReference(id, name.slice(0, -5), metadata);
 						return metadata;
 					}));
 					for (const metadata of batch) if (metadata) manifest.push(metadata);
@@ -224,7 +225,7 @@ async function handle(
 				}
 			}
 			if (s[2] === "media" && s[3] && s[4] === "thumbnail" && s.length === 5 && method === "POST") {
-				return await storeMissingMediaThumbnail(id, safeId(s[3]), req.headers.get("x-media-revision"), await req.text());
+				return await storeMissingMediaThumbnail(id, safeId(s[3]), req.headers.get("x-media-revision"), await req.text(), req.signal);
 			}
 			if (s[2] === "media" && s[3] && s.length === 4) {
 				const mediaId = safeId(s[3]);

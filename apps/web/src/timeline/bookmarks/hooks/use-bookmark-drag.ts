@@ -6,6 +6,8 @@ import {
 	type RefObject,
 } from "react";
 import { useEditor } from "@/editor/use-editor";
+import { registerCanceller } from "@/editor/cancel-interaction";
+import { beginTimelineGesture } from "@/timeline/gesture-state";
 import { useShiftKey } from "@/hooks/use-shift-key";
 import { TIMELINE_DRAG_THRESHOLD_PX } from "@/timeline/components/interaction";
 import { getMouseTimeFromClientX } from "@/timeline/drag-utils";
@@ -62,6 +64,12 @@ export function useBookmarkDrag({
 	const [isPendingDrag, setIsPendingDrag] = useState(false);
 	const pendingDragRef = useRef<PendingBookmarkDrag | null>(null);
 	const lastMouseXRef = useRef(0);
+	const releaseGesture = useRef<(() => void) | undefined>(undefined);
+	const release = useCallback(() => {
+		releaseGesture.current?.();
+		releaseGesture.current = undefined;
+	}, []);
+	useEffect(() => release, [release]);
 
 	const startDrag = useCallback(
 		({
@@ -71,6 +79,7 @@ export function useBookmarkDrag({
 			bookmark: Bookmark;
 			initialCurrentTime: MediaTime;
 		}) => {
+			releaseGesture.current ??= beginTimelineGesture();
 			setDragState({
 				isDragging: true,
 				bookmark,
@@ -81,12 +90,31 @@ export function useBookmarkDrag({
 	);
 
 	const endDrag = useCallback(() => {
+		release();
+		pendingDragRef.current = null;
+		setIsPendingDrag(false);
 		setDragState({
 			isDragging: false,
 			bookmark: null,
 			currentTime: ZERO_MEDIA_TIME,
 		});
-	}, []);
+	}, [release]);
+
+	useEffect(() => {
+		if (!dragState.isDragging && !isPendingDrag) return;
+		const cancel = () => {
+			endDrag();
+			onSnapPointChange?.(null);
+		};
+		const unregister = registerCanceller({ fn: cancel });
+		window.addEventListener("blur", cancel);
+		window.addEventListener("pointercancel", cancel);
+		return () => {
+			unregister();
+			window.removeEventListener("blur", cancel);
+			window.removeEventListener("pointercancel", cancel);
+		};
+	}, [dragState.isDragging, isPendingDrag, endDrag, onSnapPointChange]);
 
 	const getSnapResult = useCallback(
 		({

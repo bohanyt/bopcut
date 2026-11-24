@@ -61,10 +61,11 @@ export async function atomicWrite(file: string, data: string | Uint8Array, signa
 	const key = path.resolve(file).toLowerCase();
 	const previous = fileQueues.get(key) ?? Promise.resolve();
 	const current = previous.catch(() => undefined).then(async () => {
+		signal?.throwIfAborted();
 		await fs.mkdir(path.dirname(file), { recursive: true });
 		const temp = `${file}.${randomUUID()}.tmp`;
 		try {
-			await fs.writeFile(temp, data);
+			await fs.writeFile(temp, data, { signal });
 			await renameWithRetry(temp, file, signal);
 		} finally {
 			await fs.rm(temp, { force: true });
@@ -103,6 +104,10 @@ export function revision(value: unknown): string {
 
 export function mediaRevision(stat: import("node:fs").Stats): string {
 	return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
+export function repairedThumbnailFile(projectId: string, mediaId: string): string {
+	return path.join(projectDir(projectId), "media", "_thumbnails", `${safeId(mediaId)}.json`);
 }
 
 // One queue per project keeps revision checks and renames ordered.
@@ -165,6 +170,7 @@ export async function saveMedia(
 			createWriteStream(temp, { flags: "wx" }),
 		);
 		await renameWithRetry(temp, file);
+		await retryTransient(() => fs.rm(repairedThumbnailFile(id, mediaId), { force: true }));
 		if (!old) {
 			try {
 				await atomicWrite(
@@ -299,4 +305,5 @@ export async function removeMedia(id: string, mediaId: string): Promise<void> {
 		: (await fs.readdir(dir).catch(() => [] as string[])).filter((name) => own.test(name));
 	for (const name of files) await retryTransient(() => fs.rm(path.join(dir, name), { force: true }));
 	await retryTransient(() => fs.rm(metaFile, { force: true }));
+	await retryTransient(() => fs.rm(repairedThumbnailFile(id, mediaId), { force: true }));
 }
