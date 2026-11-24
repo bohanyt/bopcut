@@ -32,9 +32,9 @@ export function BookmarkAreaLayer() {
 	const editing = useBookmarkArea((state) => state.editing);
 	const shown = useBookmarkArea((state) => state.shown ?? state.hovered);
 	const editor = useEditor();
-	const scope = useEditor((e) => `${e.project.getActiveOrNull()?.metadata.id}:${e.scenes.getActiveSceneOrNull()?.id}`);
+	const scope = useEditor((e) => `${e.project.getSession()}:${e.project.getActiveOrNull()?.metadata.id}:${e.scenes.getActiveSceneOrNull()?.id}`);
 	const { sceneLeft, sceneTop, sceneWidth, sceneHeight } = usePreviewViewport();
-	const matches = (target: typeof editing) => target && scope === `${target.projectId}:${target.sceneId}`;
+	const matches = (target: typeof editing) => target && scope === `${target.session}:${target.projectId}:${target.sceneId}`;
 	useEffect(() => {
 		if (editing && !matches(editing)) useBookmarkArea.setState({ editing: null });
 	}, [editing, scope]);

@@ -53,6 +53,8 @@ test("validates render arguments before connecting", () => {
 	expect(() => parseArgs(["frames", "--compare", "{}"])).toThrow("open the editor");
 	expect(() => parseArgs(["frames", "--times", "1,-1"])).toThrow("times");
 	expect(parseArgs(["frames", "--element", "intro"]).request).toEqual({ elements: ["intro"], allowMissing: false });
+	expect(parseArgs(["frames", "--note", "note-1", "--scene-id", "scene-1"]).request)
+		.toEqual({ noteId: "note-1", sceneId: "scene-1", allowMissing: false });
 	expect(() => parseArgs(["status", "--name", "Final"])).toThrow();
 });
 

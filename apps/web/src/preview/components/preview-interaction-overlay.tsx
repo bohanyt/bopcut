@@ -9,11 +9,13 @@ import { SnapGuides } from "./snap-guides";
 import { TextEditOverlay } from "./text-edit-overlay";
 import { usePropertiesStore } from "@/components/editor/panels/properties/stores/properties-store";
 import { useEditor } from "@/editor/use-editor";
+import { useBookmarkArea } from "@/timeline/bookmarks/area-state";
 
 export function PreviewInteractionOverlay() {
 	const { t } = useI18n();
 	const [snapLines, setSnapLines] = useState<SnapLine[]>([]);
 	const editor = useEditor();
+	const areaEditing = useBookmarkArea((state) => state.editing !== null);
 	const viewport = usePreviewViewport();
 	const captureTarget = usePreviewCaptureTarget();
 	const selectedElements = useEditor((e) => e.selection.getSelectedElements());
@@ -54,7 +56,7 @@ export function PreviewInteractionOverlay() {
 	};
 
 	return (
-		<div className="absolute inset-0">
+		<div className={areaEditing ? "invisible absolute inset-0" : "absolute inset-0"}>
 			<div
 				ref={captureTarget}
 				className="absolute inset-0 pointer-events-auto"

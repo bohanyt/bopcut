@@ -4,7 +4,7 @@ import type { Bookmark } from "@/timeline";
 import type { MediaTime } from "@/wasm";
 import { getFrameTime } from "./utils";
 
-type AreaTarget = { projectId: string; sceneId: string; time: MediaTime; bookmark?: Bookmark };
+type AreaTarget = { session: number; projectId: string; sceneId: string; time: MediaTime; bookmark?: Bookmark };
 export const useBookmarkArea = create<{ editing: AreaTarget | null; shown: AreaTarget | null; hovered: AreaTarget | null }>(() => ({
 	editing: null,
 	shown: null,
@@ -15,12 +15,13 @@ export function areaTarget(editor: EditorCore, time: MediaTime): AreaTarget {
 	const project = editor.project.getActive();
 	const scene = editor.scenes.getActiveScene();
 	const frame = getFrameTime({ time, fps: project.settings.fps });
-	return { projectId: project.metadata.id, sceneId: scene.id, time: frame, bookmark: scene.bookmarks.find((b) => b.time === frame) };
+	return { session: editor.project.getSession(), projectId: project.metadata.id, sceneId: scene.id, time: frame, bookmark: scene.bookmarks.find((b) => b.time === frame) };
 }
 
 export function startBookmarkArea(editor: EditorCore, time: MediaTime) {
 	editor.playback.pause();
-	const target = areaTarget(editor, time);
+	const lastFrame = editor.timeline.getLastFrameTime();
+	const target = areaTarget(editor, time > lastFrame ? lastFrame : time);
 	editor.playback.seek({ time: target.time });
 	useBookmarkArea.setState({ editing: target });
 }
