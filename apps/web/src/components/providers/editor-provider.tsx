@@ -12,7 +12,6 @@ import { useKeybindingsListener } from "@/actions/use-keybindings";
 import { useKeybindingsStore } from "@/actions/keybindings-store";
 import { useTimelineStore } from "@/timeline/timeline-store";
 import { useEditorActions } from "@/actions/use-editor-actions";
-import { loadFontAtlas } from "@/fonts/google-fonts";
 import { rendererDevice } from "@/services/renderer/renderer-device";
 
 interface EditorProviderProps {
@@ -46,7 +45,6 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 				if (cancelled) return;
 
 				setIsLoading(false);
-				loadFontAtlas();
 			} catch (err) {
 				if (cancelled) return;
 
