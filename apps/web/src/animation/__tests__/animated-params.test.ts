@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { getKeyframeById } from "@/animation/keyframe-query";
+import { retimeElementKeyframes } from "@/animation/keyframes";
+import { mediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import {
 	coerceParamValue,
 	getParamDefaultInterpolation,
@@ -7,6 +10,24 @@ import {
 } from "@/params";
 
 describe("animated params", () => {
+	test("looks up the stored value of a key moved to an occupied time", () => {
+		const time = mediaTime({ ticks: 4000 });
+		const animations = retimeElementKeyframes({
+			propertyPath: "opacity",
+			animations: {
+				opacity: {
+					keys: [
+						{ id: "first", time: ZERO_MEDIA_TIME, value: 0.25, segmentToNext: "linear", tangentMode: "flat" },
+						{ id: "second", time, value: 0.75, segmentToNext: "linear", tangentMode: "flat" },
+					],
+				},
+			},
+			timesByKeyframe: new Map([["first", time]]),
+		});
+		expect(getKeyframeById({ animations, propertyPath: "opacity", keyframeId: "first" })?.value).toBe(0.25);
+		expect(getKeyframeById({ animations, propertyPath: "opacity", keyframeId: "second" })?.value).toBe(0.75);
+	});
+
 	test("snaps and clamps number params", () => {
 		expect(
 			coerceParamValue({
