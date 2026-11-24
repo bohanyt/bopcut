@@ -156,6 +156,39 @@ describe("copying thumbnails only for media history or duplication", () => {
 		deleting.resolve(Response.json({ ok: true }));
 		await removal;
 	});
+
+	test("redo between an undo's file PUT and metadata POST keeps the thumbnail for the next undo", async () => {
+		const firstPut = deferred<Response>();
+		const putStarted = deferred<void>();
+		const posted: (string | undefined)[] = [];
+		let reads = 0;
+		let puts = 0;
+		stubFetch(async (path, init) => {
+			if (path === currentUrl) {
+				return ++reads === 1 ? new Response(inline) : new Response(null, { status: 404 });
+			}
+			if (init?.method === "PUT" && ++puts === 1) {
+				putStarted.resolve();
+				return firstPut.promise;
+			}
+			if (init?.method === "POST") posted.push(JSON.parse(String(init.body)).thumbnailUrl);
+			return Response.json({ ok: true });
+		});
+		const { media } = EditorCore.getInstance();
+		const stored = { ...asset(id), thumbnailUrl: url };
+		await media.persistBinChange({ projectId: "p", id, asset: null, removedAsset: stored });
+		const restoring = { ...stored };
+		const undo = media.persistBinChange({ projectId: "p", id, asset: restoring });
+		await putStarted.promise;
+		try {
+			await media.persistBinChange({ projectId: "p", id, asset: null, removedAsset: restoring });
+			await media.persistBinChange({ projectId: "p", id, asset: { ...restoring } });
+			expect(posted).toEqual([inline]);
+		} finally {
+			firstPut.resolve(Response.json({ ok: true }));
+			await undo;
+		}
+	});
 });
 
 describe("media manager loads", () => {

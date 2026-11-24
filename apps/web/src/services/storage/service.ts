@@ -546,12 +546,14 @@ class StorageService {
 		return items.filter((item): item is MediaAsset => item !== null);
 	}
 
-	async captureRemovedThumbnail(asset: MediaAsset): Promise<void> {
+	async captureRemovedThumbnail(asset: MediaAsset, restoring = false): Promise<void> {
 		const url = asset.thumbnailUrl;
 		const reference = parseMediaThumbnailReference(url);
 		if (!url || !reference) return;
 		const thumbnail = await copyThumbnail(reference);
 		let removed = this.removedThumbnails.get(asset.file);
+		// A redo can reach disk after the file PUT but before the restoring metadata POST.
+		if (restoring && thumbnail === undefined && removed?.has(url)) return;
 		if (!removed) this.removedThumbnails.set(asset.file, removed = new Map());
 		removed.set(url, thumbnail);
 	}

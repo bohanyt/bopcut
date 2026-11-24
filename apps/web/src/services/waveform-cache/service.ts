@@ -5,6 +5,7 @@ import { yieldAudioTask } from "@/media/audio-window";
 import type { SourceWaveformSummary } from "@/media/waveform-summary";
 import { IndexedDBAdapter } from "@/services/storage/indexeddb-adapter";
 import { mediaFileVersion } from "@/services/storage/media-file-version";
+import { waitWithAbort } from "@/utils/abort";
 import { waveformPeaks, WAVEFORM_BUCKET_SIZE } from "./peaks";
 
 interface GetSourceWaveformSummaryArgs {
@@ -23,6 +24,7 @@ type Entry = {
 
 const LIMIT_BYTES = 8 * 1024 * 1024;
 const LIMIT_ENTRIES = 64;
+const DOWNLOAD_LIMIT = 3;
 
 function sourceFileVersion(file: File): string {
 	return JSON.stringify([file.name, file.size, file.lastModified, mediaFileVersion(file)]);
@@ -31,6 +33,7 @@ function sourceFileVersion(file: File): string {
 export class WaveformCache {
 	private summaries = new Map<string, Entry>();
 	private queue: Promise<unknown> = Promise.resolve();
+	private downloads = new Set<Promise<unknown>>();
 	private persisted = new IndexedDBAdapter<SourceWaveformSummary>({
 		dbName: "bopencut-waveform-cache",
 		storeName: "summaries",
@@ -48,9 +51,19 @@ export class WaveformCache {
 
 		existing?.controller.abort();
 		const controller = new AbortController();
-		const promise = this.queue
-			.then(() => yieldAudioTask(controller.signal))
-			.then(() => this.buildSummary(args, version, controller.signal))
+		const { signal } = controller;
+		const download = !args.audioBuffer && !args.sourceFile && args.audioUrl
+			? this.download(args.audioUrl, signal)
+			: Promise.resolve(undefined);
+		const promise = download
+			.then((remoteData) => {
+				signal.throwIfAborted();
+				const work = this.queue
+					.then(() => yieldAudioTask(signal))
+					.then(() => this.buildSummary(args, version, signal, remoteData));
+				this.queue = work.catch(() => undefined);
+				return work;
+			})
 			.then((summary) => {
 				controller.signal.throwIfAborted();
 				if (this.summaries.get(sourceKey) === entry) {
@@ -64,10 +77,29 @@ export class WaveformCache {
 				throw error;
 			});
 		const entry: Entry = { controller, promise, version };
-		this.queue = promise.catch(() => undefined);
 		this.summaries.delete(sourceKey);
 		this.summaries.set(sourceKey, entry);
 		return promise;
+	}
+
+	private async download(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
+		while (this.downloads.size >= DOWNLOAD_LIMIT) {
+			await waitWithAbort(Promise.race(this.downloads), signal);
+		}
+		signal.throwIfAborted();
+		const deadline = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+		const download = (async () => {
+			const response = await fetch(url, { signal: deadline });
+			if (!response.ok) throw new Error(`Failed to fetch waveform source: ${response.status}`);
+			return response.arrayBuffer();
+		})();
+		const slot = download.then(() => undefined, () => undefined);
+		this.downloads.add(slot);
+		try {
+			return await download;
+		} finally {
+			this.downloads.delete(slot);
+		}
 	}
 
 	clearSource({ sourceKey }: { sourceKey: string }): void {
@@ -101,8 +133,7 @@ export class WaveformCache {
 		sourceKey,
 		audioBuffer,
 		sourceFile,
-		audioUrl,
-	}: GetSourceWaveformSummaryArgs, version: string | undefined, signal: AbortSignal): Promise<SourceWaveformSummary> {
+	}: GetSourceWaveformSummaryArgs, version: string | undefined, signal: AbortSignal, remoteData?: ArrayBuffer): Promise<SourceWaveformSummary> {
 		if (audioBuffer) return summarizeAudio(sourceKey, audioBuffer, signal);
 		// Keep decodeAudioData's original sample rate. A different output device can select a
 		// different rate, so the persisted summary must include it in the cache key.
@@ -117,16 +148,8 @@ export class WaveformCache {
 				if (cached) return cached;
 			}
 
-			let data: ArrayBuffer;
-			if (sourceFile) {
-				data = await sourceFile.arrayBuffer();
-			} else if (audioUrl) {
-				const response = await fetch(audioUrl, { signal });
-				if (!response.ok) throw new Error(`Failed to fetch waveform source: ${response.status}`);
-				data = await response.arrayBuffer();
-			} else {
-				throw new Error(`No waveform source available for ${sourceKey}`);
-			}
+			const data = sourceFile ? await sourceFile.arrayBuffer() : remoteData;
+			if (!data) throw new Error(`No waveform source available for ${sourceKey}`);
 			signal.throwIfAborted();
 			// Web Audio decodes off the main thread and takes ownership of the input bytes.
 			audioBuffer = await audioContext.decodeAudioData(data);

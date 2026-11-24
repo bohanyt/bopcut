@@ -79,7 +79,8 @@ export class MediaManager {
 		if (!writes) this.binWrites.set(projectId, writes = new Map());
 		const projectWrites = writes;
 		const reference = parseMediaThumbnailReference((asset ?? removedAsset)?.thumbnailUrl);
-		const previous = projectWrites.get(id)?.started;
+		const pending = projectWrites.get(id);
+		const previous = pending?.started;
 		const started = reference || previous ? Promise.withResolvers<void>() : undefined;
 		const send = () => {
 			try {
@@ -101,7 +102,7 @@ export class MediaManager {
 		// Capture a projected thumbnail before its metadata disappears. A later history action
 		// only waits for the earlier request to be sent, even if its response is delayed.
 		const write = () => reference && removedAsset
-			? storageService.captureRemovedThumbnail(removedAsset).then(send, send)
+			? storageService.captureRemovedThumbnail(removedAsset, pending?.asset?.file === removedAsset.file).then(send, send)
 			: send();
 		const done = (previous ? previous.then(write) : write()).finally(() => {
 			if (projectWrites.get(id)?.done === done) projectWrites.delete(id);
