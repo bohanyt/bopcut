@@ -17,6 +17,7 @@ import {
 	validateTextPreset,
 } from "./presets";
 import { buildTextElement } from "@/timeline/element-utils";
+import { parseSubtitleFile } from "@/subtitles/parse";
 import { upsertPathKeyframe } from "@/animation";
 import { resolveAnimationTarget } from "@/timeline/animation-targets";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
@@ -31,6 +32,31 @@ const element = (): TextElement => ({
 	}),
 	id: "caption",
 	duration: t(3),
+});
+
+describe("subtitle import", () => {
+	test("reads adjacent SubRip cues and keeps short fields in milliseconds", () => {
+		const result = parseSubtitleFile({
+			fileName: "captions.srt",
+			input: "7\r\n00:00:00,09 --> 00:00:01,000\r\nLaunch\r\n8\r\n00:00:02.7 --> 00:00:03.125\r\nLand\r\n9",
+		});
+		expect(result.skippedCueCount).toBe(0);
+		expect(result.captions.map(({ text, startTime }) => ({ text, startTime }))).toEqual([
+			{ text: "Launch", startTime: 0.009 },
+			{ text: "Land\n9", startTime: 2.007 },
+		]);
+	});
+
+	test("reads standard ASS dialogue without a format line and uses centiseconds", () => {
+		const result = parseSubtitleFile({
+			fileName: "captions.ass",
+			input: "[Events]\nDialogue: 0,0:00:02.7,0:00:04.20,Default,,0,0,0,,Hello, world\nDialogue: incomplete",
+		});
+		expect(result.skippedCueCount).toBe(1);
+		expect(result.captions[0]?.text).toBe("Hello, world");
+		expect(result.captions[0]?.startTime).toBe(2.07);
+		expect(result.captions[0]?.duration).toBeCloseTo(2.13);
+	});
 });
 
 describe("caption word timing", () => {
