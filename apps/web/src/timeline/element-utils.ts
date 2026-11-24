@@ -270,7 +270,7 @@ function buildImageElement({
 	};
 }
 
-function buildUploadAudioElement({
+export function buildUploadAudioElement({
 	mediaId,
 	name,
 	duration,

@@ -15,11 +15,13 @@ export class PlaybackManager {
 	private currentTime: MediaTime = ZERO_MEDIA_TIME;
 	private volume = 1;
 	private muted = false;
+	private recordingMute = false;
 	private previousVolume = 1;
 	private isScrubbing = false;
 	private listeners = new Set<() => void>();
 	private updateListeners = new Set<(time: MediaTime) => void>();
 	private seekListeners = new Set<(time: MediaTime) => void>();
+	private interruptListeners = new Set<() => void>();
 	private playbackTimer: number | null = null;
 	private readClock = wallClock;
 	private playbackStartClockTime = 0;
@@ -42,7 +44,7 @@ export class PlaybackManager {
 		this.reconcileTimelineScope();
 	}
 
-	play(): void {
+	play({ restartAtEnd = true } = {}): void {
 		if (this.isPlaying) return;
 		const maxTime = this.editor.timeline.getTotalDuration();
 		if (maxTime <= 0) {
@@ -50,7 +52,8 @@ export class PlaybackManager {
 		}
 
 		if (this.currentTime >= maxTime) {
-			this.seek({ time: ZERO_MEDIA_TIME });
+			if (!restartAtEnd) return;
+			this.setTime(ZERO_MEDIA_TIME);
 		}
 
 		this.isPlaying = true;
@@ -59,6 +62,11 @@ export class PlaybackManager {
 	}
 
 	pause(): void {
+		this.interruptListeners.forEach((fn) => fn());
+		this.pausePlayback();
+	}
+
+	private pausePlayback(): void {
 		this.isPlaying = false;
 		this.stopTimer();
 		this.notify();
@@ -66,8 +74,8 @@ export class PlaybackManager {
 
 	finishAtTimelineEnd(): void {
 		const endTime = this.editor.timeline.getTotalDuration();
-		this.pause();
-		this.seek({ time: endTime });
+		this.pausePlayback();
+		this.setTime(endTime);
 		this.dispatchSeekEvent(this.currentTime);
 	}
 
@@ -80,6 +88,11 @@ export class PlaybackManager {
 	}
 
 	seek({ time }: { time: MediaTime }): void {
+		this.interruptListeners.forEach((fn) => fn());
+		this.setTime(time);
+	}
+
+	private setTime(time: MediaTime): void {
 		this.currentTime = this.clampTimeToTimeline(time);
 		if (this.isPlaying) {
 			this.playbackStartClockTime = this.readClock();
@@ -148,6 +161,19 @@ export class PlaybackManager {
 		return this.volume;
 	}
 
+	getOutputVolume(): number {
+		return this.recordingMute ? 0 : this.volume;
+	}
+
+	muteDuringRecording(): () => void {
+		this.recordingMute = true;
+		this.notify();
+		return () => {
+			this.recordingMute = false;
+			this.notify();
+		};
+	}
+
 	isMuted(): boolean {
 		return this.muted;
 	}
@@ -174,6 +200,12 @@ export class PlaybackManager {
 	onSeek(listener: (time: MediaTime) => void): () => void {
 		this.seekListeners.add(listener);
 		return () => this.seekListeners.delete(listener);
+	}
+
+	/** Explicit pause or seek, independent of natural ends and timeline reconciliation. */
+	onPlaybackInterrupt(listener: () => void): () => void {
+		this.interruptListeners.add(listener);
+		return () => this.interruptListeners.delete(listener);
 	}
 
 	private reconcileTimelineScope(): void {

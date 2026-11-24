@@ -111,7 +111,13 @@ export class ScenesManager {
 		this.editor.command.execute({ command });
 	}
 
-	async switchToScene({ sceneId }: { sceneId: string }): Promise<void> {
+	async switchToScene({ sceneId, fromHistory = false }: { sceneId: string; fromHistory?: boolean }): Promise<void> {
+		if (!fromHistory && this.active?.id !== sceneId) {
+			const signal = this.editor.project.getSessionSignal();
+			const take = this.editor.voiceOver.finishForNavigation();
+			if (take) await take;
+			if (signal.aborted) return;
+		}
 		const targetScene = this.list.find((s) => s.id === sceneId);
 
 		if (!targetScene) {
@@ -133,6 +139,11 @@ export class ScenesManager {
 		trackId: string;
 		elementId: string;
 	}): Promise<void> {
+		const signal = this.editor.project.getSessionSignal();
+		const sourceSceneId = this.active?.id;
+		const take = this.editor.voiceOver.finishForNavigation();
+		if (take) await take;
+		if (signal.aborted || sourceSceneId !== this.active?.id) return;
 		const host = this.getActiveScene();
 		const element = [...host.tracks.overlay, host.tracks.main, ...host.tracks.audio]
 			.find((track) => track.id === trackId)

@@ -83,6 +83,9 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 
 		return () => {
 			cancelled = true;
+			if (editor.project.getActiveOrNull()?.metadata.id === projectId) {
+				void editor.voiceOver.finishForNavigation();
+			}
 			if (editor.playback.getIsPlaying()) editor.playback.pause();
 		};
 	}, [projectId, router]);

@@ -23,6 +23,10 @@ export interface TActionDefinition extends TActionBaseDefinition {
 }
 
 export const ACTIONS = {
+	"record-voice-over": {
+		description: en["shortcuts.action.record-voice-over"],
+		category: "timeline",
+	},
 	"toggle-play": {
 		description: en["shortcuts.action.toggle-play"],
 		category: "playback",
@@ -180,6 +184,7 @@ export function isActionWithOptionalArgs(
 }
 
 const ACTION_DEFAULT_SHORTCUTS = [
+	["record-voice-over", ["shift+r"]],
 	["toggle-play", ["space", "k"]],
 	["seek-forward", ["l"]],
 	["seek-backward", ["j"]],

@@ -155,7 +155,7 @@ export class CommandManager {
 		const { sceneId } = entry;
 		if (sceneId === null || sceneId === this.getActiveSceneId()) return true;
 		if (this.editor.scenes.getScenes().some((scene) => scene.id === sceneId)) {
-			void this.editor.scenes.switchToScene({ sceneId });
+			void this.editor.scenes.switchToScene({ sceneId, fromHistory: true });
 			return entry.projectSession === this.editor.project.getSession();
 		}
 		if (entry.command.restoresScene({ sceneId, direction })) return true;
