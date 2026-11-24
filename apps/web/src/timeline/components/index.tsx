@@ -66,7 +66,7 @@ import {
 	getTrackExpandedRows,
 	type ExpandedRow,
 } from "./expanded-layout";
-import { TIMELINE_HORIZONTAL_WHEEL_STEP_PX } from "./interaction";
+import { getWheelScroll } from "./interaction";
 import { TimelineToolbar } from "./timeline-toolbar";
 import { CompoundBreadcrumb } from "./compound-breadcrumb";
 import { useElementSelection } from "@/timeline/hooks/element/use-element-selection";
@@ -266,6 +266,7 @@ export function Timeline() {
 
 		let pendingZoomDelta = 0;
 		let zoomRafId: ReturnType<typeof requestAnimationFrame> | null = null;
+		let scrolledWithAlt = false;
 
 		const onWheel = (e: WheelEvent) => {
 			const isZoom = e.ctrlKey || e.metaKey;
@@ -292,32 +293,36 @@ export function Timeline() {
 			const tracks = tracksScrollRef.current;
 			if (!tracks) return;
 
-			const isHorizontal =
-				e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY);
+			if (e.altKey) scrolledWithAlt = true;
 
 			e.preventDefault();
 
-			if (isHorizontal) {
-				const raw =
-					Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-				const clamped =
-					Math.sign(raw) *
-					Math.min(Math.abs(raw), TIMELINE_HORIZONTAL_WHEEL_STEP_PX);
-				tracks.scrollLeft = Math.max(0, tracks.scrollLeft + clamped);
+			const scroll = getWheelScroll(e);
+			if (scroll.axis === "x") {
+				tracks.scrollLeft = Math.max(0, tracks.scrollLeft + scroll.delta);
 			} else {
-				tracks.scrollTop = Math.max(0, tracks.scrollTop + e.deltaY);
+				tracks.scrollTop = Math.max(0, tracks.scrollTop + scroll.delta);
 			}
 
 			syncFollowers();
 			saveScrollPositionRef.current();
 		};
 
+		// Releasing Alt would otherwise move the focus to the browser's menu.
+		const onKeyUp = (e: KeyboardEvent) => {
+			if (e.key !== "Alt" || !scrolledWithAlt) return;
+			scrolledWithAlt = false;
+			e.preventDefault();
+		};
+
 		container.addEventListener("wheel", onWheel, {
 			passive: false,
 			capture: true,
 		});
+		window.addEventListener("keyup", onKeyUp);
 		return () => {
 			container.removeEventListener("wheel", onWheel, { capture: true });
+			window.removeEventListener("keyup", onKeyUp);
 			if (zoomRafId !== null) cancelAnimationFrame(zoomRafId);
 		};
 	}, [syncFollowers]);
