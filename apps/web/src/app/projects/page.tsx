@@ -402,7 +402,11 @@ async function renameProject({
 function ProjectActions() {
 	const { t } = useI18n();
 	const editor = useEditor();
-	const { selectedProjectIds, clearSelectedProjects } = useProjectsStore();
+	const {
+		selectedProjectIds,
+		clearSelectedProjects,
+		removeProjectFromSelection,
+	} = useProjectsStore();
 	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
 	const savedProjects = editor.project.getSavedProjects();
@@ -420,8 +424,11 @@ function ProjectActions() {
 	};
 
 	const handleDeleteConfirm = async () => {
-		await deleteProjects({ editor, ids: selectedProjectIds });
-		clearSelectedProjects();
+		const ids = selectedProjectIds;
+		await deleteProjects({ editor, ids });
+		for (const id of ids) {
+			removeProjectFromSelection({ projectId: id });
+		}
 		setIsDeleteDialogOpen(false);
 	};
 
@@ -553,6 +560,7 @@ function ProjectItem({
 		viewMode,
 		setProjectSelected,
 		selectProjectRange,
+		removeProjectFromSelection,
 	} = useProjectsStore();
 	const selectedProjectIdSet = new Set(selectedProjectIds);
 	const isSelected = selectedProjectIdSet.has(project.id);
@@ -574,6 +582,7 @@ function ProjectItem({
 	const handleInfoClick = () => setIsInfoDialogOpen(true);
 	const handleDeleteConfirm = async () => {
 		await deleteProjects({ editor, ids: [project.id] });
+		removeProjectFromSelection({ projectId: project.id });
 		setIsDeleteDialogOpen(false);
 	};
 

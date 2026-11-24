@@ -729,6 +729,20 @@ export class ElementInteractionController {
 			return;
 		}
 
+		const tracks = this.deps.scene.getTracks();
+		const planStillValid = moveGroup.members.every((member) => {
+			const sourceTrack = orderedTracks(tracks).find(
+				({ id }) => id === member.trackId,
+			);
+			return (
+				sourceTrack?.elements.some(({ id }) => id === member.elementId) ?? false
+			);
+		});
+		if (!planStillValid) {
+			this.finishSession();
+			return;
+		}
+
 		const didMove = groupMoveResult.moves.some((move) => {
 			const member = moveGroup.members.find(
 				(m) => m.elementId === move.elementId,

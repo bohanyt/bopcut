@@ -10,7 +10,7 @@ import { loadIcon } from "@/stickers/providers/iconify";
 import { generateUUID } from "@/utils/id";
 import { floatToFrameRate } from "@/fps/utils";
 import type { TProjectSettings } from "@/project/types";
-import { type AgentAsset, type AgentElement, type LoadedMedia, buildAgentElement, createAgentTrack, loadAgentAsset } from "./elements";
+import { type AgentAsset, type AgentElement, type LoadedMedia, buildAgentElement, checkAgentTrim, createAgentTrack, loadAgentAsset } from "./elements";
 import { type BuildContext, applyAgentKeyframes, buildAgentCompound, walkAgentElements } from "./compound-content";
 import { loadTextPresets } from "@/text/presets";
 import { checkAgentCaption, resolveCaptionPreset } from "./captions";
@@ -37,6 +37,14 @@ export function bundleProjectSettings(bundle: Pick<Bundle, "width" | "height" | 
 		if (rate.numerator > 0 && rate.denominator > 0) settings.fps = rate;
 	}
 	return Object.keys(settings).length ? settings : null;
+}
+
+export function checkBundleAssetKeys(bundle: Pick<Bundle, "assets">): void {
+	const seen = new Set<string>();
+	for (const a of bundle.assets ?? []) {
+		if (seen.has(a.key)) throw new Error(`Duplicate asset key: ${a.key}`);
+		seen.add(a.key);
+	}
 }
 
 /** Root tracks and nested compound scenes of a bundle (pure, given its loaded media). */
@@ -71,12 +79,14 @@ export function buildBundleScenes({ bundle, media, sceneId }: { bundle: Bundle; 
 export async function importAgentBundle({ onStatus }: { onStatus: (text: string) => void }): Promise<string> {
 	const editor = EditorCore.getInstance();
 	const bundle: Bundle = await (await fetch("/api/agent/bundle", { cache: "no-store" })).json();
-	// Caption presets are resolved and captions checked first: a bad caption fails before a project is created.
+	// Captions, trims and asset keys are checked first: a bad bundle fails before a project is created.
 	let presets: ReturnType<typeof loadTextPresets> | undefined;
 	for (const e of walkAgentElements([...(bundle.main ?? []), ...(bundle.audio ?? []), ...(bundle.overlay ?? []).flatMap((t) => t.elements ?? [])])) {
 		if (e.caption?.preset) e.caption = resolveCaptionPreset(e.caption, await (presets ??= loadTextPresets()));
 		checkAgentCaption(e);
+		checkAgentTrim(e);
 	}
+	checkBundleAssetKeys(bundle);
 	const projectId = await editor.project.createNewProject({ name: bundle.name });
 	const session = editor.media.startImport();
 	if (!session || session.projectId !== projectId) throw new Error("The bundle's project is no longer open");

@@ -34,6 +34,7 @@ interface ProjectsState {
 		projectId: string;
 		allProjectIds: string[];
 	}) => void;
+	removeProjectFromSelection: ({ projectId }: { projectId: string }) => void;
 }
 
 const getNextSelectedProjectIds = ({
@@ -88,7 +89,19 @@ export const useProjectsStore = create<ProjectsState>()(
 					}),
 					lastSelectedProjectId: isSelected
 						? projectId
-						: state.lastSelectedProjectId,
+						: state.lastSelectedProjectId === projectId
+							? null
+							: state.lastSelectedProjectId,
+				})),
+			removeProjectFromSelection: ({ projectId }) =>
+				set((state) => ({
+					selectedProjectIds: state.selectedProjectIds.filter(
+						(id) => id !== projectId,
+					),
+					lastSelectedProjectId:
+						state.lastSelectedProjectId === projectId
+							? null
+							: state.lastSelectedProjectId,
 				})),
 			selectProjectRange: ({ projectId, allProjectIds }) =>
 				set((state) => {
