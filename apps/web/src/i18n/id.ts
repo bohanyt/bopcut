@@ -503,6 +503,7 @@ export const id = {
 	"properties.selected": "{count} elemen dipilih.",
 	"properties.spacing": "Jarak",
 	"properties.speed": "Kecepatan",
+	"properties.speedOverlap": "Kecepatan ini akan membuat klip bertumpang tindih dengan klip berikutnya. Aktifkan Ripple atau beri ruang pada trek.",
 	"properties.stroke": "Garis tepi",
 	"properties.toggleEffect": "Aktifkan atau nonaktifkan {name}",
 	"properties.toggleKeyframe": "Aktifkan atau nonaktifkan keyframe untuk {property}",

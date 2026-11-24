@@ -654,60 +654,24 @@ export function removeKeyframe({
 	});
 }
 
-export function retimeKeyframe({
+function retimeChannelKeyframes({
 	channel,
-	keyframeId,
-	time,
+	timesByKeyframe,
 }: {
 	channel: AnimationChannel | undefined;
-	keyframeId: string;
-	time: MediaTime;
+	timesByKeyframe: ReadonlyMap<string, MediaTime>;
 }): AnimationChannel | undefined {
-	if (!channel) {
-		return undefined;
-	}
-
-	if (isScalarChannel(channel)) {
-		const keyframeByIdIndex = channel.keys.findIndex(
-			(keyframe) => keyframe.id === keyframeId,
-		);
-		if (keyframeByIdIndex < 0) {
-			return channel;
-		}
-
-		const nextKeys = [...channel.keys];
-		nextKeys[keyframeByIdIndex] = {
-			...nextKeys[keyframeByIdIndex],
-			time,
-		};
-
-		return normalizeScalarChannel({
-			channel: {
-				...channel,
-				keys: nextKeys,
-			},
-		});
-	}
-
-	const keyframeByIdIndex = channel.keys.findIndex(
-		(keyframe) => keyframe.id === keyframeId,
-	);
-	if (keyframeByIdIndex < 0) {
+	if (!channel?.keys.some((keyframe) => timesByKeyframe.has(keyframe.id))) {
 		return channel;
 	}
 
-	const nextKeys = [...channel.keys];
-	nextKeys[keyframeByIdIndex] = {
-		...nextKeys[keyframeByIdIndex],
-		time,
+	const retime = <T extends { id: string; time: MediaTime }>(keyframe: T): T => {
+		const time = timesByKeyframe.get(keyframe.id);
+		return time === undefined ? keyframe : { ...keyframe, time };
 	};
-
-	return normalizeDiscreteChannel({
-		channel: {
-			...channel,
-			keys: nextKeys,
-		},
-	});
+	return isScalarChannel(channel)
+		? normalizeScalarChannel({ channel: { ...channel, keys: channel.keys.map(retime) } })
+		: normalizeDiscreteChannel({ channel: { ...channel, keys: channel.keys.map(retime) } });
 }
 
 export function setChannel({
@@ -1340,16 +1304,14 @@ export function removeElementKeyframe({
 	});
 }
 
-export function retimeElementKeyframe({
+export function retimeElementKeyframes({
 	animations,
 	propertyPath,
-	keyframeId,
-	time,
+	timesByKeyframe,
 }: {
 	animations: ElementAnimations | undefined;
 	propertyPath: AnimationPath;
-	keyframeId: string;
-	time: MediaTime;
+	timesByKeyframe: ReadonlyMap<string, MediaTime>;
 }): ElementAnimations | undefined {
 	const data = getChannelData({ animations, propertyPath });
 	if (!data) {
@@ -1358,10 +1320,9 @@ export function retimeElementKeyframe({
 
 	const nextAnimations = cloneAnimationsState({ animations });
 	if (isLeafChannelData(data)) {
-		nextAnimations[propertyPath] = retimeKeyframe({
+		nextAnimations[propertyPath] = retimeChannelKeyframes({
 			channel: data,
-			keyframeId,
-			time,
+			timesByKeyframe,
 		});
 	} else if (isCompositeChannelData(data)) {
 		let nextData: ChannelData | undefined = data;
@@ -1369,7 +1330,7 @@ export function retimeElementKeyframe({
 			nextData = setChannelInData({
 				data: nextData,
 				componentKey,
-				channel: retimeKeyframe({ channel, keyframeId, time }),
+				channel: retimeChannelKeyframes({ channel, timesByKeyframe }),
 			});
 		}
 		nextAnimations[propertyPath] = nextData;

@@ -110,18 +110,6 @@ function EditorLayout() {
 		// Restore the saved position on editor entry, even if the timeline remounts later.
 		const { playheadTime } = editor.project.getTimelineViewState();
 		if (playheadTime !== undefined) editor.playback.seek({ time: playheadTime });
-		const session = editor.project.getSession();
-		const savePlayhead = () => {
-			if (editor.project.getSession() === session) editor.project.savePendingPlayhead();
-		};
-		const onVisibilityChange = () => {
-			if (document.hidden) savePlayhead();
-		};
-		document.addEventListener("visibilitychange", onVisibilityChange);
-		return () => {
-			document.removeEventListener("visibilitychange", onVisibilityChange);
-			savePlayhead();
-		};
 	}, [editor]);
 
 	const showBookmarkNotes = isPreviewOverlayVisible({

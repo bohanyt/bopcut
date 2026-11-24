@@ -14,7 +14,8 @@ import type {
 import { calculateTotalDuration } from "@/timeline";
 import { TimelineDragSource } from "@/timeline/drag-source";
 import { findTrackInSceneTracks } from "@/timeline/track-element-update";
-import { applyElementRetime } from "@/timeline/update-pipeline";
+import { applyElementRetime, applyElementUpdates, type ElementUpdate } from "@/timeline/update-pipeline";
+import { applyRippleAdjustments, computeRippleAdjustments } from "@/ripple";
 import { generateUUID } from "@/utils/id";
 import { lastFrameMediaTime, type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import {
@@ -48,7 +49,7 @@ import {
 	TracksSnapshotCommand,
 	UpsertKeyframeCommand,
 	RemoveKeyframeCommand,
-	RetimeKeyframeCommand,
+	RetimeKeyframesCommand,
 	UpdateScalarKeyframeCurveCommand,
 	AddClipEffectCommand,
 	DeleteFreeformPathMaskPointsCommand,
@@ -156,7 +157,7 @@ export class TimelineManager {
 		elementId: string;
 		retime?: RetimeConfig;
 		pushHistory?: boolean;
-	}): void {
+	}): "overlap" | undefined {
 		const before = this.editor.scenes.getActiveSceneOrNull()?.tracks;
 		if (!before) return;
 		const after = applyElementRetime({
@@ -167,13 +168,14 @@ export class TimelineManager {
 			rippleEnabled: pushHistory && this.editor.command.isRippleEnabled,
 			boundaryIdPrefix: generateUUID(),
 		});
-		if (before === after) {
+		if (!after || before === after) {
 			this.discardPreview();
-			return;
+			return after === null ? "overlap" : undefined;
 		}
 		const command = new TracksSnapshotCommand({ before, after, ripples: false });
 		if (pushHistory) this.editor.command.execute({ command });
 		else command.execute();
+		return undefined;
 	}
 
 	previewElementRetime({ trackId, elementId, retime }: ElementRef & { retime?: RetimeConfig }): void {
@@ -187,13 +189,11 @@ export class TimelineManager {
 			rippleEnabled: this.editor.command.isRippleEnabled,
 			boundaryIdPrefix: `${elementId}:retime-preview`,
 		});
-		if (next === tracks) {
+		if (!next || next === tracks) {
 			this.discardPreview();
 			return;
 		}
-		this.previewOverlay.clear();
-		this.previewTracks = next;
-		this.notify();
+		this.previewTrackChanges(tracks, next);
 	}
 
 	moveElements({
@@ -349,11 +349,7 @@ export class TimelineManager {
 		updates,
 		pushHistory = true,
 	}: {
-		updates: Array<{
-			trackId: string;
-			elementId: string;
-			patch: Partial<TimelineElement>;
-		}>;
+		updates: readonly ElementUpdate[];
 		pushHistory?: boolean;
 	}): void {
 		if (updates.length === 0) {
@@ -675,12 +671,10 @@ export class TimelineManager {
 		keyframeId: string;
 		time: MediaTime;
 	}): void {
-		const command = new RetimeKeyframeCommand({
+		const command = new RetimeKeyframesCommand({
 			trackId,
 			elementId,
-			propertyPath,
-			keyframeId,
-			nextTime: time,
+			keyframes: [{ propertyPath, keyframeId, nextTime: time }],
 		});
 		this.editor.command.execute({ command });
 	}
@@ -798,7 +792,40 @@ export class TimelineManager {
 	}
 
 	isPreviewActive(): boolean {
-		return this.previewTracks !== null;
+		return this.previewOverlay.size > 0;
+	}
+
+	previewResize(updates: readonly ElementUpdate[]): void {
+		const beforeTracks = this.editor.scenes.getActiveSceneOrNull()?.tracks;
+		if (!beforeTracks) return;
+		const afterTracks = applyElementUpdates({
+			tracks: beforeTracks,
+			updates,
+			boundaryIdPrefix: "resize-preview",
+		});
+		const preview = this.editor.command.isRippleEnabled
+			? applyRippleAdjustments({
+					tracks: afterTracks,
+					adjustments: computeRippleAdjustments({ beforeTracks, afterTracks }),
+				})
+			: afterTracks;
+		this.previewTrackChanges(beforeTracks, preview);
+	}
+
+	private previewTrackChanges(before: SceneTracks, after: SceneTracks): void {
+		const wasActive = this.isPreviewActive();
+		this.previewOverlay.clear();
+		// Resize and retime replace elements in place, preserving track and element order.
+		const originalTracks = [before.main, ...before.overlay, ...before.audio];
+		[after.main, ...after.overlay, ...after.audio].forEach((track, trackIndex) => {
+			const original = originalTracks[trackIndex];
+			if (track === original) return;
+			track.elements.forEach((element, elementIndex) => {
+				if (element !== original.elements[elementIndex]) this.previewOverlay.set(element.id, element);
+			});
+		});
+		this.previewTracks = this.isPreviewActive() ? after : null;
+		if (wasActive || this.isPreviewActive()) this.notify();
 	}
 
 	previewElements({
@@ -839,12 +866,13 @@ export class TimelineManager {
 	}
 
 	commitPreview(): void {
-		const afterTracks = this.previewTracks;
-		if (!afterTracks) return;
+		if (this.previewOverlay.size === 0) return;
 		const committedTracks = this.editor.scenes.getActiveSceneOrNull()?.tracks;
 		if (!committedTracks) {
 			return;
 		}
+		const afterTracks =
+			this.previewTracks ?? this.applyPreviewOverlay(committedTracks);
 		const command = new TracksSnapshotCommand({
 			before: committedTracks,
 			after: afterTracks,
@@ -856,7 +884,7 @@ export class TimelineManager {
 	}
 
 	discardPreview({ notify = true }: { notify?: boolean } = {}): void {
-		if (!this.previewTracks) return;
+		if (this.previewOverlay.size === 0) return;
 		this.previewOverlay.clear();
 		this.previewTracks = null;
 		if (notify) this.notify();

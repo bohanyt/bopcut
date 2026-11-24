@@ -14,8 +14,7 @@ import {
 import { TIMELINE_DRAG_THRESHOLD_PX } from "@/timeline/components/interaction";
 import { timelineTimeToSnappedPixels } from "@/timeline";
 import { getKeyframeById } from "@/animation";
-import { RetimeKeyframeCommand } from "@/commands/timeline/element/keyframes/retime-keyframe";
-import { BatchCommand } from "@/commands";
+import { RetimeKeyframesCommand } from "@/commands/timeline/element/keyframes/retime-keyframe";
 import type { SelectedKeyframeRef } from "@/animation/types";
 import type { TimelineElement } from "@/timeline";
 import type { Command } from "@/commands/base-command";
@@ -274,7 +273,7 @@ export class KeyframeDragController {
 		deltaTicks: number;
 	}): void {
 		const { element } = this.config;
-		const commands: Command[] = keyframeRefs.flatMap((ref) => {
+		const keyframes = keyframeRefs.flatMap((ref) => {
 			const keyframe = getKeyframeById({
 				animations: element.animations,
 				propertyPath: ref.propertyPath,
@@ -282,26 +281,23 @@ export class KeyframeDragController {
 			});
 			if (!keyframe) return [];
 			return [
-				new RetimeKeyframeCommand({
-					trackId: ref.trackId,
-					elementId: ref.elementId,
+				{
 					propertyPath: ref.propertyPath,
 					keyframeId: ref.keyframeId,
 					nextTime: addMediaTime({
 						a: keyframe.time,
 						b: mediaTime({ ticks: deltaTicks }),
 					}),
-				}),
+				},
 			];
 		});
 
-		const [first, ...rest] = commands;
-		if (!first) return;
-		if (rest.length === 0) {
-			this.config.executeCommand(first);
-		} else {
-			this.config.executeCommand(new BatchCommand([first, ...rest]));
-		}
+		if (keyframes.length === 0) return;
+		this.config.executeCommand(new RetimeKeyframesCommand({
+			trackId: keyframeRefs[0].trackId,
+			elementId: element.id,
+			keyframes,
+		}));
 	}
 
 	private handleMouseMove({ clientX }: MouseEvent): void {

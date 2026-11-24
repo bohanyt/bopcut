@@ -6,12 +6,48 @@ import {
 } from "@/retime";
 import type { ElementRef, RetimeConfig, SceneTracks, TimelineElement, TimelineTrack } from "@/timeline";
 import { isRetimableElement } from "@/timeline";
-import { findTrackInSceneTracks, updateTrackInSceneTracks } from "@/timeline/track-element-update";
+import {
+	findTrackInSceneTracks,
+	updateElementInSceneTracks,
+	updateTrackInSceneTracks,
+} from "@/timeline/track-element-update";
 import { rippleShiftElements } from "@/ripple";
 import { ZERO_MEDIA_TIME, roundMediaTime } from "@/wasm";
 import { reconcileCaptionEdit } from "@/text/caption";
 
 type ElementUpdateField = keyof TimelineElement | string;
+
+export interface ElementUpdate extends ElementRef {
+	patch: Partial<TimelineElement>;
+}
+
+export function applyElementUpdates({
+	tracks,
+	updates,
+	boundaryIdPrefix,
+}: {
+	tracks: SceneTracks;
+	updates: readonly ElementUpdate[];
+	boundaryIdPrefix: string;
+}): SceneTracks {
+	let updatedTracks = tracks;
+	for (const [index, { trackId, elementId, patch }] of updates.entries()) {
+		const track = findTrackInSceneTracks({ tracks: updatedTracks, trackId });
+		if (!track?.elements.some((element) => element.id === elementId)) continue;
+		const context = {
+			tracks: updatedTracks,
+			trackId,
+			boundaryIdPrefix: `${boundaryIdPrefix}:${index}`,
+		};
+		updatedTracks = updateElementInSceneTracks({
+			tracks: updatedTracks,
+			trackId,
+			elementId,
+			update: (element) => applyElementUpdate({ element, patch, context }),
+		});
+	}
+	return updatedTracks;
+}
 
 export function applyElementRetime({
 	tracks,
@@ -25,7 +61,7 @@ export function applyElementRetime({
 	retime?: RetimeConfig;
 	rippleEnabled: boolean;
 	boundaryIdPrefix: string;
-}): SceneTracks {
+}): SceneTracks | null {
 	const track = findTrackInSceneTracks({ tracks, trackId });
 	const element = track?.elements.find((candidate) => candidate.id === elementId);
 	if (!track || !element || !isRetimableElement(element)) return tracks;
@@ -50,7 +86,7 @@ export function applyElementRetime({
 				nextStart = Math.min(nextStart, candidate.startTime);
 			}
 		}
-		if (!rippleEnabled && end + delta > nextStart) return tracks;
+		if (!rippleEnabled && end + delta > nextStart) return null;
 		// Preserve gaps to later clips. If old clips already overlap, make room for the new span.
 		shiftFrom = Math.min(end, nextStart);
 		shiftBy = Math.max(delta, end + delta - nextStart);
@@ -79,7 +115,6 @@ export interface ElementUpdateContext {
 	tracks: SceneTracks;
 	trackId: string;
 	boundaryIdPrefix?: string;
-	rippleEnabled?: boolean;
 }
 
 interface ElementUpdateRuleResult {
@@ -164,14 +199,12 @@ const enforceRules: ElementUpdateRule[] = [
 	},
 	{
 		triggers: ["startTime"],
-		apply: ({ element, patch, context }) => {
+		apply: ({ element, context }) => {
 			const requestedStartTime =
 				element.startTime < ZERO_MEDIA_TIME
 					? ZERO_MEDIA_TIME
 					: element.startTime;
-			// A non-ripple trim keeps the edge opposite the handle fixed, even on Main.
-			const isTrim = patch.trimStart !== undefined && patch.duration !== undefined;
-			if (context.trackId !== context.tracks.main.id || (isTrim && !context.rippleEnabled)) {
+			if (context.trackId !== context.tracks.main.id) {
 				return {
 					element: {
 						...element,

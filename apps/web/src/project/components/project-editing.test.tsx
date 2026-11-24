@@ -2,13 +2,13 @@ import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, type ReactNode } from "react";
 import type { Root } from "react-dom/client";
-import { bindAction, invokeAction, unbindAction } from "@/actions";
-import { useEditorActions } from "@/actions/use-editor-actions";
+import { bindAction, unbindAction } from "@/actions";
+import { toast } from "sonner";
 import { AnimationTab } from "@/animation/components/animation-tab";
 import { applyAnimationPresets, readPresetSettings } from "@/animation/presets";
 import { PreviewFramingProvider, usePreviewViewportState } from "@/preview/components/preview-viewport";
 import { fixture, t, video } from "@/timeline/__tests__/compound-fixtures";
-import { storageService } from "@/services/storage/service";
+import { SpeedTab } from "@/speed/components/speed-tab";
 import { useKeybindingsListener } from "@/actions/use-keybindings";
 import { EditableTimecode } from "@/components/editable-timecode";
 import { EditableProjectName } from "@/components/editor/editor-header";
@@ -373,46 +373,33 @@ test("animation preset length accepts a decimal comma and restores the value aft
 	}
 });
 
-function EditingActions() {
-	useEditorActions();
-	return null;
-}
-
-test("keyboard frame steps and jumps persist together when the project closes", async () => {
+test("the Speed tab reports an overlap once on commit and restores the speed", () => {
 	const editor = setupEditingProject();
-	const stored = structuredClone(editor.project.getActive());
-	const save = spyOn(storageService, "saveProject").mockResolvedValue();
-	const saveNavigation = spyOn(storageService, "saveProjectNavigation").mockImplementation(async ({ navigation }) => {
-		stored.timelineViewState = navigation.timelineViewState;
+	editor.save.stop();
+	editor.command.isRippleEnabled = false;
+	const element = video("a", 0, 2);
+	const { tracks } = editor.scenes.getActiveScene();
+	editor.timeline.updateTracks({
+		...tracks,
+		main: { ...tracks.main, elements: [element, video("b", 2, 2)] },
 	});
-	const load = spyOn(storageService, "loadProject").mockImplementation(async () => ({ project: stored }));
-	const migrations = spyOn(storageService, "ensureMigrations").mockResolvedValue();
-	const media = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([]);
+	const warn = spyOn(toast, "warning").mockReturnValue("overlap");
 	try {
-		editor.playback.seek({ time: t(1) });
-		render(<EditingActions />);
-		act(() => {
-			invokeAction("frame-step-forward");
-			invokeAction("frame-step-forward");
-			invokeAction("jump-forward");
-		});
-		const finalTime = t(6 + 2 / 30);
-		expect(editor.playback.getCurrentTime()).toBe(finalTime);
-		expect(saveNavigation).not.toHaveBeenCalled();
-		render(null);
-		editor.project.closeProject();
-		await editor.project.loadProject({ id: stored.metadata.id });
-		expect(saveNavigation).toHaveBeenCalledTimes(1);
-		expect(save).not.toHaveBeenCalled();
-		expect(editor.project.getTimelineViewState()).toEqual({ zoomLevel: 2, scrollLeft: 23, playheadTime: finalTime });
+		render(<SpeedTab element={element} trackId={tracks.main.id} />);
+		const input = document.querySelector<HTMLInputElement>('input[inputmode="decimal"]')!;
+		const previousValue = input.value;
+		act(() => input.focus());
+		typeValue(input, "0.75");
+		typeValue(input, "0.5");
+		expect(warn).not.toHaveBeenCalled();
+		pressKey(input, "Enter");
+		expect(warn.mock.calls).toEqual([["This speed would overlap the next clip. Enable Ripple or make room on the track."]]);
+		expect(input.value).toBe(previousValue);
+		expect(editor.command.canUndo()).toBe(false);
 	} finally {
 		render(null);
 		EditorCore.reset();
-		save.mockRestore();
-		saveNavigation.mockRestore();
-		load.mockRestore();
-		migrations.mockRestore();
-		media.mockRestore();
+		warn.mockRestore();
 	}
 });
 

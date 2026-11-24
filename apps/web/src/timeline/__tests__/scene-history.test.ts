@@ -3,7 +3,8 @@ import type { TScene, TextElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import { collectAudioClips } from "@/media/audio";
-import { buildEffectParamPath, getKeyframeAtTime } from "@/animation";
+import { buildEffectParamPath, getChannel, getKeyframeAtTime } from "@/animation";
+import type { ScalarAnimationKey } from "@/animation/types";
 import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
 import { cancelInteraction } from "@/editor/cancel-interaction";
@@ -96,42 +97,51 @@ function setupSplitHistory() {
 	return { editor, tracks, main, first, second, keyAt };
 }
 
-test("a non-ripple left trim on the first main clip keeps the previewed out-point", () => {
+test.each([false, true])("a left trim previews the first main clip pinned at zero with ripple=%s", (ripple) => {
 	const { editor, first, main } = setupSplitHistory();
-	editor.command.isRippleEnabled = false;
+	editor.command.isRippleEnabled = ripple;
 	const { updates: [update] } = computeGroupResize({
 		side: "left",
 		deltaTime: t(1),
 		fps: { numerator: 30, denominator: 1 },
 		members: [{ ...main()[0], ...first, leftNeighborBound: null, rightNeighborBound: t(2) }],
 	});
-	editor.timeline.previewElements({ updates: [{ ...first, updates: update.patch }] });
+	editor.timeline.previewResize([update]);
 	const span = ({ startTime, duration }: { startTime: number; duration: number }) =>
 		[startTime, startTime + duration];
 	const preview = editor.timeline.getPreviewTracks()!.main.elements.map(span);
-	expect(preview).toEqual([[t(1), t(2)], [t(2), t(4)]]);
+	expect(preview).toEqual([[t(0), t(1)], ripple ? [t(1), t(3)] : [t(2), t(4)]]);
 	editor.timeline.discardPreview();
 	editor.timeline.updateElements({ updates: [update] });
 	expect(main().map(span)).toEqual(preview);
 });
 
-test("dragging keyframes to either edge preserves their spacing in preview and on release", () => {
+test.each([
+	{ edge: "right", reverse: false, clientX: 200, delta: 3, times: [4, 5] },
+	{ edge: "right", reverse: true, clientX: 200, delta: 3, times: [4, 5] },
+	{ edge: "left", reverse: false, clientX: -200, delta: -1, times: [0, 1] },
+	{ edge: "left", reverse: true, clientX: -200, delta: -1, times: [0, 1] },
+])("dragging eased keys past the $edge edge preserves spacing and handles with reverse=$reverse", ({
+	reverse, clientX, delta, times,
+}) => {
 	const scenes = fixture();
-	const element = video("a", 0, 5);
-	getHost(scenes).tracks.main.elements = [element];
+	const clip = video("a", 0, 5);
+	const keys: ScalarAnimationKey[] = [
+		{
+			id: "earlier", time: t(1), value: 0, segmentToNext: "bezier",
+			tangentMode: "broken", rightHandle: { dt: t(0.3), dv: 0.2 },
+		},
+		{
+			id: "later", time: t(2), value: 1, segmentToNext: "linear",
+			tangentMode: "broken", leftHandle: { dt: t(-0.4), dv: -0.1 },
+		},
+	];
+	clip.animations = { opacity: { keys } };
+	getHost(scenes).tracks.main.elements = [clip];
 	const editor = setup(scenes);
-	const first = { trackId: "t-main", elementId: "a" };
-	const selectedKeyframes = [1, 2].map((seconds) => {
-		editor.timeline.upsertKeyframes({ keyframes: [{
-			...first, propertyPath: "opacity", time: t(seconds), value: seconds / 2,
-		}] });
-		const clip = editor.scenes.getActiveScene().tracks.main.elements[0];
-		return { ...first, propertyPath: "opacity", keyframeId: getKeyframeAtTime({
-			animations: clip.animations, propertyPath: "opacity", time: t(seconds),
-		})!.id };
-	});
-	const clip = editor.scenes.getActiveScene().tracks.main.elements[0];
-	editor.command.clear();
+	const selectedKeyframes = (reverse ? [...keys].reverse() : keys).map(({ id }) => ({
+		trackId: "t-main", elementId: "a", propertyPath: "opacity", keyframeId: id,
+	}));
 	const doc = new EventTarget();
 	const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
 	Object.defineProperty(globalThis, "document", { configurable: true, value: doc });
@@ -145,27 +155,23 @@ test("dragging keyframes to either edge preserves their spacing in preview and o
 		seek: () => {}, getTotalDuration: () => t(5),
 	} } });
 	try {
-		for (const [clientX, delta, times] of [[200, 3, [4, 5]], [-200, -1, [0, 1]]] as const) {
-			controller.onKeyframeMouseDown({
-				keyframes: [selectedKeyframes[0]],
-				event: {
-					clientX: 0, preventDefault() {}, stopPropagation() {}, currentTarget: { ownerDocument: doc },
-				} as unknown as ReactMouseEvent,
-			});
-			const move = Object.assign(new Event("mousemove"), { clientX });
-			doc.dispatchEvent(move);
-			doc.dispatchEvent(move);
-			const previewDelta = controller.keyframeDragState.deltaTicks;
-			doc.dispatchEvent(new Event("mouseup"));
-			const updated = editor.scenes.getActiveScene().tracks.main.elements[0];
-			expect(times.map((seconds) => getKeyframeAtTime({
-				animations: updated.animations, propertyPath: "opacity", time: t(seconds),
-			})?.id)).toEqual(selectedKeyframes.map(({ keyframeId }) => keyframeId));
-			expect(previewDelta).toBe(t(delta));
-			editor.command.undo();
-			expect(editor.scenes.getActiveScene().tracks.main.elements[0]).toBe(clip);
-			expect(editor.command.canUndo()).toBe(false);
-		}
+		controller.onKeyframeMouseDown({
+			keyframes: [selectedKeyframes[0]],
+			event: {
+				clientX: 0, preventDefault() {}, stopPropagation() {}, currentTarget: { ownerDocument: doc },
+			} as unknown as ReactMouseEvent,
+		});
+		const move = Object.assign(new Event("mousemove"), { clientX });
+		doc.dispatchEvent(move);
+		doc.dispatchEvent(move);
+		expect(controller.keyframeDragState.deltaTicks).toBe(t(delta));
+		doc.dispatchEvent(new Event("mouseup"));
+		const updated = editor.scenes.getActiveScene().tracks.main.elements[0];
+		expect(getChannel({ animations: updated.animations, propertyPath: "opacity" })?.keys)
+			.toEqual(keys.map((key, index) => ({ ...key, time: t(times[index]) })));
+		editor.command.undo();
+		expect(editor.scenes.getActiveScene().tracks.main.elements[0]).toBe(clip);
+		expect(editor.command.canUndo()).toBe(false);
 	} finally {
 		controller.destroy();
 		if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
