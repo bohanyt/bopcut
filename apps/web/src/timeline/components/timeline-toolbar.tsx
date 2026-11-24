@@ -49,6 +49,7 @@ import { OcRippleIcon } from "@/components/icons";
 import { GraphEditorPopover } from "./graph-editor/popover";
 import { PopoverTrigger } from "@/components/ui/popover";
 import { useGraphEditorController } from "./graph-editor/use-controller";
+import { VoiceOverControl } from "@/recording/voice-over-control";
 
 export function TimelineToolbar({
 	zoomLevel,
@@ -136,6 +137,7 @@ function ToolbarLeftSection() {
 
 	return (
 		<div className="flex items-center gap-1">
+			<VoiceOverControl />
 			<TooltipProvider delayDuration={500}>
 				<ToolbarButton
 					icon={<HugeiconsIcon icon={ScissorIcon} />}

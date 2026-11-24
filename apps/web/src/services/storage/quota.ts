@@ -142,6 +142,7 @@ export function isStorageQuotaExceededError({
 	return (
 		error.name === "QuotaExceededError" ||
 		error.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+		/\b(?:ENOSPC|EDQUOT)\b/.test(error.message) ||
 		error.message.toLowerCase().includes("quota")
 	);
 }

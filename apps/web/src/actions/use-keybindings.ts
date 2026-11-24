@@ -34,6 +34,14 @@ export function useKeybindingsListener() {
 				activeElement instanceof HTMLElement &&
 				isTypableDOMElement({ element: activeElement });
 			const boundAction = binding ? keybindings.get(binding) : undefined;
+			if (editor.voiceOver.isCapturing() && (
+				normalizedKey === "escape" && editor.voiceOver.getSnapshot().phase !== "recording" ||
+				!isTextInput && binding === "space"
+			)) {
+				ev.preventDefault();
+				if (!ev.repeat) void editor.voiceOver.stop();
+				return;
+			}
 
 			if (normalizedKey === "escape" && isTextInput) {
 				return;
@@ -70,6 +78,7 @@ export function useKeybindingsListener() {
 					invokeAction("jump-backward", { seconds: 5 }, "keypress");
 					break;
 				default:
+					if (ev.repeat && boundAction === "record-voice-over") break;
 					invokeAction(boundAction, undefined, "keypress");
 			}
 		};

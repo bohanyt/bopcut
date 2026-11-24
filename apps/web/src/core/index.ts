@@ -13,6 +13,7 @@ import { DiagnosticsManager } from "./managers/diagnostics-manager";
 import { registerDefaultEffects } from "@/effects";
 import { registerDefaultMasks } from "@/masks";
 import { registerTranscriptionDiagnostics } from "@/transcription/diagnostics";
+import { VoiceOver } from "@/recording/voice-over";
 
 export class EditorCore {
 	private static instance: EditorCore | null = null;
@@ -28,6 +29,7 @@ export class EditorCore {
 	public readonly selection: SelectionManager;
 	public readonly clipboard: ClipboardManager;
 	public readonly diagnostics: DiagnosticsManager;
+	public readonly voiceOver: VoiceOver;
 
 	private constructor(public readonly renderOnly = false) {
 		registerDefaultEffects();
@@ -44,6 +46,7 @@ export class EditorCore {
 		this.selection = new SelectionManager(this);
 		this.clipboard = new ClipboardManager(this);
 		this.diagnostics = new DiagnosticsManager(this);
+		this.voiceOver = new VoiceOver(this);
 		registerTranscriptionDiagnostics({ diagnostics: this.diagnostics });
 		this.playback.bindTimelineScope();
 		this.command.registerReactor(() => {
@@ -81,6 +84,7 @@ export class EditorCore {
 	}
 
 	static reset(): void {
+		EditorCore.instance?.voiceOver.dispose();
 		EditorCore.instance?.timeline.cancelPreviewGesture();
 		EditorCore.instance?.audio.dispose();
 		if (EditorCore.instance?.playback.getIsPlaying()) EditorCore.instance.playback.pause();

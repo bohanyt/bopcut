@@ -71,10 +71,13 @@ export function useEditorActions() {
 		return activateScope({ entry: timelineScope });
 	}, [hasTimelineSelection, timelineScope]);
 
+	useActionHandler("record-voice-over", () => editor.voiceOver.toggle(), undefined);
+
 	useActionHandler(
 		"toggle-play",
 		() => {
-			editor.playback.toggle();
+			if (editor.voiceOver.isCapturing()) void editor.voiceOver.stop();
+			else editor.playback.toggle();
 		},
 		undefined,
 	);

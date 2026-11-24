@@ -22,6 +22,7 @@
 - **Agen belajar seleramu:** editanmu pada item buatan agen dicatat dan diringkas menjadi kandidat aturan selera.
 
 **Editor**
+- **Rekam suara.** Gunakan mikrofon di timeline atau Shift+R, lalu rekam di playhead dan pilih take.
 - Proyek dan media disimpan **di folder, bukan di browser**, jadi bisa dibuka dari browser mana pun di laptop yang sama.
 - Bahan motion graphic: ikon (Iconify), garis/panah/path dengan efek "digambar", grup objek.
 - Model 3D (GLB/glTF) yang dirender per frame.

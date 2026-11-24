@@ -89,6 +89,8 @@ export class ProjectManager {
 	}
 
 	async createNewProject({ name }: { name: string }): Promise<string> {
+		const take = this.editor.voiceOver.finishForNavigation();
+		if (take) await take;
 		const mainScene = buildDefaultScene({ name: "Main scene", isMain: true });
 		const newProject: TProject = {
 			metadata: {
@@ -164,6 +166,8 @@ export class ProjectManager {
 	}
 
 	async loadProject({ id }: { id: string }): Promise<void> {
+		const take = this.editor.voiceOver.finishForNavigation();
+		if (take) await take;
 		if (!this.isInitialized) {
 			this.isLoading = true;
 			this.notify();
@@ -749,6 +753,8 @@ export class ProjectManager {
 	}
 
 	async prepareExit(): Promise<void> {
+		const take = this.editor.voiceOver.finishForNavigation();
+		if (take) await take;
 		if (!this.active) return;
 
 		try {

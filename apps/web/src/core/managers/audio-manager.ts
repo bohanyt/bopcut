@@ -44,7 +44,7 @@ export class AudioManager {
 	private unsubscribers: Array<() => void> = [];
 
 	constructor(private editor: EditorCore) {
-		this.lastVolume = this.editor.playback.getVolume();
+		this.lastVolume = this.editor.playback.getOutputVolume();
 
 		this.unsubscribers.push(
 			this.editor.playback.subscribe(this.handlePlaybackChange),
@@ -73,7 +73,7 @@ export class AudioManager {
 
 	private handlePlaybackChange = (): void => {
 		const isPlaying = this.editor.playback.getIsPlaying();
-		const volume = this.editor.playback.getVolume();
+		const volume = this.editor.playback.getOutputVolume();
 
 		if (volume !== this.lastVolume) {
 			this.lastVolume = volume;

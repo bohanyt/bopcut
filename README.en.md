@@ -22,6 +22,7 @@
 - **Teach the agent your preferences.** Your changes to agent-created items are logged and summarized into suggested editing preferences.
 
 **Editor**
+- **Record voice-over.** Use the timeline microphone or Shift+R, then record at the playhead and choose between takes.
 - Projects and media are saved **in folders on disk**, so any browser on the same laptop can open them.
 - Motion graphics include icons from Iconify, lines, arrows and paths with a draw effect, and object groups.
 - GLB/glTF 3D models render frame by frame.
