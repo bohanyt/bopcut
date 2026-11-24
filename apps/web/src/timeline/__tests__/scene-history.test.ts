@@ -740,7 +740,7 @@ describe("generated ids in history", () => {
 		}] });
 		const dragSource = new TimelineDragSource();
 		const dataTransfer = { setData() {}, types: [] } as unknown as DataTransfer;
-		dragSource.begin({ dataTransfer, dragData: { type: "effect", effectType: "blur", targetElementTypes: ["video"] } });
+		dragSource.begin({ dataTransfer, dragData: { id: "blur", name: "Blur", type: "effect", effectType: "blur", targetElementTypes: ["video"] } });
 		const config: DragDropConfig = {
 			dragSource, zoomLevel: 1, getContainerEl: () => null, getHeaderEl: () => null,
 			getTracksScrollEl: () => ({ scrollLeft: 0, scrollTop: 0, getBoundingClientRect: () => ({ left: 0, top: 0 }) }) as HTMLDivElement,

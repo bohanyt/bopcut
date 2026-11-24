@@ -112,7 +112,7 @@ const run = (
 
 test("draft add refuses a collision on the named track and accepts adjacent clips", () => {
 	const add = (start: number): DraftOp => ({ op: "add", track: { name: "Titles", type: "text" },
-		element: { agent_id: "new-title", text: "A title", start, duration: 1 } });
+		element: { agent_id: "new-title", name: "A title", text: "A title", start, duration: 1 } });
 	expect(run(scenes, [add(2)]).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("overlap") });
 	expect(run(scenes, [add(5)]).results[0].ok).toBe(true);
 });
