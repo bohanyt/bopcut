@@ -6,6 +6,7 @@
 			"outputs": [".next/**", "!.next/cache/**"],
 			"env": [
 				"NODE_ENV",
+				"BOPENCUT_STANDALONE",
 				"NEXT_PUBLIC_SITE_URL",
 				"NEXT_PUBLIC_MARBLE_API_URL",
 				"DATABASE_URL",

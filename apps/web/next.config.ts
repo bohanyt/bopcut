@@ -9,7 +9,7 @@ const nextConfig: NextConfig = {
 	},
 	reactStrictMode: true,
 	productionBrowserSourceMaps: true,
-	output: "standalone",
+	output: process.env.BOPENCUT_STANDALONE === "1" ? "standalone" : undefined,
 	serverExternalPackages: ["@napi-rs/canvas"],
 	images: {
 		remotePatterns: [

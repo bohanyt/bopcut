@@ -5,8 +5,8 @@ import path from "node:path";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { fileProbeCommand, toolsFromEnv } from "@/retrieval/server";
 import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
-import { audio, fixture, scene, t, text } from "@/timeline/__tests__/compound-fixtures";
-import type { TextElement, VideoElement } from "@/timeline";
+import { audio, fixture, scene, t, text, video } from "@/timeline/__tests__/compound-fixtures";
+import type { CompoundElement, TextElement, VideoElement } from "@/timeline";
 import { reserveEditorActivity, reserveReview } from "./review-activity";
 import { knownExportProfile, saveExportProfile } from "./export-profile";
 import { RANGE_FRAME_WIDTH, RANGE_HEADER, RANGE_ROW_HEIGHT } from "./range-view";
@@ -95,6 +95,87 @@ test("portrait crop uses the visible source rectangle and rejects unproved trans
 	expect(reviewSourceCrop(item, { width: 360, height: 640 }, asset)).toBeNull();
 });
 
+test("reviewSourceCrop and minimum gain cover compounds, shakes, and audio dips", () => {
+	const canvas = { width: 360, height: 640 };
+	const asset = { id: "asset", name: "Landscape", width: 640, height: 360 };
+	const scale = 3.160493827;
+	const fill = { "transform.scaleX": scale, "transform.scaleY": scale };
+	const expectRect = (crop: ReturnType<typeof reviewSourceCrop>) => {
+		expect(crop?.x).toBeCloseTo(219, 0);
+		expect(crop?.width).toBeGreaterThanOrEqual(202);
+		expect(crop?.width).toBeLessThan(205);
+	};
+	const videoItem = (items: ReturnType<typeof visibleRangeElements> extends Generator<infer T> ? T[] : never) =>
+		items.find((entry) => entry.element.type === "video" || entry.element.type === "image");
+	const cropItem = (parent?: { params?: VideoElement["params"]; animations?: VideoElement["animations"];
+		masks?: VideoElement["masks"] }, own?: Pick<VideoElement, "params" | "animations">) => {
+		const [root] = fixture();
+		root.tracks.overlay = [];
+		root.tracks.audio = [];
+		if (!parent) {
+			const item = videoItem([...visibleRangeElements(root, [root], { from: 0, to: 5, rows: 1 })])!;
+			item.element.params = { ...fill, ...own?.params };
+			item.element.animations = own?.animations;
+			return reviewSourceCrop(item, canvas, asset);
+		}
+		const inner = { ...video("inner", 0, 10), params: { ...fill } };
+		const nested = scene("nested", { overlay: [], main: { ...root.tracks.main, elements: [inner] }, audio: [] }, { kind: "compound" });
+		root.tracks.main.elements = [{
+			...root.tracks.main.elements[0], type: "compound", id: "parent", sceneId: "nested",
+			startTime: t(0), duration: t(10), trimStart: t(0), params: parent.params ?? {},
+			animations: parent.animations, masks: parent.masks,
+		} as unknown as CompoundElement];
+		const item = videoItem([...visibleRangeElements(root, [root, nested], { from: 0, to: 5, rows: 1 })])!;
+		return reviewSourceCrop(item, canvas, asset);
+	};
+	expectRect(cropItem());
+	expect(cropItem({ params: { "shake.intensity": 12 } })).toBeNull();
+	const shaking = { "shake.intensity": { keys: [{ id: "0", time: t(0), value: 40, segmentToNext: "linear", tangentMode: "auto" },
+		{ id: "1", time: t(1), value: 0, segmentToNext: "linear", tangentMode: "auto" }] } } as VideoElement["animations"];
+	expect(cropItem({ params: { "shake.intensity": 0 }, animations: shaking })).toBeNull();
+	expect(cropItem(undefined, { params: { "shake.intensity": 0 }, animations: shaking })).toBeNull();
+	expect(cropItem(undefined, { params: { "shake.rotation": 2 } })).toBeNull();
+	expect(cropItem({ params: { "transform.scaleX": 0.5, "transform.scaleY": 0.5 } })).toBeNull();
+	expect(cropItem({ params: { "transform.rotate": 3 } })).toBeNull();
+	expect(cropItem({ params: { blendMode: "screen" } })).toBeNull();
+	expect(cropItem({ masks: [{
+		id: "mask", type: "rectangle", params: { centerX: 0, centerY: 0, rotation: 0, scale: 1, width: 100, height: 100,
+			feather: 0, inverted: false, strokeColor: "#fff", strokeWidth: 0, strokeAlign: "center" },
+	}] })).toBeNull();
+	const [root] = fixture();
+	root.tracks.overlay = [];
+	root.tracks.audio = [];
+	const innerVideo = { ...video("leaf", 0, 10), params: { ...fill } };
+	const inner = scene("inner", { overlay: [], main: { ...root.tracks.main, elements: [innerVideo] }, audio: [] }, { kind: "compound" });
+	const middle = scene("middle", { overlay: [], main: { ...root.tracks.main, elements: [{
+		...root.tracks.main.elements[0], type: "compound", id: "middle", sceneId: "inner", startTime: t(0), duration: t(10),
+		trimStart: t(0), params: {},
+	}] }, audio: [] }, { kind: "compound" });
+	root.tracks.main.elements = [{
+		...root.tracks.main.elements[0], type: "compound", id: "outer", sceneId: "middle", startTime: t(0), duration: t(10),
+		trimStart: t(0), params: { "transform.positionX": 12 },
+	}];
+	const range = [...visibleRangeElements(root, [root, middle, inner], { from: 0, to: 5, rows: 1 })];
+	const deepMoved = videoItem(range)!;
+	expect(reviewSourceCrop(deepMoved, canvas, asset)).toBeNull();
+	root.tracks.main.elements[0].params = {};
+	const deepPlain = videoItem(range)!;
+	expectRect(reviewSourceCrop(deepPlain, canvas, asset));
+	const voiced = audio("voice", 0, 10);
+	voiced.params = { volume: 0, fadeIn: 1, fadeOut: 1 };
+	const [gainRoot] = fixture();
+	gainRoot.tracks.main.elements = [];
+	gainRoot.tracks.audio[0].elements = [voiced];
+	const { sounds } = inspectTimeline(gainRoot, [gainRoot], [{ id: "media-voice", name: "Voice" }], { width: 640, height: 360 }, 10, 30);
+	expect(sounds[0].minimumGain(0, 0.2)).toBeLessThan(0.05);
+	expect(sounds[0].minimumGain(9.5, 10)).toBeLessThan(0.05);
+	expect(sounds[0].minimumGain(2, 4)).toBeGreaterThan(0.9);
+	voiced.animations = ({ volume: { keys: [{ id: "dip", time: t(2), value: -60, segmentToNext: "linear", tangentMode: "auto" }] } }
+	) as NonNullable<typeof voiced.animations>;
+	const keyed = inspectTimeline(gainRoot, [gainRoot], [{ id: "media-voice", name: "Voice" }], { width: 640, height: 360 }, 10, 30);
+	expect(keyed.sounds[0].minimumGain(1.5, 2.5)).toBeLessThan(0.01);
+});
+
 test("a short caption follows words heard during the span even if the middle of its clip is silent", () => {
 	const [root] = fixture();
 	root.tracks.main.elements = [];
@@ -102,7 +183,7 @@ test("a short caption follows words heard during the span even if the middle of 
 	voiced.params = { volume: -60 };
 	voiced.animations = {
 		volume: { keys: [0, 1, 2].map((time) => ({ id: String(time), time: t(time), value: time === 2 ? -60 : 0,
-			segmentToNext: "linear", tangentMode: "auto" })) },
+			segmentToNext: "linear" as const, tangentMode: "auto" as const })) },
 	};
 	root.tracks.audio[0].elements = [voiced];
 	root.tracks.overlay = [{ type: "text", id: "captions", name: "Captions", hidden: false, elements: [
