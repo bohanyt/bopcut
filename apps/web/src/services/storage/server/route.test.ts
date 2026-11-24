@@ -77,6 +77,7 @@ describe("project adapter", () => {
 			ctx(id),
 		);
 		expect((await migration.json()).skipped).toBe(true);
+		expect((await PUT(request(id, "PUT", { "if-match": "new" }, first), ctx(id))).status).toBe(404);
 		expect((await GET(request(id, "GET"), ctx(id))).status).toBe(404);
 	});
 	test("rejects foreign origins and traversal IDs", async () => {

@@ -82,6 +82,23 @@ describe("folder storage", () => {
 			(await mediaResponse("project-1", meta.id, "bytes=99-")).status,
 		).toBe(416);
 	});
+	test("missing media bytes return 404 and a repeat upload preserves saved metadata", async () => {
+		const projectId = "restored-media";
+		const mediaId = "clip";
+		const dir = path.join(projectDir(projectId), "media");
+		const file = path.join(dir, "clip.mp4");
+		const metadataPath = path.join(dir, "_metadata", "clip.json");
+		const upload = { id: mediaId, fileName: "clip.mp4", fileType: "video/mp4" };
+		const stored = { ...upload, diskFile: "clip.mp4", staged: true, words: [{ text: "hello" }] };
+		await atomicWrite(metadataPath, JSON.stringify(stored));
+
+		expect((await mediaResponse(projectId, mediaId, null)).status).toBe(404);
+		await saveMedia(projectId, mediaId, upload, new Blob(["restored"]).stream());
+		expect(await fs.readFile(file, "utf8")).toBe("restored");
+		expect(await (await mediaResponse(projectId, mediaId, null)).text()).toBe("restored");
+		expect(await readJson(metadataPath)).toEqual(stored);
+	});
+
 	test("retries transient Windows lock errors with backoff, not other errors", async () => {
 		const delays: number[] = [];
 		const sleep = async (ms: number) => { delays.push(ms); };

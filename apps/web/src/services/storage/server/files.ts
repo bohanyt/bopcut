@@ -143,7 +143,15 @@ export async function saveMedia(
 	const file = path.join(dir, fileName);
 	const metaFile = path.join(dir, "_metadata", `${mediaId}.json`);
 	const old = await readJson(metaFile);
-	if (old) return;
+	if (old) {
+		const diskFile = old.diskFile;
+		if (typeof diskFile === "string" && new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(diskFile)) {
+			if (await statFile(path.join(dir, diskFile))) return;
+		}
+		// A repeat upload can repair missing bytes without replacing the saved metadata.
+		if (diskFile !== fileName || (old.fileType && old.fileType !== metadata.fileType))
+			throw new Error("Upload does not match the saved media");
+	}
 	const temp = path.join(dir, `${mediaId}.${randomUUID()}.tmp`);
 	try {
 		await pipeline(
@@ -153,6 +161,7 @@ export async function saveMedia(
 			createWriteStream(temp, { flags: "wx" }),
 		);
 		await renameWithRetry(temp, file);
+		if (old) return;
 		try {
 			await atomicWrite(
 				metaFile,
@@ -207,7 +216,11 @@ export async function mediaResponse(
 	const file = path.join(dir, meta.diskFile);
 	// Opened (with retries on transient Windows locks) before the response starts, then streamed from
 	// that handle: a lock can no longer turn into a failed body read halfway through a response.
-	const handle = await retryTransient(() => fs.open(file, "r"));
+	const handle = await retryTransient(() => fs.open(file, "r")).catch((error: unknown) => {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	});
+	if (!handle) return new Response(null, { status: 404 });
 	let streaming = false;
 	try {
 		const stat = await handle.stat();

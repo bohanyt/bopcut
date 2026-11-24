@@ -128,6 +128,8 @@ async function handle(
 					if (migrating && (current || (await readJson(marker(id)))))
 						return Response.json({ skipped: true });
 					const expected = req.headers.get("if-match");
+					if (!migrating && !current && expected === "new" && (await readJson(marker(id)))?.deleted)
+						return new Response(null, { status: 404 });
 					if (!migrating && expected !== (current ? revision(current) : "new"))
 						return Response.json({ error: "Project changed" }, { status: 409 });
 					const etag = await writeProject(id, value, current);
