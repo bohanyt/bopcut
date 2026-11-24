@@ -224,6 +224,34 @@ test("a missing forward frame holds the previous picture instead of jumping back
 		expect(cache.getFrameAt(file, 1.8)?.timestamp).toBe(0);
 	}));
 
+test("an exact recovery retains frame ordering when its decoded canvas is absent from the ring", () =>
+	withCache(async ({ cache }) => {
+		const file = new File([], "source.mp4");
+		const clip = {};
+		const keyframe = (await load(cache, file, 1.6))!;
+		const exact = { ...keyframe, timestamp: 1.6 };
+		cache.acceptExactFrame(file, 1.6, clip, exact, true);
+		cache.finishFrame(() => {});
+		expect(cache.getFrameAt(file, 1.7, clip)).toBeNull();
+		cache.finishFrame(() => {}, false);
+		cache.acceptExactFrame(file, 1.8, clip, keyframe, true);
+		expect(cache.needsFrame).toBe(true);
+		cache.finishFrame(() => {}, false);
+		expect(cache.getFrameAt(file, 1.9, clip)).toBeNull();
+	}));
+
+test("recovery advances the live cursor and rejects a backwards seek without restarting it", () =>
+	withCache(async ({ cache, stream, streamStarts }) => {
+		const file = new File([], "source.mp4");
+		stream(true);
+		cache.getFrameAt(file, 1);
+		cache.finishFrame(() => {});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect((await cache.getExactFrameAt(file, 1.2, {}, true))?.timestamp).toBe(1.2);
+		expect(await cache.getExactFrameAt(file, 0.4, {}, true)).toBeNull();
+		expect(streamStarts).toEqual([1]);
+	}));
+
 test("a cold backward drag skips a preceding keyframe that would reverse picture order", () =>
 	withCache(async ({ cache }) => {
 		const file = new File([], "source.mp4");

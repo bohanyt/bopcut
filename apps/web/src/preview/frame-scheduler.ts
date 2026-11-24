@@ -7,7 +7,7 @@ export function createPreviewFrameScheduler({
 	setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
 	clearTimer = (id) => globalThis.clearTimeout(id),
 }: {
-	render: (options: { signal: AbortSignal; approximate: boolean }) => Promise<void> | void;
+	render: (options: { signal: AbortSignal; approximate: boolean; recovering: boolean }) => Promise<void> | void;
 	requestFrame: (callback: () => void) => number;
 	cancelFrame: (id: number) => void;
 	shouldRetry?: (error: unknown) => boolean;
@@ -35,7 +35,7 @@ export function createPreviewFrameScheduler({
 		}
 		dirty = false;
 		const controller = new AbortController();
-		const task = render({ signal: controller.signal, approximate });
+		const task = render({ signal: controller.signal, approximate, recovering });
 		if (!task) return;
 		rendering = controller;
 		const finish = (retry = false) => {
@@ -98,7 +98,6 @@ export function createPreviewFrameScheduler({
 		if (!approximate || holdTimer !== undefined) return;
 		holdTimer = setTimer(() => {
 			holdTimer = undefined;
-			clearSettle();
 			approximate = false;
 			recovering = true;
 			invalidate();
@@ -126,7 +125,7 @@ export function createPreviewFrameScheduler({
 			approximate = nextMode;
 			lastSeekTime = playheadTime;
 			clearSettle();
-			if (approximate) {
+			if (explicit) {
 				// Start at the seek even when the renderer cannot draw before the next move.
 				if (changed) holdForScrubFrame();
 				settleTimer = setTimer(settle, settleDelay);
@@ -142,7 +141,13 @@ export function createPreviewFrameScheduler({
 			if (retained) holdForScrubFrame();
 			else clearHold();
 		},
-		scrubRecoveryFinished: () => { recovering = false; },
+		scrubRecoveryFinished: () => {
+			if (!recovering) return;
+			recovering = false;
+			approximate = true;
+			holdForScrubFrame();
+			queueFrame();
+		},
 		scrubFrameReady: () => {
 			if (approximate) queueFrame();
 		},

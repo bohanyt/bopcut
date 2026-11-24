@@ -235,3 +235,35 @@ test("retained redraws during random back-and-forth jumps share one 250 ms deadl
 		scheduler.dispose();
 	}
 });
+
+test("failed recovery resumes approximation and waits another hold interval", () => {
+	const clock = frameClock();
+	const timers = new Map<number, () => void>();
+	const recoveries: boolean[] = [];
+	const scheduler = createPreviewFrameScheduler({
+		...clock,
+		setTimer(run, delay) {
+			timers.set(delay, run);
+			return delay as unknown as ReturnType<typeof setTimeout>;
+		},
+		clearTimer(id) { timers.delete(Number(id)); },
+		render({ recovering }) { recoveries.push(recovering); },
+	});
+	scheduler.seek(1, true, false);
+	clock.tick();
+	const first = timers.get(250);
+	first?.();
+	clock.tick();
+	scheduler.scrubRecoveryFinished();
+	const second = timers.get(250);
+	expect(second).toBeDefined();
+	expect(second).not.toBe(first);
+	scheduler.seek(2, true, false);
+	clock.tick();
+	expect(recoveries).toEqual([false, true, false]);
+	expect(timers.get(250)).toBe(second);
+	second?.();
+	clock.tick();
+	expect(recoveries).toEqual([false, true, false, true]);
+	scheduler.dispose();
+});

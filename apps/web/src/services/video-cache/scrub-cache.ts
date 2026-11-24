@@ -15,7 +15,7 @@ const JOB_LIMIT = 2;
 const DETAIL_DIMENSION = 240;
 const DETAIL_FRAME_LIMIT = 220;
 const DETAIL_FRAME_BYTES = 27 * 1024 * 1024;
-const LOOK_BEHIND = 2.5;
+const LOOK_BEHIND = 6;
 
 type Frame = {
 	canvas: OffscreenCanvas;
@@ -41,12 +41,14 @@ type Motion = {
 	at: number;
 	readTo: number;
 	fast: boolean;
+	backfill: boolean;
 	cursor?: VideoCursor;
 	pending?: Promise<unknown>;
 };
-type ScrubTarget = { time: number; direction: number; run: number };
-type Presentation = { run: number; frame: Frame | null };
+type ScrubTarget = { time: number; extreme: number; direction: number; run: number };
+type Presentation = { run: number; timestamp: number; frame?: Frame };
 const TARGET_JUMP_SECONDS = 0.75;
+const REVERSAL_SECONDS = 0.05;
 type ExactOptions = {
 	getScale?: (source: { width: number; height: number }) => number;
 	maxTextureDimension?: number;
@@ -117,15 +119,21 @@ export class ScrubVideoCache {
 	get needsFrame(): boolean { return this.missing; }
 	get isRetainingFrame(): boolean { return this.retained; }
 
-	getFrameAt(file: File, time: number, clip?: object): Frame | null {
+	private readSource(file: File, time: number): Source | undefined {
 		const source = this.getSource(file);
+		if (!source) return;
+		let times = this.reads.get(source);
+		if (!times) this.reads.set(source, times = new Set());
+		if (times.size < FRAME_LIMIT) times.add(time);
+		return source;
+	}
+
+	getFrameAt(file: File, time: number, clip?: object): Frame | null {
+		const source = this.readSource(file, time);
 		if (!source) {
 			this.missing = true;
 			return null;
 		}
-		let times = this.reads.get(source);
-		if (!times) this.reads.set(source, times = new Set());
-		if (times.size < FRAME_LIMIT) times.add(time);
 		const previous = clip && this.presentations.get(clip);
 		const target = clip ? this.recordTarget(clip, time) : undefined;
 		const direction = target?.direction ?? 0;
@@ -137,20 +145,19 @@ export class ScrubVideoCache {
 		// A preceding keyframe cannot establish frame order in a backward drag.
 		if (clip && !detail && direction <= 0 && frame && frame.timestamp < time) frame = null;
 		const sameRun = previous && previous.run === target?.run;
-		if (previous?.frame?.canvas.width && (!frame || ((sameRun || !detail) && (
-			(direction >= 0 && frame.timestamp < previous.frame.timestamp) ||
-			(direction < 0 && frame.timestamp > previous.frame.timestamp))))) {
-			frame = previous.frame;
+		if (previous && (!frame || ((sameRun || !detail) && this.isOutOfOrder(previous.timestamp, frame.timestamp, direction)))) {
+			frame = previous.frame?.canvas.width ? previous.frame : null;
 			this.retained = true;
 		}
-		if (clip && target) {
-			if (previous?.frame && frame?.timestamp === previous.frame.timestamp &&
+		if (clip && target && frame) {
+			if (previous && frame.timestamp === previous.timestamp &&
 				!(detail && detail.frame === frame && contains(detail, time)) && frame.timestamp !== time) {
 				this.retained = true;
 			}
 			// A held picture can stay visible across a seek without becoming this run's ordering reference.
 			this.framePresentations.set(clip, {
-				run: previous?.frame && frame === previous.frame ? previous.run : target.run,
+				run: previous && frame === previous.frame ? previous.run : target.run,
+				timestamp: frame.timestamp,
 				frame,
 			});
 		}
@@ -163,14 +170,39 @@ export class ScrubVideoCache {
 		return frame;
 	}
 
+	private isOutOfOrder(previous: number, candidate: number, direction: number): boolean {
+		return direction < 0 ? candidate > previous : candidate < previous;
+	}
+
+	acceptExactFrame(file: File, time: number, clip: object, frame: Frame | null, recovering: boolean): void {
+		const source = this.readSource(file, time);
+		const target = this.recordTarget(clip, time);
+		const previous = this.presentations.get(clip);
+		if (!frame || (recovering && previous?.run === target.run &&
+			this.isOutOfOrder(previous.timestamp, frame.timestamp, target.direction))) {
+			this.missing = true;
+			return;
+		}
+		const cached = source && this.find(this.details, source, frame.timestamp)?.frame;
+		this.framePresentations.set(clip, {
+			run: target.run,
+			timestamp: frame.timestamp,
+			frame: cached?.timestamp === frame.timestamp ? cached : undefined,
+		});
+	}
+
 	private recordTarget(clip: object, time: number): ScrubTarget {
 		const targets = this.targets ??= new WeakMap<object, ScrubTarget>();
 		const previous = targets.get(clip);
 		const delta = previous ? time - previous.time : 0;
-		const direction = Math.sign(delta) || previous?.direction || 0;
-		const restart = previous && (Math.abs(delta) > TARGET_JUMP_SECONDS ||
-			(previous.direction !== 0 && direction !== previous.direction));
-		const target = { time, direction, run: (previous?.run ?? 0) + Number(!!restart) };
+		const jump = Math.abs(delta) > TARGET_JUMP_SECONDS;
+		const previousDirection = previous?.direction ?? 0;
+		const fromExtreme = time - (previous?.extreme ?? time);
+		const reversal = previousDirection * fromExtreme < -REVERSAL_SECONDS;
+		const restart = jump || reversal;
+		const direction = restart || !previousDirection ? Math.sign(delta) : previousDirection;
+		const extreme = restart || !previousDirection || direction * fromExtreme >= 0 ? time : previous!.extreme;
+		const target = { time, extreme, direction, run: (previous?.run ?? 0) + Number(restart) };
 		targets.set(clip, target);
 		return target;
 	}
@@ -208,9 +240,10 @@ export class ScrubVideoCache {
 		this.pump();
 	}
 
-	async getExactFrameAt(file: File, time: number, options: ExactOptions): Promise<Frame | null> {
+	async getExactFrameAt(file: File, time: number, options: ExactOptions, recovering = false): Promise<Frame | null> {
 		const motion = this.motion;
 		if (!motion || this.sources.get(file) !== motion.source) return null;
+		if (recovering && (motion.pending || time < motion.readTo || !motion.cursor?.canAdvanceTo(time))) return null;
 		this.settling = true;
 		const { signal, getScale, maxTextureDimension = Infinity } = options;
 		await waitWithAbort(Promise.resolve(motion.pending), signal);
@@ -219,10 +252,16 @@ export class ScrubVideoCache {
 		if (this.motion !== motion) return null;
 		if (!this.exactRead) {
 			const key = this.find(this.keys, motion.source, time);
+			if (recovering && (!motion.cursor.canAdvanceTo(time) ||
+				(time - motion.at >= 2 && !(key && contains(key, motion.at))))) return null;
 			const window = key && contains(key, motion.at) ? 4 : 2;
-			const sample = motion.cursor.readAt(time, undefined, window).catch(() => null).finally(() => {
+			const sample = motion.cursor.readAt(time, recovering ? (value) => {
+				motion.at = value.timestamp;
+				this.storeDetail(motion.source, track, value);
+			} : undefined, recovering ? Infinity : window).catch(() => null).finally(() => {
 				if (motion.pending === sample) motion.pending = undefined;
 			});
+			if (recovering) motion.readTo = time;
 			this.exactRead = { time, sample };
 			motion.pending = sample;
 		}
@@ -311,6 +350,14 @@ export class ScrubVideoCache {
 			if (!best || entry.start > best.start) best = entry;
 		}
 		return best;
+	}
+
+	private storeDetail(source: Source, track: InputVideoTrack, sample: VideoSample): void {
+		const range = { start: sample.timestamp, end: sample.timestamp + Math.max(sample.duration, 0.000001) };
+		if (this.find(this.details, source, range.start)?.start === range.start) return;
+		const frame = rasterize(sample, track, DETAIL_DIMENSION);
+		if (frame && this.store(this.details, source, range, frame) &&
+			this.motion && Math.abs(this.motion.target - range.start) <= 0.5) this.onReady?.();
 	}
 
 	private followingDetail(source: Source, time: number): Entry | undefined {
@@ -418,29 +465,30 @@ export class ScrubVideoCache {
 		}
 		this.closeMotion();
 		if (this.jobs + this.retiring >= JOB_LIMIT) return;
-		const start = Math.max(0, time - (backward ? LOOK_BEHIND : 0));
-		this.motion = { source, target: time, start, at: -Infinity, readTo: -Infinity, fast };
+		this.motion = { source, target: time, start: time, at: -Infinity, readTo: -Infinity, fast, backfill: backward };
 	}
 
 	private advanceMotion(): void {
 		const motion = this.motion;
 		if (!motion || motion.pending || this.settling || motion.readTo >= motion.target) return;
-		const target = motion.readTo < motion.start ? motion.start : Math.min(motion.target, motion.readTo + 1.5);
-		motion.readTo = target;
 		const task = (async () => {
 			const track = await motion.source.track;
 			if (this.motion !== motion) return;
+			if (!motion.cursor && motion.backfill) {
+				const time = motion.target;
+				const key = await new EncodedPacketSink(track).getKeyPacket(time, { verifyKeyPackets: true });
+				if (this.motion !== motion) return;
+				motion.start = Math.max(0, time - LOOK_BEHIND, key?.timestamp ?? 0);
+			}
+			const target = Math.max(motion.start, Math.min(motion.target, motion.readTo + 1.5));
+			motion.readTo = target;
 			const cursor = motion.cursor ??= new VideoCursor(track, true);
 			let sliceStarted = performance.now();
 			await cursor.readAt(target, (sample) => {
 				if (this.motion !== motion) return;
 				motion.at = sample.timestamp;
 				if (motion.fast && motion.target - sample.timestamp > 0.65) return;
-				const range = { start: sample.timestamp, end: sample.timestamp + Math.max(sample.duration, 0.000001) };
-				if (this.find(this.details, motion.source, range.start)?.start === range.start) return;
-				const frame = rasterize(sample, track, DETAIL_DIMENSION);
-				if (frame && this.store(this.details, motion.source, range, frame) &&
-					Math.abs(motion.target - range.start) <= 0.5) this.onReady?.();
+				this.storeDetail(motion.source, track, sample);
 				// A burst of decoder output can otherwise rasterize an entire slice
 				// through microtasks before the browser can process pointer input.
 				if (performance.now() - sliceStarted >= 7) {

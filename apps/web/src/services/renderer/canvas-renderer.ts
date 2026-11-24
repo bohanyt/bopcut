@@ -38,6 +38,8 @@ let renderQueue: Promise<void> = Promise.resolve();
 type RenderRequest = { node: AnyBaseNode; time: number; signal?: AbortSignal };
 type ScrubPreview = {
 	cache: ScrubVideoCache;
+	exact?: boolean;
+	recovering?: boolean;
 	onReady?: () => void;
 	onBlocked?: () => void;
 	onRetained?: () => void;
@@ -118,7 +120,8 @@ export class CanvasRenderer {
 		scrub?: ScrubPreview;
 	}) {
 		const { maxSurfaceDimension, maxTextureDimension } = getRendererLimits();
-		this.target = this.getRenderTarget(scrub?.onReady ? Math.min(maxSurfaceDimension ?? Infinity, 640) : maxSurfaceDimension);
+		const approximate = scrub?.onReady && !scrub.exact;
+		this.target = this.getRenderTarget(approximate ? Math.min(maxSurfaceDimension ?? Infinity, 640) : maxSurfaceDimension);
 		if (targetCanvas !== this.outputCanvas) {
 			const error = canvasSizeError(targetCanvas, maxSurfaceDimension);
 			if (error) throw new Error(error);
@@ -126,7 +129,8 @@ export class CanvasRenderer {
 		await measureSpanAsync({
 			name: "resolve",
 			fn: () => resolveRenderTree({
-				node, renderer: this, time, signal, scrubCache: scrub?.cache, settleScrub: !!scrub && !scrub.onReady,
+				node, renderer: this, time, signal, scrubCache: scrub?.cache,
+				settleScrub: !!scrub && !approximate, interactiveScrub: !!scrub?.onReady, recoverScrub: scrub?.recovering,
 			}),
 		});
 		signal.throwIfAborted();

@@ -223,9 +223,10 @@ function PreviewCanvas({
 		};
 	}, [renderer, scrubCache, sessionSignal]);
 
-	const render = useCallback(({ signal: seekSignal, approximate: scheduledApproximation }: {
+	const render = useCallback(({ signal: seekSignal, approximate: scheduledApproximation, recovering }: {
 		signal: AbortSignal;
 		approximate: boolean;
+		recovering: boolean;
 	}) => {
 		if (!renderTree || document.hidden || rendererDevice.status.state !== "ready" || editor.renderer.isExportRunning()) {
 			return;
@@ -249,11 +250,12 @@ function PreviewCanvas({
 		const approximate = scheduledApproximation && pointerScrubbing;
 		if (playing || (!approximate && !scrubCache.active)) scrubCache.stop();
 		if (
-			!approximate &&
+			!approximate && !recovering &&
 			frame === lastFrameRef.current &&
 			renderTree === lastSceneRef.current &&
 			(playing || renderTime === lastExactTimeRef.current)
 		) {
+			if (!pointerScrubbing) scrubCache.stop();
 			return;
 		}
 
@@ -271,18 +273,20 @@ function PreviewCanvas({
 			node: renderTree,
 			time: renderTime,
 			signal,
-			scrub: approximate ? {
+			scrub: pointerScrubbing ? {
 				cache: scrubCache,
+				exact: !approximate,
+				recovering,
 				onReady: () => schedulerRef.current?.scrubFrameReady(),
 				onBlocked,
 				onRetained: () => { retained = true; },
-				shouldPresent: () => !editor.playback.getIsPlaying() && editor.playback.getIsScrubbing(),
+				shouldPresent: () => !editor.playback.getIsPlaying() && editor.playback.getIsScrubbing() &&
+					(!recovering || hasSameVisibleVideoClips(renderTree, renderTime, Math.min(
+						editor.playback.getCurrentTime(), editor.timeline.getLastFrameTime(),
+					))),
 			} : scrubCache.active ? {
 				cache: scrubCache,
 				onBlocked,
-				shouldPresent: () => !pointerScrubbing || hasSameVisibleVideoClips(renderTree, renderTime, Math.min(
-					editor.playback.getCurrentTime(), editor.timeline.getLastFrameTime(),
-				)),
 			} : undefined,
 		})
 			.then(() => {
@@ -290,7 +294,6 @@ function PreviewCanvas({
 				const mount = canvasMountRef.current;
 				if (signal.aborted || graphics.aborted || !mount) return;
 				if (held) return;
-				if (!approximate) schedulerRef.current?.scrubRecoveryFinished();
 				if (approximate) schedulerRef.current?.scrubFramePresented(retained);
 				const outputCanvas = renderer.getOutputCanvas();
 				if (outputCanvas.parentElement !== mount) mount.replaceChildren(outputCanvas);
@@ -303,6 +306,9 @@ function PreviewCanvas({
 				if (!signal.aborted && !(error instanceof GraphicsDeviceError)) {
 					console.error("Preview render failed:", error);
 				}
+			})
+			.finally(() => {
+				if (recovering && !signal.aborted && !graphics.aborted) schedulerRef.current?.scrubRecoveryFinished();
 			});
 	}, [renderer, scrubCache, renderTree, editor.playback, editor.renderer, editor.timeline]);
 

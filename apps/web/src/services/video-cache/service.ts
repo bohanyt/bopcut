@@ -49,6 +49,10 @@ export class VideoCursor {
 		return Math.abs(time - this.currentStart);
 	}
 
+	canAdvanceTo(time: number): boolean {
+		return !!this.iterator && time >= this.currentStart;
+	}
+
 	async readAt(time: number, observe?: ObserveSample, sequentialWindow = 2): Promise<VideoSample | null> {
 		if (this.disposed) return null;
 		const start = this.currentStart;

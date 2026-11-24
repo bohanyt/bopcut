@@ -61,6 +61,8 @@ type ResolveContext = {
 	signal?: AbortSignal;
 	scrubCache?: ScrubVideoCache;
 	settleScrub?: boolean;
+	interactiveScrub?: boolean;
+	recoverScrub?: boolean;
 };
 
 /** Recovery may display an earlier exact time only while the same video clips are visible. */
@@ -87,6 +89,8 @@ export async function resolveRenderTree({
 	signal,
 	scrubCache,
 	settleScrub,
+	interactiveScrub,
+	recoverScrub,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
@@ -94,8 +98,10 @@ export async function resolveRenderTree({
 	signal?: AbortSignal;
 	scrubCache?: ScrubVideoCache;
 	settleScrub?: boolean;
+	interactiveScrub?: boolean;
+	recoverScrub?: boolean;
 }): Promise<void> {
-	await resolveNode({ node, context: { renderer, time, signal, scrubCache, settleScrub } });
+	await resolveNode({ node, context: { renderer, time, signal, scrubCache, settleScrub, interactiveScrub, recoverScrub } });
 }
 
 async function resolveNode({
@@ -401,9 +407,14 @@ function readVideoFrame(
 		throwOnSeekError: context.renderer.strictVideoDecoding,
 	});
 	const scrub = context.scrubCache;
-	return readMediaSource(mediaId, context, scrub
-		? async () => (await scrub.getExactFrameAt(file, seconds, options)) ?? readExact()
-		: readExact);
+	return readMediaSource(mediaId, context, scrub ? async () => {
+		const recovering = !!context.recoverScrub;
+		const warmFrame = await scrub.getExactFrameAt(file, seconds, options, recovering);
+		const frame = warmFrame ?? (recovering ? null : await readExact());
+		context.signal?.throwIfAborted();
+		if (context.interactiveScrub) scrub.acceptExactFrame(file, seconds, clip, frame, recovering);
+		return frame;
+	} : readExact);
 }
 
 async function readMediaSource<T>(
