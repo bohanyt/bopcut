@@ -845,3 +845,38 @@ test("keep refuses an overlapping extension with ripple and preserves protected 
 	expect(released.results.map((result) => result.ok)).toEqual([true, true]);
 	expect(find(released.scenes, "b")?.startTime).toBe(t(1));
 });
+
+test("keep rolls back the edit when ripple overlaps a stationary clip", () => {
+	const input = titles(
+		{ ...text("target", 10, 2), agentId: "target", humanFields: ["duration"] },
+		{ ...text("middle", 4, 1), agentId: "middle", humanFields: ["start"] },
+		text("later", 12, 3),
+	);
+	const move: DraftOp = { op: "set", match: { agentId: "target" }, start: 0, duration: 1 };
+	const outcome = run(input, [move], "keep", undefined, { ripple: true });
+	expect(outcome.results[0]).toMatchObject({
+		ok: false,
+		error: "ripple would cause later and middle to overlap on Titles",
+		kept: ["duration"],
+		current: { start: 10, duration: 2 },
+	});
+	expect(outcome.scenes).toBe(input);
+	expect(outcome.touched).toEqual([]);
+	expect(run(input, [move], "keep").results[0].ok).toBe(true);
+});
+
+test("keep commits a ripple that fits even when unrelated clips already overlap", () => {
+	const input = titles(
+		{ ...text("target", 10, 2), agentId: "target", humanFields: ["duration"] },
+		{ ...text("middle", 6, 1), agentId: "middle", humanFields: ["start"] },
+		text("existing overlap", 6.5, 1),
+		text("later", 12, 3),
+	);
+	const move: DraftOp = { op: "set", match: { agentId: "target" }, start: 0, duration: 1 };
+	const outcome = run(input, [move], "keep", undefined, { ripple: true });
+	expect(outcome.results[0]).toMatchObject({ ok: true, kept: ["duration"] });
+	expect(find(outcome.scenes, "target")).toMatchObject({ startTime: t(0), duration: t(2) });
+	expect(find(outcome.scenes, "later")?.startTime).toBe(t(2));
+	expect(find(outcome.scenes, "middle")?.startTime).toBe(t(6));
+	expect(find(outcome.scenes, "existing overlap")?.startTime).toBe(t(6.5));
+});

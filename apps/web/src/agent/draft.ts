@@ -76,6 +76,27 @@ const INTERPOLATIONS: unknown[] = ["linear", "hold", "bezier"];
 const seconds = (ticks: number) => ticks / TICKS_PER_SECOND;
 const wordCutFields = ["start", "duration", "trimStart"] as const;
 
+/** Existing overlaps can remain, but closing a gap must not create another one. */
+function assertRippleFits(before: SceneTracks, after: SceneTracks): void {
+	const tracks = new Map(orderedTracks(before).map((track) => [track.id, track]));
+	for (const track of orderedTracks(after)) {
+		const previous = tracks.get(track.id);
+		const old = new Map(previous?.elements.map((element) => [element.id, element]));
+		const sorted = [...track.elements].sort((a, b) => a.startTime - b.startTime);
+		for (const [i, left] of sorted.entries()) {
+			for (let j = i + 1; j < sorted.length; j++) {
+				const right = sorted[j];
+				if (right.startTime >= left.startTime + left.duration) break;
+				if (left.startTime >= right.startTime + right.duration) continue;
+				const a = old.get(left.id);
+				const b = old.get(right.id);
+				if (a && b && a.startTime < b.startTime + b.duration && b.startTime < a.startTime + a.duration) continue;
+				throw new Error(`ripple would cause ${left.name || left.id} and ${right.name || right.id} to overlap on ${track.name}`);
+			}
+		}
+	}
+}
+
 /** Identify newly invalid audio wrappers using the same predicate as final scene relocation. */
 function protectedCompoundRelocation(before: TScene[], after: TScene[]): ElementHit | undefined {
 	const previousVisuals = new Map<string, boolean>();
@@ -211,6 +232,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 			if (orderedTracks(next).some((track) => track.elements.some((element) =>
 				starts.has(element.id) && starts.get(element.id) !== element.startTime))) next = tracks;
 		}
+		if (next !== tracks && operation.keep) assertRippleFits(scene.tracks, next);
 		// A clip this edit moves (explicitly or by ripple) must not be one the user moved after basedOn.
 		if (!activeKeep || next !== tracks) {
 			assertRippleNotStale({ base, now, sceneId, before: activeKeep ? tracks : scene.tracks, after: next,
@@ -279,9 +301,9 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 
 	let activeKeep = false;
 	const released = new Map<string, Set<string>>();
-	let operation: { hit?: ElementHit; fixedStartId?: string; release?: { id: string; fields: ReadonlySet<string> } };
+	let operation: { keep: boolean; hit?: ElementHit; fixedStartId?: string; release?: { id: string; fields: ReadonlySet<string> } };
 	const run = (op: DraftOp, result: any) => {
-		const keep = (op?.onConflict ?? onConflict) === "keep";
+		const keep = operation.keep;
 		activeKeep = false;
 		const take = keep ? takeHumanFields(op.take) : new Set<string>();
 		const kept = new Set<string>();
@@ -792,10 +814,10 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		const result: any = { op: op?.op };
 		if (op && "match" in op && op.match !== undefined) result.match = op.match;
 		const saved = { list, touched: touched.length, finish: finish.length };
-		operation = {};
+		operation = { keep: (op?.onConflict ?? onConflict) === "keep" };
 		try {
 			run(op, result);
-			if (list !== saved.list && (op?.onConflict ?? onConflict) === "keep") {
+			if (list !== saved.list && operation.keep) {
 				const relocation = protectedCompoundRelocation(saved.list, list);
 				if (relocation) {
 					operation.hit = relocation;
