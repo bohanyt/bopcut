@@ -6,10 +6,12 @@ import { LoadBoundary } from "./load-boundary";
 
 let dom: Window;
 let root: Root;
+const originals = new Map<string, PropertyDescriptor | undefined>();
 
 beforeEach(async () => {
 	dom = new Window();
 	for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
+		originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
 		Object.defineProperty(globalThis, key, { configurable: true, value });
 	}
 	root = (await import("react-dom/client")).createRoot(document.body.appendChild(document.createElement("div")));
@@ -18,6 +20,11 @@ beforeEach(async () => {
 afterEach(async () => {
 	act(() => root.unmount());
 	await dom.close();
+	for (const [key, original] of originals) {
+		if (original) Object.defineProperty(globalThis, key, original);
+		else Reflect.deleteProperty(globalThis, key);
+	}
+	originals.clear();
 });
 
 function ThrowingChild(): never {
