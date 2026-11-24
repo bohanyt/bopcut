@@ -13,6 +13,15 @@ export interface DecodedKeybindingsState {
 	isCustomized: boolean;
 }
 
+function normalizePersistedShortcutKey(key: string): string {
+	if (key === "esc") return "escape";
+	const separator = key.lastIndexOf("+");
+	if (separator > 0 && key.slice(separator + 1) === "esc") {
+		return `${key.slice(0, separator + 1)}escape`;
+	}
+	return key;
+}
+
 export function serializeKeybindingsState({
 	keybindings,
 	isCustomized,
@@ -57,10 +66,18 @@ export function decodePersistedKeybindingsState({
 
 	const keybindings = new Map<ShortcutKey, TActionWithOptionalArgs>();
 	const dropped: Array<{ key: string; action: string | undefined }> = [];
-	for (const [key, action] of Object.entries(persisted.keybindings)) {
+	const explicitEscapeKeys = new Set<string>();
+	for (const key of Object.keys(persisted.keybindings)) {
+		if (key === "escape" || key.endsWith("+escape")) {
+			explicitEscapeKeys.add(key);
+		}
+	}
+	for (const [rawKey, action] of Object.entries(persisted.keybindings)) {
 		if (action === undefined) continue;
+		const key = normalizePersistedShortcutKey(rawKey);
+		if (rawKey !== key && explicitEscapeKeys.has(key)) continue;
 		if (!isShortcutKey(key) || !isActionWithOptionalArgs(action)) {
-			dropped.push({ key, action });
+			dropped.push({ key: rawKey, action });
 			continue;
 		}
 

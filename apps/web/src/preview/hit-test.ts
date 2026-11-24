@@ -1,7 +1,7 @@
 import type { ElementWithBounds } from "./element-bounds";
 import type { ElementRef } from "@/timeline/types";
 
-function pointInRotatedRect({
+export function pointInRotatedRect({
 	px,
 	py,
 	cx,
@@ -27,8 +27,12 @@ function pointInRotatedRect({
 	const localY = dx * sin + dy * cos;
 	const halfW = Math.abs(width) / 2;
 	const halfH = Math.abs(height) / 2;
+	const eps = 1e-6;
 	return (
-		localX >= -halfW && localX <= halfW && localY >= -halfH && localY <= halfH
+		localX >= -halfW - eps &&
+		localX <= halfW + eps &&
+		localY >= -halfH - eps &&
+		localY <= halfH + eps
 	);
 }
 

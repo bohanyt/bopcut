@@ -480,7 +480,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const type = op.type;
 				if (!TRANSITION_TYPES.includes(type)) throw new Error(`transition type must be one of ${TRANSITION_TYPES.join(", ")}`);
 				const wanted = op.duration ?? 0.5;
-				if (typeof wanted !== "number" || !Number.isFinite(wanted) || wanted <= 0 || wanted > 5) throw new Error("transition duration must be 0 to 5 seconds");
+				if (typeof wanted !== "number" || !Number.isFinite(wanted) || wanted <= 0 || wanted > 5) throw new Error("transition duration must be above 0 and at most 5 seconds");
 				const frameTicks = (TICKS_PER_SECOND * fps.denominator) / fps.numerator;
 				const wholeFrames = (ticks: number) => Math.floor(ticks / frameTicks + 1e-9) * frameTicks;
 				const incoming = hit.element;

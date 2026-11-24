@@ -17,7 +17,7 @@ import type {
 const DEFAULT_BROWSE_LIMIT = 12;
 const DEFAULT_SEARCH_LIMIT = 100;
 
-function mergeSearchResults({
+export function mergeSearchResults({
 	results,
 }: {
 	results: StickerSearchResult[];
@@ -28,6 +28,7 @@ function mergeSearchResults({
 	>();
 	let total = 0;
 	let hasMore = false;
+	let duplicatesRemoved = 0;
 
 	for (const result of results) {
 		total += result.total;
@@ -35,12 +36,17 @@ function mergeSearchResults({
 		for (const item of result.items) {
 			if (!deduplicatedItems.has(item.id)) {
 				deduplicatedItems.set(item.id, item);
+			} else {
+				duplicatesRemoved++;
 			}
 		}
 	}
 
+	const items = Array.from(deduplicatedItems.values());
+	total = Math.max(total - duplicatesRemoved, items.length);
+
 	return {
-		items: Array.from(deduplicatedItems.values()),
+		items,
 		total,
 		hasMore,
 	};

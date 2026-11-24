@@ -50,6 +50,16 @@ describe("duck keyframes", () => {
 	test("no speech, no keyframes", () => {
 		expect(duckKeyframes([], { duration: 5 })).toEqual([]);
 	});
+	test("first keyframe at 0 reflects partial attack when speech starts inside attack", () => {
+		const atAttack = duckKeyframes([{ start: 5, end: 8 }], { duration: 20, amountDb: -12, attack: 5 });
+		expect(atAttack[0]).toEqual({ path: "volume", time: 0, value: 0 });
+		const partial = duckKeyframes([{ start: 1, end: 4 }], { duration: 20, amountDb: -12, attack: 2 });
+		expect(partial[0]).toEqual({ path: "volume", time: 0, value: -6 });
+		const fromZero = duckKeyframes([{ start: 0, end: 2 }], { duration: 10, amountDb: -12, attack: 5 });
+		expect(fromZero[0]).toEqual({ path: "volume", time: 0, value: -12 });
+		const zeroAttack = duckKeyframes([{ start: 1, end: 2 }], { duration: 5, amountDb: -12, attack: 0, release: 0 });
+		expect(zeroAttack.filter((p) => p.time === 0 || p.time === 0.999).map((p) => p.value)).toEqual([0, 0]);
+	});
 });
 
 describe("duck requests", () => {

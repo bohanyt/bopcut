@@ -96,7 +96,9 @@ export function duckKeyframes(segments: Segment[], { duration, baseDb = 0, amoun
 		attack + release,
 	);
 	if (!inside.length) return [];
-	const points: { time: number; value: number }[] = [{ time: 0, value: inside[0].start - attack <= 0 ? low : baseDb }];
+	const lead = inside[0].start;
+	const first = lead <= 0 ? low : lead >= attack ? baseDb : baseDb + ((low - baseDb) * (attack - lead)) / attack;
+	const points: { time: number; value: number }[] = [{ time: 0, value: first }];
 	// A zero attack or release is a step: the base value holds until 1 ms before the change.
 	const STEP = 0.001;
 	for (const s of inside) {

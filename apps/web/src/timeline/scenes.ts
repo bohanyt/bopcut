@@ -10,12 +10,18 @@ export function getMainScene({ scenes }: { scenes: TScene[] }): TScene | null {
 }
 
 export function ensureMainScene({ scenes }: { scenes: TScene[] }): TScene[] {
-	const hasMain = scenes.some((scene) => scene.isMain);
-	if (!hasMain) {
+	const mainIndex = scenes.findIndex((scene) => scene.isMain);
+	if (mainIndex === -1) {
 		const mainScene = buildDefaultScene({ name: "Main scene", isMain: true });
 		return [mainScene, ...scenes];
 	}
-	return scenes;
+	let changed = false;
+	const result = scenes.map((scene, index) => {
+		if (!scene.isMain || index === mainIndex) return scene;
+		changed = true;
+		return { ...scene, isMain: false };
+	});
+	return changed ? result : scenes;
 }
 
 export function buildDefaultScene({

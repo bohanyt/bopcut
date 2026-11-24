@@ -37,7 +37,13 @@ async function readPresets(): Promise<{ file: string; preset: TextStylePreset }[
 }
 
 export async function GET() {
-	const presets = (await readPresets()).map(({ preset }) => preset);
+	const presets: TextStylePreset[] = [];
+	const seen = new Set<string>();
+	for (const { preset } of await readPresets()) {
+		if (seen.has(preset.name)) continue;
+		seen.add(preset.name);
+		presets.push(preset);
+	}
 	return Response.json(presets, { headers: { "Cache-Control": "no-store" } });
 }
 
@@ -52,8 +58,9 @@ export async function POST(request: Request) {
 			return Response.json({ error: "Preset too large" }, { status: 413 });
 		const preset = validateTextPreset(JSON.parse(text));
 		// A file that already declares this exact name is replaced, whatever its file name is.
-		const existing = (await readPresets()).find((entry) => entry.preset.name === preset.name);
-		const file = path.join(directory(), existing?.file ?? presetFileName(preset.name));
+		const sameName = (await readPresets()).filter((entry) => entry.preset.name === preset.name);
+		const targetFile = sameName[0]?.file ?? presetFileName(preset.name);
+		const file = path.join(directory(), targetFile);
 		const temporary = `${file}.${crypto.randomUUID()}.tmp`;
 		try {
 			await fs.writeFile(temporary, JSON.stringify(preset, null, 2));
@@ -62,6 +69,11 @@ export async function POST(request: Request) {
 			await fs.rm(temporary, { force: true }).catch(() => {});
 			throw error;
 		}
+		await Promise.all(
+			sameName
+				.filter((entry) => entry.file !== targetFile)
+				.map((entry) => fs.rm(path.join(directory(), entry.file), { force: true }).catch(() => {})),
+		);
 		return Response.json(preset);
 	} catch (error) {
 		return Response.json(

@@ -9,7 +9,7 @@ export function toElementDurationTicks({
 }: {
 	seconds: number | null | undefined;
 }) {
-	if (seconds == null) {
+	if (seconds == null || seconds <= 0) {
 		return DEFAULT_NEW_ELEMENT_DURATION;
 	}
 

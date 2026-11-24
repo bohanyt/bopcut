@@ -207,7 +207,7 @@ export function formatRulerLabel({
 	}
 
 	const frameWithinSecond = getFrameWithinSecond({ timeInSeconds, fps: frameRateToFloat(fps) });
-	return `${frameWithinSecond}f`;
+	return frameWithinSecond > 0 ? `${frameWithinSecond}f` : formatTimestamp({ timeInSeconds: Math.floor(timeInSeconds) });
 }
 
 /**
@@ -233,8 +233,8 @@ function getFrameWithinSecond({
 	timeInSeconds: number;
 	fps: number;
 }): number {
-	const fractionalPart = timeInSeconds % 1;
-	return Math.round(fractionalPart * fps);
+	const firstFrame = Math.ceil(Math.floor(timeInSeconds) * fps - 1e-6);
+	return Math.round(timeInSeconds * fps) - firstFrame;
 }
 
 /**

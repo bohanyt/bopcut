@@ -14,6 +14,7 @@ import type {
 } from "@/actions/keybinding";
 import { isKey } from "@/actions/keybinding";
 import { runMigrations, CURRENT_VERSION } from "./keybindings/migrations";
+import { decodePersistedKeybindingsState } from "./keybindings/persistence";
 
 export interface KeybindingConflict {
 	key: ShortcutKey;
@@ -56,17 +57,6 @@ type PersistedState = {
 
 function isDOMElement(element: EventTarget | null): element is HTMLElement {
 	return element instanceof HTMLElement;
-}
-
-function isPersistedState(value: unknown): value is PersistedState {
-	if (!value || typeof value !== "object") return false;
-	if (!("keybindings" in value) || !("isCustomized" in value)) return false;
-	const { keybindings, isCustomized } = value;
-	return (
-		typeof keybindings === "object" &&
-		keybindings !== null &&
-		typeof isCustomized === "boolean"
-	);
 }
 
 export const useKeybindingsStore = create<KeybindingsState>()(
@@ -189,17 +179,12 @@ export const useKeybindingsStore = create<KeybindingsState>()(
 			migrate: (persisted, version) =>
 				runMigrations({ state: persisted, fromVersion: version }),
 			merge: (persisted, current) => {
-				if (!isPersistedState(persisted)) return current;
-				const entries = Object.entries(persisted.keybindings);
-				// Persistence boundary: keys are normalized by the migration chain.
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-				const typedEntries = entries as Array<
-					[ShortcutKey, TActionWithOptionalArgs]
-				>;
+				const decoded = decodePersistedKeybindingsState({ state: persisted });
+				if (!decoded) return current;
 				return {
 					...current,
-					keybindings: new Map(typedEntries),
-					isCustomized: persisted.isCustomized,
+					keybindings: decoded.keybindings,
+					isCustomized: decoded.isCustomized,
 				};
 			},
 		},

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, readdir, rmdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { parseCaptions } from "./transcript-cues";
 import { getTranscript } from "./transcript";
 import { runWithPrivateCookies } from "./yt-dlp-cookies";
 import type { Runner } from "./server";
@@ -136,6 +137,22 @@ test("creator VTT is tried if JSON3 is unusable and keeps inline word times", as
 	expect(result.origin).toBe("creator");
 	metadata.subtitles = { en: [{ ext: "json3", url: "http://127.0.0.1/track" }, vttFormat] };
 	expect((await get({ url: "https://192.0.2.1/video" }, undefined, run, "0")).cues).toEqual(result.cues);
+});
+
+test("VTT accepts variable hours, fraction length, and numeric character references", () => {
+	const data = [
+		"WEBVTT",
+		"1:05:00.000 --> 1:06:30.500\nit&#39;s &#x41; &amp;#39; &#0; &#x110000;",
+		"00:01.5 --> 00:02.25\nSay<00:01.5>more<00:02.25>end",
+		"1:05:00.000 --> 1:06:30.500\nHello<1:05:01.5> there",
+	].join("\n\n");
+	expect(parseCaptions(data, "vtt", false).cues).toEqual([
+		{ start: 3900, end: 3990.5, text: "it's A &#39; &#0; &#x110000;" },
+		{ start: 1.5, end: 2.25, text: "Saymoreend",
+			words: [{ text: "Say", start: 1.5, end: 1.5 }, { text: "more", start: 1.5, end: 2.25 }, { text: "end", start: 2.25, end: 2.25 }] },
+		{ start: 3900, end: 3990.5, text: "Hello there",
+			words: [{ text: "Hello", start: 3900, end: 3901.5 }, { text: "there", start: 3901.5, end: 3990.5 }] },
+	]);
 });
 
 test("automatic VTT keeps repeated lines and reports malformed timed blocks", async () => {

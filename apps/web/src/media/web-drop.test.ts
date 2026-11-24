@@ -157,6 +157,16 @@ describe("drops and pastes, edge cases", () => {
 		expect(dataUrlToFile("data:image/png;charset=utf-8;base64,iVBORw0KGgo=")?.size).toBe(8);
 	});
 
+	test("svg data URLs are refused; png, jpeg and webp still become files", () => {
+		const svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+		expect(dataUrlToFile(`data:image/svg+xml,${encodeURIComponent(svg)}`)).toBeNull();
+		expect(dataUrlToFile(`data:IMAGE/SVG+XML;base64,${btoa(svg)}`)).toBeNull();
+		expect(dataUrlToFile(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`)).toBeNull();
+		expect(dataUrlToFile("data:image/png;base64,iVBORw0KGgo=")?.type).toBe("image/png");
+		expect(dataUrlToFile("data:image/jpeg;base64,/9j/4AAQ")?.type).toBe("image/jpeg");
+		expect(dataUrlToFile("data:image/webp;base64,UklGRg==")?.type).toBe("image/webp");
+	});
+
 	test("a bad data URL does not stop the next candidate", async () => {
 		const { file } = await fetchWebMedia(["data:image/png;base64,***", "data:image/png;base64,iVBORw0KGgo="]);
 		expect(file?.size).toBe(8);
