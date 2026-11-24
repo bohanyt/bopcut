@@ -15,10 +15,13 @@ function bookmarkTimeEqual({
 export function findBookmarkIndex({
 	bookmarks,
 	frameTime,
+	bookmark,
 }: {
 	bookmarks: Bookmark[];
 	frameTime: MediaTime;
+	bookmark?: Bookmark;
 }): number {
+	if (bookmark) return bookmarks.indexOf(bookmark);
 	return bookmarks.findIndex((bookmark) =>
 		bookmarkTimeEqual({ bookmarkTime: bookmark.time, frameTime }),
 	);
@@ -56,26 +59,28 @@ export function toggleBookmarkInArray({
 export function removeBookmarkFromArray({
 	bookmarks,
 	frameTime,
+	bookmark,
 }: {
 	bookmarks: Bookmark[];
 	frameTime: MediaTime;
+	bookmark?: Bookmark;
 }): Bookmark[] {
-	return bookmarks.filter(
-		(bookmark) =>
-			!bookmarkTimeEqual({ bookmarkTime: bookmark.time, frameTime }),
-	);
+	const index = findBookmarkIndex({ bookmarks, frameTime, bookmark });
+	return index === -1 ? bookmarks : bookmarks.filter((_, i) => i !== index);
 }
 
 export function updateBookmarkInArray({
 	bookmarks,
 	frameTime,
 	updates,
+	bookmark,
 }: {
 	bookmarks: Bookmark[];
 	frameTime: MediaTime;
 	updates: Partial<Omit<Bookmark, "time">>;
+	bookmark?: Bookmark;
 }): Bookmark[] {
-	const index = findBookmarkIndex({ bookmarks, frameTime });
+	const index = findBookmarkIndex({ bookmarks, frameTime, bookmark });
 	if (index === -1) {
 		return bookmarks;
 	}
@@ -90,13 +95,15 @@ export function moveBookmarkInArray({
 	bookmarks,
 	fromTime,
 	toTime,
+	bookmark,
 }: {
 	bookmarks: Bookmark[];
 	fromTime: MediaTime;
 	toTime: MediaTime;
+	bookmark?: Bookmark;
 }): Bookmark[] {
-	const index = findBookmarkIndex({ bookmarks, frameTime: fromTime });
-	if (index === -1) {
+	const index = findBookmarkIndex({ bookmarks, frameTime: fromTime, bookmark });
+	if (index === -1 || bookmarks[index].time === toTime || isBookmarkAtTime({ bookmarks, frameTime: toTime })) {
 		return bookmarks;
 	}
 

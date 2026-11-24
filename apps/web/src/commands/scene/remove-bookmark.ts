@@ -1,6 +1,6 @@
 import { Command, type CommandResult } from "@/commands/base-command";
 import { EditorCore } from "@/core";
-import type { TScene } from "@/timeline";
+import type { Bookmark, TScene } from "@/timeline";
 import { updateSceneInArray } from "@/timeline/scenes";
 import {
 	getFrameTime,
@@ -12,7 +12,7 @@ export class RemoveBookmarkCommand extends Command {
 	private savedScenes: TScene[] | null = null;
 	private frameTime: MediaTime = ZERO_MEDIA_TIME;
 
-	constructor(private time: MediaTime) {
+	constructor(private time: MediaTime, private bookmark?: Bookmark) {
 		super();
 	}
 
@@ -36,10 +36,11 @@ export class RemoveBookmarkCommand extends Command {
 		const updatedBookmarks = removeBookmarkFromArray({
 			bookmarks: activeScene.bookmarks,
 			frameTime: this.frameTime,
+			bookmark: this.bookmark,
 		});
 
 		if (updatedBookmarks.length === activeScene.bookmarks.length) {
-			return;
+			return { changed: false };
 		}
 
 		const updatedScenes = updateSceneInArray({

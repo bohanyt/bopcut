@@ -5,6 +5,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { computeAgentDraft } = await import("./draft");
+const { snapshotNotes } = await import("./notes");
 const { SnapshotHistory, fieldsMapOf, fieldsOf: fieldOf, stableJson } = await import("./stale");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
@@ -252,6 +253,8 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		}];
 		const nested: TScene = { ...scenesWith([])[0], id: "nested", kind: "compound", isMain: false, bookmarks: [note] };
 		const scenes = [root, nested];
+		expect(snapshotNotes(root, scenes, { width: 100, height: 100 }, []))
+			.toContainEqual(expect.objectContaining({ id: "shared", text: "Check the logo", sceneId: "nested" }));
 		expect(run(scenes, [{ op: "resolve-note", id: "shared" }]).results[0]).toMatchObject({ ok: false });
 		const both = [
 			{ op: "reply-note", id: "shared", sceneId: "nested", text: "Done" },

@@ -24,12 +24,12 @@ import { roundFrameTime, type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 
 export interface BookmarkDragState {
 	isDragging: boolean;
-	bookmarkTime: MediaTime | null;
+	bookmark: Bookmark | null;
 	currentTime: MediaTime;
 }
 
 interface PendingBookmarkDrag {
-	bookmarkTime: MediaTime;
+	bookmark: Bookmark;
 	startMouseX: number;
 	startMouseY: number;
 }
@@ -56,7 +56,7 @@ export function useBookmarkDrag({
 
 	const [dragState, setDragState] = useState<BookmarkDragState>({
 		isDragging: false,
-		bookmarkTime: null,
+		bookmark: null,
 		currentTime: ZERO_MEDIA_TIME,
 	});
 	const [isPendingDrag, setIsPendingDrag] = useState(false);
@@ -65,15 +65,15 @@ export function useBookmarkDrag({
 
 	const startDrag = useCallback(
 		({
-			bookmarkTime,
+			bookmark,
 			initialCurrentTime,
 		}: {
-			bookmarkTime: MediaTime;
+			bookmark: Bookmark;
 			initialCurrentTime: MediaTime;
 		}) => {
 			setDragState({
 				isDragging: true,
-				bookmarkTime,
+				bookmark,
 				currentTime: initialCurrentTime,
 			});
 		},
@@ -83,7 +83,7 @@ export function useBookmarkDrag({
 	const endDrag = useCallback(() => {
 		setDragState({
 			isDragging: false,
-			bookmarkTime: null,
+			bookmark: null,
 			currentTime: ZERO_MEDIA_TIME,
 		});
 	}, []);
@@ -139,7 +139,7 @@ export function useBookmarkDrag({
 			if (!scrollContainer) return;
 
 			if (isPendingDrag && pendingDragRef.current) {
-				const { startMouseX, startMouseY, bookmarkTime } =
+				const { startMouseX, startMouseY, bookmark } =
 					pendingDragRef.current;
 				const deltaX = Math.abs(event.clientX - startMouseX);
 				const deltaY = Math.abs(event.clientY - startMouseY);
@@ -169,11 +169,11 @@ export function useBookmarkDrag({
 				});
 				const { snappedTime: initialTime } = getSnapResult({
 					rawTime: frameSnappedTime,
-					excludeBookmarkTime: bookmarkTime,
+					excludeBookmarkTime: bookmark.time,
 				});
 
 				startDrag({
-					bookmarkTime,
+					bookmark,
 					initialCurrentTime: initialTime,
 				});
 				pendingDragRef.current = null;
@@ -181,7 +181,7 @@ export function useBookmarkDrag({
 				return;
 			}
 
-			if (!dragState.isDragging || dragState.bookmarkTime === null) return;
+			if (!dragState.isDragging || !dragState.bookmark) return;
 
 			const activeProject = editor.project.getActive();
 			if (!activeProject) return;
@@ -201,7 +201,7 @@ export function useBookmarkDrag({
 			});
 			const snapResult = getSnapResult({
 				rawTime: frameSnappedTime,
-				excludeBookmarkTime: dragState.bookmarkTime,
+				excludeBookmarkTime: dragState.bookmark.time,
 			});
 
 			setDragState((previousDragState) => ({
@@ -215,7 +215,7 @@ export function useBookmarkDrag({
 		return () => document.removeEventListener("mousemove", handleMouseMove);
 	}, [
 		dragState.isDragging,
-		dragState.bookmarkTime,
+		dragState.bookmark,
 		zoomLevel,
 		duration,
 		editor.project,
@@ -230,7 +230,7 @@ export function useBookmarkDrag({
 		if (!dragState.isDragging) return;
 
 		const handleMouseUp = () => {
-			if (dragState.bookmarkTime === null) {
+			if (!dragState.bookmark) {
 				endDrag();
 				onSnapPointChange?.(null);
 				return;
@@ -240,8 +240,9 @@ export function useBookmarkDrag({
 				dragState.currentTime > duration ? duration : dragState.currentTime;
 
 			editor.scenes.moveBookmark({
-				fromTime: dragState.bookmarkTime,
+				fromTime: dragState.bookmark.time,
 				toTime: clampedTime,
+				bookmark: dragState.bookmark,
 			});
 
 			endDrag();
@@ -252,7 +253,7 @@ export function useBookmarkDrag({
 		return () => document.removeEventListener("mouseup", handleMouseUp);
 	}, [
 		dragState.isDragging,
-		dragState.bookmarkTime,
+		dragState.bookmark,
 		dragState.currentTime,
 		duration,
 		endDrag,
@@ -281,7 +282,7 @@ export function useBookmarkDrag({
 			event.stopPropagation();
 
 			pendingDragRef.current = {
-				bookmarkTime: bookmark.time,
+				bookmark,
 				startMouseX: event.clientX,
 				startMouseY: event.clientY,
 			};

@@ -3,6 +3,7 @@ import type { Effect } from "@/effects/types";
 import type { Mask } from "@/masks/types";
 import type { ParamValues } from "@/params";
 import type { MediaTime } from "@/wasm";
+import type { FrameRate } from "opencut-wasm";
 
 export type ElementRef = {
 	trackId: string;
@@ -314,6 +315,7 @@ export interface ComputeDropTargetParams {
 	zoomLevel: number;
 	verticalDragDirection?: "up" | "down" | null;
 	startTimeOverride?: MediaTime;
+	frameRate?: FrameRate | null;
 	excludeElementId?: string;
 	excludeElementIds?: ReadonlySet<string>;
 	targetElementTypes?: string[];

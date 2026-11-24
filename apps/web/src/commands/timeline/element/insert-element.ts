@@ -90,7 +90,7 @@ export class InsertElementCommand extends Command {
 		});
 
 		if (!updateResult) {
-			return;
+			return { changed: false };
 		}
 
 		const { updatedTracks, targetTrackId } = updateResult;
@@ -340,7 +340,7 @@ export class InsertElementCommand extends Command {
 					track: targetTrack,
 					scenes,
 				});
-				console.error(validation.errorMessage);
+				if (validation.errorMessage) console.error(validation.errorMessage);
 			}
 
 			return null;

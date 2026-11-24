@@ -16,6 +16,7 @@ import type { Transform } from "@/rendering";
 import { resolveTrackPlacement } from "@/timeline/placement";
 import { buildMoveGroup, resolveGroupMove } from "@/timeline/group-move";
 import { computeDropTarget } from "@/timeline/components/drop-target";
+import { getTrackHeight } from "@/timeline/components/track-layout";
 import { mediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 
 function buildTransform(): Transform {
@@ -325,6 +326,25 @@ test("the hovered row stays available when the drag crosses another selected cli
 });
 
 describe("resolveTrackPlacement", () => {
+	test("explicit insertion rechecks the actual position after drop rounding", () => {
+		const track = buildTrack({ id: "occupied", type: "video", elements: [
+			buildElement({ id: "existing", type: "video", startTime: 0, duration: 1100 }),
+		] });
+		const tracks = buildSceneTracks({ overlay: [track] });
+		const insert = (ticks: number) => resolveTrackPlacement({
+			tracks, elementType: "video", strategy: { type: "explicit", trackId: track.id },
+			timeSpans: [{ startTime: mediaTime({ ticks }), duration: mediaTime({ ticks: 1000 }) }],
+		});
+		expect(insert(1000)).toBeNull();
+		expect(insert(1100)).toMatchObject({ kind: "existingTrack", trackId: track.id });
+	});
+
+	test("an external file dropped between video rows creates its track in the gap", () => {
+		const tracks = buildSceneTracks({ overlay: [buildTrack({ id: "upper", type: "video" }), buildTrack({ id: "lower", type: "video" })] });
+		expect(computeDropTarget({ tracks, elementType: "video", mouseX: 0, mouseY: getTrackHeight({ type: "video" }),
+			playheadTime: ZERO_MEDIA_TIME, isExternalDrop: true, elementDuration: mediaTime({ ticks: 1000 }), pixelsPerSecond: 100, zoomLevel: 1,
+		})).toMatchObject({ trackIndex: 1, isNewTrack: true });
+	});
 	test("explicit returns the requested compatible track", () => {
 		const tracks = buildSceneTracks({
 			overlay: [buildTrack({ id: "text-1", type: "text" })],

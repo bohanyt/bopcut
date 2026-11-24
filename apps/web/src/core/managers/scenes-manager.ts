@@ -247,8 +247,8 @@ export class ScenesManager {
 		return isBookmarkAtTime({ bookmarks: activeScene.bookmarks, frameTime });
 	}
 
-	async removeBookmark({ time }: { time: MediaTime }): Promise<void> {
-		const command = new RemoveBookmarkCommand(time);
+	async removeBookmark({ time, bookmark }: { time: MediaTime; bookmark?: Bookmark }): Promise<void> {
+		const command = new RemoveBookmarkCommand(time, bookmark);
 		this.editor.command.execute({ command });
 	}
 
@@ -256,23 +256,27 @@ export class ScenesManager {
 		time,
 		updates,
 		create,
+		bookmark,
 	}: {
 		time: MediaTime;
 		updates: Partial<Omit<Bookmark, "time">>;
 		create?: boolean;
+		bookmark?: Bookmark;
 	}): Promise<void> {
-		const command = new UpdateBookmarkCommand({ time, updates, create });
+		const command = new UpdateBookmarkCommand({ time, updates, create, bookmark });
 		this.editor.command.execute({ command });
 	}
 
 	async moveBookmark({
 		fromTime,
 		toTime,
+		bookmark,
 	}: {
 		fromTime: MediaTime;
 		toTime: MediaTime;
+		bookmark?: Bookmark;
 	}): Promise<void> {
-		const command = new MoveBookmarkCommand({ fromTime, toTime });
+		const command = new MoveBookmarkCommand({ fromTime, toTime, bookmark });
 		this.editor.command.execute({ command });
 	}
 

@@ -110,6 +110,30 @@ const run = (
 		...options,
 	});
 
+test("draft add refuses a collision on the named track and accepts adjacent clips", () => {
+	const add = (start: number): DraftOp => ({ op: "add", track: { name: "Titles", type: "text" },
+		element: { agent_id: "new-title", text: "A title", start, duration: 1 } });
+	expect(run(scenes, [add(2)]).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("overlap") });
+	expect(run(scenes, [add(5)]).results[0].ok).toBe(true);
+});
+
+test("keep records comparison-only fields across snapshots and restores ownership on Undo", () => {
+	const editor = setup();
+	const old = fieldsMapOf(scenes);
+	const match = { id: "a" };
+	const before = run(scenes, [{ op: "set", match, start: 0.5, params: { opacity: 0.6 } }]).scenes;
+	const edit: DraftOp = { op: "set", match, start: 1, params: { opacity: 0.2 } };
+	const kept = run(before, [edit], "keep", old);
+	expect(kept.results[0]).toMatchObject({ ok: true, kept: ["params.opacity", "start"] });
+	expect(find(kept.scenes, "a")?.humanFields).toEqual(["params.opacity", "start"]);
+	const again = run(kept.scenes, [edit], "keep", fieldsMapOf(kept.scenes));
+	expect(find(again.scenes, "a")).toMatchObject({ startTime: t(0.5), params: { opacity: 0.6 } });
+	editor.scenes.setScenes({ scenes: before });
+	editor.command.execute({ command: new AgentDraftCommand({ before, after: kept.scenes, selection: [] }) });
+	editor.command.undo();
+	expect(find(editor.scenes.getScenes(), "a")?.humanFields).toBeUndefined();
+});
+
 test("committed inspector and preview edits mark only changed agent fields, with undo and redo", () => {
 	const editor = setup();
 	editor.timeline.previewElements({

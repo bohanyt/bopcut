@@ -165,6 +165,22 @@ test("mixdown puts center-only 5.1 dialogue in both stereo channels and ignores 
 	}
 });
 
+test("48 kHz export resampling excludes the first sample past a fractional trim end", async () => {
+	installBuffer();
+	const nativeRate = 48_000;
+	const end = 480.5 / nativeRate;
+	const trim = 0.25 / nativeRate;
+	const buffer = new AudioBuffer({ length: 1000, sampleRate: nativeRate });
+	buffer.getChannelData(0)[481] = 1;
+	const tracks = timeline();
+	tracks.audio[0].elements.push({
+		...clip("fractional", 0, trim, end - trim), sourceType: "library", sourceUrl: "/library/fractional.wav", buffer,
+	});
+	const [block] = await Array.fromAsync(mixTimelineAudio({ tracks, mediaAssets: [], duration: t(end), sampleRate: 44_100 }));
+	const peak = Math.max(...block.getChannelData(0).map(Math.abs));
+	expect(peak).toBe(0);
+});
+
 test("96 kHz sources reject ultrasonic aliases across mix block boundaries", async () => {
 	installBuffer();
 	const nativeRate = 96_000;

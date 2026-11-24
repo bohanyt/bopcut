@@ -12,6 +12,9 @@ import { PreviewInteractionController } from "@/preview/controllers/preview-inte
 import { PreviewPointerCapture } from "@/preview/pointer-capture";
 import { KeyframeDragController } from "@/timeline/controllers/keyframe-drag-controller";
 import { ElementInteractionController } from "@/timeline/controllers/element-interaction-controller";
+import { DragDropController, type DragDropConfig } from "@/timeline/controllers/drag-drop-controller";
+import { TimelineDragSource } from "@/timeline/drag-source";
+import { buildEffectElement } from "@/timeline/element-utils";
 import { startColorDrag } from "@/components/ui/color-drag";
 import { appendAlpha, parseHexAlpha } from "@/utils/color";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
@@ -27,7 +30,7 @@ mock.module("@/services/renderer/gpu-renderer", () => ({
 }));
 const { EditorCore } = await import("@/core");
 const { BatchCommand } = await import("@/commands");
-const { PasteKeyframesCommand } = await import("@/commands/timeline/clipboard");
+const { PasteCommand, PasteKeyframesCommand } = await import("@/commands/timeline/clipboard");
 const { RemoveMediaAssetCommand } = await import("@/commands/media");
 const { applyDraft } = await import("@/agent/bridge");
 const { CreateCompoundCommand, DeleteElementsCommand, InsertElementCommand, SplitElementsCommand } = await import(
@@ -716,6 +719,75 @@ describe("preview gesture history boundaries", () => {
 });
 
 describe("generated ids in history", () => {
+	test("a pasted group falls back to a new track if moving its first clip to zero causes overlap", () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = { ...host.tracks, main: { ...host.tracks.main, elements: [video("late-main", 2, 1)] }, overlay: [], audio: [] };
+		const editor = setup(scenes);
+		editor.command.execute({ command: new PasteCommand({ time: t(1), clipboardItems: [0, 2.5].map((start) => ({
+			trackId: "copied-track", trackType: "video", element: video(`source-${start}`, start, 1),
+		})) }) });
+		const { main, overlay } = editor.scenes.getActiveScene().tracks;
+		expect(main.elements.map(({ id }) => id)).toEqual(["late-main"]);
+		expect(overlay[0].elements.map(({ startTime }) => startTime)).toEqual([t(1), t(3.5)]);
+	});
+	test("dropping an effect over an occupied effect row creates a free row", () => {
+		const { editor } = setupSplitHistory();
+		const tracks = () => editor.scenes.getActiveScene().tracks;
+		editor.timeline.updateTracks({ ...tracks(), overlay: [{
+			id: "effects", name: "Effects", type: "effect", hidden: false,
+			elements: [{ ...buildEffectElement({ effectType: "blur", startTime: t(0) }), id: "existing" }],
+		}] });
+		const dragSource = new TimelineDragSource();
+		const dataTransfer = { setData() {}, types: [] } as unknown as DataTransfer;
+		dragSource.begin({ dataTransfer, dragData: { type: "effect", effectType: "blur", targetElementTypes: ["video"] } });
+		const config: DragDropConfig = {
+			dragSource, zoomLevel: 1, getContainerEl: () => null, getHeaderEl: () => null,
+			getTracksScrollEl: () => ({ scrollLeft: 0, scrollTop: 0, getBoundingClientRect: () => ({ left: 0, top: 0 }) }) as HTMLDivElement,
+			getActiveProjectFps: () => editor.project.getActive().settings.fps,
+			startMediaImport: () => null, getSceneTracks: tracks, getCurrentPlayheadTime: () => t(0),
+			getMediaAssets: () => [], importMediaFile: async () => null,
+			executeCommand: (command) => editor.command.execute({ command }),
+			insertElement: (args) => editor.timeline.insertElement(args), addClipEffect: () => {},
+		};
+		const drop = new DragDropController({ configRef: { current: config } });
+		const event = { clientX: 0, clientY: 8, preventDefault() {}, dataTransfer } as React.DragEvent;
+		drop.onDragOver(event);
+		drop.onDrop(event);
+		expect(tracks().overlay.map(({ elements }) => elements.length)).toEqual([1, 1]);
+	});
+	test("an incompatible keyframe paste reports failure and leaves Undo unchanged", () => {
+		const { editor, first, second, keyAt } = setupSplitHistory();
+		const effectId = editor.timeline.addClipEffect({ ...first, effectType: "blur" });
+		const propertyPath = buildEffectParamPath({ effectId, paramKey: "intensity" });
+		editor.timeline.upsertEffectParamKeyframe({ ...first, effectId, paramKey: "intensity", time: t(1), value: 30 });
+		editor.selection.setSelectedKeyframes({ keyframes: [{ ...first, propertyPath, keyframeId: keyAt(propertyPath, 1)!.id }] });
+		expect(editor.clipboard.copy()).toBe(true);
+		editor.selection.setSelectedElements({ elements: [second] });
+		expect(editor.clipboard.paste()).toBe(false);
+		editor.command.undo();
+		expect(keyAt(propertyPath, 1)).toBeNull();
+	});
+
+	test("moving onto an occupied frame leaves the note in place and removing a stacked note uses its identity", async () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		const first = { time: t(0), note: "older note" };
+		const second = { time: t(0), note: "top note" };
+		const occupied = { time: t(1), note: "occupied" };
+		host.bookmarks = [first, second, occupied];
+		const editor = setup(scenes);
+		const bookmarks = () => editor.scenes.getActiveScene().bookmarks;
+		await editor.scenes.moveBookmark({ fromTime: second.time, toTime: occupied.time, bookmark: second });
+		expect(bookmarks()).toEqual([first, second, occupied]);
+		expect(editor.command.canUndo()).toBe(false);
+		await editor.scenes.removeBookmark({ time: second.time, bookmark: second });
+		expect(bookmarks()).toEqual([first, occupied]);
+		editor.command.undo();
+		expect(bookmarks()).toEqual([first, second, occupied]);
+		await editor.scenes.moveBookmark({ fromTime: second.time, toTime: t(2), bookmark: second });
+		expect(bookmarks()).toEqual([first, occupied, { ...second, time: t(2) }]);
+	});
 	test("redo of separation keeps the audio clip, track and volume key ids", () => {
 		const { editor, tracks, first } = setupSplitHistory();
 		editor.media.setAssets({ assets: [

@@ -36,6 +36,8 @@ const messageKeys = new Map<string, StaticMessageKey>([
 	["Compound clip was not created", "timeline.compoundNotCreated"],
 	["A rename of this project is still being saved; try again in a moment", "projects.renamePending"],
 	["The project kept changing while it was reopened", "projects.changedWhileOpening"],
+	["This project was made with a newer version of bopencut. Update bopencut to open it.", "projects.newerVersion"],
+	["This project does not have a valid version. Open it with a compatible editor and save it again.", "projects.invalidVersion"],
 	["a save of it is still running; try again in a moment", "projects.savePending"],
 	["The project kept changing; try again", "storage.projectChanging"],
 	["The project was deleted; not saved", "storage.projectDeleted"],

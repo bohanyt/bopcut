@@ -31,7 +31,7 @@ function buildExistingTrackResult({
 	trackIndex: number;
 	tracks: SceneTracks;
 	timeSpans: PlacementTimeSpan[];
-}): PlacementResult {
+}): Extract<PlacementResult, { kind: "existingTrack" }> {
 	const firstSpan = timeSpans[0];
 	const requestedStartTime = firstSpan?.startTime ?? ZERO_MEDIA_TIME;
 	const adjustedStartTime = enforceMainTrackStart({
@@ -157,12 +157,16 @@ export function resolveTrackPlacement({
 			return null;
 		}
 
-		return buildExistingTrackResult({
+		const result = buildExistingTrackResult({
 			track,
 			trackIndex,
 			tracks,
 			timeSpans,
 		});
+		const { adjustedStartTime } = result;
+		const actualSpans = adjustedStartTime === undefined ? timeSpans : timeSpans.map((span, index) =>
+			index === 0 ? { ...span, startTime: adjustedStartTime } : span);
+		return canPlaceTimeSpansOnTrack({ track, timeSpans: actualSpans }) ? result : null;
 	}
 
 	if (strategy.type === "firstAvailable") {
