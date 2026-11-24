@@ -163,7 +163,7 @@ test("lock names are case-insensitive and only safe generations count", async ()
 		await fs.writeFile(path.join(dir, "WRITER-1.LOCK"), lockRecord(process.pid, 0));
 		await fs.writeFile(path.join(dir, ignored), "");
 		expect(await acquireProxyWriter(dir)).toBe(true);
-		expect(await fs.readdir(dir)).toEqual([ignored, "writer-2.lock"].sort());
+		expect((await fs.readdir(dir)).sort()).toEqual([ignored, "writer-2.lock"].sort());
 		await fs.writeFile(path.join(dir, largest), lockRecord(process.pid, 0));
 		expect(await acquireProxyWriter(dir)).toBe(false);
 		expect(await ownsProxyWriter(dir)).toBe(false);
