@@ -140,6 +140,7 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 			for (const decode of hardware) {
 				const quality = encoder === "h264_nvenc" ? ["-preset", "p4", "-rc", "vbr", "-cq", "25", "-b:v", "0"]
 					: encoder === "libx264" ? ["-preset", "ultrafast", "-crf", "24"] : ["-b:v", "4800k"];
+				quality.push("-maxrate", "5200k", "-bufsize", "5200k");
 				try {
 					await encode(["-v", "error", "-y", ...decode, "-i", file, "-map", "0:v:0", "-an", "-sn", "-dn",
 						"-vf", "scale=" + w + ":" + h + ":flags=lanczos,setsar=1", "-pix_fmt", "yuv420p", "-fps_mode", "passthrough",
@@ -252,7 +253,7 @@ async function pump() {
 					const file = await sourcePath(session.project, id);
 					if (file) failureKey = (await fingerprint(file)).key + (session.software ? ":software" : ":hardware");
 					const info = file && failureKey && !failures.has(failureKey)
-						? await prepare(file, session.software, encoders, AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)])) : undefined;
+						? await prepare(file, session.software, encoders, AbortSignal.any([controller.signal, AbortSignal.timeout(20 * 60_000)])) : undefined;
 					if (controller.signal.aborted) break;
 					session.done.add(id);
 					if (info) report("preparing", { id, info });
