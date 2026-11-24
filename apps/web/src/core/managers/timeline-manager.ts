@@ -14,8 +14,7 @@ import type {
 import { calculateTotalDuration } from "@/timeline";
 import { TimelineDragSource } from "@/timeline/drag-source";
 import { findTrackInSceneTracks } from "@/timeline/track-element-update";
-import { applyElementRetime, applyElementUpdates, type ElementUpdate } from "@/timeline/update-pipeline";
-import { applyRippleAdjustments, computeRippleAdjustments } from "@/ripple";
+import { applyElementRetime, type ElementUpdate } from "@/timeline/update-pipeline";
 import { generateUUID } from "@/utils/id";
 import { lastFrameMediaTime, type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import {
@@ -795,27 +794,10 @@ export class TimelineManager {
 		return this.previewOverlay.size > 0;
 	}
 
-	previewResize(updates: readonly ElementUpdate[]): void {
-		const beforeTracks = this.editor.scenes.getActiveSceneOrNull()?.tracks;
-		if (!beforeTracks) return;
-		const afterTracks = applyElementUpdates({
-			tracks: beforeTracks,
-			updates,
-			boundaryIdPrefix: "resize-preview",
-		});
-		const preview = this.editor.command.isRippleEnabled
-			? applyRippleAdjustments({
-					tracks: afterTracks,
-					adjustments: computeRippleAdjustments({ beforeTracks, afterTracks }),
-				})
-			: afterTracks;
-		this.previewTrackChanges(beforeTracks, preview);
-	}
-
 	private previewTrackChanges(before: SceneTracks, after: SceneTracks): void {
 		const wasActive = this.isPreviewActive();
 		this.previewOverlay.clear();
-		// Resize and retime replace elements in place, preserving track and element order.
+		// Retime replaces elements in place, preserving track and element order.
 		const originalTracks = [before.main, ...before.overlay, ...before.audio];
 		[after.main, ...after.overlay, ...after.audio].forEach((track, trackIndex) => {
 			const original = originalTracks[trackIndex];

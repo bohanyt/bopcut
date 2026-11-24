@@ -10,7 +10,7 @@ import {
 } from "@/timeline/controllers/resize-controller";
 import type { ResizeSide } from "@/timeline/group-resize";
 import type { SnapPoint } from "@/timeline/snapping";
-import type { ElementRef } from "@/timeline";
+import type { ElementRef, TimelineElement } from "@/timeline";
 
 const NO_RESIZE_PINS: readonly ElementRef[] = [];
 
@@ -40,8 +40,22 @@ export function useTimelineResize({
 		selectedElements,
 		discardPreview: () => editor.timeline.discardPreview(),
 		beginPreviewGesture: editor.timeline.beginPreviewGesture,
-		previewElements: (updates) => editor.timeline.previewResize(updates),
-		commitElements: (updates) => editor.timeline.updateElements({ updates }),
+		previewElements: (updates) =>
+			editor.timeline.previewElements({
+				updates: updates.map(({ trackId, elementId, patch }) => ({
+					trackId,
+					elementId,
+					updates: patch as Partial<TimelineElement>,
+				})),
+			}),
+		commitElements: (updates) =>
+			editor.timeline.updateElements({
+				updates: updates.map(({ trackId, elementId, patch }) => ({
+					trackId,
+					elementId,
+					patch: patch as Partial<TimelineElement>,
+				})),
+			}),
 		onSnapPointChange,
 		getWords: ({ trackId, elementId }) => {
 			const tracks = editor.scenes.getActiveScene().tracks;

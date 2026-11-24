@@ -11,7 +11,6 @@ import { cancelInteraction } from "@/editor/cancel-interaction";
 import { PreviewInteractionController } from "@/preview/controllers/preview-interaction-controller";
 import { PreviewPointerCapture } from "@/preview/pointer-capture";
 import { KeyframeDragController } from "@/timeline/controllers/keyframe-drag-controller";
-import { computeGroupResize } from "@/timeline/group-resize";
 import { ElementInteractionController } from "@/timeline/controllers/element-interaction-controller";
 import { startColorDrag } from "@/components/ui/color-drag";
 import { appendAlpha, parseHexAlpha } from "@/utils/color";
@@ -96,25 +95,6 @@ function setupSplitHistory() {
 		});
 	return { editor, tracks, main, first, second, keyAt };
 }
-
-test.each([false, true])("a left trim previews the first main clip pinned at zero with ripple=%s", (ripple) => {
-	const { editor, first, main } = setupSplitHistory();
-	editor.command.isRippleEnabled = ripple;
-	const { updates: [update] } = computeGroupResize({
-		side: "left",
-		deltaTime: t(1),
-		fps: { numerator: 30, denominator: 1 },
-		members: [{ ...main()[0], ...first, leftNeighborBound: null, rightNeighborBound: t(2) }],
-	});
-	editor.timeline.previewResize([update]);
-	const span = ({ startTime, duration }: { startTime: number; duration: number }) =>
-		[startTime, startTime + duration];
-	const preview = editor.timeline.getPreviewTracks()!.main.elements.map(span);
-	expect(preview).toEqual([[t(0), t(1)], ripple ? [t(1), t(3)] : [t(2), t(4)]]);
-	editor.timeline.discardPreview();
-	editor.timeline.updateElements({ updates: [update] });
-	expect(main().map(span)).toEqual(preview);
-});
 
 test.each([
 	{ edge: "right", reverse: false, clientX: 200, delta: 3, times: [4, 5] },
