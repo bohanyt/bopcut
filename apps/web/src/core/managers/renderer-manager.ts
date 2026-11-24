@@ -4,7 +4,6 @@ import type { RootNode } from "@/services/renderer/nodes/root-node";
 import type { ExportOptions, ExportResult } from "@/export";
 import { getExportFailure } from "@/export/failure";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
-import { SceneExporter } from "@/services/renderer/scene-exporter";
 import { buildScene, collectVisibleMedia } from "@/services/renderer/scene-builder";
 import { collectAudibleCandidates } from "@/media/audio";
 import { mixTimelineAudio } from "@/media/audio-mixdown";
@@ -374,6 +373,7 @@ export class RendererManager {
 				scenes,
 			});
 
+			const { SceneExporter } = await import("@/services/renderer/scene-exporter");
 			const exporter = new SceneExporter({
 				width: canvasSize.width,
 				height: canvasSize.height,

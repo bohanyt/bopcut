@@ -6,8 +6,9 @@ import {
 	addMediaTime,
 	type MediaTime,
 	mediaTime,
-	roundFrameTicks,
+	roundFrameTime,
 	snapSeekMediaTime,
+	subMediaTime,
 	TICKS_PER_SECOND,
 	ZERO_MEDIA_TIME,
 } from "@/wasm";
@@ -32,6 +33,7 @@ interface ActiveSession {
 	kind: "active";
 	keyframeRefs: SelectedKeyframeRef[];
 	startMouseX: number;
+	anchorTimelineTime: MediaTime;
 	deltaTicks: number;
 	minDeltaTicks: number;
 	maxDeltaTicks: number;
@@ -319,10 +321,23 @@ export class KeyframeDragController {
 				latest = Math.max(latest, keyframe.time);
 			}
 
+			const anchorRef = this.session.keyframeRefs[0];
+			const anchorKeyframe = anchorRef
+				? getKeyframeById({
+						animations: element.animations,
+						propertyPath: anchorRef.propertyPath,
+						keyframeId: anchorRef.keyframeId,
+					})
+				: null;
+			const anchorTimelineTime = anchorKeyframe
+				? addMediaTime({ a: element.startTime, b: anchorKeyframe.time })
+				: addMediaTime({ a: element.startTime, b: mediaTime({ ticks: earliest }) });
+
 			this.session = {
 				kind: "active",
 				keyframeRefs: this.session.keyframeRefs,
 				startMouseX: this.session.startMouseX,
+				anchorTimelineTime,
 				deltaTicks: 0,
 				minDeltaTicks: -earliest,
 				maxDeltaTicks: element.duration - latest,
@@ -342,7 +357,17 @@ export class KeyframeDragController {
 			((clientX - this.session.startMouseX) / pixelsPerSecond) *
 				TICKS_PER_SECOND,
 		);
-		const snappedDelta = roundFrameTicks({ ticks: rawDeltaTicks, fps });
+		const snappedAbsolute = roundFrameTime({
+			time: addMediaTime({
+				a: this.session.anchorTimelineTime,
+				b: mediaTime({ ticks: rawDeltaTicks }),
+			}),
+			fps,
+		});
+		const snappedDelta = subMediaTime({
+			a: snappedAbsolute,
+			b: this.session.anchorTimelineTime,
+		});
 		this.session.deltaTicks = Math.max(
 			this.session.minDeltaTicks,
 			Math.min(this.session.maxDeltaTicks, snappedDelta),
