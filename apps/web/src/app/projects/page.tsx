@@ -340,6 +340,7 @@ function SearchBar({
 					/>
 					<Input
 						placeholder={t("projects.search")}
+						aria-label={t("projects.searchLabel")}
 						value={searchQuery}
 						onChange={(event) => setSearchQuery({ query: event.target.value })}
 						size="lg"

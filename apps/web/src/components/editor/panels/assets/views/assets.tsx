@@ -564,6 +564,7 @@ function MediaActions({
 	onFromUrl: () => void;
 }) {
 	const { t } = useI18n();
+	const switchViewLabel = t(mediaViewMode === "grid" ? "assets.switchList" : "assets.switchGrid");
 	return (
 		<div className="flex gap-1.5">
 			<TooltipProvider>
@@ -572,6 +573,7 @@ function MediaActions({
 						<Button
 							size="icon"
 							variant="ghost"
+							aria-label={switchViewLabel}
 							onClick={() =>
 								setMediaViewMode(mediaViewMode === "grid" ? "list" : "grid")
 							}
@@ -586,11 +588,7 @@ function MediaActions({
 						</Button>
 					</TooltipTrigger>
 					<TooltipContent>
-						<p>
-							{mediaViewMode === "grid"
-								? t("assets.switchList")
-								: t("assets.switchGrid")}
-						</p>
+						<p>{switchViewLabel}</p>
 					</TooltipContent>
 				</Tooltip>
 				<Tooltip>
@@ -600,6 +598,7 @@ function MediaActions({
 								<Button
 									size="icon"
 									variant="ghost"
+									aria-label={t("assets.sort")}
 									disabled={isProcessing}
 									className="items-center justify-center"
 								>
