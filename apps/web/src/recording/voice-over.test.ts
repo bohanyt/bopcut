@@ -209,6 +209,7 @@ test("a coalesced scrub seek interrupts the recorder through PlaybackManager", a
 		getCurrentTime: () => editor.playback.getCurrentTime(),
 		getActiveProjectFps: () => editor.project.getActive().settings.fps,
 		isShiftHeld: () => true,
+		isSnappingEnabled: () => true,
 		getIsPlaying: () => editor.playback.getIsPlaying(),
 		getRulerEl: () => ({ getBoundingClientRect: () => ({ left: 0 }) }) as HTMLDivElement,
 		getRulerScrollEl: () => null,
@@ -261,6 +262,7 @@ test.each(["stop", "pause", "seek", "unplug", "navigation", "empty", "silent", "
 		});
 		try {
 			const { playback } = editor;
+			const reveal = spyOn(playback, "revealPlayhead");
 			playback.setVolume({ volume: .35 });
 			if (exit === "originally muted") playback.mute();
 			await start();
@@ -287,6 +289,7 @@ test.each(["stop", "pause", "seek", "unplug", "navigation", "empty", "silent", "
 			} else {
 				expect(manager.getSnapshot().phase).toBe("review");
 				expect(editor.scenes.getActiveScene().tracks.audio[0].elements[0].startTime).toBe(t(0));
+				expect(reveal).toHaveBeenCalled();
 			}
 		} finally { manager.dispose(); }
 	},

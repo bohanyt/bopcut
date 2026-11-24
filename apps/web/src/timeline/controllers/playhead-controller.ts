@@ -55,6 +55,7 @@ export interface PlayheadConfig {
 	getCurrentTime: () => MediaTime;
 	getActiveProjectFps: () => FrameRate | null;
 	isShiftHeld: () => boolean;
+	isSnappingEnabled: () => boolean;
 	getIsPlaying: () => boolean;
 	getRulerEl: () => HTMLDivElement | null;
 	getRulerScrollEl: () => HTMLDivElement | null;
@@ -209,6 +210,11 @@ export class PlayheadController {
 		if (!this.config.getIsPlaying() || isScrubbing)
 			return;
 
+		this.reveal(time);
+	}
+
+	/** Scrolls the timeline to center a playhead that is out of view. */
+	reveal(time: MediaTime): void {
 		const rulerViewport = this.config.getRulerScrollEl();
 		const tracksViewport = this.config.getTracksScrollEl();
 		if (!rulerViewport || !tracksViewport) return;
@@ -318,7 +324,7 @@ export class PlayheadController {
 		const frameTime = snapSeekMediaTime({ time: rawTime, duration, fps });
 
 		const time = (() => {
-			if (!isElementSnappingEnabled || this.config.isShiftHeld())
+			if (!isElementSnappingEnabled || !this.config.isSnappingEnabled() || this.config.isShiftHeld())
 				return frameTime;
 
 			const tracks = this.config.getSceneTracks();

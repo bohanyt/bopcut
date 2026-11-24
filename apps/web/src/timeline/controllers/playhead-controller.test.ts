@@ -69,6 +69,7 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 	};
 	let bookmarks: Bookmark[] = [{ time: time(1) }];
 	let shift = false;
+	let snapping = true;
 	const controller = new PlayheadController({
 		configRef: { current: {
 			zoomLevel: 1,
@@ -78,6 +79,7 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 			getProjectSession: () => projectSession,
 			getActiveProjectFps: () => ({ numerator: 30, denominator: 1 }),
 			isShiftHeld: () => shift,
+			isSnappingEnabled: () => snapping,
 			getIsPlaying: () => isPlaying,
 			getRulerEl: () => ruler,
 			getRulerScrollEl: () => autoScroll ? rulerViewport : null,
@@ -113,6 +115,7 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 		edgeReads: () => edgeReads,
 		setBookmarks: (value: Bookmark[]) => { bookmarks = value; },
 		holdShift: () => { shift = true; },
+		turnSnappingOff: () => { snapping = false; },
 		seekExternally: (value: MediaTime) => { currentTime = value; },
 		setScene: (id: string) => { sceneId = id; controller.stopIfScopeChanged(); },
 		setProjectSession: (id: number) => { projectSession = id; controller.stopIfScopeChanged(); },
@@ -144,6 +147,32 @@ test("scrub seeks once per frame and flushes the last position before saving", (
 	expect(scrub.drawnAtSeek).toEqual(scrub.seek.map(String));
 	expect(scrub.saved).toEqual([time(3)]);
 	expect(scrub.scrubbing).toEqual([true, false]);
+});
+
+test("turning snapping off keeps the playhead on the pointer's frame", () => {
+	const pixels = 52;
+	const snapped = setup();
+	snapped.controller.onRulerPointerDown(snapped.event(0));
+	snapped.move(pixels);
+	snapped.frame();
+	expect(snapped.seek.at(-1)).toBe(time(1));
+	cleanup?.();
+	const free = setup();
+	free.turnSnappingOff();
+	free.controller.onRulerPointerDown(free.event(0));
+	free.move(pixels);
+	free.frame();
+	expect(free.seek.at(-1)).not.toBe(time(1));
+	expect(free.edgeReads()).toBe(0);
+});
+
+test("reveal scrolls only to a playhead outside the view", () => {
+	const scrub = setup({ autoScroll: true });
+	scrub.controller.reveal(time(1));
+	expect(scrub.rulerViewport.scrollLeft).toBe(0);
+	scrub.controller.reveal(time(8));
+	expect(scrub.rulerViewport.scrollLeft).toBe(300);
+	expect(scrub.tracksViewport.scrollLeft).toBe(300);
 });
 
 test("snap points are reused until the scene data changes and Shift bypasses the cache", () => {
