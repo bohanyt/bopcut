@@ -1,7 +1,7 @@
 import type { TimelineTrack } from "@/timeline";
 import { getTimelinePixelsPerSecond } from "@/timeline/pixel-utils";
 import { TICKS_PER_SECOND } from "@/wasm";
-import { getTrackClipIndex } from "./track-clip-index";
+import type { TrackClipIndexes } from "./track-clip-index";
 import {
 	TIMELINE_CONTENT_TOP_PADDING_PX,
 	TIMELINE_TRACK_GAP_PX,
@@ -67,6 +67,7 @@ export function resolveTimelineElementIntersections({
 	container,
 	scrollContainer,
 	tracks,
+	indexes,
 	zoomLevel,
 	startPos,
 	currentPos,
@@ -75,6 +76,7 @@ export function resolveTimelineElementIntersections({
 	container: HTMLElement;
 	scrollContainer: HTMLDivElement | null;
 	tracks: TimelineTrack[];
+	indexes: TrackClipIndexes;
 	zoomLevel: number;
 	startPos: { x: number; y: number };
 	currentPos: { x: number; y: number };
@@ -88,6 +90,7 @@ export function resolveTimelineElementIntersections({
 	});
 	return hitTestTimelineElements({
 		tracks,
+		indexes,
 		zoomLevel,
 		selectionRectangle,
 		getTrackExpansionHeight,
@@ -96,11 +99,13 @@ export function resolveTimelineElementIntersections({
 
 export function hitTestTimelineElements({
 	tracks,
+	indexes,
 	zoomLevel,
 	selectionRectangle,
 	getTrackExpansionHeight,
 }: {
 	tracks: TimelineTrack[];
+	indexes: TrackClipIndexes;
 	zoomLevel: number;
 	selectionRectangle: SelectionRectangle;
 	getTrackExpansionHeight?: (trackIndex: number) => number;
@@ -116,10 +121,7 @@ export function hitTestTimelineElements({
 		if (elementTop > bottom) break;
 		const elementBottom = elementTop + getTrackHeight({ type: track.type });
 		if (elementBottom >= top) {
-			for (const element of getTrackClipIndex(track.elements).query(
-				start,
-				end,
-			)) {
+			for (const element of indexes.get(track.id)?.query(start, end) ?? []) {
 				selectedElements.push({ trackId: track.id, elementId: element.id });
 			}
 		}

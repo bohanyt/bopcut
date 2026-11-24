@@ -280,6 +280,7 @@ export type ElementDragView =
 			readonly kind: "dragging";
 			readonly anchorElementId: string;
 			readonly trackId: string;
+			readonly sourceTrackIds: ReadonlySet<string>;
 			readonly memberTimeOffsets: ReadonlyMap<string, MediaTime>;
 			readonly startMouseX: number;
 			readonly startMouseY: number;

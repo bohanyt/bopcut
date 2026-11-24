@@ -5,29 +5,26 @@ import {
 	memo,
 	useCallback,
 	useEffect,
-	useLayoutEffect,
 	useMemo,
-	useRef,
 	useState,
 	useSyncExternalStore,
 } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
-import { findTrackInSceneTracks, hasElementEffects } from "@/timeline";
-import { getTrackClipIndex } from "./track-clip-index";
+import { findTrackInSceneTracks } from "@/timeline";
+import type { TrackClipIndexes } from "./track-clip-index";
+import { buildClipIndex } from "./clip-window";
 import { addMediaTime } from "@/wasm";
-import { getClipThumbnailUrl, TimelineElement } from "./timeline-element";
+import { TimelineElement } from "./timeline-element";
 import type { TimelineTrack } from "@/timeline";
 import type { TimelineElement as TimelineElementType } from "@/timeline";
 import { TIMELINE_LAYERS } from "./layers";
 import type { ElementDragView } from "@/timeline";
 
-const CLIP_SELECTOR = "[data-timeline-element-id]";
-const EFFECTS_SELECTOR = "[data-timeline-effects]";
-const TABBABLE_BUTTON = 'button:not([disabled]):not([tabindex="-1"])';
-
 interface TimelineTrackContentProps {
 	track: TimelineTrack;
+	index: NonNullable<ReturnType<TrackClipIndexes["get"]>>;
+	focusRequest?: string;
 	zoomLevel: number;
 	dragView?: Extract<ElementDragView, { kind: "dragging" }>;
 	windowStart: number;
@@ -59,6 +56,8 @@ interface TimelineTrackContentProps {
 
 export const TimelineTrackContent = memo(function TimelineTrackContent({
 	track,
+	index,
+	focusRequest,
 	zoomLevel,
 	dragView,
 	windowStart,
@@ -83,8 +82,6 @@ export const TimelineTrackContent = memo(function TimelineTrackContent({
 		[trackId, trackType],
 	);
 	const trackRef = useCommittedRef(track);
-	const contentRef = useRef<HTMLDivElement>(null);
-	const [focusRequest, setFocusRequest] = useState<string | null>(null);
 	const [focusedId, setFocusedId] = useState<string | null>(null);
 	const [menuId, setMenuId] = useState<string | null>(null);
 	const [pressedId, setPressedId] = useState<string | null>(null);
@@ -120,12 +117,11 @@ export const TimelineTrackContent = memo(function TimelineTrackContent({
 		getPreviewElements,
 		getPreviewElements,
 	);
-	const index = useMemo(
-		() => getTrackClipIndex(track.elements),
-		[track.elements],
-	);
 	const displayIndex = useMemo(
-		() => (previewElements ? getTrackClipIndex(previewElements) : index),
+		() =>
+			previewElements
+				? buildClipIndex<TimelineElementType>(previewElements)
+				: index,
 		[previewElements, index],
 	);
 	const clips = useMemo(() => {
@@ -177,77 +173,11 @@ export const TimelineTrackContent = memo(function TimelineTrackContent({
 		setMenuId((current) => (open ? id : current === id ? null : current));
 	}, []);
 
-	const handleTab = (event: React.KeyboardEvent<HTMLDivElement>) => {
-		if (
-			event.key !== "Tab" ||
-			event.altKey ||
-			event.ctrlKey ||
-			event.metaKey ||
-			event.defaultPrevented
-		)
-			return;
-		const target = event.target;
-		if (
-			!(target instanceof HTMLButtonElement) ||
-			!target.matches(TABBABLE_BUTTON)
-		)
-			return;
-		const clip = target.closest<HTMLElement>(CLIP_SELECTOR);
-		if (!clip) return;
-		const buttons = clip.querySelectorAll(TABBABLE_BUTTON);
-		// Let the browser visit other controls on this clip first.
-		if (target !== (event.shiftKey ? buttons[0] : buttons[buttons.length - 1]))
-			return;
-
-		const elements = previewElements ?? track.elements;
-		const current = elements.findIndex(
-			({ id }) => id === clip.dataset.timelineElementId,
-		);
-		if (current === -1) return;
-		const mounted = new Map(
-			Array.from(
-				event.currentTarget.querySelectorAll<HTMLElement>(CLIP_SELECTOR),
-				(node) => [node.dataset.timelineElementId, node] as const,
-			),
-		);
-		const step = event.shiftKey ? -1 : 1;
-		for (let i = current + step; i >= 0 && i < elements.length; i += step) {
-			const element = elements[i];
-			const node = mounted.get(element.id);
-			if (node) {
-				if (node.querySelector(TABBABLE_BUTTON)) return;
-				continue;
-			}
-			if (
-				(element.type !== "video" && element.type !== "image") ||
-				!hasElementEffects({ element })
-			)
-				continue;
-			const asset = editor.media
-				.getAssets()
-				.find(({ id }) => id === element.mediaId);
-			if (!getClipThumbnailUrl(element, asset)) continue;
-			event.preventDefault();
-			setFocusRequest(element.id);
-			return;
-		}
-	};
-
-	useLayoutEffect(() => {
-		if (!focusRequest) return;
-		const clip = contentRef.current?.querySelector<HTMLElement>(
-			`[data-timeline-element-id="${CSS.escape(focusRequest)}"]`,
-		);
-		const button = clip?.querySelector<HTMLButtonElement>(EFFECTS_SELECTOR);
-		button?.scrollIntoView({ block: "nearest", inline: "nearest" });
-		button?.focus({ preventScroll: true });
-		setFocusRequest(null);
-	}, [focusRequest]);
-
 	return (
 		<div className="relative size-full">
 			<button
 				type="button"
+				data-timeline-track-button
 				className="absolute inset-0 m-0 size-full appearance-none border-0 bg-transparent p-0"
 				aria-label={t("timeline.selectTrack", { name: track.name })}
 				onMouseUp={(event) => {
@@ -261,10 +191,8 @@ export const TimelineTrackContent = memo(function TimelineTrackContent({
 			/>
 			{/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- spatial gesture surface; the wrapping <button> handles keyboard track selection, this <div> only forwards background clicks for box-select / deselect. */}
 			<div
-				ref={contentRef}
 				className="relative h-full min-w-full"
 				style={{ zIndex: TIMELINE_LAYERS.trackContent }}
-				onKeyDown={handleTab}
 				onMouseUp={(event) => {
 					if (event.target !== event.currentTarget) return;
 					if (shouldIgnoreClick?.()) return;

@@ -1,22 +1,35 @@
-import type { TimelineElement } from "@/timeline";
+import type { TimelineElement, TimelineTrack } from "@/timeline";
 import { buildClipIndex } from "./clip-window";
 
-// Undo history retains old element arrays. Limit the number of reusable
-// indexes so the cache does not grow with the number of edits.
-const MAX_RECENT_TRACK_INDEXES = 16;
-const trackIndexes = new Map<
-	readonly TimelineElement[],
-	ReturnType<typeof buildClipIndex<TimelineElement>>
->();
+export function createTrackClipIndexCache(
+	build = buildClipIndex<TimelineElement>,
+) {
+	const recent = new Map<
+		readonly TimelineElement[],
+		ReturnType<typeof build>
+	>();
 
-export function getTrackClipIndex(elements: readonly TimelineElement[]) {
-	const existing = trackIndexes.get(elements);
-	const index = existing ?? buildClipIndex(elements);
-	if (existing) trackIndexes.delete(elements);
-	trackIndexes.set(elements, index);
-	if (trackIndexes.size > MAX_RECENT_TRACK_INDEXES) {
-		const oldest = trackIndexes.keys().next().value;
-		if (oldest) trackIndexes.delete(oldest);
-	}
-	return index;
+	return {
+		getTracks(tracks: readonly TimelineTrack[]) {
+			const indexes = new Map(
+				tracks.map(({ id, elements }) => {
+					const index = recent.get(elements) ?? build(elements);
+					recent.delete(elements);
+					recent.set(elements, index);
+					return [id, index] as const;
+				}),
+			);
+			// Keep every active row and a bounded number of historical versions.
+			const capacity = Math.max(16, tracks.length * 2);
+			for (const elements of recent.keys()) {
+				if (recent.size <= capacity) break;
+				recent.delete(elements);
+			}
+			return indexes;
+		},
+	};
 }
+
+export type TrackClipIndexes = ReturnType<
+	ReturnType<typeof createTrackClipIndexCache>["getTracks"]
+>;

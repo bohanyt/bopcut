@@ -83,10 +83,12 @@ import { useTimelineResize } from "@/timeline/hooks/use-timeline-resize";
 import { useTimelineStore } from "@/timeline/timeline-store";
 import { useEditor } from "@/editor/use-editor";
 import { useClipWindow } from "./use-clip-window";
-import { getTrackClipIndex } from "./track-clip-index";
+import { createTrackClipIndexCache, type TrackClipIndexes } from "./track-clip-index";
+import { useTimelineKeyboard } from "./timeline-keyboard";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import type { ElementRef } from "@/timeline";
 import { useTimelinePlayhead } from "@/timeline/hooks/use-timeline-playhead";
+import { TIMELINE_LAYERS } from "./layers";
 import { DragLine } from "./drag-line";
 import { invokeAction } from "@/actions";
 import { resolveTimelineElementIntersections } from "./selection-hit-testing";
@@ -153,6 +155,11 @@ export function Timeline() {
 				? [...scene.tracks.overlay, scene.tracks.main, ...scene.tracks.audio]
 				: [],
 		[scene],
+	);
+	const [trackIndexCache] = useState(createTrackClipIndexCache);
+	const trackIndexes = useMemo(
+		() => trackIndexCache.getTracks(tracks),
+		[tracks, trackIndexCache],
 	);
 	const mainTrackId = scene?.tracks.main.id ?? null;
 	const seek = (time: MediaTime) => editor.playback.seek({ time });
@@ -382,6 +389,7 @@ export function Timeline() {
 				container: tracksContainerRef.current,
 				scrollContainer: tracksScrollRef.current,
 				tracks,
+				indexes: trackIndexes,
 				zoomLevel,
 				startPos,
 				currentPos,
@@ -579,6 +587,7 @@ export function Timeline() {
 							>
 								{tracks.length > 0 && (
 									<TimelineTrackRows
+										indexes={trackIndexes}
 										tracks={tracks}
 										mainTrackId={mainTrackId}
 										windowStart={windowStart}
@@ -760,6 +769,7 @@ function TrackLabelsPanel({
 
 function TimelineTrackRows({
 	tracks,
+	indexes,
 	mainTrackId,
 	windowStart,
 	windowEnd,
@@ -779,6 +789,7 @@ function TimelineTrackRows({
 	dropTarget,
 }: {
 	tracks: TimelineTrack[];
+	indexes: TrackClipIndexes;
 	mainTrackId: string | null;
 	windowStart: number;
 	windowEnd: number;
@@ -804,7 +815,8 @@ function TimelineTrackRows({
 	dropTarget: DropTarget | null;
 }) {
 	const { t } = useI18n();
-	const timeline = useEditor((e) => e.timeline);
+	const { timeline, media } = useEditor();
+	const keyboard = useTimelineKeyboard(tracks, () => media.getAssets());
 	const selectedByTrack = useMemo(
 		() => groupElementIds(selectedElements),
 		[selectedElements],
@@ -815,44 +827,46 @@ function TimelineTrackRows({
 	);
 	const expandedByTrack = useMemo(
 		() =>
-			tracks.map(({ elements }) => {
+			tracks.map(({ id }) => {
 				if (expandedElementIds.size === 0) return EMPTY_IDS;
-				const index = getTrackClipIndex(elements);
-				return new Set([...expandedElementIds].filter((id) => index.get(id)));
+				const index = indexes.get(id);
+				return new Set([...expandedElementIds].filter((id) => index?.get(id)));
 			}),
-		[tracks, expandedElementIds],
+		[tracks, indexes, expandedElementIds],
 	);
 	const dragged = dragView.kind === "dragging" ? dragView : undefined;
-	const sortedTracks = tracks
-		.map((track, index) => {
-			if (!dragged) return { track, index, hasDragged: false };
-			const clipIndex = getTrackClipIndex(track.elements);
-			const hasDragged = [...dragged.memberTimeOffsets.keys()].some((id) =>
-				clipIndex.get(id),
-			);
-			return { track, index, hasDragged };
-		})
-		.sort((a, b) => Number(a.hasDragged) - Number(b.hasDragged));
 
 	return (
-		<>
-			{sortedTracks.map(({ track, index, hasDragged }) => (
+		<div {...keyboard.bindings}>
+			{tracks.map((track, index) => (
 				<ContextMenu key={track.id}>
 					<ContextMenuTrigger asChild>
 						<div
+							data-timeline-track-id={track.id}
 							className={cn(
 								"absolute right-0 left-0 transition-colors",
 								selectedByTrack.has(track.id) && SELECTED_TRACK_ROW_CLASS,
 							)}
 							style={{
+								zIndex: dragged?.sourceTrackIds.has(track.id)
+									? TIMELINE_LAYERS.trackContent + 1
+									: undefined,
 								top: `${TIMELINE_CONTENT_TOP_PADDING_PX + getCumulativeHeightBefore({ tracks, trackIndex: index, getExtraHeight: getTrackExpansionHeight })}px`,
 								height: `${getTrackHeight({ type: track.type }) + getTrackExpansionHeight(index)}px`,
 							}}
 						>
 							<TimelineTrackContent
 								track={track}
+								index={indexes.get(track.id)!}
+								focusRequest={
+									keyboard.pending?.trackId === track.id
+										? keyboard.pending.elementId
+										: undefined
+								}
 								zoomLevel={zoomLevel}
-								dragView={hasDragged ? dragged : undefined}
+								dragView={
+									dragged?.sourceTrackIds.has(track.id) ? dragged : undefined
+								}
 								windowStart={windowStart}
 								windowEnd={windowEnd}
 								selectedIds={selectedByTrack.get(track.id)}
@@ -919,7 +933,7 @@ function TimelineTrackRows({
 					</ContextMenuContent>
 				</ContextMenu>
 			))}
-		</>
+		</div>
 	);
 }
 
