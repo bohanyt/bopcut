@@ -74,6 +74,8 @@ AGENT_FILES_ROOT=/path/to/asset-root    # Default: AGENT_WORKSPACE
 
 **draft.json**: `{schema:"opencut-agent-draft-1", rev, label, projectId?, ops:[{op:"set", match:{agentId}|{id}, start?, duration?, trimStart?, params?}, {op:"delete", match:…}, {op:"add", track:{name, type?:"video"|"audio"|"effect", index?}, element:el}]}`. For `add`, `el.asset` is an object `{path,type,name}` (not a bundle key); an existing track with that name is reused, otherwise one is created (overlays are inserted at `index`). Exact names take precedence; `Main`, the legacy `Utama`, and the editor default `Main Track` are aliases of each other (so `Main` reaches the main track of a compound made in the editor). Existing saved track names are not renamed. The entire draft is one Undo; changed/added items are selected immediately. `match` can also reach inside compound clips, and `group`, `ungroup`, and `compound` ops exist: see *Compound clips for agents*. `replace`, `atomic`, `set` keyframes, and `mediaId`: see *Draft reliability*.
 
+An `add` whose final span overlaps another clip on the named track fails. Pick a free span or use a separate track for simultaneous clips.
+
 **Editing on top of the user's edits (`basedOn`).** Put the `syncedAt` of the snapshot you read into the draft as `basedOn` (a snapshot from `window.agent.snapshot()` in the console counts too).
 - If the user changed a field that an op touches after that snapshot, the op is refused: `ok:false`, `stale:true`, `fields`, and `current` holding the current values. Re-read the snapshot and apply your change on top.
 - For `set`, the touched fields are the given `start`/`duration`/`trimStart`, each `params` key, and the keyframes. A `caption` update rewrites text, words and style, so it counts as touching the whole element (`element`): it is refused if the user changed that caption in any way. New `params.content` on a caption also counts its words and highlights (`caption`), since new text rewrites them.
@@ -259,7 +261,9 @@ Choose **Point at an area** in the preview toolbar or an open note, draw on the 
 
 Starting playback, seeking, changing scenes, or starting a voice-over cancels an unsaved area. Timeline shortcuts are suspended during area editing. The form sits below the picture, and Enter confirms.
 
-Area notes also carry `sceneId` and `elements:[{id,name,type}]`. This list is separate from manually associated `elementIds`. It omits hidden tracks, hidden elements, and zero-opacity elements. A track's audio mute setting has no effect on its visual candidates. Overlap uses transformed element bounds and sampled coverage of the active mask, including feather. The list describes candidates under the box, including covered candidates behind the topmost one. Compound area-note times are relative to their content scene.
+Notes inside reachable compound scenes carry `sceneId` even when they have no box. Their times are relative to the content scene.
+
+Area notes also carry `sceneId` and `elements:[{id,name,type}]`. This list is separate from manually associated `elementIds`. It omits hidden tracks, hidden elements, and zero-opacity elements. A track's audio mute setting has no effect on its visual candidates. Overlap uses transformed element bounds and sampled coverage of the active mask, including feather. The list describes candidates under the box, including covered candidates behind the topmost one.
 
 Add `{op:"note", text, start, end?, match?:[{agentId}|{id}]}`, `{op:"resolve-note", id, sceneId?}`, or `{op:"reply-note", id, text, sceneId?}` to draft `ops`. Replies and resolutions search reachable scenes, including compound contents. Include the note's `sceneId` when its ID is shared by copies. With `basedOn`, the owning scene's note is checked for changes. The result includes the note ID and status per operation in `draft-result.json`, and the whole draft remains one Undo. Because bookmarks use one position per frame, additions at an existing position are rejected and reported.
 
@@ -275,6 +279,7 @@ Frames of the current timeline use the root, scene contents, canvas, background,
 - A past state renders with the canvas, background and frame rate it had. If media it shows (on visible tracks of its root timeline and in the visible compound clips there; sounds and hidden content do not count) were removed since, the request is refused with their names, and a frame whose media are removed during the batch is listed in `errors` (a frame without them would look right but is not). Add `projectId` to keep another project from answering: with it, only that project answers (an error if the state is not its own). Without it, a request that names only another project's snapshots or drafts is left for that project.
 - At most 64 frames per request (times, doubled with `compare`). A time a state cannot show (outside its timeline, or an empty timeline) is listed in `errors:[{time, variant?, error}]`; the other frames are still rendered.
 - The editor remembers the states of its last 64 snapshots and the last 16 drafts of each project in this session (without decoded audio). An unknown or malformed state refuses the request: `frames-result.json` gets `{rev, files:[], error}`. Each rev is answered once, also if an older rev is written again.
+- An invalid `times` list or `width` also receives `{rev, files:[], error}` when `rev` is usable. Requests without a usable `rev` are ignored.
 
 ## Cuts that never chop a word
 

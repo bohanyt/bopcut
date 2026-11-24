@@ -319,7 +319,11 @@ async function mixClip({
 	const from = Math.max(start, clip.start);
 	const to = Math.min(end, clip.end);
 	const rate = stretched ? 1 : clip.rate;
-	const sample = createStereoSampler(buffer, rate * buffer.sampleRate / output.sampleRate);
+	const { sampleRate: nativeRate } = buffer;
+	const { sourceEnd } = resolvePitchSourceEnd(clip.element, clip.rate);
+	const sample = createStereoSampler(buffer, rate * nativeRate / output.sampleRate, stretched ? undefined : {
+		end: Math.ceil(sourceEnd * nativeRate - 1e-7) - Math.round(window.start * nativeRate),
+	});
 	const stereo = new Float64Array(2);
 	const trim = (stretched ? 0 : clip.trim) - window.start;
 	for (let block = from; block < to; block += 4096) {

@@ -169,6 +169,36 @@ test("direct loads migrate only the requested version and the listing makes one 
 	}
 });
 
+test("refuses unsupported project versions without writing and still lists their metadata", async () => {
+	const versions = [["future", CURRENT_PROJECT_VERSION + 1], ["future-string", String(CURRENT_PROJECT_VERSION + 1)],
+		["missing-version", undefined], ["bad-version", "unknown"], ["numeric-version", String(CURRENT_PROJECT_VERSION - 1)]] as const;
+	const projects = versions.map(([id, version]) => ({ ...fixture(id), version }));
+	for (const project of projects) await writeLegacy(project);
+	const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: RequestInfo | URL, init?: RequestInit) => {
+		const [, id = ""] = String(url).slice("/api/storage/".length).split("/");
+		if (!id) {
+			const summaries = await (await route("GET")).json() as typeof projects;
+			return Response.json(summaries.filter((summary) => projects.some((project) => project.metadata.id === summary.metadata.id)));
+		}
+		return route(init?.method === "PUT" ? "PUT" : "GET", id, "", init);
+	}, { preconnect: fetch.preconnect }));
+	try {
+		const storage = new StorageService();
+		for (const project of projects.slice(0, 4)) {
+			const { id } = project.metadata;
+			const message = id.startsWith("future") ? "made with a newer version of bopencut" : "does not have a valid version";
+			for (const readOnly of [false, true]) await expect(storage.loadProject({ id, readOnly })).rejects.toThrow(message);
+			await expect(storage.renameProject({ id, name: "Renamed" })).rejects.toThrow(message);
+			expect(await fs.readFile(projectPath(id), "utf8")).toBe(JSON.stringify(project));
+		}
+		expect((await storage.loadAllProjectsMetadata()).map(({ id }) => id).sort()).toEqual(versions.map(([id]) => id).sort());
+		expect((await storage.loadAllProjects()).map(({ metadata, version }) => [metadata.id, version]))
+			.toEqual([["numeric-version", CURRENT_PROJECT_VERSION]]);
+	} finally {
+		fetchSpy.mockRestore();
+	}
+});
+
 test("saved human fields survive a reload and project duplication", async () => {
 	const id = "ownership-round-trip";
 	const clip = {

@@ -46,8 +46,8 @@ export function BookmarkAreaLayer({ formHost }: { formHost: HTMLDivElement | nul
 			onSave={(box, note) => {
 				if (useBookmarkArea.getState().editing !== editing || editor.playback.getIsPlaying() ||
 					editor.voiceOver.isCapturing() || editor.playback.getCurrentTime() !== editing.time) return;
-				const bookmark = editor.scenes.getActiveScene().bookmarks.find((b) => b.time === editing.time);
-				void editor.scenes.updateBookmark({ time: editing.time, create: true, updates: {
+				const { bookmark } = editing;
+				void editor.scenes.updateBookmark({ time: editing.time, bookmark, create: true, updates: {
 					box, note,
 					...(!bookmark?.id && { id: generateUUID(), author: "user", createdAt: new Date().toISOString(), resolved: false }),
 				} });

@@ -20,12 +20,13 @@ export function areaTarget(editor: EditorCore, time: MediaTime): AreaTarget {
 	return { session: editor.project.getSession(), projectId: project.metadata.id, sceneId: scene.id, time: frame, bookmark: scene.bookmarks.find((b) => b.time === frame) };
 }
 
-export function startBookmarkArea(editor: EditorCore, time: MediaTime) {
+export function startBookmarkArea(editor: EditorCore, time: MediaTime, bookmark?: Bookmark) {
 	if (editor.voiceOver.isCapturing()) return;
 	useBookmarkArea.setState({ editing: null });
 	editor.playback.pause();
 	const lastFrame = editor.timeline.getLastFrameTime();
 	const target = areaTarget(editor, time > lastFrame ? lastFrame : time);
+	if (bookmark) target.bookmark = bookmark;
 	editor.playback.seek({ time: target.time });
 	useBookmarkArea.setState({ editing: target });
 	const cancel = () => {

@@ -109,9 +109,9 @@ export function TimelineBookmarksRow({
 					handleRulerTrackingPointerDown(event);
 				}}
 			>
-				{bookmarks.map((bookmark) => (
+				{bookmarks.map((bookmark, index) => (
 					<TimelineBookmark
-						key={`bookmark-${bookmark.time}`}
+						key={bookmark.id ?? `bookmark-${bookmark.time}-${index}`}
 						bookmark={bookmark}
 						zoomLevel={zoomLevel}
 						dragState={dragState}
@@ -152,10 +152,7 @@ function TimelineBookmark({
 		};
 	}, [editor, hovered, isPopoverOpen, bookmark]);
 
-	const isDragging =
-		dragState.isDragging &&
-		dragState.bookmarkTime !== null &&
-		dragState.bookmarkTime === bookmark.time;
+	const isDragging = dragState.isDragging && dragState.bookmark === bookmark;
 
 	const displayTime = isDragging ? dragState.currentTime : bookmark.time;
 	const time = bookmark.time;
@@ -340,7 +337,7 @@ function BookmarkPopoverContent({
 	}, [committedColor]);
 
 	const handleRemove = () => {
-		editor.scenes.removeBookmark({ time });
+		editor.scenes.removeBookmark({ time, bookmark });
 		onPopoverClose();
 	};
 
@@ -364,7 +361,7 @@ function BookmarkPopoverContent({
 			updates.duration = duration;
 		}
 		if (Object.keys(updates).length === 0) return;
-		editor.scenes.updateBookmark({ time, updates });
+		editor.scenes.updateBookmark({ time, bookmark, updates });
 	};
 	const maxDuration = mediaTimeToSeconds({
 		time:
@@ -415,6 +412,7 @@ function BookmarkPopoverContent({
 								onClick={() =>
 									editor.scenes.updateBookmark({
 										time,
+										bookmark,
 										updates: { color: undefined },
 									})
 								}
@@ -454,11 +452,11 @@ function BookmarkPopoverContent({
 				</div>
 			</div>
 			{bookmark.replies?.map((reply) => <div key={reply.id} className="text-xs"><strong>{t("bookmark.author", { author: t(reply.author === "agent" ? "bookmark.agent" : "bookmark.user") })}</strong> {reply.text}</div>)}
-			{bookmark.note && <Button type="button" variant="outline" size="sm" onClick={() => editor.scenes.updateBookmark({ time, updates: { resolved: !bookmark.resolved } })}>{bookmark.resolved ? t("bookmark.reopen") : t("bookmark.resolve")}</Button>}
+			{bookmark.note && <Button type="button" variant="outline" size="sm" onClick={() => editor.scenes.updateBookmark({ time, bookmark, updates: { resolved: !bookmark.resolved } })}>{bookmark.resolved ? t("bookmark.reopen") : t("bookmark.resolve")}</Button>}
 			{bookmark.author === "agent" && <span className="text-xs">{t("bookmark.agent")}</span>}
 			<Button type="button" variant="outline" size="sm" disabled={editor.voiceOver.isCapturing()} onClick={() => {
 				onPopoverClose();
-				startBookmarkArea(editor, time);
+				startBookmarkArea(editor, time, bookmark);
 			}}>{t("bookmark.pointArea")}</Button>
 			<Button
 				type="button"

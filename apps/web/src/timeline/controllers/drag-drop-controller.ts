@@ -35,7 +35,7 @@ import type {
 } from "@/timeline";
 import type { TimelineDragData } from "@/timeline/drag";
 import type { MediaAsset } from "@/media/types";
-import { roundFrameTime, type MediaTime } from "@/wasm";
+import type { MediaTime } from "@/wasm";
 
 // --- Config ---
 
@@ -224,12 +224,8 @@ export class DragDropController {
 			pixelsPerSecond: BASE_TIMELINE_PIXELS_PER_SECOND,
 			zoomLevel: this.config.zoomLevel,
 			targetElementTypes,
+			frameRate: this.config.getActiveProjectFps(),
 		});
-
-		const fps = this.config.getActiveProjectFps();
-		target.xPosition = fps
-			? roundFrameTime({ time: target.xPosition, fps })
-			: target.xPosition;
 
 		this.setOver({ dropTarget: target, elementType });
 		event.dataTransfer.dropEffect = "copy";
@@ -506,18 +502,6 @@ export class DragDropController {
 			effectType: dragData.effectType,
 			startTime: target.xPosition,
 		});
-
-		const existingEffectTrack = orderedTracks({
-			sceneTracks: this.config.getSceneTracks(),
-		}).find((track) => track.type === "effect");
-
-		if (existingEffectTrack) {
-			this.config.insertElement({
-				placement: { mode: "explicit", trackId: existingEffectTrack.id },
-				element,
-			});
-			return;
-		}
 
 		this.insertAtTarget({ element, target, trackType: "effect" });
 	}

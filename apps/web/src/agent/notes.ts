@@ -80,14 +80,15 @@ function rectanglesOverlap(a: ElementBounds, b: Omit<ElementBounds, "rotation">)
 
 export function snapshotNotes(root: TScene, scenes: TScene[], canvas: { width: number; height: number }, media: MediaAsset[]) {
 	return getReachableScenes(scenes, root.id).flatMap((scene) =>
-		scene.bookmarks.filter((b) => b.note?.trim() && (scene === root || b.box)).map((b) => {
+		scene.bookmarks.filter((b) => b.note?.trim()).map((b) => {
 			const elements = b.box ? elementsInNoteBox(b.box, b.time, scene.tracks, canvas, media) : undefined;
 			return {
 				id: noteId(b), text: b.note, start: b.time / TICKS_PER_SECOND,
 				...(b.duration ? { end: (b.time + b.duration) / TICKS_PER_SECOND } : {}),
 				elementIds: b.elementIds ?? [], replies: b.replies ?? [], author: b.author ?? "user",
 				resolved: b.resolved ?? false, createdAt: b.createdAt ?? null,
-				...(b.box && { sceneId: scene.id, box: b.box, elements }),
+				...((b.box || scene.id !== root.id) && { sceneId: scene.id }),
+				...(b.box && { box: b.box, elements }),
 			};
 		}),
 	);

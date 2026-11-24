@@ -54,7 +54,7 @@ export class CommandManager {
 		try { return action(); } finally { this.recordsHumanFields = previous; }
 	}
 
-	execute({ command }: { command: Command }): Command {
+	execute({ command }: { command: Command }): CommandResult | undefined {
 		const projectSession = this.editor.project.getSession();
 		const sceneId = this.getActiveSceneId();
 		const rippleEnabled = this.isRippleEnabled;
@@ -77,10 +77,10 @@ export class CommandManager {
 			throw error;
 		}
 		const derived = this.editor.scenes.endDerivedLog();
-		if (result?.changed === false) return command;
+		if (result?.changed === false) return result;
 		const selectionOverride = this.applySelectionOverride(result);
 		this.runReactors();
-		if (projectSession !== this.editor.project.getSession()) return command;
+		if (projectSession !== this.editor.project.getSession()) return result;
 		this.history.push({
 			command,
 			agent: this.agent,
@@ -92,7 +92,7 @@ export class CommandManager {
 			selectionOverride,
 		});
 		this.redoStack = [];
-		return command;
+		return result;
 	}
 
 	push({ command }: { command: Command }): void {
