@@ -8,8 +8,12 @@ import type { ProxyInfo, ProxyUpdate } from "./mapping";
 
 const profile = "p1-v1";
 const chunk = 64 * 1024;
-const reserve = () => Number(process.env.BOPENCUT_PROXY_FREE_BYTES ?? 5_000_000_000);
-const limit = () => Number(process.env.BOPENCUT_PROXY_LIMIT_BYTES ?? 8_000_000_000);
+function byteSetting(value: string | undefined, fallback: number) {
+	const bytes = Number(value);
+	return value && Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : fallback;
+}
+const reserve = () => byteSetting(process.env.BOPENCUT_PROXY_FREE_BYTES, 5_000_000_000);
+const limit = () => byteSetting(process.env.BOPENCUT_PROXY_LIMIT_BYTES, 8_000_000_000);
 const directory = () => path.join(dataRoot(), "proxies");
 const keyPattern = /^[a-f0-9]{64}-p1-v1$/;
 class LowDisk extends Error {}
@@ -46,6 +50,20 @@ function run(args: string[], signal: AbortSignal) {
 	const [exe, ...leading] = command();
 	return runBackgroundProcess(exe, [...leading, "-nostdin", ...args], signal, directory());
 }
+async function encode(args: string[], output: string, signal: AbortSignal) {
+	const stall = new AbortController();
+	let previousSize = -1;
+	let progress = Date.now();
+	const monitor = setInterval(() => {
+		void fs.stat(output).then(({ size }) => {
+			if (size !== previousSize) { previousSize = size; progress = Date.now(); }
+		}).catch(() => {}).finally(() => {
+			if (Date.now() - progress > 30_000) stall.abort();
+		});
+	}, 1_000);
+	try { await run(args, AbortSignal.any([signal, stall.signal])); }
+	finally { clearInterval(monitor); }
+}
 async function probe(file: string, signal: AbortSignal): Promise<Probe> {
 	const [exe] = command();
 	const suffix = process.platform === "win32" ? ".exe" : "";
@@ -64,11 +82,15 @@ function timestamps(probe: Probe) {
 async function files() {
 	const entries = await fs.readdir(directory()).catch(() => []);
 	return Promise.all(entries.filter((name) => name.endsWith(".mp4") && keyPattern.test(name.slice(0, -4)))
-		.map(async (name) => ({ name, stat: await fs.stat(path.join(directory(), name)) })));
+		.map(async (name) => {
+			const video = await fs.stat(path.join(directory(), name));
+			const sidecar = await fs.stat(path.join(directory(), name.replace(/\.mp4$/, ".json"))).catch(() => null);
+			return { name, stat: { size: video.size + (sidecar?.size ?? 0), mtimeMs: video.mtimeMs } };
+		}));
 }
-async function room(bytes: number, keep?: string): Promise<number> {
+export async function ensureProxySpace(bytes: number, keep?: string, alreadyWritten = 0): Promise<number> {
 	const available = await fs.statfs(directory());
-	if (available.bavail * available.bsize - bytes < reserve()) throw new LowDisk();
+	if (available.bavail * available.bsize - Math.max(0, bytes - alreadyWritten) < reserve()) throw new LowDisk();
 	const entries = await files();
 	let used = entries.reduce((n, f) => n + f.stat.size, 0);
 	for (const entry of entries.sort((a, b) => a.stat.mtimeMs - b.stat.mtimeMs)) {
@@ -91,7 +113,7 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 		const info = await fs.readFile(metadata, "utf8").then(JSON.parse).catch(() => null);
 		if (info) { const now = new Date(); await fs.utimes(video, now, now).catch(() => {}); return info; }
 	}
-	await room(0);
+	await ensureProxySpace(0);
 	const source = await probe(file, signal);
 	const stream = source.streams[0];
 	const pts = timestamps(source);
@@ -119,9 +141,9 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 				const quality = encoder === "h264_nvenc" ? ["-preset", "p4", "-rc", "vbr", "-cq", "25", "-b:v", "0"]
 					: encoder === "libx264" ? ["-preset", "ultrafast", "-crf", "24"] : ["-b:v", "4800k"];
 				try {
-					await run(["-v", "error", "-y", ...decode, "-i", file, "-map", "0:v:0", "-an", "-sn", "-dn",
+					await encode(["-v", "error", "-y", ...decode, "-i", file, "-map", "0:v:0", "-an", "-sn", "-dn",
 						"-vf", "scale=" + w + ":" + h + ":flags=lanczos,setsar=1", "-pix_fmt", "yuv420p", "-fps_mode", "passthrough",
-						"-c:v", encoder, ...quality, "-g", encoder === "h264_nvenc" ? "0" : "1", "-bf", "0", "-fs", String(maxBytes), "-movflags", "+faststart", temp], signal);
+						"-c:v", encoder, ...quality, "-g", encoder === "h264_nvenc" ? "0" : "1", "-bf", "0", "-fs", String(maxBytes), "-movflags", "+faststart", temp], temp, signal);
 					success = true;
 					break;
 				} catch { signal.throwIfAborted(); }
@@ -129,6 +151,8 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 			if (success) break;
 		}
 		if (!success) throw new Error("No working proxy encoder");
+		const stat = await fs.stat(temp);
+		if (stat.size >= maxBytes) throw new LowDisk();
 		const output = await probe(temp, signal);
 		const proxy = timestamps(output);
 		// A constant timestamp offset is fine. Any drift, reordering or duplicated sample disables the proxy.
@@ -136,10 +160,10 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 			output.streams[0]?.width !== w || output.streams[0]?.height !== h ||
 			proxy.some((t, i) => Math.abs(t - proxy[0] - (pts[i] - pts[0])) > 0.002) ||
 			(await fingerprint(file)).key !== key) return;
-		const stat = await fs.stat(temp);
-		await room(stat.size, key);
 		const info = { key, width, height, source: pts, proxy, size, duration, frameCount: pts.length };
-		await fs.writeFile(sidecar, JSON.stringify(info));
+		const serialized = JSON.stringify(info);
+		await ensureProxySpace(stat.size + Buffer.byteLength(serialized), key, stat.size);
+		await fs.writeFile(sidecar, serialized);
 		signal.throwIfAborted();
 		await fs.rename(temp, video);
 		await fs.rename(sidecar, metadata).catch(async error => { await fs.rm(video, { force: true }); throw error; });
@@ -152,18 +176,20 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 type Session = { project: string; ids: string[]; software: boolean; enabled?: boolean; paused: boolean; send: (update: ProxyUpdate) => void; done: Set<string> };
 const sessions = new Map<string, Session>();
 const failures = new Set<string>();
-let active: { session: Session; controller: AbortController } | undefined;
+let active: { session: Session; media: string; controller: AbortController } | undefined;
 let running = false;
 let needsPump = false;
 let initialized = false;
 let wiping = false;
 let idle: PromiseWithResolvers<void> | undefined;
 let encoderProbe: Promise<string[] | null> | undefined;
-export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" | "paused">) {
+export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" | "paused">, replaced: string[] = []) {
 	const session = sessions.get(id);
 	if (!session) return;
 	Object.assign(session, changes);
-	if (session.paused) active?.controller.abort();
+	for (const id of session.done) if (!session.ids.includes(id) || replaced.includes(id)) session.done.delete(id);
+	if (session.paused || (active?.session === session &&
+		(!session.ids.includes(active.media) || replaced.includes(active.media)))) active?.controller.abort();
 	void pump();
 }
 export function openSession(id: string, session: Omit<Session, "done">) {
@@ -219,12 +245,12 @@ async function pump() {
 				if (session.done.has(id)) continue;
 				if (wiping || [...sessions.values()].some(entry => entry.paused) || ![...sessions.values()].includes(session)) break;
 				const controller = new AbortController();
-				active = { session, controller };
+				active = { session, media: id, controller };
 				report("preparing");
 				let failureKey: string | undefined;
 				try {
 					const file = await sourcePath(session.project, id);
-					if (file) failureKey = (await fingerprint(file)).key;
+					if (file) failureKey = (await fingerprint(file)).key + (session.software ? ":software" : ":hardware");
 					const info = file && failureKey && !failures.has(failureKey)
 						? await prepare(file, session.software, encoders, AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)])) : undefined;
 					if (controller.signal.aborted) break;
@@ -274,5 +300,10 @@ export async function proxyPath(key: string) {
 		fs.lstat(video).catch(() => null),
 		fs.lstat(path.join(directory(), key + ".json")).catch(() => null),
 	]);
-	return entry?.isFile() && metadata?.isFile() ? video : undefined;
+	if (!entry?.isFile() || !metadata?.isFile()) return;
+	if (Date.now() - entry.mtimeMs > 60_000) {
+		const now = new Date();
+		void fs.utimes(video, now, now).catch(() => {});
+	}
+	return video;
 }

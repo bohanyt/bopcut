@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { useEffect } from "react";
 import type { EditorCore } from "@/core";
+import { ALL_FORMATS, BlobSource, Input } from "mediabunny";
 import type { ProxyInfo, ProxyUpdate } from "./mapping";
 
 type Preferences = { enabled?: boolean; software: boolean };
@@ -75,9 +76,11 @@ export function useProxySession(editor: EditorCore, project: string) {
 	useEffect(() => {
 		const controller = new AbortController();
 		const id = crypto.randomUUID();
-		const paused = () => editor.renderer.isExportRunning() || editor.voiceOver.getSnapshot().phase === "recording";
+		const paused = () => editor.renderer.isExportRunning() ||
+			["count-in", "starting", "recording"].includes(editor.voiceOver.getSnapshot().phase);
 		let queue = mediaOrder(editor);
 		let isPaused = paused();
+		let files = new Map(editor.media.getAssets().map(asset => [asset.id, asset.file]));
 		useProxyStore.setState({ ready: new Map(), update: undefined });
 		const post = (body: object) => fetch("/api/proxies", {
 			method: "POST", body: JSON.stringify({ id, ...body }), signal: controller.signal,
@@ -88,10 +91,13 @@ export function useProxySession(editor: EditorCore, project: string) {
 			if (!opened) return;
 			const next = mediaOrder(editor);
 			const state = paused();
-			if (state === isPaused && next.join() === queue.join()) return;
+			const updatedFiles = new Map(editor.media.getAssets().map(asset => [asset.id, asset.file]));
+			const replaced = next.filter(id => updatedFiles.get(id) !== files.get(id));
+			files = updatedFiles;
+			if (state === isPaused && next.join() === queue.join() && !replaced.length) return;
 			queue = next;
 			isPaused = state;
-			void post({ action: "update", ids: queue, paused: isPaused }).catch(() => {});
+			void post({ action: "update", ids: queue, paused: isPaused, replaced }).catch(() => {});
 		};
 		void (async () => {
 			const response = await post({ project, ids: queue, paused: isPaused, ...settings });
@@ -113,16 +119,33 @@ export function useProxySession(editor: EditorCore, project: string) {
 						useProxyStore.setState({ update });
 						const media = update.media;
 						const file = editor.media.getAssets().find(asset => asset.id === media?.id)?.file;
-						if (media && file) void fingerprint(file).then(hash => {
+						if (media && file) void fingerprint(file).then(async hash => {
 							if (controller.signal.aborted || !media.info.key.startsWith(hash + "-")) return;
+							const source = new Input({ formats: ALL_FORMATS, source: new BlobSource(file, { maxCacheSize: 1024 * 1024 }) });
+							try {
+								const track = await source.getPrimaryVideoTrack();
+								if (!track || track.displayWidth !== media.info.width || track.displayHeight !== media.info.height ||
+									Math.abs(await track.getFirstTimestamp() - media.info.source[0]) > 0.000002) return;
+							} finally { source.dispose(); }
+							if (controller.signal.aborted) return;
 							useProxyStore.setState(state => ({ ready: new Map(state.ready).set(media.id, { info: media.info, file }) }));
 						}).catch(() => {});
 					}
 				}
 			} finally { await reader.cancel().catch(() => {}); }
 		})().catch(() => {});
+		let scrubbing = editor.playback.getIsScrubbing();
 		const dispose = [editor.timeline.subscribe(refresh), editor.scenes.subscribe(refresh), editor.media.subscribe(refresh),
-			editor.renderer.subscribe(refresh), editor.voiceOver.subscribe(refresh)];
-		return () => { controller.abort(); dispose.forEach(fn => fn()); };
+			editor.renderer.subscribe(refresh), editor.voiceOver.subscribe(refresh),
+			editor.playback.subscribeState(() => {
+				const next = editor.playback.getIsScrubbing();
+				if (scrubbing && !next) refresh();
+				scrubbing = next;
+			})];
+		const syncSettings = (event: StorageEvent) => {
+			if (event.key === settingsKey) useProxyStore.setState({ settings: preferences() });
+		};
+		window.addEventListener("storage", syncSettings);
+		return () => { controller.abort(); dispose.forEach(fn => fn()); window.removeEventListener("storage", syncSettings); };
 	}, [editor, project, settings]);
 }

@@ -7,7 +7,9 @@ export const dynamic = "force-dynamic";
 function allowed(request: Request) {
 	const url = new URL(request.url);
 	const origin = request.headers.get("origin");
-	return ["127.0.0.1", "localhost"].includes(url.hostname) && (!origin || origin === url.origin) &&
+	const host = request.headers.get("host") ?? url.host;
+	return ["127.0.0.1", "localhost"].includes(url.hostname) &&
+		(!origin || (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin) && new URL(origin).host === host)) &&
 		request.headers.get("sec-fetch-site") !== "cross-site";
 }
 function ids(value: unknown): string[] {
@@ -25,21 +27,28 @@ export async function POST(request: Request) {
 		const body = await request.json();
 		const id = safeId(body.id ?? "");
 		if (body.action === "update") {
-			updateSession(id, { ...(body.ids === undefined ? {} : { ids: ids(body.ids) }), ...(typeof body.paused === "boolean" ? { paused: body.paused } : {}) });
+			updateSession(id, { ...(body.ids === undefined ? {} : { ids: ids(body.ids) }), ...(typeof body.paused === "boolean" ? { paused: body.paused } : {}) },
+				body.replaced === undefined ? [] : ids(body.replaced));
 			return new Response(null, { status: 204 });
 		}
 		const project = safeId(body.project ?? "");
 		const queue = ids(body.ids);
 		let close: (() => void) | undefined;
+		let closed = false;
 		const encoder = new TextEncoder();
 		const stream = new ReadableStream<Uint8Array>({
 			start(controller) {
 				close = openSession(id, { project, ids: queue, paused: !!body.paused, software: body.software === true, enabled: body.enabled,
-					send(update) { if (!request.signal.aborted) controller.enqueue(encoder.encode(JSON.stringify(update) + "\n")); },
+					send(update) { if (!closed && !request.signal.aborted) controller.enqueue(encoder.encode(JSON.stringify(update) + "\n")); },
 				});
-				request.signal.addEventListener("abort", () => { close?.(); controller.close(); }, { once: true });
+				request.signal.addEventListener("abort", () => {
+					if (closed) return;
+					closed = true;
+					close?.();
+					controller.close();
+				}, { once: true });
 			},
-			cancel() { close?.(); },
+			cancel() { closed = true; close?.(); },
 		});
 		return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
 	} catch { return new Response(null, { status: 400 }); }
