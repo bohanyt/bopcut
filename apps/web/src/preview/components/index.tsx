@@ -28,6 +28,7 @@ import { createPreviewFrameScheduler } from "@/preview/frame-scheduler";
 import { PreviewToolbar } from "./toolbar";
 import {
 	PreviewViewportProvider,
+	PreviewFramingProvider,
 	usePreviewViewportState,
 } from "./preview-viewport";
 
@@ -37,6 +38,11 @@ function usePreviewSize() {
 	);
 
 	return previewCanvasSize(canvasSize);
+}
+
+export function EditorPreviewFraming({ children }: { children: React.ReactNode }) {
+	const { width, height } = usePreviewSize();
+	return <PreviewFramingProvider canvasWidth={width} canvasHeight={height}>{children}</PreviewFramingProvider>;
 }
 
 function normalizeWheelDelta({

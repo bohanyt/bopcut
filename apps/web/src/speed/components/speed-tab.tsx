@@ -1,5 +1,6 @@
 import { useI18n } from "@/i18n/provider";
 import { useRef } from "react";
+import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
 import { NumberField } from "@/components/ui/number-field";
 import { Switch } from "@/components/ui/switch";
@@ -81,11 +82,12 @@ export function SpeedTab({
 		rate: number;
 		maintainPitch: boolean;
 	}) => {
-		editor.timeline.updateElementRetime({
+		const result = editor.timeline.updateElementRetime({
 			trackId,
 			elementId: element.id,
 			retime: buildRetime({ rate: nextRate, maintainPitch: nextMaintainPitch }),
 		});
+		if (result === "overlap") toast.warning(t("properties.speedOverlap"));
 	};
 
 	const speedDraft = usePropertyDraft({
@@ -93,16 +95,10 @@ export function SpeedTab({
 		parse: (input) => parseSpeedInput({ input }),
 		onPreview: (nextRate) => {
 			pendingRateRef.current = nextRate;
-			editor.timeline.previewElements({
-				updates: [
-					{
-						trackId,
-						elementId: element.id,
-						updates: {
-							retime: buildRetime({ rate: nextRate, maintainPitch }),
-						},
-					},
-				],
+			editor.timeline.previewElementRetime({
+				trackId,
+				elementId: element.id,
+				retime: buildRetime({ rate: nextRate, maintainPitch }),
 			});
 		},
 		onCommit: () => {

@@ -11,7 +11,7 @@ export {
 	cloneAnimations,
 	getChannel,
 	removeElementKeyframe,
-	retimeElementKeyframe,
+	retimeElementKeyframes,
 	setBindingComponentChannel,
 	setChannel,
 	splitAnimationsAtTime,

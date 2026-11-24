@@ -501,6 +501,7 @@ export const en = {
 	"properties.selected": "{count} elements selected.",
 	"properties.spacing": "Spacing",
 	"properties.speed": "Speed",
+	"properties.speedOverlap": "This speed would overlap the next clip. Enable Ripple or make room on the track.",
 	"properties.stroke": "Stroke",
 	"properties.toggleEffect": "Toggle {name}",
 	"properties.toggleKeyframe": "Toggle {property} keyframe",

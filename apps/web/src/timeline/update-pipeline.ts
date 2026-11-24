@@ -4,12 +4,112 @@ import {
 	getSourceSpanAtClipTime,
 	getTimelineDurationForSourceSpan,
 } from "@/retime";
-import type { RetimeConfig, SceneTracks, TimelineElement } from "@/timeline";
+import type { ElementRef, RetimeConfig, SceneTracks, TimelineElement, TimelineTrack } from "@/timeline";
 import { isRetimableElement } from "@/timeline";
+import {
+	findTrackInSceneTracks,
+	updateElementInSceneTracks,
+	updateTrackInSceneTracks,
+} from "@/timeline/track-element-update";
+import { rippleShiftElements } from "@/ripple";
 import { ZERO_MEDIA_TIME, roundMediaTime } from "@/wasm";
 import { reconcileCaptionEdit } from "@/text/caption";
 
 type ElementUpdateField = keyof TimelineElement | string;
+
+export interface ElementUpdate extends ElementRef {
+	patch: Partial<TimelineElement>;
+}
+
+export function applyElementUpdates({
+	tracks,
+	updates,
+	boundaryIdPrefix,
+}: {
+	tracks: SceneTracks;
+	updates: readonly ElementUpdate[];
+	boundaryIdPrefix: string;
+}): SceneTracks {
+	let updatedTracks = tracks;
+	for (const [index, { trackId, elementId, patch }] of updates.entries()) {
+		const track = findTrackInSceneTracks({ tracks: updatedTracks, trackId });
+		if (!track?.elements.some((element) => element.id === elementId)) continue;
+		const context = {
+			tracks: updatedTracks,
+			trackId,
+			boundaryIdPrefix: `${boundaryIdPrefix}:${index}`,
+		};
+		updatedTracks = updateElementInSceneTracks({
+			tracks: updatedTracks,
+			trackId,
+			elementId,
+			update: (element) => applyElementUpdate({ element, patch, context }),
+		});
+	}
+	return updatedTracks;
+}
+
+export function applyElementRetime({
+	tracks,
+	trackId,
+	elementId,
+	retime,
+	rippleEnabled,
+	boundaryIdPrefix,
+}: ElementRef & {
+	tracks: SceneTracks;
+	retime?: RetimeConfig;
+	rippleEnabled: boolean;
+	boundaryIdPrefix: string;
+}): SceneTracks | null {
+	const track = findTrackInSceneTracks({ tracks, trackId });
+	const element = track?.elements.find((candidate) => candidate.id === elementId);
+	if (!track || !element || !isRetimableElement(element)) return tracks;
+
+	const next = applyElementUpdate({
+		element,
+		patch: { retime },
+		context: { tracks, trackId, boundaryIdPrefix },
+	});
+	if (!isRetimableElement(next)) return tracks;
+	const delta = next.duration - element.duration;
+	if (delta === 0 && next.retime?.rate === element.retime?.rate &&
+		!!next.retime?.maintainPitch === !!element.retime?.maintainPitch) return tracks;
+
+	const end = element.startTime + element.duration;
+	let shiftFrom = end;
+	let shiftBy = delta;
+	if (delta > 0) {
+		let nextStart = Infinity;
+		for (const candidate of track.elements) {
+			if (candidate.id !== elementId && candidate.startTime >= element.startTime) {
+				nextStart = Math.min(nextStart, candidate.startTime);
+			}
+		}
+		if (!rippleEnabled && end + delta > nextStart) return null;
+		// Preserve gaps to later clips. If old clips already overlap, make room for the new span.
+		shiftFrom = Math.min(end, nextStart);
+		shiftBy = Math.max(delta, end + delta - nextStart);
+	}
+
+	return updateTrackInSceneTracks({
+		tracks,
+		trackId,
+		update: <TTrack extends TimelineTrack>(current: TTrack): TTrack => {
+			const elements = rippleEnabled && shiftBy !== 0
+				? rippleShiftElements<TimelineElement>({
+						elements: current.elements,
+						afterTime: shiftFrom,
+						shiftAmount: -shiftBy,
+					})
+				: current.elements;
+			return {
+				...current,
+				elements: elements.map((candidate) => candidate.id === elementId ? next : candidate),
+			} as TTrack;
+		},
+	});
+}
 
 export interface ElementUpdateContext {
 	tracks: SceneTracks;

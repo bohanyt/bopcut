@@ -12,7 +12,7 @@ import {
 import { AssetsPanel } from "@/components/editor/panels/assets";
 import { PropertiesPanel } from "@/components/editor/panels/properties";
 import { Timeline } from "@/timeline/components";
-import { PreviewPanel } from "@/preview/components";
+import { EditorPreviewFraming, PreviewPanel } from "@/preview/components";
 import { EditorHeader } from "@/components/editor/editor-header";
 import { EditorProvider } from "@/components/providers/editor-provider";
 import { Onboarding } from "@/components/editor/onboarding";
@@ -50,7 +50,9 @@ export default function Editor() {
 					<ModelGraphicsStatusBanner />
 					<EditorHeader />
 					<div className="min-h-0 min-w-0 flex-1">
-						<EditorLayout />
+						<EditorPreviewFraming>
+							<EditorLayout />
+						</EditorPreviewFraming>
 					</div>
 					<Onboarding />
 					<MigrationDialog />

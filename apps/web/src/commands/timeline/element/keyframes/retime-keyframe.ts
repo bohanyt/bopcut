@@ -1,5 +1,5 @@
 import { EditorCore } from "@/core";
-import { retimeElementKeyframe } from "@/animation";
+import { retimeElementKeyframes } from "@/animation";
 import { Command, type CommandResult } from "@/commands/base-command";
 import { updateElementInSceneTracks } from "@/timeline";
 import type { AnimationPath } from "@/animation/types";
@@ -12,33 +12,29 @@ import {
 } from "@/wasm";
 import { resolveAnimationTarget } from "@/timeline/animation-targets";
 
-export class RetimeKeyframeCommand extends Command {
+export class RetimeKeyframesCommand extends Command {
 	private savedState: SceneTracks | null = null;
 	private readonly trackId: string;
 	private readonly elementId: string;
-	private readonly propertyPath: AnimationPath;
-	private readonly keyframeId: string;
-	private readonly nextTime: MediaTime;
+	private readonly keyframes: readonly {
+		propertyPath: AnimationPath;
+		keyframeId: string;
+		nextTime: MediaTime;
+	}[];
 
 	constructor({
 		trackId,
 		elementId,
-		propertyPath,
-		keyframeId,
-		nextTime,
+		keyframes,
 	}: {
 		trackId: string;
 		elementId: string;
-		propertyPath: AnimationPath;
-		keyframeId: string;
-		nextTime: MediaTime;
+		keyframes: RetimeKeyframesCommand["keyframes"];
 	}) {
 		super();
 		this.trackId = trackId;
 		this.elementId = elementId;
-		this.propertyPath = propertyPath;
-		this.keyframeId = keyframeId;
-		this.nextTime = nextTime;
+		this.keyframes = keyframes;
 	}
 
 	execute(): CommandResult | undefined {
@@ -50,23 +46,22 @@ export class RetimeKeyframeCommand extends Command {
 			trackId: this.trackId,
 			elementId: this.elementId,
 			update: (element) => {
-				if (!resolveAnimationTarget({ element, path: this.propertyPath })) {
-					return element;
+				const timesByPath = new Map<AnimationPath, Map<string, MediaTime>>();
+				for (const { propertyPath, keyframeId, nextTime } of this.keyframes) {
+					const timesByKeyframe = timesByPath.get(propertyPath) ?? new Map();
+					timesByKeyframe.set(keyframeId, maxMediaTime({
+						a: ZERO_MEDIA_TIME,
+						b: minMediaTime({ a: nextTime, b: element.duration }),
+					}));
+					timesByPath.set(propertyPath, timesByKeyframe);
 				}
 
-				const boundedTime = maxMediaTime({
-					a: ZERO_MEDIA_TIME,
-					b: minMediaTime({ a: this.nextTime, b: element.duration }),
-				});
-				return {
-					...element,
-					animations: retimeElementKeyframe({
-						animations: element.animations,
-						propertyPath: this.propertyPath,
-						keyframeId: this.keyframeId,
-						time: boundedTime,
-					}),
-				};
+				let animations = element.animations;
+				for (const [propertyPath, timesByKeyframe] of timesByPath) {
+					if (!resolveAnimationTarget({ element, path: propertyPath })) continue;
+					animations = retimeElementKeyframes({ animations, propertyPath, timesByKeyframe });
+				}
+				return animations === element.animations ? element : { ...element, animations };
 			},
 		});
 

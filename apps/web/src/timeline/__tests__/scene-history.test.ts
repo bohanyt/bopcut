@@ -2,12 +2,15 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { TScene, TextElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
-import { buildEffectParamPath, getKeyframeAtTime } from "@/animation";
+import { collectAudioClips } from "@/media/audio";
+import { buildEffectParamPath, getChannel, getKeyframeAtTime } from "@/animation";
+import type { ScalarAnimationKey } from "@/animation/types";
 import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
 import { cancelInteraction } from "@/editor/cancel-interaction";
 import { PreviewInteractionController } from "@/preview/controllers/preview-interaction-controller";
 import { PreviewPointerCapture } from "@/preview/pointer-capture";
+import { KeyframeDragController } from "@/timeline/controllers/keyframe-drag-controller";
 import { ElementInteractionController } from "@/timeline/controllers/element-interaction-controller";
 import { startColorDrag } from "@/components/ui/color-drag";
 import { appendAlpha, parseHexAlpha } from "@/utils/color";
@@ -92,6 +95,118 @@ function setupSplitHistory() {
 		});
 	return { editor, tracks, main, first, second, keyAt };
 }
+
+test.each([
+	{ edge: "right", reverse: false, clientX: 200, delta: 3, times: [4, 5] },
+	{ edge: "right", reverse: true, clientX: 200, delta: 3, times: [4, 5] },
+	{ edge: "left", reverse: false, clientX: -200, delta: -1, times: [0, 1] },
+	{ edge: "left", reverse: true, clientX: -200, delta: -1, times: [0, 1] },
+])("dragging eased keys past the $edge edge preserves spacing and handles with reverse=$reverse", ({
+	reverse, clientX, delta, times,
+}) => {
+	const scenes = fixture();
+	const clip = video("a", 0, 5);
+	const keys: ScalarAnimationKey[] = [
+		{
+			id: "earlier", time: t(1), value: 0, segmentToNext: "bezier",
+			tangentMode: "broken", rightHandle: { dt: t(0.3), dv: 0.2 },
+		},
+		{
+			id: "later", time: t(2), value: 1, segmentToNext: "linear",
+			tangentMode: "broken", leftHandle: { dt: t(-0.4), dv: -0.1 },
+		},
+	];
+	clip.animations = { opacity: { keys } };
+	getHost(scenes).tracks.main.elements = [clip];
+	const editor = setup(scenes);
+	const selectedKeyframes = (reverse ? [...keys].reverse() : keys).map(({ id }) => ({
+		trackId: "t-main", elementId: "a", propertyPath: "opacity", keyframeId: id,
+	}));
+	const doc = new EventTarget();
+	const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+	Object.defineProperty(globalThis, "document", { configurable: true, value: doc });
+	const controller = new KeyframeDragController({ configRef: { current: {
+		zoomLevel: 1, getFps: () => ({ numerator: 30, denominator: 1 }),
+		element: clip, displayedStartTime: t(0), selectedKeyframes,
+		isKeyframeSelected: () => true, setKeyframeSelection: () => {},
+		toggleKeyframeSelection: () => {}, selectKeyframeRange: () => {},
+		executeCommand: (command) => editor.command.execute({ command }),
+		beginPreviewGesture: editor.timeline.beginPreviewGesture,
+		seek: () => {}, getTotalDuration: () => t(5),
+	} } });
+	try {
+		controller.onKeyframeMouseDown({
+			keyframes: [selectedKeyframes[0]],
+			event: {
+				clientX: 0, preventDefault() {}, stopPropagation() {}, currentTarget: { ownerDocument: doc },
+			} as unknown as ReactMouseEvent,
+		});
+		const move = Object.assign(new Event("mousemove"), { clientX });
+		doc.dispatchEvent(move);
+		doc.dispatchEvent(move);
+		expect(controller.keyframeDragState.deltaTicks).toBe(t(delta));
+		doc.dispatchEvent(new Event("mouseup"));
+		const updated = editor.scenes.getActiveScene().tracks.main.elements[0];
+		expect(getChannel({ animations: updated.animations, propertyPath: "opacity" })?.keys)
+			.toEqual(keys.map((key, index) => ({ ...key, time: t(times[index]) })));
+		editor.command.undo();
+		expect(editor.scenes.getActiveScene().tracks.main.elements[0]).toBe(clip);
+		expect(editor.command.canUndo()).toBe(false);
+	} finally {
+		controller.destroy();
+		if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+		else Reflect.deleteProperty(globalThis, "document");
+	}
+});
+
+test.each([false, true])("a slowdown respects ripple=%s and stays clear of the next clip", async (ripple) => {
+	const { editor, first, main, tracks } = setupSplitHistory();
+	editor.command.isRippleEnabled = ripple;
+	const before = tracks();
+	editor.timeline.previewElementRetime({ ...first, retime: { rate: 0.5 } });
+	const preview = editor.timeline.getPreviewTracks()!;
+	expect(preview.main.elements.map(({ startTime, duration }) => [startTime, duration]))
+		.toEqual([[t(0), t(ripple ? 4 : 2)], [t(ripple ? 4 : 2), t(2)]]);
+	expect(tracks()).toBe(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.timeline.updateElementRetime({ ...first, retime: { rate: 0.5 } });
+	expect(editor.timeline.isPreviewActive()).toBe(false);
+	expect(main()).toEqual(preview.main.elements);
+	expect(main()[0].duration).toBe(ripple ? t(4) : t(2));
+	expect(main()[1].startTime).toBe(ripple ? t(4) : t(2));
+	if (ripple) {
+		const mediaAssets = ["a", "b"].map((id): MediaAsset => ({
+			id: `media-${id}`, name: id, type: "video", hasAudio: true,
+			file: new File([], `${id}.mp4`, { type: "video/mp4" }),
+		}));
+		const audio = await collectAudioClips({ tracks: tracks(), mediaAssets });
+		expect(audio.map(({ id, startTime, duration, retime }) => [id, startTime, duration, retime?.rate]))
+			.toEqual([["a", 0, 4, 0.5], ["b", 4, 2, undefined]]);
+		editor.command.undo();
+		expect(tracks()).toBe(before);
+		expect(editor.command.canUndo()).toBe(false);
+		editor.command.isRippleEnabled = false;
+		editor.command.redo();
+		expect(main()[1].startTime).toBe(t(4));
+	} else {
+		expect(tracks()).toBe(before);
+		expect(editor.command.canUndo()).toBe(false);
+	}
+});
+
+test("changing speed into a gap works without ripple, and speeding up with ripple closes the freed span", () => {
+	const scenes = fixture();
+	getHost(scenes).tracks.main.elements = [video("a", 0, 2), video("b", 5, 2)];
+	const editor = setup(scenes);
+	const first = { trackId: "t-main", elementId: "a" };
+	const timings = () => editor.scenes.getActiveScene().tracks.main.elements
+		.map(({ startTime, duration }) => [startTime, duration]);
+	editor.timeline.updateElementRetime({ ...first, retime: { rate: 0.5 } });
+	expect(timings()).toEqual([[t(0), t(4)], [t(5), t(2)]]);
+	editor.command.isRippleEnabled = true;
+	editor.timeline.updateElementRetime({ ...first, retime: { rate: 2 } });
+	expect(timings()).toEqual([[t(0), t(1)], [t(2), t(2)]]);
+});
 
 test("large subtitle imports publish one complete track and keep its IDs and selection in history", () => {
 	const editor = setup();
