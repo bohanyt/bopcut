@@ -1,48 +1,45 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { clearFontAtlasCache, loadFontAtlas } from "./google-fonts";
 
-const ATLAS = { fonts: { Roboto: { x: 0, y: 0, w: 100, ch: 0, s: [] } } };
+const originals = {
+	fetch: Object.getOwnPropertyDescriptor(globalThis, "fetch"),
+	Image: Object.getOwnPropertyDescriptor(globalThis, "Image"),
+};
+let requests = 0;
+let respond: () => Response | Promise<Response>;
 
-describe("loadFontAtlas", () => {
-	let calls: string[];
-	let restore: () => void;
+beforeEach(() => {
+	requests = 0;
+	clearFontAtlasCache();
+	const replacements = { fetch: async () => { requests++; return respond(); }, Image: class { src = ""; } };
+	for (const [key, value] of Object.entries(replacements)) {
+		Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+	}
+});
 
-	beforeEach(() => {
-		globalThis.Image = class { src = "" } as unknown as typeof Image;
-		const real = globalThis.fetch;
-		calls = [];
-		globalThis.fetch = (async (input) => {
-			calls.push(String(input));
-			return nextFetch();
-		}) as typeof fetch;
-		restore = () => { globalThis.fetch = real; };
-	});
-	let nextFetch: () => Response | Promise<Response>;
-	afterEach(async () => {
-		restore();
-		(await import("./google-fonts")).clearFontAtlasCache();
-	});
+afterEach(() => {
+	clearFontAtlasCache();
+	for (const [key, descriptor] of Object.entries(originals)) {
+		if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+		else Reflect.deleteProperty(globalThis, key);
+	}
+});
 
-	const atlasCount = () => calls.filter((u) => u.includes("font-atlas.json")).length;
+const atlas = () => Response.json({ fonts: { Roboto: { x: 0, y: 0, w: 100, ch: 0, s: [] } } });
 
-	test("does not fetch until loadFontAtlas is called", async () => {
-		nextFetch = () => Response.json(ATLAS);
-		await import("./google-fonts");
-		expect(atlasCount()).toBe(0);
-	});
+test("concurrent and later requests share one font atlas download", async () => {
+	respond = atlas;
+	const [first, second] = await Promise.all([loadFontAtlas(), loadFontAtlas()]);
+	expect(first).not.toBeNull();
+	expect(second).toBe(first);
+	expect(await loadFontAtlas()).toBe(first);
+	expect(requests).toBe(1);
+});
 
-	test("one call fetches once; concurrent call does not fetch again", async () => {
-		nextFetch = async () => { await new Promise((r) => setTimeout(r, 10)); return Response.json(ATLAS); };
-		const { loadFontAtlas } = await import("./google-fonts");
-		await Promise.all([loadFontAtlas(), loadFontAtlas()]);
-		expect(atlasCount()).toBe(1);
-	});
-
-	test("failed fetch can be retried by a later call", async () => {
-		let attempts = 0;
-		nextFetch = async () => (++attempts === 1 ? new Response(null, { status: 500 }) : Response.json(ATLAS));
-		const { loadFontAtlas } = await import("./google-fonts");
-		expect(await loadFontAtlas()).toBeNull();
-		expect(await loadFontAtlas()).not.toBeNull();
-		expect(atlasCount()).toBe(2);
-	});
+test.each(["status", "network"] as const)("a font atlas request that failed (%s) can be retried", async (failure) => {
+	respond = () => failure === "status" ? new Response(null, { status: 500 }) : Promise.reject(new Error("offline"));
+	expect(await loadFontAtlas()).toBeNull();
+	respond = atlas;
+	expect(await loadFontAtlas()).not.toBeNull();
+	expect(requests).toBe(2);
 });
