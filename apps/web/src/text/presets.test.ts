@@ -70,6 +70,18 @@ async function withWorkspace(run: (workspace: string) => Promise<void>) {
 const post = (body: unknown, headers: Record<string, string> = { "Content-Type": "application/json" }) =>
 	POST(new Request("http://localhost:3000/api/agent/presets", { method: "POST", headers: { host: "localhost:3000", ...headers }, body: JSON.stringify(body) }));
 
+test("a failed rename leaves no temporary file in the presets folder", async () => {
+	await withWorkspace(async (workspace) => {
+		const dir = path.join(workspace, "presets");
+		await fs.mkdir(dir, { recursive: true });
+		const target = path.join(dir, presetFileName("Blocked"));
+		await fs.mkdir(target);
+		const res = await post({ name: "Blocked", style: { fontSize: 8 } });
+		expect(res.status).toBe(400);
+		expect((await fs.readdir(dir)).some((name) => name.endsWith(".tmp"))).toBe(false);
+	});
+});
+
 test("only the editor's own origin may save presets, as JSON", async () => {
 	await withWorkspace(async () => {
 		const preset = { name: "Readable", style: { fontSize: 8 } };

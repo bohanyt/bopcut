@@ -55,8 +55,13 @@ export async function POST(request: Request) {
 		const existing = (await readPresets()).find((entry) => entry.preset.name === preset.name);
 		const file = path.join(directory(), existing?.file ?? presetFileName(preset.name));
 		const temporary = `${file}.${crypto.randomUUID()}.tmp`;
-		await fs.writeFile(temporary, JSON.stringify(preset, null, 2));
-		await fs.rename(temporary, file);
+		try {
+			await fs.writeFile(temporary, JSON.stringify(preset, null, 2));
+			await fs.rename(temporary, file);
+		} catch (error) {
+			await fs.rm(temporary, { force: true }).catch(() => {});
+			throw error;
+		}
 		return Response.json(preset);
 	} catch (error) {
 		return Response.json(

@@ -1,6 +1,19 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+export function insidePath(root: string, rel: string, pathApi: typeof path.posix | typeof path.win32 = path): string {
+	const full = pathApi.resolve(root, rel);
+	const relative = pathApi.relative(root, full);
+	if (!relative || relative === ".." || relative.startsWith(`..${pathApi.sep}`) || pathApi.isAbsolute(relative)) {
+		throw new Error("Path outside AGENT_FILES_ROOT");
+	}
+	return full;
+}
+
+export function inside(root: string, rel: string): string {
+	return insidePath(root, rel);
+}
+
 /**
  * The real path of a regular file under `root`, or null when either is missing. A link that leads out
  * of the root, or anything that is not a regular file, is refused, so these reads stay in their folder.
