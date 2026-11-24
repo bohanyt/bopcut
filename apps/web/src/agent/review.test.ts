@@ -5,12 +5,12 @@ import path from "node:path";
 import { createCanvas } from "@napi-rs/canvas";
 import { fileProbeCommand, toolsFromEnv } from "@/retrieval/server";
 import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
-import { audio, fixture, t, text } from "@/timeline/__tests__/compound-fixtures";
+import { audio, fixture, scene, t, text } from "@/timeline/__tests__/compound-fixtures";
 import type { TextElement, VideoElement } from "@/timeline";
 import { reserveEditorActivity, reserveReview } from "./review-activity";
 import { knownExportProfile, saveExportProfile } from "./export-profile";
 import { cutPop, finding, summarizeReview, unusualPauses } from "./review-findings";
-import { textFindings } from "./review-timeline";
+import { inspectTimeline, textFindings } from "./review-timeline";
 import { writeReview } from "./review-server";
 
 test("a short isolated click is distinct from a hard speech onset and a longer sound effect", () => {
@@ -50,6 +50,23 @@ test("reviews reserve the renderer and microphone before starting", async () => 
 		expect(reserveReview(false)).toBeNull();
 	} finally { release?.(); }
 	expect(reserveReview(true)).toBeNull();
+});
+
+test("a nested cut reports the selected root time and the actual clip ID", () => {
+	const [root] = fixture();
+	root.tracks.overlay = [];
+	root.tracks.audio = [];
+	root.tracks.main.elements = [{ ...root.tracks.main.elements[0], type: "compound", id: "parent",
+		sceneId: "nested", startTime: t(10), trimStart: t(1.5), duration: t(2) }];
+	const child = audio("child", 1, 3);
+	const nested = scene("nested", { overlay: [], main: { ...root.tracks.main, elements: [] }, audio: [
+		{ id: "voice", name: "Voice", type: "audio", muted: false, elements: [child] },
+	] }, { kind: "compound" });
+	const report = inspectTimeline(root, [root, nested], [{ id: "media-child", name: "Voice",
+		words: [{ text: "word", start: 0.3, end: 0.8 }] }], { width: 640, height: 360 }, 12, 30);
+	expect(report.findings.find((hit) => hit.kind === "cut-word")).toMatchObject({
+		from: 10, severity: "warning", elementIds: ["child"], values: { instance: "parent/child" },
+	});
 });
 
 test("an export profile belongs to the file that was originally published", async () => {

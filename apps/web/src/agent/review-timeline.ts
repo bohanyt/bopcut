@@ -21,6 +21,7 @@ import { orderedTracks } from "./scene-graph";
 type Canvas = { width: number; height: number };
 export type ReviewMedia = TranscriptMedia & { width?: number; height?: number; fileType?: string; present?: boolean; sourceFile?: string };
 type Instance = ReturnType<typeof visibleRangeElements> extends Generator<infer T> ? T : never;
+const instanceKey = (item: Instance) => [...item.chain.map((parent) => parent.id), item.element.id].join("/");
 type Rect = { x: number; y: number; w: number; h: number };
 const normalized = (s: string) => s.toLowerCase().match(/[\p{L}\p{N}]+/gu)?.join(" ") ?? "";
 const intersects = (a: Rect, b: Rect) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
@@ -88,6 +89,7 @@ function projectBounds(bounds: ElementBounds, canvas: Canvas, parents: ReturnTyp
 export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMedia[], canvas: Canvas, duration: number, fps: number) {
 	const assets = new Map(media.map((asset) => [asset.id, asset]));
 	const instances = [...visibleRangeElements(root, scenes, { from: 0, to: duration, rows: 1 })];
+	const instancesByKey = new Map(instances.map((item) => [instanceKey(item), item]));
 	const sounds = orderedTracks(expandCompoundAudioTracks({ tracks: root.tracks, scenes })).flatMap((track) => {
 		if ("muted" in track && track.muted) return [];
 		return track.elements.flatMap((element) => {
@@ -142,8 +144,10 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 			const key = `${at}:${sound.mediaId}:${word.start}`;
 			if (wordCuts.has(key)) continue;
 			wordCuts.add(key);
+			const placed = instancesByKey.get(sound.element.id);
 			findings.push(finding("cut-word", missing > L.clippedWordSeconds ? "warning" : "info", at, at,
-				{ word: word.text, sourceCut: source, wordStart: word.start, wordEnd: word.end, missing, threshold: L.clippedWordSeconds }, [sound.element.id]));
+				{ word: word.text, sourceCut: source, wordStart: word.start, wordEnd: word.end, missing, threshold: L.clippedWordSeconds,
+					instance: sound.element.id }, [placed?.element.id ?? sound.element.id]));
 		}
 	}
 	const phrases = timelineTranscript(root, scenes, media).filter((clip) => sounds.some((sound) => sound.element.id === clip.id &&
@@ -167,7 +171,7 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 			const overlap = Math.min(other.end, end) - Math.max(other.start, start);
 			if (overlap < L.repeatSeconds || overlap < L.repeatFraction * Math.max(end - start, other.end - other.start)) continue;
 			const gap = Math.abs(instance.start - other.instance.start);
-			const heard = [instance, other.instance].every((item) => sounds.some((sound) => sound.element.id === item.element.id && sound.audible((item.start + item.end) / 2)));
+			const heard = [instance, other.instance].every((item) => sounds.some((sound) => sound.element.id === instanceKey(item) && sound.audible((item.start + item.end) / 2)));
 			const severity = heard && gap <= L.nearbyRepeatSeconds ? "warning" : "info";
 			related++;
 			if (repeat?.severity === "warning" && severity === "info") continue;
