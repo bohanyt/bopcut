@@ -3,6 +3,7 @@ import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
 import { useTimelineStore } from "@/timeline/timeline-store";
+import { isTimelineGestureActive } from "@/timeline/gesture-state";
 import {
 	PlayheadController,
 	type PlayheadConfig,
@@ -83,7 +84,9 @@ export function useTimelinePlayhead({
 		const unsubscribeReveal = editor.playback.onReveal(() => {
 			cancelAnimationFrame(revealFrame);
 			revealFrame = requestAnimationFrame(() => {
-				if (!editor.playback.getIsScrubbing()) ctrl.reveal(editor.playback.getCurrentTime());
+				// Scrolling under a held clip or edge would move its drop position.
+				if (editor.playback.getIsScrubbing() || isTimelineGestureActive() || editor.timeline.isPreviewActive()) return;
+				ctrl.reveal(editor.playback.getCurrentTime());
 			});
 		});
 		return () => {
