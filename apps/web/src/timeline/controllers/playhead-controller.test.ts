@@ -213,15 +213,14 @@ test("a paused drag can seek back to a cached snap point after an external seek"
 	expect(scrub.seek).toEqual([time(1), time(1)]);
 });
 
-for (const interrupt of ["cancel", "loseCapture", "blur", "pagehide", "hide", "noButtons"] as const) {
+for (const interrupt of ["cancel", "loseCapture", "blur", "pagehide", "hide"] as const) {
 	test(`ends the captured scrub on ${interrupt}, preserving the last pointer sample`, () => {
 		const scrub = setup({ autoScroll: true });
 		scrub.controller.onRulerPointerDown(scrub.event(50));
 		expect(scrub.pointerCaptured()).toBe(true);
 		scrub.move(145);
 		scrub.moveOtherPointer(32);
-		if (interrupt === "noButtons") scrub.move(400, 0);
-		else scrub[interrupt]();
+		scrub[interrupt]();
 		expect(scrub.pointerCaptured()).toBe(false);
 		expect(scrub.seek.at(-1)).toBe(time(2.9));
 		expect(scrub.saved).toEqual([time(2.9)]);
@@ -231,6 +230,19 @@ for (const interrupt of ["cancel", "loseCapture", "blur", "pagehide", "hide", "n
 		expect(scrub.rulerViewport.scrollLeft).toBe(left);
 	});
 }
+
+test("a transient zero-button move keeps the captured scrub active through release", () => {
+	const scrub = setup();
+	scrub.controller.onRulerPointerDown(scrub.event(50));
+	scrub.move(145, 0);
+	scrub.frame();
+	expect(scrub.controller.isActive).toBe(true);
+	expect(scrub.pointerCaptured()).toBe(true);
+	scrub.move(160);
+	scrub.release(200);
+	expect(scrub.saved).toEqual([time(4)]);
+	expect(scrub.scrubbing).toEqual([true, false]);
+});
 
 test("scene and project navigation discard queued pointer samples from the old scope", () => {
 	const scrub = setup();

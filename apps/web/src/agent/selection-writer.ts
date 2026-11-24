@@ -5,33 +5,39 @@ export function createSelectionWriter({
 }: {
 	isScrubbing: () => boolean;
 	readBody: () => string;
-	send: (body: string, keepalive: boolean) => Promise<void>;
+	send: (body: string) => Promise<void>;
 }) {
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	let lastBody = "";
-	let revision = 0;
-	const flush = (keepalive: boolean) => {
-		if (timer === undefined || isScrubbing()) return;
-		clearTimeout(timer);
-		timer = undefined;
+	let pending = false;
+	let sending = false;
+	let lastBody: string | undefined;
+
+	const flush = async () => {
+		if (!pending || sending || isScrubbing()) return;
+		pending = false;
 		const body = readBody();
 		if (body === lastBody) return;
-		lastBody = body;
-		const attempt = ++revision;
-		void send(body, keepalive).catch(() => {
-			if (attempt === revision) lastBody = "";
-		});
+		sending = true;
+		try {
+			await send(body);
+			lastBody = body;
+		} catch {
+			lastBody = undefined;
+		} finally {
+			sending = false;
+			void flush();
+		}
 	};
 
 	return {
 		schedule: () => {
 			if (isScrubbing()) return;
 			clearTimeout(timer);
+			pending = false;
 			timer = setTimeout(() => {
-				if (isScrubbing()) timer = undefined;
-				else flush(false);
+				pending = true;
+				void flush();
 			}, 250);
 		},
-		flushOnHide: () => flush(true),
 	};
 }

@@ -204,15 +204,14 @@ export function installAgentBridge() {
 	editor.timeline.subscribe(push);
 	editor.scenes.subscribe(push);
 	// selection.json: what the user points at, written shortly after the selection or the playhead settles.
-	const { schedule: pushSelection, flushOnHide } = createSelectionWriter({
+	const { schedule: pushSelection } = createSelectionWriter({
 		isScrubbing: () => editor.playback.getIsScrubbing(),
 		readBody: () => JSON.stringify(agentSelection() ?? NO_SELECTION),
-		send: async (body, keepalive) => {
+		send: async (body) => {
 			const response = await fetch("/api/agent/selection", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body,
-				keepalive,
 			});
 			if (!response.ok) throw new Error("Could not sync agent selection");
 		},
@@ -223,10 +222,6 @@ export function installAgentBridge() {
 	editor.timeline.subscribe(pushSelection);
 	editor.scenes.subscribe(pushSelection);
 	editor.project.subscribe(pushSelection);
-	document.addEventListener("visibilitychange", () => {
-		if (document.hidden) flushOnHide();
-	});
-	window.addEventListener("pagehide", flushOnHide);
 	pushSelection();
 	// Re-sync when readiness changes (media finished loading, a save landed) so the snapshot tells the truth.
 	let readiness = "";

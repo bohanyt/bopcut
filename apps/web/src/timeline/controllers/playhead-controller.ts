@@ -372,10 +372,6 @@ export class PlayheadController {
 
 	private handlePointerMove = (event: PointerEvent): void => {
 		if (this.session.kind !== "scrubbing" || this.session.pointerId !== event.pointerId) return;
-		if (!(event.buttons & 1)) {
-			this.finishAtLastPosition();
-			return;
-		}
 		this.lastMouseClientX = event.clientX;
 		this.session.hasMoved = true;
 		this.scheduleScrub();
