@@ -6,6 +6,7 @@ import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
 import { waitWithAbort } from "@/utils/abort";
 import { VideoCache } from "@/services/video-cache/service";
+import type { ExactScrubCache } from "@/services/video-cache/exact-scrub-cache";
 import { MIN_GPU_CANVAS_DIMENSION, previewCanvasSize } from "@/canvas/sizes";
 import { canvasSizeError, checkGraphicsContext, getRendererLimits, rendererDevice, rethrowGraphicsFailure } from "./renderer-device";
 import {
@@ -90,8 +91,8 @@ export class CanvasRenderer {
 		return this.outputCanvas;
 	}
 
-	async render({ node, time, signal }: { node: AnyBaseNode; time: number; signal?: AbortSignal }) {
-		return this.renderToCanvas({ node, time, signal, targetCanvas: this.outputCanvas });
+	async render({ node, time, signal, scrubCache }: { node: AnyBaseNode; time: number; signal?: AbortSignal; scrubCache?: ExactScrubCache }) {
+		return this.renderToCanvas({ node, time, signal, scrubCache, targetCanvas: this.outputCanvas });
 	}
 
 	private async renderFrame({
@@ -99,11 +100,13 @@ export class CanvasRenderer {
 		time,
 		signal,
 		targetCanvas,
+		scrubCache,
 	}: {
 		node: AnyBaseNode;
 		time: number;
 		signal: AbortSignal;
 		targetCanvas: HTMLCanvasElement;
+		scrubCache?: ExactScrubCache;
 	}) {
 		const { maxSurfaceDimension, maxTextureDimension } = getRendererLimits();
 		this.target = this.getRenderTarget(maxSurfaceDimension);
@@ -113,7 +116,7 @@ export class CanvasRenderer {
 		}
 		await measureSpanAsync({
 			name: "resolve",
-			fn: () => resolveRenderTree({ node, renderer: this, time, signal }),
+			fn: () => resolveRenderTree({ node, renderer: this, time, signal, scrubCache }),
 		});
 		signal.throwIfAborted();
 		checkGraphicsContext();
@@ -153,11 +156,13 @@ export class CanvasRenderer {
 		node,
 		time,
 		targetCanvas,
+		scrubCache,
 		signal,
 	}: {
 		node: AnyBaseNode;
 		time: number;
 		targetCanvas: HTMLCanvasElement;
+		scrubCache?: ExactScrubCache;
 		signal?: AbortSignal;
 	}) {
 		signal?.throwIfAborted();
@@ -166,11 +171,12 @@ export class CanvasRenderer {
 		const task = renderQueue.then(async () => {
 			frameSignal.throwIfAborted();
 			checkGraphicsContext();
-			await this.renderFrame({ node, time, signal: frameSignal, targetCanvas });
+			await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, scrubCache });
 		}).catch((error: unknown) => {
 			frameSignal.throwIfAborted();
 			rethrowGraphicsFailure(error);
 		}).finally(() => {
+			scrubCache?.finishFrame();
 			if (frameSignal.aborted) this.videoCache.clear();
 			else this.videoCache.finishFrame();
 		});

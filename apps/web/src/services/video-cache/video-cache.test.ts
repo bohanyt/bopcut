@@ -3,6 +3,7 @@ import { Canvas } from "@napi-rs/canvas";
 import { EncodedPacket, EncodedPacketSink, Input, InputVideoTrack, VideoSample, VideoSampleSink } from "mediabunny";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { VideoCache } from "./service";
+import { ExactScrubCache } from "./exact-scrub-cache";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { buildFrameDescriptor } from "@/services/renderer/compositor/frame-descriptor";
 import { BlurBackgroundNode } from "@/services/renderer/nodes/blur-background-node";
@@ -118,6 +119,32 @@ const constantRate = (seconds: number) => Array.from({ length: seconds * 30 }, (
 	timestamp: i / 30,
 	duration: 1 / 30,
 }));
+
+test("the exact scrub ring reuses a backward GOP decode, including gaps, at the regular preview size", () =>
+	withVideo([{ timestamp: 0, duration: 0.03 }, { timestamp: 1, duration: 0.03 }, { timestamp: 2, duration: 0.03 }], async ({ file, starts, closed }) => {
+		const cache = new ExactScrubCache();
+		const clip = {};
+		const key = spyOn(EncodedPacketSink.prototype, "getKeyPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 0, 0.03));
+		const nextKey = spyOn(EncodedPacketSink.prototype, "getNextKeyPacket").mockResolvedValue(null);
+		const read = async (time: number) => {
+			const frame = await cache.getFrameAt(file, clip, time, { getScale: () => 0.5, maxTextureDimension: 1920 });
+			cache.finishFrame();
+			return frame;
+		};
+		try {
+			expect(await read(2)).toMatchObject({ timestamp: 2, canvas: { width: 960, height: 540 } });
+			expect((await read(1.8))?.timestamp).toBe(1);
+			expect((await read(0.8))?.timestamp).toBe(0);
+			expect((await read(1.5))?.timestamp).toBe(1);
+			expect(starts).toEqual([2, 0]);
+		} finally {
+			cache.clear();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			key.mockRestore();
+			nextKey.mockRestore();
+		}
+		expect(closed.sort()).toEqual([0, 1, 2, 2]);
+	}, { width: 1920, height: 1080 }));
 
 test.each(["preview", "export"])("%s video textures retain alpha when a frame surface is reused", (mode) =>
 	withVideo(constantRate(1), async ({ file }) => {

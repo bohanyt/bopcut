@@ -11,12 +11,20 @@ import { getDecodableVideoTrack } from "@/media/video-probe";
 import { fitSurfaceSize } from "@/services/renderer/scale";
 
 type VideoSize = { width: number; height: number };
-type VideoFrame = {
+export type VideoFrame = {
 	canvas: OffscreenCanvas;
 	timestamp: number;
 	sourceWidth: number;
 	sourceHeight: number;
 };
+
+export function videoSurfaceSize(sourceWidth: number, sourceHeight: number, scale: number, maxTextureDimension: number): VideoSize {
+	// Round up in half-octave steps so a zoom animation can reuse the same allocation.
+	const budget = scale >= 1 || !Number.isFinite(scale) ? 1 : 2 ** (Math.ceil(Math.log2(Math.max(0, scale)) * 2) / 2);
+	return budget * Math.max(sourceWidth, sourceHeight) > maxTextureDimension
+		? fitSurfaceSize(sourceWidth, sourceHeight, maxTextureDimension)
+		: { width: Math.max(1, Math.ceil(sourceWidth * budget)), height: Math.max(1, Math.ceil(sourceHeight * budget)) };
+}
 type VideoRequest = { cursor: VideoCursor; sample: Promise<VideoSample | null> };
 type VideoSource = {
 	input: Input;
@@ -107,16 +115,7 @@ class VideoCursor {
 	rasterize(sample: VideoSample, track: InputVideoTrack, scale: number, maxTextureDimension: number): VideoFrame {
 		const sourceWidth = track.displayWidth;
 		const sourceHeight = track.displayHeight;
-		// Round up in half-octave steps so a zoom animation can reuse the same canvas allocation.
-		const budget = scale >= 1 || !Number.isFinite(scale)
-			? 1
-			: 2 ** (Math.ceil(Math.log2(Math.max(0, scale)) * 2) / 2);
-		const { width, height } = budget * Math.max(sourceWidth, sourceHeight) > maxTextureDimension
-			? fitSurfaceSize(sourceWidth, sourceHeight, maxTextureDimension)
-			: {
-				width: Math.max(1, Math.ceil(sourceWidth * budget)),
-				height: Math.max(1, Math.ceil(sourceHeight * budget)),
-			};
+		const { width, height } = videoSurfaceSize(sourceWidth, sourceHeight, scale, maxTextureDimension);
 		const key = `${width}x${height}`;
 		const cached = this.frames.get(key);
 		if (cached) return cached;

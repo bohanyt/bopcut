@@ -7,6 +7,7 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+import { ExactScrubCache } from "@/services/video-cache/exact-scrub-cache";
 import { previewCanvasSize } from "@/canvas/sizes";
 import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
 import { RecoverableSurfaceError, rendererDevice } from "@/services/renderer/renderer-device";
@@ -154,6 +155,8 @@ function PreviewCanvas({
 	const lastSceneRef = useRef<RootNode | null>(null);
 	const schedulerRef = useRef<ReturnType<typeof createPreviewFrameScheduler> | null>(null);
 	const renderSignalRef = useRef<AbortSignal | null>(null);
+	const scrubDraw = useRef<AbortController | null>(null);
+	const [scrubCache] = useState(() => new ExactScrubCache());
 	const lastRendererRef = useRef<CanvasRenderer | null>(null);
 	const { width: nativeWidth, height: nativeHeight } = usePreviewSize();
 	const viewportSize = useContainerSize({ containerRef: viewportRef });
@@ -201,7 +204,10 @@ function PreviewCanvas({
 		if (!mount) return;
 		const controller = new AbortController();
 		const signal = AbortSignal.any([controller.signal, sessionSignal]);
-		const clearVideo = () => renderer.videoCache.clear();
+		const clearVideo = () => {
+			renderer.videoCache.clear();
+			scrubCache.clear();
+		};
 		signal.addEventListener("abort", clearVideo, { once: true });
 		renderSignalRef.current = signal;
 		lastFrameRef.current = -1;
@@ -214,10 +220,10 @@ function PreviewCanvas({
 			renderSignalRef.current = null;
 			controller.abort();
 		};
-	}, [renderer, sessionSignal]);
+	}, [renderer, scrubCache, sessionSignal]);
 
 	const render = useCallback(() => {
-		if (!renderTree || rendererDevice.status.state !== "ready") return;
+		if (!renderTree || document.hidden || rendererDevice.status.state !== "ready") return;
 		if (lastRendererRef.current !== renderer) {
 			lastRendererRef.current = renderer;
 			lastFrameRef.current = -1;
@@ -239,10 +245,15 @@ function PreviewCanvas({
 			return;
 		}
 
-		const signal = renderSignalRef.current;
-		if (!signal) return;
+		const session = renderSignalRef.current;
+		if (!session || session.aborted || editor.renderer.isExportRunning()) return;
+		const scrub = editor.playback.getIsScrubbing() && !editor.playback.getIsPlaying() ? new AbortController() : null;
+		scrubDraw.current = scrub;
+		const signal = scrub ? AbortSignal.any([session, scrub.signal]) : session;
 		const graphics = rendererDevice.signal;
-		const task = editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
+		const task = scrub
+			? renderer.render({ node: renderTree, time: renderTime, signal, scrubCache })
+			: editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
 		if (!task) return;
 		return task
 			.then(() => {
@@ -260,7 +271,7 @@ function PreviewCanvas({
 					console.error("Preview render failed:", error);
 				}
 			});
-	}, [renderer, renderTree, editor.playback, editor.renderer, editor.timeline]);
+	}, [renderer, renderTree, scrubCache, editor.playback, editor.renderer, editor.timeline]);
 
 	const renderRef = useCommittedRef(render);
 	useEffect(() => {
@@ -275,13 +286,43 @@ function PreviewCanvas({
 			lastFrameRef.current = -1;
 			scheduler.request();
 		};
-		const onVisibility = () => { if (!document.hidden) redraw(); };
+		const clearScrub = () => {
+			scrubDraw.current?.abort();
+			scrubCache.clear();
+		};
+		const onVisibility = () => { if (document.hidden) clearScrub(); else redraw(); };
+		const isPointerScrubbing = () => editor.playback.getIsScrubbing() && !editor.playback.getIsPlaying();
+		let scrubbing = isPointerScrubbing();
+		let scene = editor.scenes.getActiveSceneOrNull()?.id;
+		let assets = editor.media.getAssets();
 		document.addEventListener("visibilitychange", onVisibility);
 		const unsubscribe = [
 			editor.playback.onUpdate(scheduler.playbackTick),
-			editor.playback.onSeek(scheduler.request),
+			editor.playback.onSeek(() => {
+				scrubDraw.current?.abort();
+				scheduler.request();
+			}),
+			editor.playback.subscribeState(() => {
+				const next = isPointerScrubbing();
+				if (scrubbing && !next) {
+					scrubDraw.current?.abort();
+					scrubCache.stop();
+					scheduler.request();
+				}
+				scrubbing = next;
+			}),
+			editor.scenes.subscribe(() => {
+				const next = editor.scenes.getActiveSceneOrNull()?.id;
+				if (scene !== next) clearScrub();
+				scene = next;
+			}),
+			editor.media.subscribe(() => {
+				const next = editor.media.getAssets();
+				if (assets !== next && assets.some((asset) => !next.some((current) => current.id === asset.id && current.file === asset.file))) clearScrub();
+				assets = next;
+			}),
 			editor.renderer.subscribe(scheduler.request),
-			rendererDevice.subscribe(() => { if (rendererDevice.status.state === "ready") redraw(); }),
+			rendererDevice.subscribe(() => { if (rendererDevice.status.state === "ready") redraw(); else clearScrub(); }),
 			modelGraphics.subscribe(() => { if (!modelGraphics.getSnapshot()) redraw(); }),
 		];
 		return () => {
@@ -290,7 +331,7 @@ function PreviewCanvas({
 			document.removeEventListener("visibilitychange", onVisibility);
 			for (const remove of unsubscribe) remove();
 		};
-	}, [editor, renderRef]);
+	}, [editor, renderRef, scrubCache]);
 	useEffect(() => {
 		schedulerRef.current?.request();
 	}, [render, sessionSignal]);

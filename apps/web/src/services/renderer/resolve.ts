@@ -24,6 +24,7 @@ import type { Transform } from "@/rendering";
 import { applyShake, readShakeSettings } from "@/rendering/shake";
 import { waitWithAbort } from "@/utils/abort";
 import type { CanvasRenderer } from "./canvas-renderer";
+import type { ExactScrubCache } from "@/services/video-cache/exact-scrub-cache";
 import type { AnyBaseNode } from "./nodes/base-node";
 import {
 	BlurBackgroundNode,
@@ -58,6 +59,7 @@ type ResolveContext = {
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
+	scrubCache?: ExactScrubCache;
 };
 
 export async function resolveRenderTree({
@@ -65,13 +67,15 @@ export async function resolveRenderTree({
 	renderer,
 	time,
 	signal,
+	scrubCache,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
+	scrubCache?: ExactScrubCache;
 }): Promise<void> {
-	await resolveNode({ node, context: { renderer, time, signal } });
+	await resolveNode({ node, context: { renderer, time, signal, scrubCache } });
 }
 
 async function resolveNode({
@@ -354,19 +358,32 @@ async function resolveVideoNode({
 }
 
 function readVideoFrame(
-	{ mediaId, file }: { mediaId: string; file: File },
+	clip: { mediaId: string; file: File },
 	time: number,
 	context: ResolveContext,
 	getScale: (source: { width: number; height: number }) => number,
 ) {
-	return readMediaSource(mediaId, context, () => context.renderer.videoCache.getFrameAt({
+	const { mediaId, file } = clip;
+	const seconds = mediaTimeToSeconds({ time: roundMediaTime({ time }) });
+	const maxTextureDimension = getRendererLimits().maxTextureDimension ?? Infinity;
+	const readExact = () => context.renderer.videoCache.getFrameAt({
 		file,
-		time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
+		time: seconds,
 		getScale: context.renderer.exactFrames ? undefined : getScale,
-		maxTextureDimension: getRendererLimits().maxTextureDimension,
+		maxTextureDimension,
 		throwOnSeekError: context.renderer.strictVideoDecoding,
 		signal: context.signal,
-	}));
+	});
+	const scrubCache = context.scrubCache;
+	return readMediaSource(mediaId, context, scrubCache ? async () => {
+		try {
+			const cached = await scrubCache.getFrameAt(file, clip, seconds, { getScale, maxTextureDimension, signal: context.signal });
+			if (cached) return cached;
+		} catch {
+			context.signal?.throwIfAborted();
+		}
+		return readExact();
+	} : readExact);
 }
 
 async function readMediaSource<T>(
