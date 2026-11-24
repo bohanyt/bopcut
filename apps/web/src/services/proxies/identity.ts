@@ -1,5 +1,5 @@
-export const proxyProfile = "p1-v3";
-export const cachedProxyKey = /^[a-f0-9]{64}-p1-v[123]$/;
+export const proxyProfile = "p1-v4";
+export const cachedProxyKey = /^[a-f0-9]{64}-p1-v[1-4]$/;
 
 export function proxyFingerprintRegions(size: number) {
 	const block = 64 * 1024;

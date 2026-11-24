@@ -15,7 +15,7 @@ function byteSetting(value: string | undefined, fallback: number) {
 const reserve = () => byteSetting(process.env.BOPENCUT_PROXY_FREE_BYTES, 5_000_000_000);
 const limit = () => byteSetting(process.env.BOPENCUT_PROXY_LIMIT_BYTES, 8_000_000_000);
 class LowDisk extends Error {}
-class EncoderFailure extends Error {}
+class EncoderBusy extends Error {}
 export async function fingerprint(file: string) {
 	const input = await fs.open(file, "r");
 	try {
@@ -116,9 +116,11 @@ async function files(dir: string) {
 async function cleanInterruptedJobs(dir: string) {
 	const names = new Set(await fs.readdir(dir));
 	for (const name of names) {
-		const match = /^([a-f0-9]{64}-p1-v[123])\.(mp4|json)$/.exec(name);
+		const key = path.basename(name, path.extname(name));
+		const extension = path.extname(name);
 		if (/^\.job-[a-f0-9-]{36}\.mp4(?:\.json)?$/.test(name) ||
-			(match && !names.has(match[1] + (match[2] === "mp4" ? ".json" : ".mp4")))) {
+			(cachedProxyKey.test(key) && (extension === ".mp4" || extension === ".json") &&
+				!names.has(key + (extension === ".mp4" ? ".json" : ".mp4")))) {
 			const file = path.join(dir, name);
 			if (await proxyFile(file)) await fs.rm(file, { force: true }).catch(() => {});
 		}
@@ -186,7 +188,7 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 	const stream = source.streams[0];
 	const pts = timestamps(source);
 	// This profile is SDR, eight-bit YUV without alpha.
-	if (!stream || !pts || !/^(yuvj?(420|422|444)p|nv12)$/.test(stream.pix_fmt) ||
+	if (!stream || !pts || pts[0] < 0 || !/^(yuvj?420p|nv12)$/.test(stream.pix_fmt) ||
 		stream.tags?.alpha_mode === "1" || ["smpte2084", "arib-std-b67"].includes(stream.color_transfer ?? "")) return;
 	if (stream.sample_aspect_ratio && !["1:1", "N/A"].includes(stream.sample_aspect_ratio)) return;
 	const duration = Number(stream.duration) || pts.at(-1)! - pts[0];
@@ -215,6 +217,7 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 	try {
 		if (!await sameSource(identity)) throw new Error("Proxy source changed before encoding");
 		let success = false;
+		let busy = false;
 		for (const encoder of [...encoders, ...(software ? ["libx264"] : [])]) {
 			const hardware = encoder === "h264_nvenc" ? [["-hwaccel", "cuda"], []] : encoder === "libx264" ? [[]] : [["-hwaccel", "auto"], []];
 			for (const decode of hardware) {
@@ -229,11 +232,18 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 						"-c:v", encoder, ...quality, "-g", encoder === "h264_nvenc" ? "0" : "1", "-bf", "0", "-fs", String(maxBytes), "-movflags", "+faststart", temp], temp, signal);
 					success = true;
 					break;
-				} catch { signal.throwIfAborted(); }
+				} catch (error) {
+					signal.throwIfAborted();
+					const stderr = (error as { stderr?: string })?.stderr ?? "";
+					busy ||= /temporarily unavailable|encoder is busy|too many (sessions|concurrent)|out of memory|no free (session|encoder)/i.test(stderr);
+				}
 			}
 			if (success) break;
 		}
-		if (!success) throw new EncoderFailure();
+		if (!success) {
+			if (busy) throw new EncoderBusy();
+			throw new Error("No working proxy encoder");
+		}
 		if (!await sameSource(identity)) throw new Error("Proxy source changed during encoding");
 		const stat = await fs.stat(temp);
 		if (stat.size >= maxBytes) throw new LowDisk();
@@ -275,7 +285,6 @@ type Job = { session: Session; id: string; revision: number; source?: Source; co
 const sessions = new Map<string, Session>();
 const pauses = new Set<symbol>();
 const failures = new Set<string>();
-const retried = new Set<string>();
 let active: Job | undefined;
 let running = false;
 let needsPump = false;
@@ -436,9 +445,7 @@ async function pump() {
 			} catch (error) {
 				if (job.controller.signal.aborted || !usesJob(session, job)) continue;
 				const key = job.source?.key;
-				if (error instanceof EncoderFailure && key && !retried.has(key)) {
-					if (retried.size >= 1024) retried.delete(retried.values().next().value!);
-					retried.add(key);
+				if (error instanceof EncoderBusy) {
 					capabilities = undefined;
 					blocked.add(session);
 					retryLater();
