@@ -11,7 +11,7 @@ const { installAgentBridge, pollExport } = await import("./bridge");
 const { snapshotHistory } = await import("./history");
 const graphics = await import("@/services/renderer/renderer-device");
 const { rendererDevice } = graphics;
-const { storageService } = await import("@/services/storage/service");
+const { storageService, normalizeBookmarks } = await import("@/services/storage/service");
 
 const T = (seconds: number) => mediaTimeFromSeconds({ seconds });
 const date = new Date(0);
@@ -73,7 +73,7 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 			if (url === "/api/agent/frames-request") return Response.json({ rev: "frame-test", compare, times });
 			if (url === "/api/agent/frame") {
 				uploads.push(init?.body as FormData);
-				return Response.json({ file: `frame-${uploads.length}.jpg` });
+				return Response.json({ file: `frame-${uploads.length}.jpg`, ...(uploads.at(-1)?.has("crop") && { crop: "note-crop.jpg" }) });
 			}
 			if (url === "/api/agent/frames-result") {
 				const result = JSON.parse(init?.body as string);
@@ -92,7 +92,7 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 		},
 		localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) },
 		createImageBitmap: async () => ({ ...imageSize, close() {} }),
-		document: { createElement: () => ({ getContext: () => ({ drawImage }), toBlob: (done: (blob: Blob) => void) => done(new Blob(["jpeg"])) }) },
+		document: { createElement: () => ({ getContext: () => ({ drawImage, strokeRect() {} }), toBlob: (done: (blob: Blob) => void) => done(new Blob(["jpeg"])) }) },
 	};
 	for (const [key, value] of Object.entries(globals)) {
 		const original = Object.getOwnPropertyDescriptor(globalThis, key);
@@ -107,6 +107,30 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
 	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 	EditorCore.reset();
+});
+
+test("an area note captures its own scene and uploads the annotated frame and clean crop together", async () => {
+	const { editor, scenes, uploads, results, render, drawImage } = setup({ pauseAt: "" });
+	const box = { x: 0.25, y: 0.25, width: 0.5, height: 0.25 };
+	const compound = { ...scenes[1], kind: "compound" as const, bookmarks: [{ id: "area", note: "Smaller", time: T(1), box }] };
+	editor.scenes.setScenes({ scenes: [scenes[0], compound], activeSceneId: "a" });
+	await pollFrames(() => ({ ready: true, missingMedia: [] }), Response.json({ rev: "area-frame", noteId: "area", sceneId: "b" }));
+	expect(render.mock.calls[0][0]).toMatchObject({ time: T(1), sceneId: "b" });
+	expect(uploads[0].get("crop")).toBeInstanceOf(Blob);
+	expect(drawImage.mock.calls[1].slice(1)).toEqual([480, 270, 960, 270, 0, 0, 768, 216]);
+	expect(results).toEqual([{ rev: "area-frame", projectId: "p", files: ["frame-1.jpg"], crop: "note-crop.jpg", box }]);
+});
+
+test("creating an area note is one undoable edit and old bookmarks still load", async () => {
+	const { editor } = setup();
+	const time = T(1);
+	const box = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 };
+	await editor.scenes.updateBookmark({ time, create: true, updates: { box, note: "Smaller" } });
+	const saved = editor.scenes.getActiveScene().bookmarks;
+	expect(normalizeBookmarks({ raw: JSON.parse(JSON.stringify([T(0), ...saved])) }))
+		.toEqual([{ time: T(0) }, { time, box, note: "Smaller" }]);
+	editor.command.undo();
+	expect(editor.scenes.getActiveScene().bookmarks).toEqual([]);
 });
 
 test("a render-only core hydrates a saved project without opening a save session or installing the bridge", async () => {

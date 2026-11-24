@@ -26,6 +26,7 @@ import { usePreviewStore } from "@/preview/preview-store";
 import { previewQualityScale } from "@/preview/quality";
 import { createPreviewFrameScheduler } from "@/preview/frame-scheduler";
 import { PreviewToolbar } from "./toolbar";
+import { BookmarkAreaLayer } from "./bookmark-area";
 import {
 	PreviewViewportProvider,
 	PreviewFramingProvider,
@@ -422,6 +423,7 @@ function PreviewCanvas({
 									instances={overlayInstances}
 									plane="over-interaction"
 								/>
+								<BookmarkAreaLayer />
 							</div>
 						</ContextMenuTrigger>
 						<PreviewContextMenu

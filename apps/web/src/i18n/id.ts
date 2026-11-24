@@ -290,6 +290,8 @@ export const id = {
 	"assets.video": "Video",
 
 	"bookmark.addNote": "Tambahkan catatan...",
+	"bookmark.pointArea": "Tunjuk area gambar",
+	"bookmark.resizeArea": "Ubah ukuran area catatan",
 	"bookmark.agent": "Agen",
 	"bookmark.agentNote": "Catatan agen di {time} dtk",
 	"bookmark.author": "{author}:",

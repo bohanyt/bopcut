@@ -11,7 +11,7 @@
 **Work with an agent**
 - **The agent can read the timeline.** Each change is written to the workspace as JSON, including tracks, items, times, positions, and notes.
 - **The agent can edit the timeline.** It sends per-item additions, updates, and deletions. The editor applies them in about two seconds as **one Undo step** and selects the affected items.
-- **Two-way notes.** Leave a note on a range or an item. The agent can read, reply to, and resolve it.
+- **Two-way notes.** Leave a note on a range or an item, or draw a box on the preview. The agent can read, reply to, and resolve it.
 - **Frame images.** The agent can request an image of a frame at any time.
 - **Fetch a video segment from a link.** Give a link and start and end times, such as a 20-second segment from a three-hour stream. yt-dlp fetches just that segment with frame-accurate cuts. Use an agent draft, the CLI, or the link button in the Assets panel.
 - **Find sound effects by name.** Search your own sound folders and Myinstants without an account. Use the Library tab in the Sounds panel, or put `sfx: "vine boom"` in an agent draft. Downloaded sounds become part of your library.

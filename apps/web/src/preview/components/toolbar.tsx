@@ -24,6 +24,7 @@ import {
 import { PREVIEW_ZOOM_PRESETS } from "@/preview/zoom";
 import { usePreviewViewport } from "./preview-viewport";
 import { GridPopover } from "./guide-popover";
+import { BookmarkAreaButton } from "./bookmark-area";
 import { usePreviewStore } from "@/preview/preview-store";
 import { isPreviewQuality } from "@/preview/quality";
 import { formatMediaTimecode, type MediaTime } from "@/wasm";
@@ -51,6 +52,7 @@ export function PreviewToolbar({
 			<div className="justify-self-end flex items-center gap-2.5">
 				<QualitySelect />
 				<ZoomSelect />
+				<BookmarkAreaButton />
 				<Separator orientation="vertical" className="h-4" />
 				{/* v0.4.0 */}
 				{/* <GridPopover>

@@ -14,17 +14,21 @@ export class UpdateBookmarkCommand extends Command {
 	constructor({
 		time,
 		updates,
+		create = false,
 	}: {
 		time: MediaTime;
 		updates: Partial<Omit<Bookmark, "time">>;
+		create?: boolean;
 	}) {
 		super();
 		this.time = time;
 		this.updates = updates;
+		this.create = create;
 	}
 
 	private time: MediaTime;
 	private updates: Partial<Omit<Bookmark, "time">>;
+	private create: boolean;
 
 	execute(): CommandResult | undefined {
 		const editor = EditorCore.getInstance();
@@ -43,11 +47,14 @@ export class UpdateBookmarkCommand extends Command {
 			fps: activeProject.settings.fps,
 		});
 
-		const updatedBookmarks = updateBookmarkInArray({
+		let updatedBookmarks = updateBookmarkInArray({
 			bookmarks: activeScene.bookmarks,
 			frameTime,
 			updates: this.updates,
 		});
+		if (updatedBookmarks === activeScene.bookmarks && this.create) {
+			updatedBookmarks = [...updatedBookmarks, { ...this.updates, time: frameTime }].sort((a, b) => a.time - b.time);
+		}
 
 		const updatedScenes = updateSceneInArray({
 			scenes,

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
 import type { BookmarkDragState } from "../hooks/use-bookmark-drag";
+import { areaTarget, startBookmarkArea, useBookmarkArea } from "../area-state";
 import { DEFAULT_TIMELINE_BOOKMARK_COLOR } from "@/timeline/components/theme";
 import { TIMELINE_BOOKMARK_ROW_HEIGHT_PX } from "@/timeline/components/layout";
 import { DEFAULT_FPS } from "@/fps/defaults";
@@ -140,6 +141,16 @@ function TimelineBookmark({
 	const editor = useEditor();
 	const duration = editor.timeline.getTotalDuration();
 	const [isPopoverOpen, setIsPopoverOpen] = useState(false);
+	const [hovered, setHovered] = useState(false);
+	useEffect(() => {
+		if ((!hovered && !isPopoverOpen) || !bookmark.box) return;
+		const shown = { ...areaTarget(editor, bookmark.time), bookmark };
+		const field = isPopoverOpen ? "shown" : "hovered";
+		useBookmarkArea.setState({ [field]: shown });
+		return () => {
+			if (useBookmarkArea.getState()[field] === shown) useBookmarkArea.setState({ [field]: null });
+		};
+	}, [editor, hovered, isPopoverOpen, bookmark]);
 
 	const isDragging =
 		dragState.isDragging &&
@@ -197,6 +208,10 @@ function TimelineBookmark({
 						time: formatNumberForDisplay({ value: mediaTimeToSeconds({ time }), fractionDigits: 1 }),
 					})}
 					type="button"
+					onPointerEnter={() => setHovered(true)}
+					onPointerLeave={() => setHovered(false)}
+					onFocus={() => setHovered(true)}
+					onBlur={() => setHovered(false)}
 					onPointerDown={(event) => event.stopPropagation()}
 					onMouseDown={handleMouseDown}
 					onClick={handleClick}
@@ -280,7 +295,13 @@ function TimelineBookmark({
 				align="start"
 				side="bottom"
 				sideOffset={8}
-				onOpenAutoFocus={(event) => event.preventDefault()}
+				onOpenAutoFocus={(event) => {
+					event.preventDefault();
+					if (bookmark.box) {
+						editor.playback.pause();
+						handleSeek();
+					}
+				}}
 			>
 				<BookmarkPopoverContent
 					bookmark={bookmark}
@@ -434,6 +455,10 @@ function BookmarkPopoverContent({
 			{bookmark.replies?.map((reply) => <div key={reply.id} className="text-xs"><strong>{t("bookmark.author", { author: t(reply.author === "agent" ? "bookmark.agent" : "bookmark.user") })}</strong> {reply.text}</div>)}
 			{bookmark.note && <Button type="button" variant="outline" size="sm" onClick={() => editor.scenes.updateBookmark({ time, updates: { resolved: !bookmark.resolved } })}>{bookmark.resolved ? t("bookmark.reopen") : t("bookmark.resolve")}</Button>}
 			{bookmark.author === "agent" && <span className="text-xs">{t("bookmark.agent")}</span>}
+			<Button type="button" variant="outline" size="sm" onClick={() => {
+				onPopoverClose();
+				startBookmarkArea(editor, time);
+			}}>{t("bookmark.pointArea")}</Button>
 			<Button
 				type="button"
 				variant="outline"

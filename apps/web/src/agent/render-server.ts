@@ -319,12 +319,18 @@ async function publish(job: Job, req: Request, url: URL, workspace: string, sign
 			const form = await body().formData();
 			if (job.finishing || job.framesPromoted) return json(null, { status: 409 });
 			const time = form.get("time"), image = form.get("image");
+			const crop = form.get("crop");
 			if (form.get("rev") !== job.rev || typeof time !== "string" || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(time) ||
 				!(image instanceof File) || image.type !== "image/jpeg" || form.has("variant")) return json({ error: "Invalid frame" }, { status: 400 });
+			if (crop !== null && (!(crop instanceof File) || crop.type !== "image/jpeg" || !job.request.noteId)) return json({ error: "Invalid crop" }, { status: 400 });
 			signal.throwIfAborted();
 			if (job.owner !== "hidden") job.heartbeat();
 			reportStage("saving");
 			await atomicWrite(path.join(job.scratch, "frames", `${time}.jpg`), new Uint8Array(await image.arrayBuffer()), signal);
+			if (crop instanceof File) {
+				await atomicWrite(path.join(job.scratch, "frames", `${time}-crop.jpg`), new Uint8Array(await crop.arrayBuffer()), signal);
+				return json({ file: `frames/${job.rev}/${time}.jpg`, crop: `frames/${job.rev}/${time}-crop.jpg` });
+			}
 			return json({ file: `frames/${job.rev}/${time}.jpg` });
 		}
 		if (job.kind === "frames" && action === "frames-result") {

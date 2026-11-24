@@ -18,6 +18,7 @@ import { rendererDevice } from "@/services/renderer/renderer-device";
 import { parseSourceWords, type SourceWord } from "@/media/words";
 import { toast } from "sonner";
 import { pollFrames } from "./frames";
+import { snapshotNotes } from "./notes";
 import { loadIcon } from "@/stickers/providers/iconify";
 import { createEditLogger, type EditSnapshot } from "./edit-log";
 import { type AgentElement, type LoadedMedia, assetKey, existingAgentMedia, loadAgentAsset } from "./elements";
@@ -136,7 +137,7 @@ export function agentSnapshot() {
 		canvas: project.settings.canvasSize, fps: project.settings.fps,
 		note: "Times are in seconds. transform.positionX/Y = pixels from the canvas center. Overlay index 0 = topmost. Inside compounds, start/end are relative to the compound's content; visible = intervals in the root timeline.",
 		sceneId: scene.id, activeSceneId: active.id,
-		notes: scene.bookmarks.filter((b) => b.note?.trim()).map((b) => ({ id: b.id ?? `legacy-${b.time}`, text: b.note, start: s(b.time), ...(b.duration ? { end: s(b.time + b.duration) } : {}), elementIds: b.elementIds ?? [], replies: b.replies ?? [], author: b.author ?? "user", resolved: b.resolved ?? false, createdAt: b.createdAt ?? null })),
+		notes: snapshotNotes(scene, editor.scenes.getScenes(), project.settings.canvasSize, editor.media.getAssets()),
 		tracks: view.tracks,
 		compounds: view.compounds,
 		selection: agentSelection(view),

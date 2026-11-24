@@ -288,6 +288,8 @@ export const en = {
 	"assets.video": "Video",
 
 	"bookmark.addNote": "Add a note...",
+	"bookmark.pointArea": "Point at an area",
+	"bookmark.resizeArea": "Resize note area",
 	"bookmark.agent": "Agent",
 	"bookmark.agentNote": "Agent note at {time}s",
 	"bookmark.author": "{author}:",

@@ -2,6 +2,7 @@ import { getBrowserTranslator } from "@/i18n/browser";
 import type { TProject, TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import type { MediaAsset, MediaLoadFailure } from "@/media/types";
+import { normalizeBookmarkBox } from "@/timeline/bookmarks/area";
 import { recordMediaFileVersion } from "./media-file-version";
 import { parseMediaThumbnailReference } from "./media-thumbnail-reference";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
@@ -53,7 +54,7 @@ function deserializeSummary({ metadata, version }: ProjectSummary): TProjectMeta
 	return deserializeMetadata(metadata, version < 23 ? duration * TICKS_PER_SECOND : duration);
 }
 
-function normalizeBookmarks({ raw }: { raw: unknown }): Bookmark[] {
+export function normalizeBookmarks({ raw }: { raw: unknown }): Bookmark[] {
 	if (!Array.isArray(raw)) return [];
 	return raw
 		.map((item): Bookmark | null => {
@@ -68,8 +69,10 @@ function normalizeBookmarks({ raw }: { raw: unknown }): Bookmark[] {
 			) {
 				return null;
 			}
+			const box = normalizeBookmarkBox(obj.box);
 			return {
 				time: roundMediaTime({ time: obj.time }),
+				...(box && { box }),
 				...(typeof obj.id === "string" && { id: obj.id }),
 				...((obj.author === "user" || obj.author === "agent") && { author: obj.author }),
 				...(typeof obj.resolved === "boolean" && { resolved: obj.resolved }),
