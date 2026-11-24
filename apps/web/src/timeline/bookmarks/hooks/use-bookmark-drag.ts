@@ -52,7 +52,6 @@ export function useBookmarkDrag({
 	const tracks = editor.scenes.getActiveScene().tracks;
 	const activeScene = editor.scenes.getActiveScene();
 	const bookmarks = activeScene?.bookmarks ?? [];
-	const playheadTime = editor.playback.getCurrentTime();
 	const duration = editor.timeline.getTotalDuration();
 
 	const [dragState, setDragState] = useState<BookmarkDragState>({
@@ -105,7 +104,7 @@ export function useBookmarkDrag({
 			const snapPoints = buildTimelineSnapPoints({
 				sources: [
 					() => getElementEdgeSnapPoints({ tracks }),
-					() => getPlayheadSnapPoints({ playheadTime }),
+					() => getPlayheadSnapPoints({ playheadTime: editor.playback.getCurrentTime() }),
 					() => getBookmarkSnapPoints({ bookmarks, excludeBookmarkTime }),
 					() => getAnimationKeyframeSnapPointsForTimeline({ tracks }),
 				],
@@ -123,7 +122,7 @@ export function useBookmarkDrag({
 		[
 			snappingEnabled,
 			tracks,
-			playheadTime,
+			editor,
 			bookmarks,
 			zoomLevel,
 			isShiftHeldRef,

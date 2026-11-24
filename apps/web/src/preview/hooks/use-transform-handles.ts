@@ -4,6 +4,7 @@ import type { OnSnapLinesChange } from "@/preview/hooks/use-preview-interaction"
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
+import type { ElementWithBounds } from "@/preview/element-bounds";
 import {
 	TransformHandleController,
 	type TransformHandleDeps,
@@ -17,26 +18,17 @@ export function useTransformHandles({
 	const viewport = usePreviewViewport();
 	const editor = useEditor();
 	const isShiftHeldRef = useShiftKey();
-	const selectedElements = useEditor((e) => e.selection.getSelectedElements());
-	const tracks = useEditor(
-		(e) => e.timeline.getPreviewTracks() ?? e.scenes.getActiveScene().tracks,
-	);
-	const currentTime = useEditor((e) => e.playback.getCurrentTime());
-	const mediaAssets = useEditor((e) => e.media.getAssets());
-	const canvasSize = useEditor(
-		(e) => e.project.getActive().settings.canvasSize,
-	);
 	const deps: TransformHandleDeps = {
 		viewport,
 		input: {
 			isShiftHeld: () => isShiftHeldRef.current,
 		},
 		scene: {
-			getSelectedElements: () => selectedElements,
-			getTracks: () => tracks,
-			getCurrentTime: () => currentTime,
-			getMediaAssets: () => mediaAssets,
-			getCanvasSize: () => canvasSize,
+			getSelectedElements: () => editor.selection.getSelectedElements(),
+			getTracks: () => editor.timeline.getPreviewTracks() ?? editor.scenes.getActiveScene().tracks,
+			getCurrentTime: () => editor.playback.getCurrentTime(),
+			getMediaAssets: () => editor.media.getAssets(),
+			getCanvasSize: () => editor.project.getActive().settings.canvasSize,
 		},
 		timeline: {
 			previewElements: (updates) =>
@@ -58,12 +50,23 @@ export function useTransformHandles({
 
 	useEffect(() => () => controller.destroy(), [controller]);
 
-	const selectedWithBounds = controller.selectedWithBounds;
-	const hasVisualSelection = selectedWithBounds !== null;
+	const selection = useEditor(() => {
+		const entry = controller.selectedWithBounds;
+		if (!entry) return null;
+		const { cx, cy, width, height, rotation } = entry.bounds;
+		return [entry.trackId, entry.elementId, entry.element, cx, cy, width, height, rotation] as const;
+	});
+	let selectedWithBounds: ElementWithBounds | null = null;
+	if (selection) {
+		const [trackId, elementId, element, cx, cy, width, height, rotation] = selection;
+		selectedWithBounds = {
+			trackId, elementId, element, bounds: { cx, cy, width, height, rotation },
+		};
+	}
 
 	return {
 		selectedWithBounds,
-		hasVisualSelection,
+		hasVisualSelection: selectedWithBounds !== null,
 		activeHandle: controller.activeHandle,
 		handleCornerPointerDown: controller.onCornerPointerDown,
 		handleEdgePointerDown: controller.onEdgePointerDown,

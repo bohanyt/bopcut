@@ -9,6 +9,7 @@ import { defaultExportName, parseExportRequest } from "./export";
 import type { ExportResult } from "@/export";
 import type { MediaLoadFailure } from "@/media/types";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
+import { createSelectionWriter } from "./selection-writer";
 import { EditorCore } from "@/core";
 import { calculateTotalDuration } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
@@ -152,14 +153,17 @@ export function agentSelection(view?: ReturnType<typeof buildSceneSnapshot>) {
 	const active = editor.scenes.getActiveSceneOrNull();
 	const scene = agentRootScene();
 	if (!project || !active || !scene) return null;
+	const refs = editor.selection.getSelectedElements();
+	const location = { projectId: project.metadata.id, sceneId: scene.id, activeSceneId: active.id, playhead: s(editor.playback.getCurrentTime()) };
+	if (refs.length === 0) return { ...location, selected: [] };
 	const snapshot = view ?? buildSceneSnapshot({ scenes: editor.scenes.getScenes(), rootSceneId: scene.id, mediaName: mediaNames(), wordsOf: mediaWords() });
 	const lanes = active.id === scene.id ? snapshot.tracks : (snapshot.compounds.find((c) => c.sceneId === active.id)?.tracks ?? []);
-	const selected = editor.selection.getSelectedElements().flatMap(({ trackId, elementId }) => {
+	const selected = refs.flatMap(({ trackId, elementId }) => {
 		const lane = lanes.find((l) => l.id === trackId);
 		const element = lane?.elements.find((e) => e.id === elementId);
 		return element && lane ? [{ ...element, track: { id: lane.id, name: lane.name, type: lane.type } }] : [];
 	});
-	return { projectId: project.metadata.id, sceneId: scene.id, activeSceneId: active.id, playhead: s(editor.playback.getCurrentTime()), selected };
+	return { ...location, selected };
 }
 
 function editSnapshot(): EditSnapshot | null {
@@ -200,22 +204,21 @@ export function installAgentBridge() {
 	editor.timeline.subscribe(push);
 	editor.scenes.subscribe(push);
 	// selection.json: what the user points at, written shortly after the selection or the playhead settles.
-	let selectionTimer: ReturnType<typeof setTimeout> | undefined;
-	let lastSelection = "";
-	const pushSelection = () => {
-		clearTimeout(selectionTimer);
-		selectionTimer = setTimeout(() => {
-			// No open project: an empty selection, so an agent never acts on a closed project's selection.
-			const body = JSON.stringify(agentSelection() ?? NO_SELECTION);
-			if (body === lastSelection) return;
-			lastSelection = body;
-			fetch("/api/agent/selection", { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {
-				lastSelection = "";
+	const { schedule: pushSelection } = createSelectionWriter({
+		isScrubbing: () => editor.playback.getIsScrubbing(),
+		readBody: () => JSON.stringify(agentSelection() ?? NO_SELECTION),
+		send: async (body) => {
+			const response = await fetch("/api/agent/selection", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body,
 			});
-		}, 250);
-	};
+			if (!response.ok) throw new Error("Could not sync agent selection");
+		},
+	});
 	editor.selection.subscribe(pushSelection);
-	editor.playback.subscribe(pushSelection);
+	editor.playback.subscribeState(pushSelection);
+	editor.playback.onSeek(pushSelection);
 	editor.timeline.subscribe(pushSelection);
 	editor.scenes.subscribe(pushSelection);
 	editor.project.subscribe(pushSelection);

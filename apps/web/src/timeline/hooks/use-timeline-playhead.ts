@@ -2,13 +2,10 @@ import { useEffect, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
-import { useEdgeAutoScroll } from "@/timeline/hooks/use-edge-auto-scroll";
-import { timelineTimeToPixels } from "@/timeline";
 import {
 	PlayheadController,
 	type PlayheadConfig,
 } from "@/timeline/controllers/playhead-controller";
-import type { MediaTime } from "@/wasm";
 
 interface UseTimelinePlayheadProps {
 	zoomLevel: number;
@@ -27,13 +24,12 @@ export function useTimelinePlayhead({
 }: UseTimelinePlayheadProps) {
 	const editor = useEditor();
 	const isShiftHeldRef = useShiftKey();
-	// isScrubbing drives useEdgeAutoScroll — the controller sets it on the editor,
-	// so this reactive read naturally reflects whether scrubbing is active.
-	const isScrubbing = useEditor((e) => e.playback.getIsScrubbing());
-
 	const config: PlayheadConfig = {
 		zoomLevel,
-		duration: editor.timeline.getTotalDuration(),
+		getDuration: () => editor.timeline.getTotalDuration(),
+		getProjectSession: () => editor.project.getSession(),
+		getSceneId: () => editor.scenes.getActiveSceneOrNull()?.id,
+		getCurrentTime: () => editor.playback.getCurrentTime(),
 		getActiveProjectFps: () => editor.project.getActive()?.settings.fps ?? null,
 		isShiftHeld: () => isShiftHeldRef.current,
 		getIsPlaying: () => editor.playback.getIsPlaying(),
@@ -62,39 +58,42 @@ export function useTimelinePlayhead({
 	useEffect(() => {
 		const scrollEl = rulerScrollRef.current;
 		if (!scrollEl) return;
-		const handler = () =>
-			ctrl.updatePlayheadLeft(editor.playback.getCurrentTime());
+		const handler = () => {
+			if (!editor.playback.getIsScrubbing() || ctrl.isActive) {
+				ctrl.handleScroll(editor.playback.getCurrentTime());
+			}
+		};
 		scrollEl.addEventListener("scroll", handler, { passive: true });
 		return () => scrollEl.removeEventListener("scroll", handler);
 	}, [ctrl, editor.playback, rulerScrollRef]);
 
 	// Playback events → update playhead position and auto-scroll during playback.
 	useEffect(() => {
-		const handler = (time: MediaTime) => ctrl.handlePlaybackUpdate(time);
 		ctrl.updatePlayheadLeft(editor.playback.getCurrentTime());
-		const unsubscribeUpdate = editor.playback.onUpdate(handler);
-		const unsubscribeSeek = editor.playback.onSeek(handler);
+		const unsubscribeUpdate = editor.playback.onUpdate((time) =>
+			ctrl.handlePlaybackUpdate(time, editor.playback.getIsScrubbing()),
+		);
+		const unsubscribeSeek = editor.playback.onSeek((time) =>
+			ctrl.handlePlaybackUpdate(time, editor.playback.getIsScrubbing()),
+		);
 		return () => {
 			unsubscribeUpdate();
 			unsubscribeSeek();
 		};
 	}, [ctrl, editor.playback]);
 
-	useEdgeAutoScroll({
-		isActive: isScrubbing,
-		getMouseClientX: () => ctrl.getLastMouseClientX(),
-		rulerScrollRef,
-		tracksScrollRef,
-		contentWidth: timelineTimeToPixels({
-			time: editor.timeline.getTotalDuration(),
-			zoomLevel,
-		}),
-	});
-
-	useEffect(() => () => ctrl.destroy(), [ctrl]);
+	useEffect(() => {
+		const stopScene = editor.scenes.subscribe(ctrl.stopIfScopeChanged);
+		const stopProject = editor.project.subscribe(ctrl.stopIfScopeChanged);
+		return () => {
+			stopScene();
+			stopProject();
+			ctrl.destroy();
+		};
+	}, [ctrl, editor]);
 
 	return {
-		handlePlayheadMouseDown: ctrl.onPlayheadMouseDown,
-		handleRulerMouseDown: ctrl.onRulerMouseDown,
+		handlePlayheadPointerDown: ctrl.onPlayheadPointerDown,
+		handleRulerPointerDown: ctrl.onRulerPointerDown,
 	};
 }

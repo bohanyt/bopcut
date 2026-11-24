@@ -354,7 +354,7 @@ export function Timeline() {
 		onSnapPointChange: handleSnapPointChange,
 	});
 
-	const { handleRulerMouseDown: handlePlayheadRulerMouseDown } =
+	const { handleRulerPointerDown: handlePlayheadRulerPointerDown } =
 		useTimelinePlayhead({
 			zoomLevel,
 			rulerRef,
@@ -526,8 +526,8 @@ export function Timeline() {
 								tracksScrollRef={rulerScrollRef}
 								handleWheel={handleWheel}
 								handleTimelineContentClick={handleRulerClick}
-								handleRulerTrackingMouseDown={handleRulerMouseDown}
-								handleRulerMouseDown={handlePlayheadRulerMouseDown}
+								handleRulerTrackingPointerDown={handleRulerMouseDown}
+								handleRulerPointerDown={handlePlayheadRulerPointerDown}
 							/>
 							<TimelineBookmarksRow
 								zoomLevel={zoomLevel}
@@ -536,8 +536,8 @@ export function Timeline() {
 								onBookmarkMouseDown={handleBookmarkMouseDown}
 								handleWheel={handleWheel}
 								handleTimelineContentClick={handleRulerClick}
-								handleRulerTrackingMouseDown={handleRulerMouseDown}
-								handleRulerMouseDown={handlePlayheadRulerMouseDown}
+								handleRulerTrackingPointerDown={handleRulerMouseDown}
+								handleRulerPointerDown={handlePlayheadRulerPointerDown}
 							/>
 						</div>
 					</div>

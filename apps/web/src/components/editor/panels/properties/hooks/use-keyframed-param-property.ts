@@ -35,6 +35,7 @@ export function useKeyframedParamProperty({
 	animations,
 	propertyPath,
 	localTime,
+	getLocalTime,
 	isPlayheadWithinElementRange,
 	resolvedValue,
 	buildBaseUpdates,
@@ -45,6 +46,7 @@ export function useKeyframedParamProperty({
 	animations: ElementAnimations | undefined;
 	propertyPath?: AnimationPath;
 	localTime: MediaTime;
+	getLocalTime: () => MediaTime;
 	isPlayheadWithinElementRange: boolean;
 	resolvedValue: number | string | boolean;
 	buildBaseUpdates: ({
@@ -135,7 +137,7 @@ export function useKeyframedParamProperty({
 					trackId,
 					elementId,
 					propertyPath: resolvedPropertyPath,
-					time: localTime,
+					time: hasAnimatedKeyframes ? localTime : getLocalTime(),
 					value: resolvedValue,
 				},
 			],

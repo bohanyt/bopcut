@@ -1,6 +1,6 @@
 "use client";
 
-import { resolveAnimationPathValueAtTime } from "@/animation";
+import { hasKeyframesForPath, resolveAnimationPathValueAtTime } from "@/animation";
 import { Section, SectionContent, SectionFields } from "@/components/section";
 import { useElementPlayhead } from "@/components/editor/panels/properties/hooks/use-element-playhead";
 import { useKeyframedParamProperty } from "@/components/editor/panels/properties/hooks/use-keyframed-param-property";
@@ -13,7 +13,6 @@ import {
 	type ElementParamDefinition,
 } from "@/params/registry";
 import type { TimelineElement } from "@/timeline";
-import type { MediaTime } from "@/wasm";
 
 export function ElementParamsTab({
 	element,
@@ -26,10 +25,6 @@ export function ElementParamsTab({
 	paramKeys?: readonly string[];
 	sectionKey: string;
 }) {
-	const { localTime, isPlayheadWithinElementRange } = useElementPlayhead({
-		startTime: element.startTime,
-		duration: element.duration,
-	});
 	const params = getElementParams({ element }).filter(
 		(param) => !paramKeys || paramKeys.includes(param.key),
 	);
@@ -48,8 +43,6 @@ export function ElementParamsTab({
 								trackId={trackId}
 								param={param}
 								baseValue={baseValues[param.key] ?? param.default}
-								localTime={localTime}
-								isPlayheadWithinElementRange={isPlayheadWithinElementRange}
 							/>
 						))}
 				</SectionFields>
@@ -63,16 +56,18 @@ function ElementParamField({
 	trackId,
 	param,
 	baseValue,
-	localTime,
-	isPlayheadWithinElementRange,
 }: {
 	element: TimelineElement;
 	trackId: string;
 	param: ElementParamDefinition;
 	baseValue: ParamValue;
-	localTime: MediaTime;
-	isPlayheadWithinElementRange: boolean;
 }) {
+	const { localTime, isPlayheadWithinElementRange, getLocalTime } = useElementPlayhead({
+		startTime: element.startTime,
+		duration: element.duration,
+		hasKeyframes: hasKeyframesForPath({ animations: element.animations, propertyPath: param.key }),
+		keyframable: param.keyframable,
+	});
 	const resolvedValue = resolveAnimationPathValueAtTime({
 		animations: element.animations,
 		propertyPath: param.key,
@@ -86,6 +81,7 @@ function ElementParamField({
 		animations: element.animations,
 		propertyPath: param.key,
 		localTime,
+		getLocalTime,
 		isPlayheadWithinElementRange,
 		resolvedValue,
 		buildBaseUpdates: ({ value }) =>

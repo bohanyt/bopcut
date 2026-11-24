@@ -27,7 +27,10 @@ export function TextEditOverlay({
 	onCommit: () => void;
 }) {
 	const { t } = useI18n();
-	const editor = useEditor();
+	const canvasSize = useEditor((editor) => editor.project.getActive().settings.canvasSize);
+	const currentTime = useEditor((editor) =>
+		element.animations ? editor.playback.getCurrentTime() : element.startTime,
+	);
 	const viewport = usePreviewViewport();
 	const divRef = useRef<HTMLDivElement>(null);
 
@@ -60,11 +63,8 @@ export function TextEditOverlay({
 		[onCommit],
 	);
 
-	const canvasSize = editor.project.getActive().settings.canvasSize;
-
 	if (!canvasSize) return null;
 
-	const currentTime = editor.playback.getCurrentTime();
 	const localTime = getElementLocalTime({
 		timelineTime: currentTime,
 		elementStartTime: element.startTime,

@@ -67,8 +67,8 @@ interface TimelineBookmarksRowProps {
 	}) => void;
 	handleWheel: (event: React.WheelEvent) => void;
 	handleTimelineContentClick: (event: React.MouseEvent) => void;
-	handleRulerTrackingMouseDown: (event: React.MouseEvent) => void;
-	handleRulerMouseDown: (event: React.MouseEvent) => void;
+	handleRulerTrackingPointerDown: (event: React.PointerEvent) => void;
+	handleRulerPointerDown: (event: React.PointerEvent) => void;
 }
 
 export function TimelineBookmarksRow({
@@ -78,8 +78,8 @@ export function TimelineBookmarksRow({
 	onBookmarkMouseDown,
 	handleWheel,
 	handleTimelineContentClick,
-	handleRulerTrackingMouseDown,
-	handleRulerMouseDown,
+	handleRulerTrackingPointerDown,
+	handleRulerPointerDown,
 }: TimelineBookmarksRowProps) {
 	const { t } = useI18n();
 	const bookmarks = useEditor((e) => e.scenes.getActiveScene().bookmarks);
@@ -90,7 +90,7 @@ export function TimelineBookmarksRow({
 			style={{ height: TIMELINE_BOOKMARK_ROW_HEIGHT_PX }}
 		>
 			<button
-				className="relative w-full cursor-default select-none border-0 bg-transparent p-0"
+				className="relative w-full cursor-default touch-none select-none border-0 bg-transparent p-0"
 				style={{
 					height: TIMELINE_BOOKMARK_ROW_HEIGHT_PX,
 					width: `${dynamicTimelineWidth}px`,
@@ -102,10 +102,10 @@ export function TimelineBookmarksRow({
 					if (!event.currentTarget.contains(event.target as Node)) return;
 					handleTimelineContentClick(event);
 				}}
-				onMouseDown={(event) => {
+				onPointerDown={(event) => {
 					if (!event.currentTarget.contains(event.target as Node)) return;
-					handleRulerMouseDown(event);
-					handleRulerTrackingMouseDown(event);
+					handleRulerPointerDown(event);
+					handleRulerTrackingPointerDown(event);
 				}}
 			>
 				{bookmarks.map((bookmark) => (
@@ -197,6 +197,7 @@ function TimelineBookmark({
 						time: formatNumberForDisplay({ value: mediaTimeToSeconds({ time }), fractionDigits: 1 }),
 					})}
 					type="button"
+					onPointerDown={(event) => event.stopPropagation()}
 					onMouseDown={handleMouseDown}
 					onClick={handleClick}
 					onKeyDown={handleKeyDown}
