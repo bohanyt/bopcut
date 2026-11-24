@@ -10,6 +10,7 @@ import { toast } from "sonner";
 
 interface CommandHistoryEntry {
 	command: Command;
+	agent: boolean;
 	projectSession: number;
 	rippleEnabled: boolean;
 	/** Scene the command ran in; undo and redo switch the editor to it first. */
@@ -26,7 +27,32 @@ export class CommandManager {
 	private redoStack: CommandHistoryEntry[] = [];
 	private reactors: Array<() => void> = [];
 
+	private agent = false;
+	recordsHumanFields = false;
+
 	constructor(private editor: EditorCore) {}
+
+	asAgent<T>(action: () => T): T {
+		return this.withOrigin(true, action);
+	}
+
+	private withOrigin<T>(agent: boolean, action: () => T): T {
+		const previous = this.agent;
+		this.agent = agent;
+		try {
+			return action();
+		} finally {
+			this.agent = previous;
+		}
+	}
+
+	get isAgent(): boolean { return this.agent; }
+
+	run<T>(command: Command, action: () => T): T {
+		const previous = this.recordsHumanFields;
+		this.recordsHumanFields = !this.agent && command.recordsHumanFields;
+		try { return action(); } finally { this.recordsHumanFields = previous; }
+	}
 
 	execute({ command }: { command: Command }): Command {
 		const projectSession = this.editor.project.getSession();
@@ -40,7 +66,7 @@ export class CommandManager {
 		this.editor.scenes.beginDerivedLog();
 		let result: CommandResult | undefined;
 		try {
-			result = command.execute({ rippleEnabled });
+			result = this.run(command, () => command.execute({ rippleEnabled }));
 			if (result?.changed !== false) this.applyRipple({ beforeTracks });
 		} catch (error) {
 			// The command left its own scene untouched; put side effects elsewhere back too.
@@ -57,6 +83,7 @@ export class CommandManager {
 		if (projectSession !== this.editor.project.getSession()) return command;
 		this.history.push({
 			command,
+			agent: this.agent,
 			projectSession,
 			rippleEnabled,
 			sceneId,
@@ -71,6 +98,7 @@ export class CommandManager {
 	push({ command }: { command: Command }): void {
 		this.history.push({
 			command,
+			agent: this.agent,
 			projectSession: this.editor.project.getSession(),
 			// The edit has already been applied without command-manager ripple.
 			rippleEnabled: false,
@@ -118,7 +146,8 @@ export class CommandManager {
 				? (this.editor.scenes.getActiveSceneOrNull()?.tracks ?? null)
 				: null;
 		const previousSelection = this.getSelectionSnapshot();
-		const result = entry.command.redo({ rippleEnabled: entry.rippleEnabled });
+		const redo = () => this.run(entry.command, () => entry.command.redo({ rippleEnabled: entry.rippleEnabled }));
+		const result = this.withOrigin(entry.agent, redo);
 		if (result?.changed === false) return;
 		this.applyRipple({ beforeTracks });
 		this.editor.scenes.applyDerivedChanges({ changes: entry.derived, side: "after" });

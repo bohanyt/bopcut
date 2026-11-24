@@ -5,6 +5,7 @@ import { applyElementUpdates, type ElementUpdate } from "@/timeline/update-pipel
 import { generateUUID } from "@/utils/id";
 
 export class UpdateElementsCommand extends Command {
+	override readonly recordsHumanFields = true;
 	private savedState: SceneTracks | null = null;
 	private readonly boundaryIdPrefix = generateUUID();
 	private readonly updates: readonly ElementUpdate[];

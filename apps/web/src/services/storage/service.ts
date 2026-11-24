@@ -1,3 +1,4 @@
+import { normalizeTrackHumanFields } from "@/timeline/human-fields";
 import { getBrowserTranslator } from "@/i18n/browser";
 import type { TProject, TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
@@ -303,7 +304,7 @@ class StorageService {
 				isMain: scene.isMain,
 				...(scene.kind && { kind: scene.kind }),
 				...(scene.compoundOrigin && { compoundOrigin: scene.compoundOrigin }),
-				tracks: scene.tracks,
+				tracks: normalizeTrackHumanFields(scene.tracks),
 				bookmarks: normalizeBookmarks({ raw: scene.bookmarks }),
 				createdAt: new Date(scene.createdAt),
 				updatedAt: new Date(scene.updatedAt),

@@ -123,6 +123,7 @@ interface BaseTimelineElement {
 	id: string;
 	/** Stable id given by an agent (bundle/draft `agent_id`), used to find the element again. */
 	agentId?: string;
+	humanFields?: string[];
 	groupId?: string;
 	name: string;
 	duration: MediaTime;

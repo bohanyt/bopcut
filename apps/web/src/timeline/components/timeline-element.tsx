@@ -345,6 +345,14 @@ export const TimelineElement = memo(function TimelineElement({
 					?
 				</span>
 			)}
+			{isSelected && element.humanFields?.length ? (
+				<span
+					className="pointer-events-none absolute right-1 bottom-1 z-10 size-1.5 rounded-full bg-primary"
+					title={t("timeline.humanFieldsProtected")}
+					aria-label={t("timeline.humanFieldsProtected")}
+					role="img"
+				/>
+			) : null}
 			<ElementInner
 				element={element}
 				displayElement={displayElement}
@@ -671,6 +679,17 @@ function TimelineElementMenu({
 					</ContextMenuItem>
 				</>
 			)}
+			{element.humanFields?.length ? (
+				<ContextMenuItem onClick={(event) => {
+					event.stopPropagation();
+					editor.timeline.updateElements({
+						updates: [{ trackId: track.id, elementId: element.id, patch: { humanFields: undefined } }],
+					});
+				}}>
+					{t("timeline.releaseHumanFields")}
+				</ContextMenuItem>
+			) : null}
+
 			<ContextMenuSeparator />
 			<DeleteMenuItem
 				isMultipleSelected={selectedElements.length > 1}

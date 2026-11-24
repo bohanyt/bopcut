@@ -72,6 +72,13 @@ AGENT_FILES_ROOT=/path/to/asset-root    # Default: AGENT_WORKSPACE
 - Use a snapshot taken after your previous draft applied.
 - Drafts without `basedOn` are not checked.
 
+**Keep the user's changes.** Set `"onConflict":"keep"` on a draft, or on a `set`, `animate`, or same-`agentId` `replace` op. An op can override the draft with `"onConflict":"refuse"` to use existing stale checks. With either no policy or `"refuse"`, `basedOn` behavior is unchanged, and without `basedOn` the draft can overwrite any field as usual. Explicit element IDs still work.
+
+- A snapshot lists `humanFields` on protected elements, including within compounds. Fields are `start`, `duration`, `trimStart`, `track`, `retime`, individual `params.<key>` and `keyframes.<property>`, and `caption` for text, word timings and emphasis as one value. Caption style remains individual params. Masks, effects, and transitions use existing behavior. They do not create ownership.
+- A successful keep op adds `kept` when it preserves fields. Example: `{"op":"set","match":{"agentId":"phrase-1"},"start":4,"params":{"color":"#aaccff","opacity":0.85},"onConflict":"keep","take":["params.color"]}`. A protected start stays put, explicitly taking the color applies it and releases its ownership if changed, and unprotected opacity applies. `take` is ignored without keep.
+- Ownership follows the project's saved elements and Undo history. Human changes claim only their directly edited fields. A neighbor shifted by ripple does not acquire ownership. Splits preserve the marks on agent-addressable pieces and claim edited timing. Duplicates and pasted copies are human-made and have no agent ownership. Compound moves preserve the ownership of the contained elements. Older projects and external writes do not infer ownership.
+- The selected clip shows a mark when it has protected fields. Choose **Let the agent change this again** in the clip menu to clear them in one undoable step. Drafts and bundles themselves do not claim human ownership.
+
 Browser console: `window.agent.snapshot()`, `window.agent.selection()`, `window.agent.applyDraft(draft)`, `window.agent.ready()` (readiness, see *Draft reliability*), `await window.agent.whenReady()` (true once ready; call it before `applyDraft` from the console).
 
 ## What the user points at ("fix this")

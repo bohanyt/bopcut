@@ -693,6 +693,8 @@ export const id = {
 	"timeline.recoverAudio": "Pulihkan audio",
 	"timeline.removeBookmark": "Hapus penanda",
 	"timeline.replaceMedia": "Ganti media",
+	"timeline.humanFieldsProtected": "Edit pengguna dilindungi",
+	"timeline.releaseHumanFields": "Izinkan agen mengubah ini lagi",
 	"timeline.revealMedia": "Tampilkan media",
 	"timeline.rightResizeHandle": "Pegangan pengubah ukuran kanan",
 	"timeline.ripple": "Ripple editing",

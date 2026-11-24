@@ -1,3 +1,4 @@
+import { changedHumanFields, withHumanFields } from "@/timeline/human-fields";
 import {
 	Command,
 	createElementSelectionResult,
@@ -78,6 +79,13 @@ export class SplitElementsCommand extends Command {
 					boundaryIdPrefix: rightId,
 				});
 				if (!parts) return [element];
+				if (!editor.command.isAgent && element.agentId) {
+					for (const side of ["left", "right"] as const) {
+						const timing = changedHumanFields(element, parts[side]).filter((field) =>
+							field === "start" || field === "duration" || field === "trimStart");
+						parts[side] = withHumanFields(parts[side], [...(element.humanFields ?? []), ...timing]);
+					}
+				}
 				changed = true;
 				didSplit = true;
 
