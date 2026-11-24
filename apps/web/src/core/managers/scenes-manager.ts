@@ -326,7 +326,8 @@ export class ScenesManager {
 		scenes: TScene[];
 		currentSceneId?: string;
 	}): void {
-		const ensuredScenes = this.normalize(ensureMainScene({ scenes }));
+		const withMainScene = ensureMainScene({ scenes });
+		const ensuredScenes = this.normalize(withMainScene);
 		const currentScene = currentSceneId
 			? ensuredScenes.find((s) => s.id === currentSceneId)
 			: null;
@@ -337,8 +338,7 @@ export class ScenesManager {
 		this.replaceActiveScene(currentScene || fallbackScene);
 		this.notify();
 
-		const hasAddedMainScene = ensuredScenes.length > scenes.length;
-		if (hasAddedMainScene && !this.editor.renderOnly) {
+		if (withMainScene !== scenes && !this.editor.renderOnly) {
 			const activeProject = this.editor.project.getActive();
 
 			if (activeProject) {

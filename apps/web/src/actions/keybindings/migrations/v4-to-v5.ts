@@ -5,7 +5,7 @@ export function v4ToV5({ state }: { state: unknown }): unknown {
 	if (!v4) return state;
 	const keybindings = { ...v4.keybindings };
 
-	if (!keybindings.escape) {
+	if (!keybindings.escape && !keybindings.esc) {
 		keybindings.escape = "deselect-all";
 	}
 

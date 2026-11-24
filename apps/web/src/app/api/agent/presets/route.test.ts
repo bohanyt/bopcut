@@ -3,9 +3,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { GET, POST } from "./route";
-import { validateTextPreset } from "@/text/presets";
 
-test("duplicate preset names list once and save collapses to one file", async () => {
+test("duplicate preset names list once and a save replaces the listed file", async () => {
 	const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "caption-presets-"));
 	const previous = process.env.AGENT_WORKSPACE;
 	process.env.AGENT_WORKSPACE = workspace;
@@ -30,14 +29,9 @@ test("duplicate preset names list once and save collapses to one file", async ()
 			}),
 		);
 		expect(res.status).toBe(200);
-		const presets = await Promise.all(
-			(await fs.readdir(dir)).filter((f) => f.endsWith(".json")).map((f) =>
-				fs.readFile(path.join(dir, f), "utf8").then((t) => JSON.parse(t) as { name: string; style: { fontSize: number } }),
-			),
-		);
-		expect(presets.filter((p) => p.name === "Readable")).toHaveLength(1);
-		expect(presets.find((p) => p.name === "Readable")?.style.fontSize).toBe(11);
-		expect(presets.some((p) => p.name === "readable")).toBe(true);
+		const saved = (await (await GET()).json()) as typeof list;
+		expect(saved.map((p) => [p.name, p.style.fontSize])).toEqual([["Readable", 11], ["readable", 4]]);
+		expect(JSON.parse(await fs.readFile(path.join(dir, "second-readable.json"), "utf8")).style.fontSize).toBe(6);
 	} finally {
 		if (previous === undefined) delete process.env.AGENT_WORKSPACE;
 		else process.env.AGENT_WORKSPACE = previous;

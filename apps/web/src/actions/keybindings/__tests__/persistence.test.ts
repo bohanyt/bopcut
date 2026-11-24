@@ -186,3 +186,13 @@ describe("parseImportedKeybindings", () => {
 		).toThrow(/not-an-action/);
 	});
 });
+
+test("an older custom esc shortcut survives the migrations", () => {
+	for (const fromVersion of [2, 4]) {
+		const state = migratePersistedKeybindingsState({
+			state: { keybindings: { esc: "undo" }, isCustomized: true },
+			fromVersion,
+		});
+		expect(decodePersistedKeybindingsState({ state })?.keybindings.get("escape")).toBe("undo");
+	}
+});
