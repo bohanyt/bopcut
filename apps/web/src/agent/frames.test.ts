@@ -213,7 +213,7 @@ test("a range job can hydrate the project without waiting for project-wide fonts
 	};
 	const load = spyOn(storageService, "loadProject").mockResolvedValue({ project });
 	const media = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([]);
-	const loadFonts = spyOn(fonts, "loadFonts").mockRejectedValue(new Error("Unexpected project-wide font load"));
+	const loadFonts = spyOn(fonts, "loadFonts").mockResolvedValue(undefined);
 	cleanups.push(() => { load.mockRestore(); media.mockRestore(); loadFonts.mockRestore(); });
 	await editor.project.loadForRender("range", async () => {}, { skipFonts: true });
 	expect(loadFonts).not.toHaveBeenCalled();

@@ -25,11 +25,11 @@ export const rangeRows = ({ from, to, rows }: RangeInput) => Array.from({ length
 		time: from + step * (index + 0.5), y: RANGE_HEADER + RANGE_ROW_HEIGHT * index };
 });
 
-export function accumulatePeaks(peaks: Float32Array, channel: Float32Array, offset: number, samples: number) {
-	for (let i = 0; i < channel.length; i++) {
-		const bucket = Math.floor((offset + i) * peaks.length / samples);
+export function accumulatePeaks(peaks: Float32Array, pcm: Float32Array, offset: number, samples: number, channels = 1) {
+	for (let i = 0; i < pcm.length; i++) {
+		const bucket = Math.floor((offset + Math.floor(i / channels)) * peaks.length / samples);
 		if (bucket >= peaks.length) break;
-		const value = Math.abs(channel[i]);
+		const value = Math.abs(pcm[i]);
 		if (Number.isFinite(value)) peaks[bucket] = Math.max(peaks[bucket], value);
 	}
 }
