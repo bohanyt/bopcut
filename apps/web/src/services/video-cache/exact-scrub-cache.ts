@@ -8,7 +8,7 @@ const READ_BYTES = 8 * 1024 * 1024;
 const FRAME_LIMIT = 180;
 const FRAME_BYTES = 128 * 1024 * 1024;
 
-type Source = { input: Input; track: Promise<InputVideoTrack>; bytes: number; lastTime?: number };
+type Source = { input: Input; track: Promise<InputVideoTrack>; bytes: number; lastTime?: number; backward?: boolean };
 type Entry = { source: Source; start: number; end: number; frame: VideoFrame; bytes: number };
 type Options = {
 	getScale: (size: { width: number; height: number }) => number;
@@ -24,6 +24,7 @@ type Cursor = {
 	start?: number;
 	current?: VideoSample;
 	next?: VideoSample;
+	exhausted?: boolean;
 	samples?: ReturnType<VideoSampleSink["samples"]>;
 	work?: Promise<void>;
 };
@@ -42,6 +43,8 @@ export class ExactScrubCache {
 		options.signal?.throwIfAborted();
 		const source = this.open(file);
 		const backward = source.lastTime !== undefined && time < source.lastTime;
+		const backfill = backward && source.backward === true;
+		if (time !== source.lastTime) source.backward = backward;
 		source.lastTime = time;
 		const track = await source.track;
 		options.signal?.throwIfAborted();
@@ -72,7 +75,7 @@ export class ExactScrubCache {
 		}
 		if (!cursor || (!cursor.work && time >= cursor.end)) {
 			this.stop();
-			cursor = this.cursor = { source, clip, time, backfill: backward, end: Infinity };
+			cursor = this.cursor = { source, clip, time, backfill, end: Infinity };
 		}
 		if (time > cursor.time) cursor.backfill = false;
 		cursor.time = time;
@@ -89,8 +92,10 @@ export class ExactScrubCache {
 			return frame.frame;
 		}
 		// An oversized surface may exceed the ring's budget by itself.
-		return cursor.current && time >= (cursor.start ?? Infinity) && time < (cursor.next?.timestamp ?? Infinity)
-			? this.rasterize(cursor.current, track, size)
+		const current = cursor.current;
+		return current && time >= (cursor.start ?? Infinity) &&
+			(time === current.timestamp || cursor.exhausted || (cursor.next && time < cursor.next.timestamp))
+			? this.rasterize(current, track, size)
 			: null;
 	}
 
@@ -113,10 +118,16 @@ export class ExactScrubCache {
 				cursor.current = first.value;
 				cursor.start = Math.min(cursor.time, first.value.timestamp);
 			}
+			if (!cursor.backfill && !cursor.next && cursor.current.timestamp === cursor.time) {
+				// A sample at the exact timestamp can be used before its interval is known.
+				this.remember(cursor.source, cursor.time, cursor.time, cursor.current, track, size);
+				return;
+			}
 			if (!cursor.next) {
 				const next = await cursor.samples.next();
 				if (this.cursor !== cursor) { next.value?.close(); return; }
 				cursor.next = next.value ?? undefined;
+				cursor.exhausted = next.done === true;
 			}
 			const current = cursor.current;
 			const end = cursor.next?.timestamp ?? Infinity;
@@ -140,7 +151,7 @@ export class ExactScrubCache {
 
 	private find(source: Source, time: number, size: { width: number; height: number }): Entry | undefined {
 		for (const entry of this.entries) {
-			if (entry.source === source && time >= entry.start && time < entry.end &&
+			if (entry.source === source && time >= entry.start && (time < entry.end || time === entry.start) &&
 				entry.frame.canvas.width === size.width && entry.frame.canvas.height === size.height) return entry;
 		}
 	}
@@ -155,7 +166,12 @@ export class ExactScrubCache {
 
 	private remember(source: Source, start: number, end: number, sample: VideoSample, track: InputVideoTrack, size: { width: number; height: number }): void {
 		const bytes = size.width * size.height * 4;
-		if (bytes > FRAME_BYTES || this.find(source, start, size)) return;
+		if (bytes > FRAME_BYTES) return;
+		const known = this.find(source, start, size);
+		if (known) {
+			known.end = Math.max(known.end, end);
+			return;
+		}
 		let canvas: OffscreenCanvas | undefined;
 		while (this.entries.size >= FRAME_LIMIT || this.bytes + bytes > FRAME_BYTES) {
 			const oldest = [...this.entries].find((entry) => !this.pinned.has(entry));

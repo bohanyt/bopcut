@@ -121,7 +121,7 @@ const constantRate = (seconds: number) => Array.from({ length: seconds * 30 }, (
 }));
 
 test("the exact scrub ring reuses a backward GOP decode, including gaps, at the regular preview size", () =>
-	withVideo([{ timestamp: 0, duration: 0.03 }, { timestamp: 1, duration: 0.03 }, { timestamp: 2, duration: 0.03 }], async ({ file, starts, closed }) => {
+	withVideo([0, 0.5, 1, 2].map((timestamp) => ({ timestamp, duration: 0.03 })), async ({ file, starts, closed }) => {
 		const cache = new ExactScrubCache();
 		const clip = {};
 		const key = spyOn(EncodedPacketSink.prototype, "getKeyPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 0, 0.03));
@@ -134,16 +134,17 @@ test("the exact scrub ring reuses a backward GOP decode, including gaps, at the 
 		try {
 			expect(await read(2)).toMatchObject({ timestamp: 2, canvas: { width: 960, height: 540 } });
 			expect((await read(1.8))?.timestamp).toBe(1);
-			expect((await read(0.8))?.timestamp).toBe(0);
+			expect((await read(0.8))?.timestamp).toBe(0.5);
+			expect((await read(0.2))?.timestamp).toBe(0);
 			expect((await read(1.5))?.timestamp).toBe(1);
-			expect(starts).toEqual([2, 0]);
+			expect(starts).toEqual([2, 1.8, 0]);
 		} finally {
 			cache.clear();
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			key.mockRestore();
 			nextKey.mockRestore();
 		}
-		expect(closed.sort()).toEqual([0, 1, 2, 2]);
+		expect(closed.sort()).toEqual([0, 0.5, 1, 1, 2, 2]);
 	}, { width: 1920, height: 1080 }));
 
 test("a newer forward scrub target reuses the same in-flight decoder request", () =>
