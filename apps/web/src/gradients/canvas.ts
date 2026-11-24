@@ -68,6 +68,7 @@ export function drawCssBackground({
 
 	for (const layer of layersInPaintOrder) {
 		if (layer.type === "color") {
+			ctx.fillStyle = "rgba(0,0,0,0)";
 			ctx.fillStyle = layer.value;
 			ctx.fillRect(0, 0, width, height);
 			continue;
@@ -268,7 +269,10 @@ const resolveLinearAngle = ({
 
 	if (!Array.isArray(orientation)) {
 		if (orientation.type === "angular") {
-			return Number.parseFloat(orientation.value);
+			const raw = orientation.value;
+			return raw.endsWith("rad")
+				? (Number.parseFloat(raw) * 180) / Math.PI
+				: Number.parseFloat(raw);
 		}
 
 		if (orientation.type === "directional") {
@@ -912,11 +916,11 @@ const colorToString = ({ color }: { color: Color }): string => {
 	}
 
 	if (color.type === "hsl") {
-		return `hsl(${color.value.join(",")})`;
+		return `hsl(${color.value[0]}, ${color.value[1]}%, ${color.value[2]}%)`;
 	}
 
 	if (color.type === "hsla") {
-		return `hsla(${color.value.join(",")})`;
+		return `hsla(${color.value[0]}, ${color.value[1]}%, ${color.value[2]}%, ${color.value[3]})`;
 	}
 
 	return `var(${color.value})`;

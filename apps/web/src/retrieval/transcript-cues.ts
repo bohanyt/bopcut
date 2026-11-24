@@ -44,12 +44,17 @@ function jsonCues(data: string, auto: boolean, counts: Counts): Cue[] {
 }
 
 const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", nbsp: " ", lrm: "\u200e", rlm: "\u200f", quot: '"', apos: "'" };
-const timestamp = "(?:\\d{2,}:)?[0-5]\\d:[0-5]\\d\\.\\d{3}";
+const timestamp = "(?:\\d+:)?[0-5]\\d:[0-5]\\d\\.\\d{1,3}";
 const timing = new RegExp("^(" + timestamp + ")[ \\t]+-->[ \\t]+(" + timestamp + ")(?:[ \\t].*)?$");
 const inlineTime = new RegExp("<(" + timestamp + ")>", "g");
 const vttSeconds = (s: string) => s.split(":").reduce((seconds, part) => seconds * 60 + Number(part), 0);
+const isCharacter = (code: number) => code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff);
 const vttText = (text: string) => text.replace(/<[^>]*>/g, "")
-	.replace(/&([a-z]+);/g, (entity, name: string) => Object.hasOwn(entities, name) ? entities[name] : entity);
+	.replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|([a-z]+));/gi, (entity, dec, hex, name) => {
+		if (name) return Object.hasOwn(entities, name) ? entities[name] : entity;
+		const code = dec !== undefined ? Number(dec) : parseInt(hex!, 16);
+		return isCharacter(code) ? String.fromCodePoint(code) : entity;
+	});
 
 function vttCues(data: string, counts: Counts): Cue[] {
 	if (!/^\uFEFF?WEBVTT(?:[ \t]|\r|\n|$)/.test(data)) return [];

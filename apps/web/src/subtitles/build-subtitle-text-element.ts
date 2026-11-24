@@ -138,10 +138,20 @@ function resolveSubtitleStyle({
 	background: TextBackground;
 	placement: NonNullable<SubtitleStyleOverrides["placement"]>;
 } {
-	const fontSize =
-		style?.fontSizeRatioOfPlayHeight != null
-			? style.fontSizeRatioOfPlayHeight * FONT_SIZE_SCALE_REFERENCE
-			: (style?.fontSize ?? SUBTITLE_FONT_SIZE);
+	let fontSize = SUBTITLE_FONT_SIZE;
+	if (style?.fontSizeRatioOfPlayHeight != null) {
+		const fromRatio =
+			style.fontSizeRatioOfPlayHeight * FONT_SIZE_SCALE_REFERENCE;
+		if (Number.isFinite(fromRatio) && fromRatio > 0) {
+			fontSize = fromRatio;
+		}
+	} else if (
+		style?.fontSize != null &&
+		Number.isFinite(style.fontSize) &&
+		style.fontSize > 0
+	) {
+		fontSize = style.fontSize;
+	}
 
 	return {
 		fontFamily: style?.fontFamily ?? "Arial",

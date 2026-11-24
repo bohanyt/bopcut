@@ -3,6 +3,7 @@ import {
 	decodePersistedKeybindingsState,
 	migratePersistedKeybindingsState,
 	parseImportedKeybindings,
+	type DecodedKeybindingsState,
 	serializeKeybindingsState,
 } from "../persistence";
 
@@ -68,6 +69,44 @@ describe("keybinding persistence", () => {
 		const decoded = decodePersistedKeybindingsState({ state: "garbage" });
 		expect(decoded).toBeNull();
 		expect(warnSpy).toHaveBeenCalledTimes(1);
+	});
+
+	test("store merge decodes persisted keybindings like persistence boundary", () => {
+		const current = {
+			keybindings: new Map([["space", "toggle-play"] as const]),
+			isCustomized: false,
+		} satisfies DecodedKeybindingsState;
+		const mergeLikeStore = (persisted: unknown) => {
+			const decoded = decodePersistedKeybindingsState({ state: persisted });
+			return decoded ? { ...current, ...decoded } : current;
+		};
+
+		expect(
+			Array.from(
+				mergeLikeStore({
+					keybindings: { space: "toggle-play", "ctrl+x": "not-an-action" },
+					isCustomized: true,
+				}).keybindings.entries(),
+			),
+		).toEqual([["space", "toggle-play"]]);
+		expect(
+			mergeLikeStore({
+				keybindings: { esc: "cancel-interaction" },
+				isCustomized: false,
+			}).keybindings.get("escape"),
+		).toBe("cancel-interaction");
+		expect(
+			mergeLikeStore({
+				keybindings: {
+					esc: "deselect-all",
+					escape: "cancel-interaction",
+				},
+				isCustomized: false,
+			}).keybindings.get("escape"),
+		).toBe("cancel-interaction");
+		expect(mergeLikeStore("garbage").keybindings.get("space")).toBe(
+			"toggle-play",
+		);
 	});
 
 	test("round-trips actions that have no default shortcut", () => {
@@ -146,4 +185,14 @@ describe("parseImportedKeybindings", () => {
 			parseImportedKeybindings({ config: { space: "not-an-action" } }),
 		).toThrow(/not-an-action/);
 	});
+});
+
+test("an older custom esc shortcut survives the migrations", () => {
+	for (const fromVersion of [2, 4]) {
+		const state = migratePersistedKeybindingsState({
+			state: { keybindings: { esc: "undo" }, isCustomized: true },
+			fromVersion,
+		});
+		expect(decodePersistedKeybindingsState({ state })?.keybindings.get("escape")).toBe("undo");
+	}
 });

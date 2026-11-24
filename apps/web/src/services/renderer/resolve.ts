@@ -722,11 +722,8 @@ function resolveEffectLayerNode({
 	node: EffectLayerNode;
 	context: ResolveContext;
 }): ResolvedEffectLayerNodeState | null {
-	const time = context.time;
-	if (
-		time < node.params.timeOffset - 1e-6 ||
-		time >= node.params.timeOffset + node.params.duration + 1e-6
-	) {
+	const clipTime = context.time - node.params.timeOffset;
+	if (clipTime < 0 || clipTime >= node.params.duration) {
 		return null;
 	}
 

@@ -68,10 +68,11 @@ export function dataUrlToFile(dataUrl: string): File | null {
 	const match = /^data:([a-z]+\/[a-z0-9.+-]+)((?:;[^;,]*)*?)(;base64)?,([\s\S]*)$/i.exec(dataUrl);
 	if (!match) return null;
 	const [, type, , base64, payload] = match;
+	if (/^image\/svg\+xml$/i.test(type)) return null;
 	try {
 		const bytes: Uint8Array<ArrayBuffer> = base64 ? Uint8Array.from(atob(payload.replace(/\s+/g, "")), (c) => c.charCodeAt(0)) : percentDecodeBytes(payload);
 		if (bytes.length === 0) return null;
-		const ext = type.split("/")[1].replace("jpeg", "jpg").replace("svg+xml", "svg");
+		const ext = type.split("/")[1].replace("jpeg", "jpg");
 		return new File([bytes], `dropped image.${ext}`, { type });
 	} catch {
 		return null;

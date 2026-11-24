@@ -237,8 +237,8 @@ const matchSideOrCorner = (): DirectionalOrientation | undefined =>
 	match({ type: "directional", pattern: tokens.sideOrCorner, captureIndex: 1 });
 
 const matchAngle = (): AngularOrientation | undefined =>
-	match({ type: "angular", pattern: tokens.angleValue, captureIndex: 1 }) ||
-	match({ type: "angular", pattern: tokens.radianValue, captureIndex: 1 });
+	match({ type: "angular", pattern: tokens.angleValue, captureIndex: 0 }) ||
+	match({ type: "angular", pattern: tokens.radianValue, captureIndex: 0 });
 
 const matchListRadialOrientations = ():
 	| Array<RadialOrientation>
@@ -439,22 +439,69 @@ const matchLiteralColor = (): Color | undefined =>
 const matchHexColor = (): Color | undefined =>
 	match({ type: "hex", pattern: tokens.hexColor, captureIndex: 1 });
 
+const matchSpaceSeparatedRgb = (): Color | undefined => {
+	const start = input;
+	const components: string[] = [];
+	for (let i = 0; i < 3; i++) {
+		const n = scan({ regexp: tokens.number });
+		if (!n) {
+			input = start;
+			return undefined;
+		}
+		components.push(n[1]);
+		if (scan({ regexp: tokens.comma })) {
+			input = start;
+			return undefined;
+		}
+	}
+	if (scan({ regexp: /^\// })) {
+		const percent = scan({ regexp: tokens.percentageValue });
+		const alpha = percent
+			? String(Number.parseFloat(percent[1]) / 100)
+			: matchNumber();
+		return { type: "rgba", value: [...components, alpha] };
+	}
+	return { type: "rgb", value: components };
+};
+
+const matchHslSpaceComponents = (): Color | undefined => {
+	const start = input;
+	const hue = matchNumber();
+	const channels: string[] = [];
+	for (let i = 0; i < 2; i++) {
+		if (scan({ regexp: tokens.comma })) {
+			input = start;
+			return undefined;
+		}
+		const p = scan({ regexp: tokens.percentageValue });
+		if (!p) {
+			input = start;
+			return undefined;
+		}
+		channels.push(p[1]);
+	}
+	if (scan({ regexp: /^\// })) {
+		const percent = scan({ regexp: tokens.percentageValue });
+		const alpha = percent
+			? String(Number.parseFloat(percent[1]) / 100)
+			: matchNumber();
+		return { type: "hsla", value: [hue, channels[0], channels[1], alpha] };
+	}
+	return { type: "hsl", value: [hue, channels[0], channels[1]] };
+};
+
 const matchRGBColor = (): Color | undefined =>
 	matchCall({
 		pattern: tokens.rgbColor,
-		callback: () => ({
-			type: "rgb",
-			value: matchListing({ matcher: matchNumber }),
-		}),
+		callback: () =>
+			matchSpaceSeparatedRgb() ?? { type: "rgb", value: matchListing({ matcher: matchNumber }) },
 	});
 
 const matchRGBAColor = (): Color | undefined =>
 	matchCall({
 		pattern: tokens.rgbaColor,
-		callback: () => ({
-			type: "rgba",
-			value: matchListing({ matcher: matchNumber }),
-		}),
+		callback: () =>
+			matchSpaceSeparatedRgb() ?? { type: "rgba", value: matchListing({ matcher: matchNumber }) },
 	});
 
 const matchVarColor = (): Color | undefined =>
@@ -470,6 +517,11 @@ const matchHSLColor = (): Color | undefined =>
 	matchCall({
 		pattern: tokens.hslColor,
 		callback: () => {
+			const space = matchHslSpaceComponents();
+			if (space) {
+				return space;
+			}
+
 			const lookahead = scan({ regexp: tokens.percentageValue });
 			if (lookahead) {
 				error({
@@ -508,6 +560,11 @@ const matchHSLAColor = (): Color | undefined =>
 	matchCall({
 		pattern: tokens.hslaColor,
 		callback: () => {
+			const space = matchHslSpaceComponents();
+			if (space) {
+				return space;
+			}
+
 			const hue = matchNumber();
 			scan({ regexp: tokens.comma });
 			let captures = scan({ regexp: tokens.percentageValue });

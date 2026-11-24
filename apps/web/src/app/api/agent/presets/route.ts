@@ -37,7 +37,13 @@ async function readPresets(): Promise<{ file: string; preset: TextStylePreset }[
 }
 
 export async function GET() {
-	const presets = (await readPresets()).map(({ preset }) => preset);
+	const presets: TextStylePreset[] = [];
+	const seen = new Set<string>();
+	for (const { preset } of await readPresets()) {
+		if (seen.has(preset.name)) continue;
+		seen.add(preset.name);
+		presets.push(preset);
+	}
 	return Response.json(presets, { headers: { "Cache-Control": "no-store" } });
 }
 

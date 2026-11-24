@@ -11,11 +11,14 @@ export function loadEnvLocal(file: string) {
 }
 
 export function retrievalOptions(args: string[], usage: (message: string) => never) {
-	const at = args.indexOf("--timeout");
+	const at = args.findIndex((a) => a === "--timeout" || a.startsWith("--timeout="));
 	if (at < 0) return { args, timeout: undefined };
-	const seconds = Number(args[at + 1]);
+	const token = args[at];
+	const paired = token === "--timeout";
+	const seconds = Number(paired ? args[at + 1] : token.slice("--timeout=".length));
+	const drop = paired ? 2 : 1;
 	if (!(seconds > 0 && seconds <= 2_147_483)) usage("--timeout needs a positive number of seconds");
-	return { args: [...args.slice(0, at), ...args.slice(at + 2)], timeout: Math.ceil(seconds * 1000) };
+	return { args: [...args.slice(0, at), ...args.slice(at + drop)], timeout: Math.ceil(seconds * 1000) };
 }
 
 export async function runRetrievalCli(

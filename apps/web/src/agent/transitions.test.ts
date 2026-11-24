@@ -101,6 +101,10 @@ describe("transitions", () => {
 		expect(run(alone, [{ op: "transition", match: { agentId: "B" }, type: "crossfade" }]).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("no clip ends") });
 		expect(run(pair(), [{ op: "transition", match: { agentId: "B" }, type: "wipe" }]).results[0]).toMatchObject({ ok: false });
 		expect(run(pair(), [{ op: "transition", match: { agentId: "B" }, type: "flash", duration: 9 }]).results[0]).toMatchObject({ ok: false });
+		expect(run(pair(), [{ op: "transition", match: { agentId: "B" }, type: "flash", duration: 0 }]).results[0]).toMatchObject({
+			ok: false,
+			error: "transition duration must be above 0 and at most 5 seconds",
+		});
 		const moving = scenesWith([video("A", 0, 2), video("B", 2, 2, { animations: { "transform.positionX": { keys: [{ id: "k", time: 0, value: 5 }] } } })]);
 		expect(run(moving, [{ op: "transition", match: { agentId: "B" }, type: "slide-left" }]).results[0]).toMatchObject({ ok: false, error: expect.stringContaining("already animates") });
 	});
