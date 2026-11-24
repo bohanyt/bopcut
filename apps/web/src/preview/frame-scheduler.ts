@@ -4,7 +4,6 @@ export function createPreviewFrameScheduler({
 	requestFrame,
 	cancelFrame,
 	shouldRetry,
-	now = () => performance.now(),
 	setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
 	clearTimer = (id) => globalThis.clearTimeout(id),
 }: {
@@ -12,20 +11,21 @@ export function createPreviewFrameScheduler({
 	requestFrame: (callback: () => void) => number;
 	cancelFrame: (id: number) => void;
 	shouldRetry?: (error: unknown) => boolean;
-	now?: () => number;
 	setTimer?: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
 	clearTimer?: (id: ReturnType<typeof setTimeout>) => void;
 }) {
 	const settleDelay = 64;
+	const holdDelay = 250;
 	let frame: number | null = null;
 	let rendering: AbortController | null = null;
 	let dirty = false;
 	let disposed = false;
 	let retried = false;
 	let approximate = false;
-	let lastSeek = -Infinity;
 	let lastSeekTime: number | undefined;
 	let settleTimer: ReturnType<typeof setTimeout> | undefined;
+	let holdTimer: ReturnType<typeof setTimeout> | undefined;
+	let recovering = false;
 
 	function draw(): void {
 		if (disposed) return;
@@ -79,12 +79,18 @@ export function createPreviewFrameScheduler({
 		settleTimer = undefined;
 	}
 
+	function clearHold(): void {
+		if (holdTimer !== undefined) clearTimer(holdTimer);
+		holdTimer = undefined;
+	}
+
 	function settle(): void {
 		clearSettle();
-		lastSeek = -Infinity;
+		clearHold();
 		lastSeekTime = undefined;
-		if (!approximate) return;
+		if (!approximate && !recovering) return;
 		approximate = false;
+		recovering = false;
 		invalidate();
 	}
 
@@ -99,26 +105,45 @@ export function createPreviewFrameScheduler({
 			draw();
 		},
 		seek: (playheadTime: number, scrubbing: boolean, playing: boolean) => {
-			const time = now();
-			const nextMode = scrubbing || (!playing && time - lastSeek < settleDelay);
+			const explicit = scrubbing && !playing;
+			if (!explicit) {
+				clearHold();
+				recovering = false;
+			}
+			const nextMode = explicit && !recovering;
 			const changed = playheadTime !== lastSeekTime || nextMode !== approximate;
 			approximate = nextMode;
-			lastSeek = playing ? -Infinity : time;
 			lastSeekTime = playheadTime;
 			clearSettle();
 			if (approximate) settleTimer = setTimer(settle, settleDelay);
-			if (changed) invalidate();
+			if (changed) {
+				if (recovering) queueFrame();
+				else invalidate();
+			}
 		},
 		settle,
+		scrubFrameBlocked: () => {
+			if (!approximate || holdTimer !== undefined) return;
+			holdTimer = setTimer(() => {
+				holdTimer = undefined;
+				clearSettle();
+				approximate = false;
+				recovering = true;
+				invalidate();
+			}, holdDelay);
+		},
+		scrubFramePresented: () => { clearHold(); },
+		scrubRecoveryFinished: () => { recovering = false; },
 		scrubFrameReady: () => {
 			if (approximate) queueFrame();
 		},
 		invalidate,
 		suspend: () => {
 			clearSettle();
+			clearHold();
 			clearFrame();
 			approximate = false;
-			lastSeek = -Infinity;
+			recovering = false;
 			lastSeekTime = undefined;
 			dirty = false;
 			rendering?.abort();
@@ -127,6 +152,7 @@ export function createPreviewFrameScheduler({
 			disposed = true;
 			clearFrame();
 			clearSettle();
+			clearHold();
 			rendering?.abort();
 		},
 	};

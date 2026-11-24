@@ -90,7 +90,9 @@ async function load(cache: ScrubVideoCache, file: File, time: number) {
 	cache.getFrameAt(file, time);
 	cache.finishFrame(ready.resolve);
 	await ready.promise;
-	return cache.getFrameAt(file, time);
+	const frame = cache.getFrameAt(file, time);
+	cache.finishFrame();
+	return frame;
 }
 
 test("scrub frames are scoped to the file and keyframe interval", () =>
@@ -228,4 +230,21 @@ test("a cold backward drag skips a preceding keyframe that would reverse picture
 		expect(cache.getFrameAt(file, 1.6, clip)).toBeNull();
 		cache.finishFrame(() => {});
 		expect(cache.getFrameAt(file, 1.55, clip)).toBeNull();
+	}));
+
+test("a frozen overlapping layer holds the composite until its own frame is decoded", () =>
+	withCache(async ({ cache, stream }) => {
+		const main = new File([], "main.mp4");
+		const overlay = new File([], "overlay.mp4");
+		const mainClip = {};
+		const overlayClip = {};
+		stream(true);
+		expect(cache.getFrameAt(main, 1, mainClip)).toBeNull();
+		expect(cache.getFrameAt(overlay, 1.4, overlayClip)).toBeNull();
+		expect(cache.needsFrame).toBe(true);
+		cache.finishFrame(() => {}, false);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(cache.getFrameAt(main, 1, mainClip)?.timestamp).toBe(1);
+		expect(cache.getFrameAt(overlay, 1.4, overlayClip)?.timestamp).toBe(1.4);
+		expect(cache.needsFrame).toBe(false);
 	}));

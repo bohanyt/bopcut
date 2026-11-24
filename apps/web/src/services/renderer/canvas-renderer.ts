@@ -36,7 +36,12 @@ export type CanvasRendererParams = {
 let renderQueue: Promise<void> = Promise.resolve();
 
 type RenderRequest = { node: AnyBaseNode; time: number; signal?: AbortSignal };
-type ScrubPreview = { cache: ScrubVideoCache; onReady?: () => void };
+type ScrubPreview = {
+	cache: ScrubVideoCache;
+	onReady?: () => void;
+	onBlocked?: () => void;
+	shouldPresent?: () => boolean;
+};
 
 export class CanvasRenderer {
 	width: number;
@@ -112,7 +117,7 @@ export class CanvasRenderer {
 		scrub?: ScrubPreview;
 	}) {
 		const { maxSurfaceDimension, maxTextureDimension } = getRendererLimits();
-		this.target = this.getRenderTarget(maxSurfaceDimension);
+		this.target = this.getRenderTarget(scrub?.onReady ? Math.min(maxSurfaceDimension ?? Infinity, 640) : maxSurfaceDimension);
 		if (targetCanvas !== this.outputCanvas) {
 			const error = canvasSizeError(targetCanvas, maxSurfaceDimension);
 			if (error) throw new Error(error);
@@ -124,12 +129,14 @@ export class CanvasRenderer {
 			}),
 		});
 		signal.throwIfAborted();
+		if ((scrub?.onReady && scrub.cache.needsFrame) || scrub?.shouldPresent?.() === false) return false;
 		checkGraphicsContext();
 		const { frame, textures } = await measureSpanAsync({
 			name: "buildFrame",
 			fn: () => buildFrameDescriptor({ node, renderer: this, signal }),
 		});
 		signal.throwIfAborted();
+		if (scrub?.shouldPresent?.() === false) return false;
 		checkGraphicsContext();
 		wasmCompositor.ensureInitialized({
 			width: this.outputWidth,
@@ -155,6 +162,7 @@ export class CanvasRenderer {
 		});
 		rendererDevice.markFramePresented();
 		onRenderPerfFrameComplete();
+		return true;
 	}
 
 	async renderToCanvas({
@@ -173,15 +181,17 @@ export class CanvasRenderer {
 		const task = renderQueue.then(async () => {
 			frameSignal.throwIfAborted();
 			checkGraphicsContext();
+			let presented: boolean;
 			try {
-				await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, scrub });
+				presented = await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, scrub });
 			} catch (error) {
 				if (scrub?.onReady || frameSignal.aborted) scrub?.cache.finishFrame();
 				else scrub?.cache.stop();
 				throw error;
 			}
-			if (scrub?.onReady) scrub.cache.finishFrame(scrub.onReady);
+			if (scrub?.onReady) scrub.cache.finishFrame(scrub.onReady, presented);
 			else scrub?.cache.stop();
+			if (!presented) scrub?.onBlocked?.();
 		}).catch((error: unknown) => {
 			frameSignal.throwIfAborted();
 			rethrowGraphicsFailure(error);

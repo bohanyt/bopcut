@@ -93,14 +93,12 @@ test("updates during a render schedule one follow-up, and disposal prevents late
 	expect(clock.pending()).toBe(0);
 });
 
-test("a burst cancels the old exact seek and settles at the same time on release", async () => {
+test("an explicit drag cancels the old exact seek and settles at the same time on release", async () => {
 	const clock = frameClock();
 	const renders: { signal: AbortSignal; approximate: boolean }[] = [];
 	const exact = Promise.withResolvers<void>();
-	let now = 0;
 	const scheduler = createPreviewFrameScheduler({
 		...clock,
-		now: () => now,
 		render(options) {
 			renders.push(options);
 			return renders.length === 1 ? exact.promise : undefined;
@@ -108,8 +106,7 @@ test("a burst cancels the old exact seek and settles at the same time on release
 	});
 	scheduler.seek(12, false, false);
 	clock.tick();
-	now = 16;
-	scheduler.seek(12, false, false);
+	scheduler.seek(12, true, false);
 	expect(renders[0].signal.aborted).toBe(true);
 	exact.resolve();
 	await exact.promise;
@@ -120,6 +117,23 @@ test("a burst cancels the old exact seek and settles at the same time on release
 	expect(renders.map(({ approximate }) => approximate)).toEqual([false, true, false]);
 	scheduler.scrubFrameReady();
 	expect(clock.pending()).toBe(0);
+	scheduler.dispose();
+});
+
+test("keyboard steps and seeks during playback use exact rendering", () => {
+	const clock = frameClock();
+	const modes: boolean[] = [];
+	const scheduler = createPreviewFrameScheduler({
+		...clock,
+		render({ approximate }) { modes.push(approximate); },
+	});
+	scheduler.seek(1, false, false);
+	clock.tick();
+	scheduler.seek(2, false, false);
+	clock.tick();
+	scheduler.seek(3, true, true);
+	clock.tick();
+	expect(modes).toEqual([false, false, false]);
 	scheduler.dispose();
 });
 
@@ -138,5 +152,32 @@ test("holding the pointer still requests an exact render during a drag", () => {
 	fire?.();
 	clock.tick();
 	expect(modes).toEqual([true, false]);
+	scheduler.dispose();
+});
+
+test("a continuously held preview falls back to exact without restarting its deadline", () => {
+	const clock = frameClock();
+	const timers = new Map<number, () => void>();
+	const modes: boolean[] = [];
+	const scheduler = createPreviewFrameScheduler({
+		...clock,
+		setTimer(callback, delay) {
+			timers.set(delay, callback);
+			return delay as unknown as ReturnType<typeof setTimeout>;
+		},
+		clearTimer(id) { timers.delete(Number(id)); },
+		render({ approximate }) { modes.push(approximate); },
+	});
+	scheduler.seek(12, true, false);
+	clock.tick();
+	scheduler.scrubFrameBlocked();
+	const deadline = timers.get(250);
+	scheduler.seek(13, true, false);
+	clock.tick();
+	scheduler.scrubFrameBlocked();
+	expect(timers.get(250)).toBe(deadline);
+	deadline?.();
+	clock.tick();
+	expect(modes).toEqual([true, true, false]);
 	scheduler.dispose();
 });

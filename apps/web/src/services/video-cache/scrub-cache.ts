@@ -1,8 +1,9 @@
-import { ALL_FORMATS, BlobSource, EncodedPacketSink, Input, VideoSampleSink, type InputVideoTrack, type VideoSample } from "mediabunny";
+import { ALL_FORMATS, BlobSource, EncodedPacketSink, Input, type InputVideoTrack, type VideoSample } from "mediabunny";
 import { getDecodableVideoTrack } from "@/media/video-probe";
 import { fitSurfaceSize } from "@/services/renderer/scale";
 import { waitWithAbort } from "@/utils/abort";
 import { VideoCursor } from "./service";
+import { retiringSamples } from "./retiring-sink";
 
 const SOURCE_LIMIT = 6;
 const SOURCE_BYTES = 32 * 1024 * 1024;
@@ -71,7 +72,7 @@ async function readSamples(
 	signal: AbortSignal,
 	use: (sample: VideoSample | null, time: number) => void,
 ): Promise<void> {
-	const samples = new VideoSampleSink(track).samplesAtTimestamps(times);
+	const samples = retiringSamples(track, (sink) => sink.samplesAtTimestamps(times));
 	try {
 		for (const time of times) {
 			await waitWithAbort(samples.next().then(({ value }) => {
@@ -98,19 +99,25 @@ export class ScrubVideoCache {
 	private wanted = new Map<Source, Set<number>>();
 	private sourceBytes = 0;
 	private jobs = 0;
+	private retiring = 0;
 	private motion?: Motion;
 	private lastTarget?: { source: Source; time: number };
 	private presentations = new Map<object, Presentation>();
 	private framePresentations = new Map<object, Presentation>();
 	private settling = false;
+	private missing = false;
 	private exactRead?: { time: number; sample: ReturnType<VideoCursor["readAt"]> };
 	private onReady?: () => void;
 
 	get active(): boolean { return !!this.onReady; }
+	get needsFrame(): boolean { return this.missing; }
 
 	getFrameAt(file: File, time: number, clip?: object): Frame | null {
 		const source = this.getSource(file);
-		if (!source) return null;
+		if (!source) {
+			this.missing = true;
+			return null;
+		}
 		let times = this.reads.get(source);
 		if (!times) this.reads.set(source, times = new Set());
 		if (times.size < FRAME_LIMIT) times.add(time);
@@ -136,10 +143,12 @@ export class ScrubVideoCache {
 			pool.entries.add(entry);
 			this.pinned.add(entry);
 		}
+		this.missing ||= !frame;
 		return frame;
 	}
 
-	finishFrame(onReady?: () => void): void {
+	finishFrame(onReady?: () => void, presented = true): void {
+		this.missing = false;
 		this.pinned.clear();
 		if (!onReady) {
 			this.reads.clear();
@@ -149,6 +158,15 @@ export class ScrubVideoCache {
 		this.settling = false;
 		this.exactRead = undefined;
 		this.motion?.cursor?.finishFrame();
+		if (!presented) {
+			for (const [clip, attempt] of this.framePresentations) {
+				attempt.frame = this.presentations.get(clip)?.frame ?? null;
+			}
+			// Preserve the last successfully drawn layer if a later attempt returns to it.
+			for (const [clip, previous] of this.presentations) {
+				if (previous.frame && !this.framePresentations.has(clip)) this.framePresentations.set(clip, previous);
+			}
+		}
 		this.presentations = this.framePresentations;
 		this.framePresentations = new Map();
 		this.onReady = onReady;
@@ -306,13 +324,23 @@ export class ScrubVideoCache {
 
 	private pump(): void {
 		if (this.settling) return;
+		const primaryRead = this.wanted.entries().next().value;
 		for (const [source, times] of this.wanted) {
-			if (this.jobs + Number(!!this.motion) >= JOB_LIMIT) break;
+			if (this.jobs + Number(!!this.motion) + this.retiring >= JOB_LIMIT) break;
 			if (source.job) continue;
-			const time = [...times].find((time) => !this.find(this.keys, source, time));
-			if (time === undefined) continue;
+			const primary = primaryRead?.[0] === source ? primaryRead[1].values().next().value : undefined;
+			const keyTime = primary !== undefined && !this.find(this.keys, source, primary) && !this.find(this.details, source, primary)
+				? primary
+				: undefined;
+			const time = [...times].find((time) => time !== primary && !this.find(this.details, source, time));
+			if (time !== undefined && keyTime === undefined) {
+				const job = { controller: new AbortController(), range: { start: time - 0.25, end: time + 0.25 } };
+				this.startJob(source, job, () => this.decodeDetail(source, time, job));
+				continue;
+			}
+			if (keyTime === undefined) continue;
 			const job: Job = { controller: new AbortController() };
-			this.startJob(source, job, () => this.decodeKey(source, time, job));
+			this.startJob(source, job, () => this.decodeKey(source, keyTime, job));
 		}
 		this.advanceMotion();
 	}
@@ -327,10 +355,16 @@ export class ScrubVideoCache {
 		});
 	}
 
-	private closeMotion(): void {
+	private closeMotion(replace = true): void {
 		const motion = this.motion;
 		this.motion = undefined;
-		motion?.cursor?.dispose();
+		if (!motion?.cursor) return;
+		this.retiring++;
+		void Promise.allSettled([motion.pending, motion.cursor.dispose()]).then(() => {
+			this.retiring--;
+			if (replace && !this.motion) this.updateMotion();
+			this.pump();
+		});
 	}
 
 	private updateMotion(): void {
@@ -350,7 +384,7 @@ export class ScrubVideoCache {
 		const motion = this.motion;
 		if (motion?.source === source) {
 			const key = this.find(this.keys, source, time);
-			const jump = key && key.start - Math.max(motion.at, motion.readTo) > 0.75;
+			const jump = time > motion.target && key && key.start - Math.max(motion.at, motion.readTo) > 0.75;
 			if (!jump && (!backward || motion.at === -Infinity || time >= motion.start || this.nearestDetail(source, time, 0.045))) {
 				motion.fast = fast || (time === motion.target && motion.fast);
 				motion.target = time;
@@ -358,7 +392,7 @@ export class ScrubVideoCache {
 			}
 		}
 		this.closeMotion();
-		if (this.jobs >= JOB_LIMIT) return;
+		if (this.jobs + this.retiring >= JOB_LIMIT) return;
 		const start = Math.max(0, time - (backward ? LOOK_BEHIND : 0));
 		this.motion = { source, target: time, start, at: -Infinity, readTo: -Infinity, fast };
 	}
@@ -371,7 +405,8 @@ export class ScrubVideoCache {
 		const task = (async () => {
 			const track = await motion.source.track;
 			if (this.motion !== motion) return;
-			const cursor = motion.cursor ??= new VideoCursor(track);
+			const cursor = motion.cursor ??= new VideoCursor(track, true);
+			let sliceStarted = performance.now();
 			await cursor.readAt(target, (sample) => {
 				if (this.motion !== motion) return;
 				motion.at = sample.timestamp;
@@ -381,9 +416,17 @@ export class ScrubVideoCache {
 				const frame = rasterize(sample, track, DETAIL_DIMENSION);
 				if (frame && this.store(this.details, motion.source, range, frame) &&
 					Math.abs(motion.target - range.start) <= 0.5) this.onReady?.();
+				// A burst of decoder output can otherwise rasterize an entire slice
+				// through microtasks before the browser can process pointer input.
+				if (performance.now() - sliceStarted >= 7) {
+					return new Promise<void>((resolve) => setTimeout(() => {
+						sliceStarted = performance.now();
+						resolve();
+					}, 0));
+				}
 			});
 		})().catch(() => {
-			if (this.motion === motion) this.closeMotion();
+			if (this.motion === motion) this.closeMotion(false);
 		}).finally(() => {
 			motion.pending = undefined;
 			this.pump();
@@ -419,6 +462,24 @@ export class ScrubVideoCache {
 			});
 		} catch {
 			if (!signal.aborted && !this.store(this.keys, source, range, null)) this.wanted.get(source)?.delete(time);
+		}
+	}
+
+	private async decodeDetail(source: Source, time: number, job: Job): Promise<void> {
+		const { signal } = job.controller;
+		const failed = { start: time, end: time + 0.001 };
+		try {
+			const track = await waitWithAbort(source.track, signal);
+			await readSamples(track, [time], signal, (sample) => {
+				const frame = sample && rasterize(sample, track, DETAIL_DIMENSION);
+				const range = frame && sample
+					? { start: sample.timestamp, end: Math.max(time + 0.000001, sample.timestamp + sample.duration) }
+					: failed;
+				if (!this.store(this.details, source, range, frame)) this.wanted.get(source)?.delete(time);
+				else if (frame) this.onReady?.();
+			});
+		} catch {
+			if (!signal.aborted) this.store(this.details, source, failed, null);
 		}
 	}
 }

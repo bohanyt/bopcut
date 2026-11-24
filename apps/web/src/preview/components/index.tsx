@@ -222,7 +222,7 @@ function PreviewCanvas({
 		};
 	}, [renderer, scrubCache, sessionSignal]);
 
-	const render = useCallback(({ signal: seekSignal, approximate }: {
+	const render = useCallback(({ signal: seekSignal, approximate: scheduledApproximation }: {
 		signal: AbortSignal;
 		approximate: boolean;
 	}) => {
@@ -244,7 +244,9 @@ function PreviewCanvas({
 		const frame = Math.floor(renderTime / ticksPerFrame);
 
 		const playing = editor.playback.getIsPlaying();
-		if (!approximate && playing) scrubCache.stop();
+		const pointerScrubbing = editor.playback.getIsScrubbing() && !playing;
+		const approximate = scheduledApproximation && pointerScrubbing;
+		if (playing) scrubCache.stop();
 		if (
 			!approximate &&
 			frame === lastFrameRef.current &&
@@ -258,6 +260,11 @@ function PreviewCanvas({
 		if (!session || session.aborted) return;
 		const signal = AbortSignal.any([session, seekSignal]);
 		const graphics = rendererDevice.signal;
+		let held = false;
+		const onBlocked = () => {
+			held = true;
+			if (approximate) schedulerRef.current?.scrubFrameBlocked();
+		};
 		return renderer.render({
 			node: renderTree,
 			time: renderTime,
@@ -265,12 +272,23 @@ function PreviewCanvas({
 			scrub: approximate ? {
 				cache: scrubCache,
 				onReady: () => schedulerRef.current?.scrubFrameReady(),
-			} : scrubCache.active ? { cache: scrubCache } : undefined,
+				onBlocked,
+				shouldPresent: () => !editor.playback.getIsPlaying() && editor.playback.getIsScrubbing(),
+			} : scrubCache.active ? {
+				cache: scrubCache,
+				onBlocked,
+				shouldPresent: () => !pointerScrubbing || Math.min(
+					editor.playback.getCurrentTime(), editor.timeline.getLastFrameTime(),
+				) === renderTime,
+			} : undefined,
 		})
 			.then(() => {
 				// Keep the previous frame visible while the new render target is waiting.
 				const mount = canvasMountRef.current;
 				if (signal.aborted || graphics.aborted || !mount) return;
+				if (!approximate) schedulerRef.current?.scrubRecoveryFinished();
+				if (held) return;
+				if (approximate) schedulerRef.current?.scrubFramePresented();
 				const outputCanvas = renderer.getOutputCanvas();
 				if (outputCanvas.parentElement !== mount) mount.replaceChildren(outputCanvas);
 				lastSceneRef.current = renderTree;
@@ -315,7 +333,9 @@ function PreviewCanvas({
 		document.addEventListener("visibilitychange", onVisibility);
 		const unsubscribe = [
 			editor.playback.onUpdate(scheduler.playbackTick),
-			editor.playback.onSeek((time) => scheduler.seek(time, scrubbing, playing)),
+			editor.playback.onSeek((time) => scheduler.seek(
+				time, editor.playback.getIsScrubbing(), editor.playback.getIsPlaying(),
+			)),
 			editor.playback.subscribe(() => {
 				const wasScrubbing = scrubbing;
 				const wasPlaying = playing;

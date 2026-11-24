@@ -9,8 +9,10 @@ import {
 } from "mediabunny";
 import { getDecodableVideoTrack } from "@/media/video-probe";
 import { fitSurfaceSize } from "@/services/renderer/scale";
+import { retiringSamples } from "./retiring-sink";
 
 type VideoSize = { width: number; height: number };
+type ObserveSample = (sample: VideoSample) => void | Promise<void>;
 type VideoFrame = {
 	canvas: OffscreenCanvas;
 	timestamp: number;
@@ -32,12 +34,14 @@ export class VideoCursor {
 	private currentStart = 0;
 	private current: VideoSample | null = null;
 	private next: Promise<VideoSample | null> | null = null;
+	private retiring?: Promise<unknown>;
+	private disposed = false;
 	exhausted = false;
 	private sink: VideoSampleSink;
 	private surfaces: { canvas: OffscreenCanvas; timestamp: number }[] = [];
 	private frames = new Map<string, VideoFrame>();
 
-	constructor(track: InputVideoTrack) {
+	constructor(private track: InputVideoTrack, private waitForRetirement = false) {
 		this.sink = new VideoSampleSink(track);
 	}
 
@@ -45,7 +49,8 @@ export class VideoCursor {
 		return Math.abs(time - this.currentStart);
 	}
 
-	async readAt(time: number, observe?: (sample: VideoSample) => void, sequentialWindow = 2): Promise<VideoSample | null> {
+	async readAt(time: number, observe?: ObserveSample, sequentialWindow = 2): Promise<VideoSample | null> {
+		if (this.disposed) return null;
 		const start = this.currentStart;
 		const iterator = this.iterator;
 		if (iterator && time >= start) {
@@ -62,14 +67,18 @@ export class VideoCursor {
 			}
 		}
 
-		this.reset();
+		const retired = this.reset();
+		if (this.waitForRetirement) await retired;
+		if (this.disposed) return null;
 		this.currentStart = time;
-		this.iterator = this.sink.samples(time);
+		this.iterator = this.waitForRetirement
+			? retiringSamples(this.track, (sink) => sink.samples(time))
+			: this.sink.samples(time);
 		this.prefetch(this.iterator);
 		return this.advanceTo(time, observe);
 	}
 
-	private async advanceTo(time: number, observe?: (sample: VideoSample) => void): Promise<VideoSample | null> {
+	private async advanceTo(time: number, observe?: ObserveSample): Promise<VideoSample | null> {
 		const iterator = this.iterator;
 		while (iterator && this.next && this.current?.timestamp !== time) {
 			const next = await this.next;
@@ -85,7 +94,11 @@ export class VideoCursor {
 			// A seek before the first presentation timestamp displays the first sample immediately.
 			this.currentStart = Math.min(next.timestamp, time);
 			this.prefetch(iterator);
-			observe?.(next);
+			const pause = observe?.(next);
+			if (pause) {
+				await pause;
+				if (iterator !== this.iterator) return null;
+			}
 			if (next.timestamp >= time) break;
 		}
 		// A frame remains active until the next presentation timestamp, including VFR gaps.
@@ -151,7 +164,7 @@ export class VideoCursor {
 		this.frames.clear();
 	}
 
-	private reset(): void {
+	private reset(): Promise<unknown> | undefined {
 		const { iterator, next } = this;
 		this.iterator = null;
 		this.next = null;
@@ -160,13 +173,20 @@ export class VideoCursor {
 		this.current = null;
 		// A resolved lookahead belongs to this cursor even if we never advance to it.
 		void next?.then((sample) => sample?.close(), () => {});
-		void iterator?.return().catch(() => {});
+		if (!iterator) return this.retiring;
+		const retired = iterator.return().catch(() => {}).finally(() => {
+			if (this.retiring === retired) this.retiring = undefined;
+		});
+		this.retiring = retired;
+		return retired;
 	}
 
-	dispose(): void {
-		this.reset();
+	dispose(): Promise<unknown> | undefined {
+		this.disposed = true;
+		const retired = this.reset();
 		this.frames.clear();
 		this.surfaces.length = 0;
+		return retired;
 	}
 }
 
