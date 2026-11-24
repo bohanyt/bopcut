@@ -298,7 +298,7 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 type Session = {
 	project: string; ids: string[]; software: boolean; paused: boolean; send: (update: ProxyUpdate) => void;
 	done: Set<string>; revisions: Map<string, number>; disk: boolean; bytes: number; written: Map<string, string>;
-	sequence: number; readerChecked?: number;
+	sequence: number; readerChecked?: number; readerPending: boolean;
 };
 type Job = { session: Session; id: string; revision: number; source?: Source; controller: AbortController };
 const sessions = new Map<string, Session>();
@@ -354,7 +354,7 @@ export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" 
 	if (!session || sequence <= session.sequence) return;
 	session.sequence = sequence;
 	Object.assign(session, changes);
-	if (session.readerChecked !== undefined && Date.now() - session.readerChecked >= readerInterval) {
+	if (!session.readerPending && session.readerChecked !== undefined && Date.now() - session.readerChecked >= readerInterval) {
 		session.readerChecked = undefined;
 		session.done.clear();
 	}
@@ -365,8 +365,8 @@ export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" 
 	void keepNeededJob();
 	void pump();
 }
-export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "disk" | "bytes" | "written" | "sequence" | "readerChecked">) {
-	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>(), sequence: 0 };
+export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "disk" | "bytes" | "written" | "sequence" | "readerChecked" | "readerPending">) {
+	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>(), sequence: 0, readerPending: false };
 	sessions.set(id, entry);
 	void keepNeededJob();
 	void pump();
@@ -418,6 +418,11 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 async function pump() {
 	if (wiping || !sessions.size || isPaused()) return;
 	if (running) { needsPump = true; return; }
+	const readerDue = (session: Session) => session.readerChecked === undefined || session.readerPending;
+	if (![...sessions.values()].some(readerDue)) {
+		for (const session of sessions.values()) send(session, "readonly");
+		return;
+	}
 	running = true;
 	idle = Promise.withResolvers<void>();
 	try {
@@ -425,6 +430,7 @@ async function pump() {
 		if (!dir) {
 			for (const session of sessions.values()) {
 				session.readerChecked ??= Date.now();
+				session.readerPending = false;
 				send(session, "readonly");
 			}
 			return;
@@ -443,11 +449,12 @@ async function pump() {
 		if (writable) for (const session of sessions.values()) {
 			if (session.readerChecked !== undefined) session.done.clear();
 			session.readerChecked = undefined;
+			session.readerPending = false;
 		}
 		const blocked = new Set<Session>();
 		while (!wiping && !isPaused()) {
 			const entry = [...sessions.entries()].find(([, session]) => !blocked.has(session) &&
-				(writable || session.readerChecked === undefined) &&
+				(writable || readerDue(session)) &&
 				session.ids.some(id => !session.done.has(id)));
 			if (!entry) break;
 			const [sessionId, session] = entry;
@@ -519,11 +526,14 @@ async function pump() {
 		}
 		const bytes = (await files(dir)).reduce((n, file) => n + file.stat.size, 0);
 		for (const session of sessions.values()) {
-			if (writable) session.readerChecked = undefined;
-			else session.readerChecked ??= Date.now();
+			const complete = session.ids.every(id => session.done.has(id));
+			if (!writable && readerDue(session)) {
+				session.readerChecked ??= Date.now();
+				session.readerPending = !complete;
+			}
 			if (blocked.has(session)) continue;
 			session.bytes = bytes;
-			if (session.ids.every(id => session.done.has(id))) send(session, !writable ? "readonly" : session.disk ? "disk" : "ready");
+			if (complete) send(session, !writable ? "readonly" : session.disk ? "disk" : "ready");
 		}
 	} catch (error) { console.error("Proxy preparation failed", error); }
 	finally {

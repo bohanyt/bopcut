@@ -8,6 +8,8 @@ import { acquireProxyWriter } from "./cache-files";
 import * as processes from "@/retrieval/process";
 import type { ProxyUpdate } from "./mapping";
 
+const ownerRecord = (pid: number, startedAt = Date.now()) => JSON.stringify({ pid, token: "test-owner", startedAt });
+
 test("proxy cache identity follows content across copies and hard links", async () => {
 	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-fingerprint-"));
 	const original = path.join(dir, "one.mp4");
@@ -57,7 +59,7 @@ test("evicts the least recently used file and preserves the cache below the disk
 			if (old[index] === undefined) delete process.env[key]; else process.env[key] = old[index];
 		}
 		for (const name of names) await fs.rm(path.join(dir, name), { force: true });
-		await fs.rm(path.join(dir, ".writer"), { force: true });
+		await fs.rm(path.join(dir, "writer-1.lock"), { force: true });
 		await fs.rmdir(dir);
 		await fs.rmdir(root);
 	}
@@ -104,7 +106,7 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 		}
 		close = openSession("tab", { project: "fixture", ids, paused: false, software: false, send() {} });
 		expect(await started.promise).toBe("near.mp4");
-		expect(await fs.readdir(cache)).toEqual([".writer"]);
+		expect(await fs.readdir(cache)).toEqual(["writer-1.lock"]);
 		updateSession("tab", { ids: ["near", "far", "middle"] }, 1);
 		firstFinished.resolve();
 		expect(await second.promise).toBe("far.mp4");
@@ -122,7 +124,7 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 			await fs.rm(path.join(meta, id + ".json"), { force: true });
 		}
 		for (const file of interrupted) await fs.rm(path.join(cache, file), { force: true });
-		await fs.rm(path.join(cache, ".writer"), { force: true });
+		await fs.rm(path.join(cache, "writer-1.lock"), { force: true });
 		for (const folder of [meta, dir, project, path.dirname(project), cache, root]) {
 			await fs.rmdir(folder).catch(() => {});
 		}
@@ -241,12 +243,13 @@ test("an oversized estimate preserves the cache and yields to the next source", 
 
 test.each(["live writer", "permission denied"])("a reader rediscovers copies and claims a free lock on an update (%s)", async (mode) => {
 	const f = await fixture(["source"]);
-	const lock = path.join(f.cache, ".writer");
+	const lock = path.join(f.cache, "writer-1.lock");
 	const holder = mode === "live writer"
 		? Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" })
 		: undefined;
 	const time = Date.now();
 	const clock = spyOn(Date, "now").mockReturnValue(time);
+	const list = spyOn(fs, "readdir");
 	const writeFile = fs.writeFile.bind(fs);
 	let permission = !holder;
 	const writes = spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
@@ -254,7 +257,7 @@ test.each(["live writer", "permission denied"])("a reader rediscovers copies and
 		return writeFile(file, data, options);
 	});
 	try {
-		if (holder) await fs.writeFile(lock, `${holder.pid}:live-token`);
+		if (holder) await fs.writeFile(lock, ownerRecord(holder.pid, time + 120_000));
 		const tab = f.tab("reader", ["source"]);
 		const readonly = (event: ProxyUpdate) => event.state === "readonly" && !event.media;
 		await tab.wait(readonly);
@@ -262,8 +265,10 @@ test.each(["live writer", "permission denied"])("a reader rediscovers copies and
 		await fs.writeFile(path.join(f.cache, key + ".mp4"), "proxy");
 		await fs.writeFile(path.join(f.cache, key + ".json"), JSON.stringify({ key, size }));
 		let since = tab.events.length;
+		const listings = list.mock.calls.filter(([dir]) => dir === f.cache).length;
 		updateSession("reader", {}, 1);
 		await tab.wait(readonly, since);
+		expect(list.mock.calls.filter(([dir]) => dir === f.cache)).toHaveLength(listings);
 		expect(tab.events.some(event => event.media)).toBe(false);
 		since = tab.events.length;
 		clock.mockReturnValue(time + 60_000);
@@ -277,11 +282,56 @@ test.each(["live writer", "permission denied"])("a reader rediscovers copies and
 		since = tab.events.length;
 		updateSession("reader", {}, 3);
 		await tab.wait(event => event.state === "ready", since);
-		expect(await fs.readFile(lock, "utf8")).toMatch(new RegExp(`^${process.pid}:`));
+		const acquired = path.join(f.cache, holder ? "writer-2.lock" : "writer-1.lock");
+		expect(JSON.parse(await fs.readFile(acquired, "utf8")).pid).toBe(process.pid);
 	} finally {
 		if (holder) { holder.kill(); await holder.exited; }
 		writes.mockRestore();
 		clock.mockRestore();
+		list.mockRestore();
+		await f.dispose();
+	}
+});
+
+test("a pause during the first reader lookup leaves the pass pending for resume", async () => {
+	const f = await fixture(["source"]);
+	const holder = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+	const start = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const source = path.join(f.media, "source.mp4");
+	const { key, size } = await fingerprint(source);
+	const open = fs.open.bind(fs);
+	const list = spyOn(fs, "readdir");
+	const listings = () => list.mock.calls.filter(([dir]) => dir === f.cache).length;
+	const blockFirst = spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+		if (file === source) {
+			start.resolve();
+			await release.promise;
+		}
+		return open(file, flags, mode);
+	});
+	try {
+		await fs.writeFile(path.join(f.cache, "writer-1.lock"), ownerRecord(holder.pid));
+		await fs.writeFile(path.join(f.cache, key + ".mp4"), "proxy");
+		await fs.writeFile(path.join(f.cache, key + ".json"), JSON.stringify({ key, size }));
+		const tab = f.tab("interrupted-reader", ["source"]);
+		await start.promise;
+		const beforePause = listings();
+		updateSession("interrupted-reader", { paused: true }, 1);
+		release.resolve();
+		// The next listing is after the work loop has observed the pause.
+		for (let i = 0; i < 100 && listings() === beforePause; i++) await sleep(1);
+		expect(listings()).toBeGreaterThan(beforePause);
+		expect(tab.events).toEqual([]);
+		updateSession("interrupted-reader", { paused: false }, 2);
+		await tab.wait(event => event.state === "readonly" && !event.media && event.done === 1);
+		expect(tab.events.some(event => event.media?.info.key === key)).toBe(true);
+	} finally {
+		release.resolve();
+		blockFirst.mockRestore();
+		list.mockRestore();
+		holder.kill();
+		await holder.exited;
 		await f.dispose();
 	}
 });
@@ -359,11 +409,11 @@ test("losing the writer token stops encoding and switches the session to reading
 	try {
 		const tab = f.tab("displaced", ["source"]);
 		await started.promise;
-		await fs.writeFile(path.join(f.cache, ".writer"), `${holder.pid}:new-owner`);
+		await fs.writeFile(path.join(f.cache, "writer-2.lock"), ownerRecord(holder.pid));
 		await stopped.promise;
 		await tab.wait(event => event.state === "readonly");
 		expect(tab.events.some(event => event.media)).toBe(false);
-		expect((await fs.readdir(f.cache)).every(name => name === ".writer" || name.startsWith(".job-"))).toBe(true);
+		expect((await fs.readdir(f.cache)).every(name => name.endsWith(".lock") || name.startsWith(".job-"))).toBe(true);
 	} finally {
 		holder.kill();
 		await holder.exited;

@@ -344,9 +344,9 @@ function PreviewCanvas({
 		};
 		const updateTarget = () => {
 			const scene = editor.renderer.getRenderTree();
-			if (!scene) settle.reset();
+			if (!scene || editor.playback.getIsPlaying()) settle.reset();
 			else settle.update(scene, getRenderTime(), !document.hidden &&
-				editor.playback.getIsScrubbing() && !editor.playback.getIsPlaying() &&
+				editor.playback.getIsScrubbing() &&
 				!editor.renderer.isExportRunning() && useProxyStore.getState().ready.size > 0);
 			scheduler.request();
 		};

@@ -1,80 +1,109 @@
 import { expect, test } from "bun:test";
 import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, uptime } from "node:os";
 import path from "node:path";
-import { acquireProxyWriter, proxyDirectory, proxyFile } from "./cache-files";
+import { acquireProxyWriter, ownsProxyWriter, proxyDirectory, proxyFile } from "./cache-files";
+
+const lockRecord = (pid: number, startedAt = Date.now()) => JSON.stringify({ pid, token: "previous-token", startedAt });
+
+async function removeLocks(dir: string) {
+	for (const name of await fs.readdir(dir)) await fs.rm(path.join(dir, name));
+	await fs.rmdir(dir);
+}
 
 test("a live writer is exclusive and a stopped writer's lock can be reclaimed", async () => {
 	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-"));
-	const lock = path.join(dir, ".writer");
+	const lock = path.join(dir, "writer-1.lock");
 	const writer = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
 	try {
-		await fs.writeFile(lock, String(writer.pid));
+		await fs.writeFile(lock, lockRecord(writer.pid));
 		expect(await acquireProxyWriter(dir)).toBe(false);
 		writer.kill();
 		await writer.exited;
 		expect(await acquireProxyWriter(dir)).toBe(true);
-		expect(await fs.readFile(lock, "utf8")).toMatch(new RegExp(`^${process.pid}:[a-f0-9-]{36}$`));
+		expect(await fs.readdir(dir)).toEqual(["writer-2.lock"]);
+		expect(await ownsProxyWriter(dir)).toBe(true);
 	} finally {
 		writer.kill();
 		await writer.exited;
-		await fs.rm(lock, { force: true });
-		await fs.rmdir(dir);
+		await removeLocks(dir);
 	}
 });
 
-test("two stale-lock claimants can both write, but only the surviving token owns the cache", async () => {
-	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-race-"));
-	const lock = path.join(dir, ".writer");
-	const previous = Bun.spawn([process.execPath, "-e", ""], { stdout: "ignore", stderr: "ignore" });
-	await previous.exited;
+function contender(dir: string) {
 	const childProgram = `
 		import { promises as fs } from "node:fs";
-		const { acquireProxyWriter, ownsProxyWriter } = await import(${JSON.stringify(path.join(import.meta.dir, "cache-files.ts").replaceAll("\\", "/"))});
+		const { acquireProxyWriter } = await import(${JSON.stringify(path.join(import.meta.dir, "cache-files.ts").replaceAll("\\", "/"))});
 		const wait = (message) => {
 			const next = new Promise(resolve => process.once("message", resolve));
 			process.send(message);
 			return next;
 		};
-		const unlink = fs.unlink.bind(fs);
-		fs.unlink = async (...args) => { await wait("stale"); return unlink(...args); };
 		const write = fs.writeFile.bind(fs);
-		fs.writeFile = async (...args) => { await write(...args); await wait("claimed"); };
-		const owns = await acquireProxyWriter(process.argv[1]);
-		process.send(owns && await ownsProxyWriter(process.argv[1]));
+		fs.writeFile = async (...args) => { await wait("stale"); return write(...args); };
+		process.send(await acquireProxyWriter(process.argv[1]));
 	`;
-	function start() {
-		const stale = Promise.withResolvers<void>();
-		const claimed = Promise.withResolvers<void>();
-		const result = Promise.withResolvers<boolean>();
-		const processHandle = Bun.spawn([process.execPath, "--tsconfig-override",
-			path.resolve(import.meta.dir, "../../../tsconfig.json"), "-e", childProgram, dir], {
-			stdout: "ignore", stderr: "inherit",
-			ipc(message) {
-				if (message === "stale") stale.resolve();
-				if (message === "claimed") claimed.resolve();
-				if (typeof message === "boolean") result.resolve(message);
-			},
-		});
-		return { processHandle, stale: stale.promise, claimed: claimed.promise, result: result.promise };
-	}
-	await fs.writeFile(lock, `${previous.pid}:old-token`);
-	const a = start(), b = start();
+	const stale = Promise.withResolvers<void>();
+	const result = Promise.withResolvers<boolean>();
+	const child = Bun.spawn([process.execPath, "--tsconfig-override",
+		path.resolve(import.meta.dir, "../../../tsconfig.json"), "-e", childProgram, dir], {
+		stdout: "ignore", stderr: "inherit",
+		ipc(message) {
+			if (message === "stale") stale.resolve();
+			if (typeof message === "boolean") result.resolve(message);
+		},
+	});
+	return { child, stale: stale.promise, result: result.promise, release: () => child.send("create") };
+}
+
+test.each([0, 1])("stale contenders in release order %i have one successful acquire", async first => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-race-"));
+	await fs.writeFile(path.join(dir, "writer-1.lock"), lockRecord(process.pid, 0));
+	const attempts = [contender(dir), contender(dir)];
 	try {
-		await Promise.all([a.stale, b.stale]);
-		a.processHandle.send("remove");
-		await a.claimed;
-		b.processHandle.send("remove");
-		await b.claimed;
-		a.processHandle.send("confirm");
-		b.processHandle.send("confirm");
-		expect(await Promise.all([a.result, b.result])).toEqual([false, true]);
+		await Promise.all(attempts.map(attempt => attempt.stale));
+		attempts[first].release();
+		expect(await attempts[first].result).toBe(true);
+		attempts[1 - first].release();
+		expect(await attempts[1 - first].result).toBe(false);
+		expect(await fs.readdir(dir)).toEqual(["writer-2.lock"]);
 	} finally {
-		for (const child of [a, b]) child.processHandle.kill();
-		await Promise.all([a.processHandle.exited, b.processHandle.exited]);
-		await fs.rm(lock, { force: true });
-		await fs.rmdir(dir);
+		for (const attempt of attempts) attempt.child.kill();
+		await Promise.all(attempts.map(attempt => attempt.child.exited));
+		await removeLocks(dir);
 	}
+});
+
+test("a delayed contender cannot take over a generation already replaced by a third writer", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-delayed-"));
+	await fs.writeFile(path.join(dir, "writer-1.lock"), lockRecord(process.pid, 0));
+	const first = contender(dir), delayed = contender(dir);
+	try {
+		await Promise.all([first.stale, delayed.stale]);
+		first.release();
+		expect(await first.result).toBe(true);
+		first.child.kill();
+		await first.child.exited;
+		expect(await acquireProxyWriter(dir)).toBe(true);
+		delayed.release();
+		expect(await delayed.result).toBe(false);
+		expect(await ownsProxyWriter(dir)).toBe(true);
+		expect(await fs.readdir(dir)).toEqual(["writer-3.lock"]);
+	} finally {
+		first.child.kill();
+		delayed.child.kill();
+		await Promise.all([first.child.exited, delayed.child.exited]);
+		await removeLocks(dir);
+	}
+});
+
+test("a pre-boot lock is stale even if its pid is alive", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-boot-"));
+	try {
+		await fs.writeFile(path.join(dir, "writer-1.lock"), lockRecord(process.pid, Date.now() - (uptime() + 60) * 1000));
+		expect(await acquireProxyWriter(dir)).toBe(true);
+		expect(await fs.readdir(dir)).toEqual(["writer-2.lock"]);
+	} finally { await removeLocks(dir); }
 });
 
 test("refuses a linked cache directory and files with multiple names", async () => {
