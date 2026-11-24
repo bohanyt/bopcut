@@ -52,6 +52,7 @@ export class WaveformCache {
 			.then(() => yieldAudioTask(controller.signal))
 			.then(() => this.buildSummary(args, version, controller.signal))
 			.then((summary) => {
+				controller.signal.throwIfAborted();
 				if (this.summaries.get(sourceKey) === entry) {
 					entry.bytes = summary.amplitudes.byteLength;
 					this.trim();
@@ -77,6 +78,9 @@ export class WaveformCache {
 	clearAll(): void {
 		for (const { controller } of this.summaries.values()) controller.abort();
 		this.summaries.clear();
+		// decodeAudioData cannot be interrupted. A new project starts its own queue while
+		// the previous context finishes and discards its result.
+		this.queue = Promise.resolve();
 	}
 
 	private trim(): void {
@@ -126,7 +130,9 @@ export class WaveformCache {
 			signal.throwIfAborted();
 			// Web Audio decodes off the main thread and takes ownership of the input bytes.
 			audioBuffer = await audioContext.decodeAudioData(data);
+			signal.throwIfAborted();
 			const summary = await summarizeAudio(sourceKey, audioBuffer, signal);
+			signal.throwIfAborted();
 			if (key) void this.persisted.set({ key, value: summary }).catch(() => undefined);
 			return summary;
 		} finally {

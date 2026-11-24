@@ -86,6 +86,60 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
+describe("copying thumbnails only for media history or duplication", () => {
+	const id = "m1";
+	const url = `/api/storage/projects/p/media/${id}/thumbnail/${"a".repeat(64)}`;
+	const inline = "data:image/jpeg;base64,/9j/2Q==";
+
+	function stubFetch(fetcher: (url: string, init?: RequestInit) => Promise<Response>) {
+		const original = globalThis.fetch;
+		restore = () => { globalThis.fetch = original; };
+		globalThis.fetch = fetcher as typeof fetch;
+	}
+
+	test.each([true, false])("a duplicate copies thumbnail bytes when available (%s)", async (available) => {
+		const calls: string[] = [];
+		let copied: string | undefined;
+		stubFetch(async (path, init) => {
+			calls.push(init?.method ?? "GET");
+			if (path === url) return available
+				? new Response(inline, { headers: { "Content-Type": "text/plain" } })
+				: new Response(null, { status: 404 });
+			expect(path).toBe(`/api/storage/projects/copy/media/${id}`);
+			if (init?.method === "POST") copied = JSON.parse(String(init.body)).thumbnailUrl;
+			return Response.json({ ok: true });
+		});
+		await new StorageService().saveMediaAsset({ projectId: "copy", mediaAsset: { ...asset(id), thumbnailUrl: url } });
+		expect(calls).toEqual(["GET", "PUT", "POST"]);
+		expect(copied).toBe(available ? inline : undefined);
+	});
+
+	test.each([true, false])("undo waits for capture but can finish before the delete response (%s)", async (available) => {
+		const calls: string[] = [];
+		let restored: string | undefined;
+		const capturing = deferred<Response>();
+		const deleting = deferred<Response>();
+		const stored = { ...asset(id), thumbnailUrl: url };
+		stubFetch(async (path, init) => {
+			calls.push(init?.method ?? "GET");
+			if (path === url) return capturing.promise;
+			if (init?.method === "DELETE") return deleting.promise;
+			if (init?.method === "POST") restored = JSON.parse(String(init.body)).thumbnailUrl;
+			return Response.json({ ok: true });
+		});
+		const { media } = EditorCore.getInstance();
+		const removal = media.persistBinChange({ projectId: "p", id, asset: null, removedAsset: stored });
+		const undo = media.persistBinChange({ projectId: "p", id, asset: { ...stored } });
+		expect(calls).toEqual(["GET"]);
+		capturing.resolve(available ? new Response(inline) : new Response(null, { status: 404 }));
+		await undo;
+		expect(calls).toEqual(["GET", "DELETE", "PUT", "POST"]);
+		expect(restored).toBe(available ? inline : undefined);
+		deleting.resolve(Response.json({ ok: true }));
+		await removal;
+	});
+});
+
 describe("media manager loads", () => {
 	test("assets added while loading are merged, not overwritten", async () => {
 		const media = EditorCore.getInstance().media;

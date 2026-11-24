@@ -3,8 +3,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GET, PUT, POST, DELETE } from "../../../app/api/storage/[...slug]/route";
-import { MediaThumbnailCache, storeMediaThumbnail } from "./media-thumbnails";
-import { withProjectLock } from "./files";
+import { MediaThumbnailCache } from "./media-thumbnails";
+import { atomicWrite, withProjectLock } from "./files";
 
 let root: string;
 let previous: string | undefined;
@@ -109,13 +109,13 @@ describe("media thumbnails", () => {
 	}
 
 	async function call(url: string, method = "GET", headers?: Record<string, string>, body?: string) {
-		const slug = url.slice("/api/storage/".length).split("/");
 		const req = new Request(`http://127.0.0.1:3021${url}`, { method, headers, body });
+		const slug = new URL(req.url).pathname.slice("/api/storage/".length).split("/");
 		const handler = method === "DELETE" ? DELETE : method === "POST" ? POST : method === "PUT" ? PUT : GET;
 		return handler(req, { params: Promise.resolve({ slug }) });
 	}
 
-	test("opens legacy media with a lightweight reference and migrates only the thumbnail requested", async () => {
+	test("projects legacy thumbnails into compact references without changing any files", async () => {
 		const id = "legacy";
 		const { dir, metadata, metadataFile } = await legacyMedia(id);
 		const list = await (await call(`/api/storage/projects/${id}/media`)).json();
@@ -127,7 +127,8 @@ describe("media thumbnails", () => {
 		const response = await call(url);
 		expect(response.headers.get("Content-Type")).toBe("image/jpeg");
 		expect([...new Uint8Array(await response.arrayBuffer())]).toEqual(bytes);
-		expect(JSON.parse(await fs.readFile(metadataFile, "utf8")).thumbnailUrl).toBe(url);
+		expect(await fs.readFile(metadataFile, "utf8")).toBe(JSON.stringify(metadata));
+		expect(await fs.readdir(dir)).not.toContain("_thumbnails");
 		expect(await fs.readFile(path.join(dir, "m.mp4"), "utf8")).toBe("original");
 		expect((await call(url, "GET", { "If-None-Match": response.headers.get("ETag")! })).status).toBe(304);
 	});
@@ -147,17 +148,7 @@ describe("media thumbnails", () => {
 		expect(after.headers.get("X-Media-Revision")).not.toBe(before.headers.get("X-Media-Revision"));
 	});
 
-	test("reopens after the sidecar commits and the metadata update is interrupted", async () => {
-		const id = "interrupted";
-		const { metadata, metadataFile } = await legacyMedia(id);
-		const url = await storeMediaThumbnail(id, "m", inline);
-		expect(JSON.parse(await fs.readFile(metadataFile, "utf8"))).toEqual(metadata);
-		expect((await (await call(`/api/storage/projects/${id}/media`)).json())[0].thumbnailUrl).toBe(url);
-		expect([...new Uint8Array(await (await call(url!)).arrayBuffer())]).toEqual(bytes);
-		expect(JSON.parse(await fs.readFile(metadataFile, "utf8")).thumbnailUrl).toBe(url);
-	});
-
-	test("can display a legacy thumbnail while the project is writing", async () => {
+	test("read-only thumbnail retrieval neither waits for a lock nor overwrites an external metadata edit", async () => {
 		const id = "busy";
 		const { metadata, metadataFile } = await legacyMedia(id);
 		const [{ thumbnailUrl }] = await (await call(`/api/storage/projects/${id}/media`)).json();
@@ -171,30 +162,63 @@ describe("media thumbnails", () => {
 			write.resolve();
 			await held;
 		}
-		expect((await call(thumbnailUrl)).status).toBe(200);
-		expect(JSON.parse(await fs.readFile(metadataFile, "utf8")).thumbnailUrl).toBe(thumbnailUrl);
+		const updated = { ...metadata, thumbnailUrl: "data:image/jpeg,%FF%D8%FF%D9%80", words: [{ text: "new" }] };
+		await atomicWrite(metadataFile, JSON.stringify(updated));
+		expect((await call(thumbnailUrl)).status).toBe(404);
+		const [current] = await (await call(`/api/storage/projects/${id}/media`)).json();
+		const response = await call(current.thumbnailUrl);
+		expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([...bytes, 128]);
+		expect(JSON.parse(await fs.readFile(metadataFile, "utf8"))).toEqual(updated);
 	});
 
-	test("preserves a legacy thumbnail for undo and copies it into the duplicate project", async () => {
-		const { metadata } = await legacyMedia("source");
-		await legacyMedia("duplicate");
-		const base = "/api/storage/projects/source/media";
-		const [{ thumbnailUrl }] = await (await call(base)).json();
-		expect((await call(`${base}/m`, "DELETE")).status).toBe(200);
-		expect(await (await call(base)).json()).toEqual([]);
+	test("metadata writes preserve the current inline thumbnail and unknown fields when given a stale reference", async () => {
+		const { metadata, metadataFile } = await legacyMedia("merge");
+		const base = "/api/storage/projects/merge/media";
+		const [entry] = await (await call(base)).json();
+		const changed = "data:image/jpeg,%FF%D8";
+		await atomicWrite(metadataFile, JSON.stringify({ ...metadata, thumbnailUrl: changed, futureField: "keep", words: ["before"], staged: true }));
+		expect((await call(`${base}/m`, "POST", {}, JSON.stringify(entry))).status).toBe(200);
+		const next = JSON.parse(await fs.readFile(metadataFile, "utf8"));
+		expect(next).toEqual({ ...metadata, thumbnailUrl: changed, futureField: "keep" });
+		expect((await call(`${base}/m`, "POST", {}, JSON.stringify({ ...entry, thumbnailUrl: inline }))).status).toBe(200);
+		expect(JSON.parse(await fs.readFile(metadataFile, "utf8"))).toEqual({ ...next, thumbnailUrl: inline });
+	});
 
-		const restore = await call(`${base}/m`, "PUT", {
-			"X-Media-Metadata": encodeURIComponent(JSON.stringify({ id: "m", fileName: "m.mp4", fileType: "video/mp4" })),
-		}, "original");
-		expect(restore.status).toBe(200);
-		for (const project of ["source", "duplicate"]) {
-			const media = `/api/storage/projects/${project}/media`;
-			expect((await call(`${media}/m`, "POST", {}, JSON.stringify({ ...metadata, thumbnailUrl }))).status).toBe(200);
+	test.each([false, true])("a filesystem copy survives removal of the original (hard links: %s)", async (linked) => {
+		const from = linked ? "linked-original" : "copied-original";
+		const to = linked ? "linked" : "copied";
+		const { dir } = await legacyMedia(from);
+		const copy = path.join(root, "projects", to, "media");
+		await fs.mkdir(path.join(copy, "_metadata"), { recursive: true });
+		const transfer = linked ? fs.link : fs.copyFile;
+		for (const file of ["m.mp4", "_metadata/m.json"]) await transfer(path.join(dir, file), path.join(copy, file));
+		await call(`/api/storage/projects/${from}/media/m`, "DELETE");
+		const [{ thumbnailUrl }] = await (await call(`/api/storage/projects/${to}/media`)).json();
+		expect(thumbnailUrl).toStartWith(`/api/storage/projects/${to}/media/`);
+		expect([...new Uint8Array(await (await call(thumbnailUrl)).arrayBuffer())]).toEqual(bytes);
+	});
+
+	test.each([false, true])("broken thumbnails return 404 and never prevent deletion (staged: %s)", async (staged) => {
+		const { dir, metadata, metadataFile } = await legacyMedia("broken");
+		const base = "/api/storage/projects/broken/media";
+		for (const thumbnailUrl of ["data:image/jpeg;base64,!!", "data:image/jpeg,%xy"]) {
+			await atomicWrite(metadataFile, JSON.stringify({ ...metadata, thumbnailUrl, staged }));
+			const [entry] = await (await call(base)).json();
+			expect((await call(entry.thumbnailUrl)).status).toBe(404);
 		}
-		const [{ thumbnailUrl: duplicateUrl }] = await (await call("/api/storage/projects/duplicate/media")).json();
-		expect(duplicateUrl).toStartWith("/api/storage/projects/duplicate/media/");
-		expect((await call(base, "DELETE")).status).toBe(200);
-		expect([...new Uint8Array(await (await call(duplicateUrl)).arrayBuffer())]).toEqual(bytes);
+		await fs.writeFile(path.join(dir, "_thumbnails"), "cannot create a directory here");
+		expect((await call(`${base}/m`, "DELETE")).status).toBe(200);
+		expect(await fs.readdir(dir)).toEqual(["_metadata", "_thumbnails"]);
+	});
+
+	test("undo and duplication can read the exact original data URL without modifying it", async () => {
+		const { metadataFile } = await legacyMedia("undo");
+		const base = "/api/storage/projects/undo/media";
+		const [{ thumbnailUrl }] = await (await call(base)).json();
+		const response = await call(thumbnailUrl, "GET", { Accept: "text/plain" });
+		expect(response.headers.get("Vary")).toBe("Accept");
+		expect(await response.text()).toBe(inline);
+		expect(JSON.parse(await fs.readFile(metadataFile, "utf8")).thumbnailUrl).toBe(inline);
 	});
 
 	test("cache bounds bytes and entry count and evicts the least recently used", () => {

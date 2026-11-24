@@ -3,6 +3,7 @@ import type { TProject, TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import type { MediaAsset, MediaLoadFailure } from "@/media/types";
 import { recordMediaFileVersion } from "./media-file-version";
+import { parseMediaThumbnailReference } from "./media-thumbnail-reference";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import { DiskAdapter, DiskSoundsAdapter } from "./disk-adapter";
@@ -96,6 +97,7 @@ class StorageService {
 	 * MB with thumbnails).
 	 */
 	private manifests = new Map<string, Map<string, MediaAssetData>>();
+	private removedThumbnails = new WeakMap<File, Map<string, string | undefined>>();
 	/** Manifests kept at once (the open project and the one before it); older ones are dropped. */
 	private static readonly MANIFEST_LIMIT = 2;
 
@@ -363,6 +365,16 @@ class StorageService {
 		onThumbnailStored?: (url: string) => void;
 	}): Promise<void> {
 
+		let thumbnailUrl = mediaAsset.thumbnailUrl;
+		const reference = parseMediaThumbnailReference(thumbnailUrl);
+		if (reference && thumbnailUrl) {
+			if (reference.projectId !== projectId || reference.mediaId !== mediaAsset.id) {
+				thumbnailUrl = await copyThumbnail(thumbnailUrl);
+			} else {
+				const removed = this.removedThumbnails.get(mediaAsset.file);
+				if (removed?.has(thumbnailUrl)) thumbnailUrl = removed.get(thumbnailUrl);
+			}
+		}
 		const metadata: MediaAssetData = {
 			id: mediaAsset.id,
 			name: mediaAsset.name,
@@ -377,7 +389,7 @@ class StorageService {
 			fps: mediaAsset.fps,
 			...(mediaAsset.hasVariableGifDelay && { hasVariableGifDelay: true }),
 			hasAudio: mediaAsset.hasAudio,
-			thumbnailUrl: mediaAsset.thumbnailUrl,
+			thumbnailUrl,
 			ephemeral: mediaAsset.ephemeral,
 			...(mediaAsset.words ? { words: mediaAsset.words } : {}),
 			...(staged ? { staged: true } : {}),
@@ -532,6 +544,15 @@ class StorageService {
 		await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), list.length) }, worker));
 		signal?.throwIfAborted();
 		return items.filter((item): item is MediaAsset => item !== null);
+	}
+
+	async captureRemovedThumbnail(asset: MediaAsset): Promise<void> {
+		const reference = asset.thumbnailUrl;
+		if (!reference || !parseMediaThumbnailReference(reference)) return;
+		const thumbnail = await copyThumbnail(reference);
+		let removed = this.removedThumbnails.get(asset.file);
+		if (!removed) this.removedThumbnails.set(asset.file, removed = new Map());
+		removed.set(reference, thumbnail);
 	}
 
 	async deleteMediaAsset({
@@ -690,3 +711,14 @@ class StorageService {
 
 export const storageService = new StorageService();
 export { StorageService };
+
+async function copyThumbnail(url: string): Promise<string | undefined> {
+	try {
+		const response = await fetch(url, { headers: { Accept: "text/plain" }, signal: AbortSignal.timeout(2_000) });
+		if (!response.ok) return;
+		const thumbnail = await response.text();
+		return /^data:image\//i.test(thumbnail) ? thumbnail : undefined;
+	} catch {
+		// The copied media file is still usable if its thumbnail cannot be fetched.
+	}
+}

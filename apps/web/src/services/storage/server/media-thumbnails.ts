@@ -1,12 +1,8 @@
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
 import path from "node:path";
-import { atomicWrite, projectDir, readJson, retryTransient, statFile, withIdleProjectLock } from "./files";
+import { projectDir, readJson, statFile } from "./files";
 
-const inlinePattern = /^data:(image\/(?:jpeg|png|webp|gif|avif|svg\+xml))(;base64)?,/i;
-const referencePattern = /^\/api\/storage\/projects\/([\w-]{1,128})\/media\/([\w-]{1,128})\/thumbnail\/([a-f0-9]{64})$/;
-const thumbnailFile = (projectId: string, key: string) =>
-	path.join(projectDir(projectId), "media", "_thumbnails", key);
+const inlinePattern = /^data:(image\/[a-z0-9][a-z0-9.+-]{0,63})(?:;[a-z0-9-]+=[^;,]*)*(;base64)?,/i;
 const metadataFile = (projectId: string, mediaId: string) =>
 	path.join(projectDir(projectId), "media", "_metadata", `${mediaId}.json`);
 const keyFor = (dataUrl: string) => createHash("sha256").update(dataUrl).digest("hex");
@@ -15,52 +11,8 @@ const urlFor = (projectId: string, mediaId: string, key: string) =>
 
 export function mediaThumbnailReference(projectId: string, mediaId: string, url: unknown) {
 	if (typeof url !== "string") return undefined;
-	return inlinePattern.test(url) ? urlFor(projectId, mediaId, keyFor(url)) : url;
-}
-
-async function readThumbnailFile(projectId: string, key: string): Promise<string | null> {
-	const file = thumbnailFile(projectId, key);
-	return retryTransient(() => fs.readFile(file, "utf8")).catch((error) => {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-		throw error;
-	});
-}
-
-async function readLegacyThumbnail(projectId: string, mediaId: string, key: string): Promise<string | null> {
-	const metadata = await readJson(metadataFile(projectId, mediaId));
-	const url = metadata?.thumbnailUrl;
-	return typeof url === "string" && inlinePattern.test(url) && keyFor(url) === key ? url : null;
-}
-
-/** Called under the destination project lock. The original metadata stays intact until the sidecar commits. */
-export async function storeMediaThumbnail(projectId: string, mediaId: string, url: unknown) {
-	if (typeof url !== "string" || !url) return undefined;
-	const reference = referencePattern.exec(url);
-	if (!reference) {
-		if (!inlinePattern.test(url)) return url;
-		const key = keyFor(url);
-		const file = thumbnailFile(projectId, key);
-		if (!await statFile(file)) await atomicWrite(file, url);
-		return urlFor(projectId, mediaId, key);
-	}
-	const [, sourceProjectId, sourceMediaId, key] = reference;
-	if (!await statFile(thumbnailFile(projectId, key))) {
-		// A duplicate may reference a thumbnail still embedded in its source project's metadata.
-		const data = await readThumbnailFile(sourceProjectId, key)
-			?? await readLegacyThumbnail(sourceProjectId, sourceMediaId, key)
-			?? await readThumbnailFile(sourceProjectId, key);
-		if (!data) throw new Error("Stored media thumbnail is unavailable");
-		await atomicWrite(thumbnailFile(projectId, key), data);
-	}
-	return urlFor(projectId, mediaId, key);
-}
-
-// Thumbnail references can outlive media metadata in the in-memory Undo history. Keep the small
-// content-addressed files with the project so Undo can restore them even after the file is deleted.
-export async function preserveMediaThumbnail(projectId: string, mediaId: string) {
-	const metadata = await readJson(metadataFile(projectId, mediaId));
-	const url = metadata?.thumbnailUrl;
-	if (typeof url === "string" && inlinePattern.test(url)) await storeMediaThumbnail(projectId, mediaId, url);
+	if (inlinePattern.test(url)) return urlFor(projectId, mediaId, keyFor(url));
+	return /^data:/i.test(url) ? undefined : url;
 }
 
 type Thumbnail = { type: string; bytes: Uint8Array<ArrayBuffer> };
@@ -99,50 +51,59 @@ export class MediaThumbnailCache {
 
 const cache = new MediaThumbnailCache();
 
-export async function readMediaThumbnail(projectId: string, mediaId: string, key: string, ifNoneMatch: string | null) {
+export async function readMediaThumbnail(projectId: string, mediaId: string, key: string, ifNoneMatch: string | null, inline = false) {
 	if (!/^[a-f0-9]{64}$/.test(key)) return new Response(null, { status: 404 });
-	const file = thumbnailFile(projectId, key);
-	const exists = await statFile(file);
-	const etag = `"${key}"`;
-	const cacheKey = `${file}:${mediaId}`;
-	let thumbnail = exists ? cache.get(cacheKey) : undefined;
-	if (!thumbnail) {
-		const legacy = await readLegacyThumbnail(projectId, mediaId, key);
-		const data = legacy ?? await readThumbnailFile(projectId, key);
-		const header = data && inlinePattern.exec(data);
-		if (!data || !header) return new Response(null, { status: 404 });
-		const payload = data.slice(header[0].length);
-		thumbnail = {
-			type: header[1],
-			bytes: header[2] ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload)),
-		};
-		// A thumbnail GET can always serve the legacy bytes while an upload or save holds the
-		// project lock. Only attempt its optional migration if it can start immediately.
-		if (!legacy || await migrateLegacyThumbnail(projectId, mediaId, key)) cache.set(cacheKey, thumbnail);
-	}
-	if (ifNoneMatch === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
-	return new Response(thumbnail.bytes, {
-		headers: {
+	try {
+		const file = metadataFile(projectId, mediaId);
+		const stat = await statFile(file);
+		if (!stat) return new Response(null, { status: 404 });
+		const cacheKey = `${file}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${key}`;
+		let thumbnail = inline ? undefined : cache.get(cacheKey);
+		if (!thumbnail) {
+			const data: unknown = (await readJson(file))?.thumbnailUrl;
+			const header = typeof data === "string" ? inlinePattern.exec(data) : null;
+			if (typeof data !== "string" || !header || keyFor(data) !== key) return new Response(null, { status: 404 });
+			const bytes = decodeDataPayload(data.slice(header[0].length), !!header[2]);
+			if (!bytes?.byteLength) return new Response(null, { status: 404 });
+			// Undo and duplication need the exact data URL to keep its content version stable.
+			if (inline) return new Response(data, {
+				headers: {
+					"Content-Type": "text/plain; charset=utf-8",
+					"X-Content-Type-Options": "nosniff",
+					"Cache-Control": "no-store",
+					Vary: "Accept",
+				},
+			});
+			thumbnail = { type: header[1], bytes };
+			cache.set(cacheKey, thumbnail);
+		}
+		const etag = `"${key}"`;
+		const headers = {
 			"Content-Type": thumbnail.type,
 			"Content-Security-Policy": "sandbox; default-src 'none'",
 			"X-Content-Type-Options": "nosniff",
 			"Cache-Control": "private, no-cache",
 			ETag: etag,
-		},
-	});
+			Vary: "Accept",
+		};
+		return ifNoneMatch === etag
+			? new Response(null, { status: 304, headers })
+			: new Response(thumbnail.bytes, { headers });
+	} catch {
+		return new Response(null, { status: 404 });
+	}
 }
 
-function migrateLegacyThumbnail(projectId: string, mediaId: string, key: string) {
-	return withIdleProjectLock(projectId, async () => {
-		const file = metadataFile(projectId, mediaId);
-		const metadata = await readJson(file);
-		const url = metadata?.thumbnailUrl;
-		if (typeof url !== "string" || !inlinePattern.test(url) || keyFor(url) !== key) return true;
-		const thumbnailUrl = await storeMediaThumbnail(projectId, mediaId, url);
-		await atomicWrite(file, JSON.stringify({ ...metadata, thumbnailUrl }));
-		return true;
-	})?.catch((error) => {
-		console.error(`Could not migrate media thumbnail (${mediaId}):`, error);
-		return false;
-	});
+function decodeDataPayload(payload: string, base64: boolean): Buffer<ArrayBuffer> | null {
+	if (/%(?![a-f\d]{2})/i.test(payload)) return null;
+	// decodeURIComponent rejects bytes such as %FF. Preserve each escaped octet directly.
+	const bytes = payload.includes("%")
+		? Buffer.concat(payload.split(/(%[a-f\d]{2})/i).map((part, i) =>
+			i % 2 ? Buffer.from(part.slice(1), "hex") : Buffer.from(part)))
+		: Buffer.from(payload);
+	if (!base64) return bytes;
+	const encoded = bytes.toString("latin1").replace(/[\t\n\f\r ]/g, "");
+	if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 === 1) return null;
+	if (encoded.endsWith("=") && encoded.length % 4 !== 0) return null;
+	return Buffer.from(encoded, "base64");
 }

@@ -24,10 +24,9 @@ import {
 } from "@/services/storage/server/projects";
 import {
 	mediaThumbnailReference,
-	preserveMediaThumbnail,
 	readMediaThumbnail,
-	storeMediaThumbnail,
 } from "@/services/storage/server/media-thumbnails";
+import { parseMediaThumbnailReference } from "@/services/storage/media-thumbnail-reference";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -210,7 +209,8 @@ async function handle(
 					return Response.json({ ok: true });
 				});
 			if (s[2] === "media" && s[3] && s[4] === "thumbnail" && s.length === 6 && method === "GET") {
-				return await readMediaThumbnail(id, safeId(s[3]), s[5], req.headers.get("if-none-match"));
+				return await readMediaThumbnail(id, safeId(s[3]), s[5], req.headers.get("if-none-match"),
+					req.headers.get("accept") === "text/plain");
 			}
 			if (s[2] === "media" && s[3] && s.length === 4) {
 				const mediaId = safeId(s[3]);
@@ -247,20 +247,25 @@ async function handle(
 						const metadata = await req.json();
 						if (!old || metadata.id !== mediaId)
 							return new Response(null, { status: 400 });
-						const thumbnailUrl = await storeMediaThumbnail(id, mediaId, metadata.thumbnailUrl);
+						const thumbnailUrl = parseMediaThumbnailReference(metadata.thumbnailUrl)
+							? old.thumbnailUrl
+							: metadata.thumbnailUrl;
 						await atomicWrite(
 							file,
-							JSON.stringify({ ...metadata, thumbnailUrl, diskFile: old.diskFile }),
+							JSON.stringify({
+								...old, ...metadata, thumbnailUrl, diskFile: old.diskFile,
+								words: metadata.words, staged: metadata.staged,
+							}),
 						);
+						const reference = mediaThumbnailReference(id, mediaId, thumbnailUrl);
 						return Response.json({ ok: true }, {
-							headers: thumbnailUrl && thumbnailUrl !== metadata.thumbnailUrl
-								? { "X-Media-Thumbnail": thumbnailUrl }
+							headers: reference && reference !== thumbnailUrl
+								? { "X-Media-Thumbnail": reference }
 								: undefined,
 						});
 					});
 				if (method === "DELETE")
 					return await withProjectLock(id, async () => {
-						await preserveMediaThumbnail(id, mediaId);
 						await removeMedia(id, mediaId);
 						return Response.json({ ok: true });
 					});

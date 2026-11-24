@@ -122,12 +122,6 @@ export async function withProjectLock<T>(
 	}
 }
 
-/** Optional maintenance can skip its write if the project already has work queued. */
-export function withIdleProjectLock<T>(id: string, action: () => Promise<T>): Promise<T> | undefined {
-	if (locks.has(id)) return;
-	return withProjectLock(id, action);
-}
-
 export async function saveMedia(
 	id: string,
 	mediaId: string,
@@ -175,11 +169,11 @@ export async function saveMedia(
 }
 
 /**
- * Media metadata, parsed once per version of its file: every range request of a playing video reads it,
- * and spoken words can make it large.
+ * Cache the fields needed by range requests without retaining embedded thumbnails or spoken words.
  */
-const metadataCache = new Map<string, { mtimeMs: number; size: number; meta: any }>();
-async function readMetadataCached(file: string): Promise<any> {
+type MediaLocation = { diskFile: string; fileType: string | undefined };
+const metadataCache = new Map<string, { mtimeMs: number; size: number; meta: MediaLocation | null }>();
+async function readMetadataCached(file: string): Promise<MediaLocation | null> {
 	let stat: { mtimeMs: number; size: number };
 	try {
 		stat = await fs.stat(file);
@@ -189,7 +183,10 @@ async function readMetadataCached(file: string): Promise<any> {
 	}
 	const cached = metadataCache.get(file);
 	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.meta;
-	const meta = await readJson(file);
+	const stored = await readJson(file);
+	const meta = typeof stored?.diskFile === "string"
+		? { diskFile: stored.diskFile, fileType: typeof stored.fileType === "string" ? stored.fileType : undefined }
+		: null;
 	metadataCache.delete(file);
 	metadataCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, meta });
 	if (metadataCache.size > 256) metadataCache.delete(metadataCache.keys().next().value as string);
@@ -268,7 +265,10 @@ export async function removeMedia(id: string, mediaId: string): Promise<void> {
 	const dir = path.join(projectDir(id), "media");
 	safeId(mediaId);
 	const metaFile = path.join(dir, "_metadata", `${mediaId}.json`);
-	const meta = await readJson(metaFile);
+	const meta = await readJson(metaFile).catch((error) => {
+		if (error instanceof SyntaxError) return null;
+		throw error;
+	});
 	const own = new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`);
 	const files = meta && own.test(meta.diskFile)
 		? [meta.diskFile as string]
