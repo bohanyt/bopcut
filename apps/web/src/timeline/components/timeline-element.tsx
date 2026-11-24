@@ -1264,6 +1264,7 @@ function EffectsButton({
 	element: VideoElement | ImageElement;
 	track: ClipTrack;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const setActiveTab = usePropertiesStore((s) => s.setActiveTab);
 
@@ -1278,6 +1279,8 @@ function EffectsButton({
 	return (
 		<button
 			type="button"
+			data-timeline-effects
+			aria-label={t("properties.openEffects")}
 			className="flex shrink-0 justify-center text-white cursor-pointer"
 			onMouseDown={(event) => event.stopPropagation()}
 			onClick={handleClick}
@@ -1285,6 +1288,15 @@ function EffectsButton({
 			<HugeiconsIcon icon={MagicWand05Icon} size={12} />
 		</button>
 	);
+}
+
+export function getClipThumbnailUrl(
+	element: VideoElement | ImageElement,
+	mediaAsset: MediaAsset | undefined,
+) {
+	return element.type === "video"
+		? mediaAsset?.thumbnailUrl
+		: (mediaAsset?.thumbnailUrl ?? mediaAsset?.url);
 }
 
 function TiledMediaContent({
@@ -1295,10 +1307,7 @@ function TiledMediaContent({
 	track: ClipTrack;
 }) {
 	const mediaAsset = useTimelineMediaAsset(element.mediaId);
-	const imageUrl =
-		element.type === "video"
-			? mediaAsset?.thumbnailUrl
-			: (mediaAsset?.thumbnailUrl ?? mediaAsset?.url);
+	const imageUrl = getClipThumbnailUrl(element, mediaAsset);
 
 	if (!imageUrl) {
 		return (

@@ -334,16 +334,27 @@ export function AudioWaveform({
 		}
 
 		let frame: number | null = null;
-		const handleScroll = () => {
+		const scheduleDraw = () => {
 			if (frame !== null) return;
 			frame = requestAnimationFrame(() => {
 				frame = null;
 				drawVisible();
 			});
 		};
-		scrollParent.addEventListener("scroll", handleScroll, { passive: true });
+		const viewportResize = new ResizeObserver(scheduleDraw);
+		viewportResize.observe(scrollParent);
+		const visibility = new IntersectionObserver(
+			([entry]) => {
+				if (entry.isIntersecting) scheduleDraw();
+			},
+			{ root: scrollParent, threshold: [0, Number.EPSILON] },
+		);
+		visibility.observe(container);
+		scrollParent.addEventListener("scroll", scheduleDraw, { passive: true });
 		return () => {
-			scrollParent.removeEventListener("scroll", handleScroll);
+			scrollParent.removeEventListener("scroll", scheduleDraw);
+			viewportResize.disconnect();
+			visibility.disconnect();
 			if (frame !== null) cancelAnimationFrame(frame);
 		};
 	}, [drawVisible]);

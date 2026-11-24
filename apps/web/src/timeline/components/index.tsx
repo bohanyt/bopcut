@@ -825,10 +825,11 @@ function TimelineTrackRows({
 	const dragged = dragView.kind === "dragging" ? dragView : undefined;
 	const sortedTracks = tracks
 		.map((track, index) => {
+			if (!dragged) return { track, index, hasDragged: false };
 			const clipIndex = getTrackClipIndex(track.elements);
-			const hasDragged = dragged
-				? [...dragged.memberTimeOffsets.keys()].some((id) => clipIndex.get(id))
-				: false;
+			const hasDragged = [...dragged.memberTimeOffsets.keys()].some((id) =>
+				clipIndex.get(id),
+			);
 			return { track, index, hasDragged };
 		})
 		.sort((a, b) => Number(a.hasDragged) - Number(b.hasDragged));

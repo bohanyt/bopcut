@@ -114,4 +114,15 @@ describe("timeline clip window", () => {
 			}),
 		).toEqual([{ trackId: "bottom", elementId: "bottom-clip" }]);
 	});
+
+	test("evicts indexes for old clip arrays retained by editing history", () => {
+		const revisions: TimelineTrack["elements"][] = Array.from(
+			{ length: 30 },
+			() => [],
+		);
+		const oldest = getTrackClipIndex(revisions[0]);
+		expect(getTrackClipIndex(revisions[0])).toBe(oldest);
+		for (const elements of revisions.slice(1)) getTrackClipIndex(elements);
+		expect(getTrackClipIndex(revisions[0])).not.toBe(oldest);
+	});
 });
