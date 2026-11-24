@@ -21,6 +21,7 @@ import {
 	SectionTitle,
 } from "@/components/section";
 import { BackgroundContent } from "./background";
+import { ProxySettings } from "./proxies";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { NumberField } from "@/components/ui/number-field";
@@ -272,6 +273,7 @@ export function SettingsView() {
 		>
 			{view === "project-info" && (
 				<div className="flex flex-col">
+					<ProxySettings />
 					<Section showTopBorder={false}>
 						<SectionHeader>
 							<SectionTitle className="flex-1">{t("common.name")}</SectionTitle>

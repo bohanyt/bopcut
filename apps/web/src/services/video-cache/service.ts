@@ -3,6 +3,7 @@ import {
 	BlobSource,
 	EncodedPacketSink,
 	Input,
+	UrlSource,
 	VideoSampleSink,
 	type InputVideoTrack,
 	type VideoSample,
@@ -171,8 +172,8 @@ class VideoCursor {
 
 /** Video samples and surfaces belong to one renderer. A cursor serves one source time per frame. */
 export class VideoCache {
-	private sources = new Map<File, VideoSource>();
-	private failedSources = new WeakMap<File, { error: unknown }>();
+	private sources = new Map<File | string, VideoSource>();
+	private failedSources = new Map<File | string, { error: unknown }>();
 
 	async getFrameAt({
 		file,
@@ -182,7 +183,7 @@ export class VideoCache {
 		throwOnSeekError = false,
 		signal,
 	}: {
-		file: File;
+		file: File | string;
 		time: number;
 		getScale?: (source: VideoSize) => number;
 		maxTextureDimension?: number;
@@ -253,17 +254,17 @@ export class VideoCache {
 		return request.cursor.rasterize(sample, track, scale, maxTextureDimension);
 	}
 
-	private getSource(file: File): VideoSource {
+	private getSource(file: File | string): VideoSource {
 		const existing = this.sources.get(file);
 		if (existing) return existing;
 
-		const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+		const input = new Input({ source: typeof file === "string" ? new UrlSource(file) : new BlobSource(file), formats: ALL_FORMATS });
 		const track = getDecodableVideoTrack(input).catch((error) => {
 			if (this.sources.get(file)?.input === input) {
 				this.sources.delete(file);
 				this.failedSources.set(file, { error });
 				input.dispose();
-				console.warn(`Failed to open video "${file.name}":`, error);
+				console.warn(`Failed to open video "${typeof file === "string" ? file : file.name}":`, error);
 			}
 			throw error;
 		});
@@ -294,6 +295,6 @@ export class VideoCache {
 			source.input.dispose();
 		}
 		this.sources.clear();
-		this.failedSources = new WeakMap();
+		this.failedSources.clear();
 	}
 }

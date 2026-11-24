@@ -1,6 +1,16 @@
 import type { en } from "./en";
 
 export const id = {
+	"proxies.title": "Penggeseran playhead mulus (salinan ringan)",
+	"proxies.softwareEncoder": "Izinkan pengodean perangkat lunak",
+	"proxies.preparing": "Menyiapkan {done} dari {total}",
+	"proxies.ready": "Siap",
+	"proxies.missing": "Memerlukan FFmpeg",
+	"proxies.disk": "Ruang penyimpanan tidak cukup",
+	"proxies.off": "Nonaktif",
+	"proxies.software": "Nonaktif · Pengode perangkat keras tidak tersedia",
+	"proxies.diskUsage": "Penyimpanan proksi: {size} MB",
+	"proxies.deleteAll": "Hapus semua proksi",
 	"common.cancel": "Batal",
 	"common.close": "Tutup",
 	"common.collapseSection": "Tutup bagian",

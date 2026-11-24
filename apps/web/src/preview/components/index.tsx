@@ -7,6 +7,8 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+import { visibleVideoNodes } from "@/services/renderer/resolve";
+import { useProxySession, useProxyStore } from "@/services/proxies/client";
 import { previewCanvasSize } from "@/canvas/sizes";
 import { GraphicsDeviceError } from "@/services/renderer/device-lifecycle";
 import { RecoverableSurfaceError, rendererDevice } from "@/services/renderer/renderer-device";
@@ -161,6 +163,7 @@ function PreviewCanvas({
 	const areaEditing = useBookmarkArea((state) => state.editing !== null);
 	const viewportRef = useRef<HTMLDivElement>(null);
 	const lastFrameRef = useRef(-1);
+	const lastWasProxy = useRef(false);
 	const lastSceneRef = useRef<RootNode | null>(null);
 	const schedulerRef = useRef<ReturnType<typeof createPreviewFrameScheduler> | null>(null);
 	const renderSignalRef = useRef<AbortSignal | null>(null);
@@ -169,6 +172,7 @@ function PreviewCanvas({
 	const viewportSize = useContainerSize({ containerRef: viewportRef });
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
+	useProxySession(editor, activeProject.metadata.id);
 	const renderTree = useEditor((e) => e.renderer.getRenderTree());
 	const viewport = usePreviewViewportState({
 		canvasHeight: nativeHeight,
@@ -241,9 +245,12 @@ function PreviewCanvas({
 			(TICKS_PER_SECOND * renderer.fps.denominator) / renderer.fps.numerator,
 		);
 		const frame = Math.floor(renderTime / ticksPerFrame);
+		const ready = useProxyStore.getState().ready;
+		const proxy = ready.size > 0 && editor.playback.getIsScrubbing() && !editor.playback.getIsPlaying();
 
 		if (
 			frame === lastFrameRef.current &&
+			proxy === lastWasProxy.current &&
 			renderTree === lastSceneRef.current
 		) {
 			return;
@@ -252,7 +259,19 @@ function PreviewCanvas({
 		const signal = renderSignalRef.current;
 		if (!signal) return;
 		const graphics = rendererDevice.signal;
-		const task = editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
+		if (editor.renderer.isExportRunning()) return;
+		const visible = proxy ? visibleVideoNodes(renderTree, renderTime) : undefined;
+		const task = visible ? renderer.render({ node: renderTree, time: renderTime, signal, proxy: {
+			proxies: ready,
+			valid() {
+				if (!editor.playback.getIsScrubbing() || editor.playback.getIsPlaying() ||
+					editor.renderer.getRenderTree() !== renderTree || useProxyStore.getState().ready.size === 0) return false;
+				const now = Math.min(editor.playback.getCurrentTime(), editor.timeline.getLastFrameTime());
+				if (now === renderTime) return true;
+				const current = visibleVideoNodes(renderTree, now);
+				return current.size === visible.size && [...current].every(node => visible.has(node));
+			},
+		} }) : editor.renderer.renderPreview({ renderer, node: renderTree, time: renderTime, signal });
 		if (!task) return;
 		return task
 			.then(() => {
@@ -263,10 +282,11 @@ function PreviewCanvas({
 				if (outputCanvas.parentElement !== mount) mount.replaceChildren(outputCanvas);
 				lastSceneRef.current = renderTree;
 				lastFrameRef.current = frame;
+				lastWasProxy.current = proxy;
 			})
 			.catch((error) => {
 				if (!signal.aborted && !graphics.aborted && error instanceof RecoverableSurfaceError) throw error;
-				if (!signal.aborted && !(error instanceof GraphicsDeviceError)) {
+				if (!signal.aborted && !(error instanceof GraphicsDeviceError) && !(error instanceof DOMException && error.name === "AbortError")) {
 					console.error("Preview render failed:", error);
 				}
 			});
@@ -288,6 +308,7 @@ function PreviewCanvas({
 		const onVisibility = () => { if (!document.hidden) redraw(); };
 		document.addEventListener("visibilitychange", onVisibility);
 		const unsubscribe = [
+			editor.playback.subscribeState(scheduler.request),
 			editor.playback.onUpdate(scheduler.playbackTick),
 			editor.playback.onSeek(scheduler.request),
 			editor.renderer.subscribe(scheduler.request),

@@ -3,6 +3,7 @@
 export const windowsWorker = String.raw`
 	delete process.env.BOPENCUT_TOOL_WORKER;
 	delete process.env.BOPENCUT_TOOL_EXECUTABLE;
+	if (process.env.BOPENCUT_TOOL_BACKGROUND === "1") require("node:os").setPriority(0, 10);
 	Promise.all([import("node:readline"), import("node:child_process")]).then(([{ createInterface }, { spawn }]) => {
 		const input = createInterface({ input: process.stdin });
 		input.once("line", (line) => {

@@ -214,6 +214,10 @@ export async function mediaResponse(
 	if (!meta || !new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(meta.diskFile))
 		return new Response(null, { status: 404 });
 	const file = path.join(dir, meta.diskFile);
+	return streamMediaFile(file, meta.fileType, range);
+}
+
+export async function streamMediaFile(file: string, fileType: string | undefined, range: string | null): Promise<Response> {
 	// Opened (with retries on transient Windows locks) before the response starts, then streamed from
 	// that handle: a lock can no longer turn into a failed body read halfway through a response.
 	const handle = await retryTransient(() => fs.open(file, "r")).catch((error: unknown) => {
@@ -229,7 +233,7 @@ export async function mediaResponse(
 			status = 200;
 		const headers: Record<string, string> = {
 			"Accept-Ranges": "bytes",
-			"Content-Type": meta.fileType || "application/octet-stream",
+			"Content-Type": fileType || "application/octet-stream",
 			"Cache-Control": "no-store",
 			"X-Media-Revision": `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`,
 		};

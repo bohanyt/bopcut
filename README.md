@@ -67,3 +67,8 @@ Jalankan bopencut, buka agen coding di folder repo, lalu minta **"baca `AGENTS.m
 ## Lisensi
 
 MIT, sama seperti OpenCut. Lihat [`LICENSE`](LICENSE).
+
+
+### Penggeseran playhead lebih mulus
+
+Pengaturan proyek menyediakan **Penggeseran playhead mulus (salinan ringan)**. FFmpeg opsional menyiapkan salinan lokal 540p untuk menggeser playhead dengan penunjuk. Pratinjau saat dijeda, pemutaran, dan ekspor memakai media asli. Tembolok salinan dapat dihapus dari pengaturan.

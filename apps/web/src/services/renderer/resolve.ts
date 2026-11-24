@@ -24,6 +24,7 @@ import type { Transform } from "@/rendering";
 import { applyShake, readShakeSettings } from "@/rendering/shake";
 import { waitWithAbort } from "@/utils/abort";
 import type { CanvasRenderer } from "./canvas-renderer";
+import { proxyTime, type ProxyInfo } from "@/services/proxies/mapping";
 import type { AnyBaseNode } from "./nodes/base-node";
 import {
 	BlurBackgroundNode,
@@ -58,20 +59,42 @@ type ResolveContext = {
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
+	proxies?: ReadonlyMap<string, { info: ProxyInfo; file: File }>;
 };
+
+export function visibleVideoNodes(root: AnyBaseNode, time: number): Set<AnyBaseNode> {
+	const result = new Set<AnyBaseNode>();
+	function visit(node: AnyBaseNode, at: number) {
+		if (node instanceof CompoundNode || node instanceof VideoNode ||
+			(node instanceof BlurBackgroundNode && node.params.mediaType === "video")) {
+			const { timeOffset, duration } = node.params;
+			if (at < timeOffset || at >= timeOffset + duration) return;
+			if (node instanceof CompoundNode) {
+				visit(node.params.content, at - timeOffset + node.params.trimStart);
+				return;
+			}
+			result.add(node);
+		}
+		for (const child of node.children) visit(child, at);
+	}
+	visit(root, time);
+	return result;
+}
 
 export async function resolveRenderTree({
 	node,
 	renderer,
 	time,
 	signal,
+	proxies,
 }: {
 	node: AnyBaseNode;
 	renderer: CanvasRenderer;
 	time: number;
 	signal?: AbortSignal;
+	proxies?: ResolveContext["proxies"];
 }): Promise<void> {
-	await resolveNode({ node, context: { renderer, time, signal } });
+	await resolveNode({ node, context: { renderer, time, signal, proxies } });
 }
 
 async function resolveNode({
@@ -359,14 +382,32 @@ function readVideoFrame(
 	context: ResolveContext,
 	getScale: (source: { width: number; height: number }) => number,
 ) {
-	return readMediaSource(mediaId, context, () => context.renderer.videoCache.getFrameAt({
+	const seconds = mediaTimeToSeconds({ time: roundMediaTime({ time }) });
+	const readOriginal = () => context.renderer.videoCache.getFrameAt({
 		file,
-		time: mediaTimeToSeconds({ time: roundMediaTime({ time }) }),
+		time: seconds,
 		getScale: context.renderer.exactFrames ? undefined : getScale,
 		maxTextureDimension: getRendererLimits().maxTextureDimension,
 		throwOnSeekError: context.renderer.strictVideoDecoding,
 		signal: context.signal,
-	}));
+	});
+	const candidate = context.proxies?.get(mediaId);
+	if (!candidate || candidate.file !== file) return readMediaSource(mediaId, context, readOriginal);
+	return readMediaSource(mediaId, context, async () => {
+		const info = candidate.info;
+		const mapped = proxyTime(info, seconds);
+		if (mapped !== undefined) {
+			try {
+				const frame = await context.renderer.videoCache.getFrameAt({
+					file: new URL("/api/proxies?key=" + info.key, location.origin).href,
+					time: mapped, maxTextureDimension: getRendererLimits().maxTextureDimension,
+					signal: context.signal,
+				});
+				if (frame) return { ...frame, sourceWidth: info.width, sourceHeight: info.height };
+			} catch { context.signal?.throwIfAborted(); }
+		}
+		return readOriginal();
+	});
 }
 
 async function readMediaSource<T>(

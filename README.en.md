@@ -67,3 +67,8 @@ Run bopencut, open your coding agent in the repository, and ask it to **"read `A
 ## License
 
 MIT, as with OpenCut. See [`LICENSE`](LICENSE).
+
+
+### Smoother scrubbing
+
+Project settings include **Smooth scrubbing (light copies)**. Optional FFmpeg prepares local 540p copies for pointer scrubbing. Paused preview, playback and export use the original media. The derived cache can be cleared from settings.
