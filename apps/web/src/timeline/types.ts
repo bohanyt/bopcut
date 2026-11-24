@@ -313,6 +313,7 @@ export interface ComputeDropTargetParams {
 	verticalDragDirection?: "up" | "down" | null;
 	startTimeOverride?: MediaTime;
 	excludeElementId?: string;
+	excludeElementIds?: ReadonlySet<string>;
 	targetElementTypes?: string[];
 }
 

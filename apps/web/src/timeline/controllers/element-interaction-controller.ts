@@ -105,6 +105,7 @@ interface MousedownSnapshot {
 
 interface DragProgress {
 	moveGroup: MoveGroup;
+	movingElementIds?: ReadonlySet<string>;
 	// Pre-minted per member so the identity of any "new track" created by
 	// this drag stays stable across mousemove-driven drop-target recomputes.
 	// `resolveGroupMoveForDrop` runs every mousemove and emits a
@@ -207,6 +208,7 @@ function resolveDropTarget({
 	zoomLevel,
 	snappedTime,
 	verticalDragDirection,
+	movingElementIds,
 }: {
 	clientX: number;
 	clientY: number;
@@ -217,6 +219,7 @@ function resolveDropTarget({
 	zoomLevel: number;
 	snappedTime: MediaTime;
 	verticalDragDirection: "up" | "down" | null;
+	movingElementIds?: ReadonlySet<string>;
 }): DropTarget | null {
 	const containerRect = viewport
 		.getTracksContainerEl()
@@ -246,6 +249,7 @@ function resolveDropTarget({
 		zoomLevel,
 		startTimeOverride: snappedTime,
 		excludeElementId: movingElement.id,
+		excludeElementIds: movingElementIds,
 		verticalDragDirection,
 	});
 }
@@ -516,6 +520,7 @@ export class ElementInteractionController {
 			viewport,
 			zoomLevel,
 			snappedTime,
+			movingElementIds: drag.movingElementIds,
 			verticalDragDirection: verticalDirection({
 				startMouseY: mousedown.origin.y,
 				currentMouseY: clientY,
@@ -623,6 +628,9 @@ export class ElementInteractionController {
 
 		const drag: DragProgress = {
 			moveGroup,
+			movingElementIds: moveGroup.members.length > 1
+				? new Set(moveGroup.members.map(({ elementId }) => elementId))
+				: undefined,
 			reservedNewTrackIds: moveGroup.members.map(() => generateUUID()),
 			currentTime: snappedTime,
 			currentMouseX: clientX,
