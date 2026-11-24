@@ -362,14 +362,14 @@ class StorageService {
 		mediaAsset: MediaAsset;
 		/** Saved for a draft that has not committed: hidden from loads until promoteMediaAssets. */
 		staged?: boolean;
-		onThumbnailStored?: (url: string) => void;
+		onThumbnailStored?: (url: string | undefined) => void;
 	}): Promise<void> {
 
 		let thumbnailUrl = mediaAsset.thumbnailUrl;
 		const reference = parseMediaThumbnailReference(thumbnailUrl);
 		if (reference && thumbnailUrl) {
 			if (reference.projectId !== projectId || reference.mediaId !== mediaAsset.id) {
-				thumbnailUrl = await copyThumbnail(thumbnailUrl);
+				thumbnailUrl = await copyThumbnail(reference);
 			} else {
 				const removed = this.removedThumbnails.get(mediaAsset.file);
 				if (removed?.has(thumbnailUrl)) thumbnailUrl = removed.get(thumbnailUrl);
@@ -397,7 +397,7 @@ class StorageService {
 
 		metadata.thumbnailUrl = await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
 		this.manifests.get(projectId)?.set(metadata.id, metadata);
-		if (metadata.thumbnailUrl) onThumbnailStored?.(metadata.thumbnailUrl);
+		onThumbnailStored?.(metadata.thumbnailUrl);
 	}
 
 	/** Sets (or replaces) the spoken words stored with a media file. */
@@ -547,12 +547,13 @@ class StorageService {
 	}
 
 	async captureRemovedThumbnail(asset: MediaAsset): Promise<void> {
-		const reference = asset.thumbnailUrl;
-		if (!reference || !parseMediaThumbnailReference(reference)) return;
+		const url = asset.thumbnailUrl;
+		const reference = parseMediaThumbnailReference(url);
+		if (!url || !reference) return;
 		const thumbnail = await copyThumbnail(reference);
 		let removed = this.removedThumbnails.get(asset.file);
 		if (!removed) this.removedThumbnails.set(asset.file, removed = new Map());
-		removed.set(reference, thumbnail);
+		removed.set(url, thumbnail);
 	}
 
 	async deleteMediaAsset({
@@ -712,8 +713,9 @@ class StorageService {
 export const storageService = new StorageService();
 export { StorageService };
 
-async function copyThumbnail(url: string): Promise<string | undefined> {
+async function copyThumbnail({ projectId, mediaId }: { projectId: string; mediaId: string }): Promise<string | undefined> {
 	try {
+		const url = `/api/storage/projects/${projectId}/media/${mediaId}/thumbnail`;
 		const response = await fetch(url, { headers: { Accept: "text/plain" }, signal: AbortSignal.timeout(2_000) });
 		if (!response.ok) return;
 		const thumbnail = await response.text();

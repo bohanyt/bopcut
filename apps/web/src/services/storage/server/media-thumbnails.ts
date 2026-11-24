@@ -51,8 +51,8 @@ export class MediaThumbnailCache {
 
 const cache = new MediaThumbnailCache();
 
-export async function readMediaThumbnail(projectId: string, mediaId: string, key: string, ifNoneMatch: string | null, inline = false) {
-	if (!/^[a-f0-9]{64}$/.test(key)) return new Response(null, { status: 404 });
+export async function readMediaThumbnail(projectId: string, mediaId: string, key: string | undefined, ifNoneMatch: string | null, inline = false) {
+	if (key === undefined ? !inline : !/^[a-f0-9]{64}$/.test(key)) return new Response(null, { status: 404 });
 	try {
 		const file = metadataFile(projectId, mediaId);
 		const stat = await statFile(file);
@@ -62,7 +62,7 @@ export async function readMediaThumbnail(projectId: string, mediaId: string, key
 		if (!thumbnail) {
 			const data: unknown = (await readJson(file))?.thumbnailUrl;
 			const header = typeof data === "string" ? inlinePattern.exec(data) : null;
-			if (typeof data !== "string" || !header || keyFor(data) !== key) return new Response(null, { status: 404 });
+			if (typeof data !== "string" || !header || (key !== undefined && keyFor(data) !== key)) return new Response(null, { status: 404 });
 			const bytes = decodeDataPayload(data.slice(header[0].length), !!header[2]);
 			if (!bytes?.byteLength) return new Response(null, { status: 404 });
 			// Undo and duplication need the exact data URL to keep its content version stable.
@@ -92,6 +92,12 @@ export async function readMediaThumbnail(projectId: string, mediaId: string, key
 	} catch {
 		return new Response(null, { status: 404 });
 	}
+}
+
+export function isEmbeddedMediaThumbnail(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const header = inlinePattern.exec(value);
+	return !!header && !!decodeDataPayload(value.slice(header[0].length), !!header[2])?.byteLength;
 }
 
 function decodeDataPayload(payload: string, base64: boolean): Buffer<ArrayBuffer> | null {

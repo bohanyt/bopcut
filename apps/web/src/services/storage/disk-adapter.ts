@@ -219,11 +219,12 @@ export class DiskAdapter {
 	}
 	/** Replaces the metadata of stored media (its file stays). */
 	async updateMediaMetadata(id: string, metadata: MediaAssetData): Promise<void> {
+		const { thumbnailUrl: _thumbnail, ...fields } = metadata;
 		await checked(
 			await fetch(this.mediaUrl(id, metadata.id), {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(metadata),
+				body: JSON.stringify(fields),
 			}),
 		);
 	}

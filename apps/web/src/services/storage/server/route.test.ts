@@ -168,6 +168,9 @@ describe("media thumbnails", () => {
 		const [current] = await (await call(`/api/storage/projects/${id}/media`)).json();
 		const response = await call(current.thumbnailUrl);
 		expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([...bytes, 128]);
+		const currentUrl = `/api/storage/projects/${id}/media/m/thumbnail`;
+		expect((await call(currentUrl)).status).toBe(404);
+		expect(await (await call(currentUrl, "GET", { Accept: "text/plain" })).text()).toBe(updated.thumbnailUrl);
 		expect(JSON.parse(await fs.readFile(metadataFile, "utf8"))).toEqual(updated);
 	});
 
@@ -177,11 +180,41 @@ describe("media thumbnails", () => {
 		const [entry] = await (await call(base)).json();
 		const changed = "data:image/jpeg,%FF%D8";
 		await atomicWrite(metadataFile, JSON.stringify({ ...metadata, thumbnailUrl: changed, futureField: "keep", words: ["before"], staged: true }));
-		expect((await call(`${base}/m`, "POST", {}, JSON.stringify(entry))).status).toBe(200);
+		expect((await call(`${base}/m`, "POST", {}, JSON.stringify({ ...entry, futureField: "stale", invented: true }))).status).toBe(200);
 		const next = JSON.parse(await fs.readFile(metadataFile, "utf8"));
 		expect(next).toEqual({ ...metadata, thumbnailUrl: changed, futureField: "keep" });
 		expect((await call(`${base}/m`, "POST", {}, JSON.stringify({ ...entry, thumbnailUrl: inline }))).status).toBe(200);
 		expect(JSON.parse(await fs.readFile(metadataFile, "utf8"))).toEqual({ ...next, thumbnailUrl: inline });
+	});
+
+	test("metadata POST reads disk after the body and preserves a newer malformed thumbnail until explicit clear", async () => {
+		const id = "pending-body";
+		const base = `/api/storage/projects/${id}/media/m`;
+		const { metadata, metadataFile } = await legacyMedia(id);
+		const { thumbnailUrl: _thumbnail, ...fields } = metadata;
+		const reading = Promise.withResolvers<void>();
+		const parsed = Promise.withResolvers<void>();
+		const req = new Request(`http://127.0.0.1:3021${base}`, { method: "POST" });
+		req.json = async () => {
+			reading.resolve();
+			await parsed.promise;
+			return { ...fields, name: "renamed", futureField: "stale" };
+		};
+		const posting = POST(req, { params: Promise.resolve({ slug: ["projects", id, "media", "m"] }) });
+		await reading.promise;
+		const malformed = { unexpected: "thumbnail value" };
+		try {
+			await atomicWrite(metadataFile, JSON.stringify({ ...metadata, thumbnailUrl: malformed, futureField: "current" }));
+		} finally {
+			parsed.resolve();
+		}
+		expect((await posting).status).toBe(200);
+		const current = { ...fields, thumbnailUrl: malformed, futureField: "current", name: "renamed" };
+		expect(JSON.parse(await fs.readFile(metadataFile, "utf8"))).toEqual(current);
+		expect((await call(base, "POST", {}, JSON.stringify({ ...fields, thumbnailUrl: "data:image/jpeg;base64,!!" }))).status).toBe(200);
+		expect(JSON.parse(await fs.readFile(metadataFile, "utf8")).thumbnailUrl).toEqual(malformed);
+		expect((await call(base, "POST", {}, JSON.stringify({ ...fields, thumbnailUrl: null }))).status).toBe(200);
+		expect(JSON.parse(await fs.readFile(metadataFile, "utf8"))).toEqual({ ...fields, futureField: "current" });
 	});
 
 	test.each([false, true])("a filesystem copy survives removal of the original (hard links: %s)", async (linked) => {
@@ -206,9 +239,8 @@ describe("media thumbnails", () => {
 			const [entry] = await (await call(base)).json();
 			expect((await call(entry.thumbnailUrl)).status).toBe(404);
 		}
-		await fs.writeFile(path.join(dir, "_thumbnails"), "cannot create a directory here");
 		expect((await call(`${base}/m`, "DELETE")).status).toBe(200);
-		expect(await fs.readdir(dir)).toEqual(["_metadata", "_thumbnails"]);
+		expect((await fs.readdir(dir)).sort()).toEqual(["_metadata"]);
 	});
 
 	test("undo and duplication can read the exact original data URL without modifying it", async () => {

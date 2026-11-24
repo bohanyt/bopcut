@@ -23,10 +23,11 @@ import {
 	writeProjectThumbnail,
 } from "@/services/storage/server/projects";
 import {
+	isEmbeddedMediaThumbnail,
 	mediaThumbnailReference,
 	readMediaThumbnail,
 } from "@/services/storage/server/media-thumbnails";
-import { parseMediaThumbnailReference } from "@/services/storage/media-thumbnail-reference";
+import type { MediaAssetData } from "@/services/storage/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,11 @@ function allowed(req: Request): boolean {
 }
 const marker = (id: string) =>
 	path.join(dataRoot(), "migrated", `${safeId(id)}.json`);
+const mediaEditorFields = {
+	id: true, name: true, fileName: true, fileType: true, type: true, size: true, lastModified: true,
+	width: true, height: true, duration: true, fps: true, hasVariableGifDelay: true, hasAudio: true,
+	ephemeral: true, staged: true, words: true,
+} satisfies Record<Exclude<keyof MediaAssetData, "thumbnailUrl">, true>;
 async function names(dir: string): Promise<string[]> {
 	try {
 		return await fs.readdir(dir);
@@ -208,9 +214,11 @@ async function handle(
 					});
 					return Response.json({ ok: true });
 				});
-			if (s[2] === "media" && s[3] && s[4] === "thumbnail" && s.length === 6 && method === "GET") {
-				return await readMediaThumbnail(id, safeId(s[3]), s[5], req.headers.get("if-none-match"),
-					req.headers.get("accept") === "text/plain");
+			if (s[2] === "media" && s[3] && s[4] === "thumbnail" && method === "GET") {
+				const inline = req.headers.get("accept") === "text/plain";
+				if (s.length === 6 || (s.length === 5 && inline)) {
+					return await readMediaThumbnail(id, safeId(s[3]), s[5], req.headers.get("if-none-match"), inline);
+				}
 			}
 			if (s[2] === "media" && s[3] && s.length === 4) {
 				const mediaId = safeId(s[3]);
@@ -239,31 +247,26 @@ async function handle(
 						await saveMedia(id, mediaId, metadata, req.body);
 						return Response.json({ ok: true });
 					});
-				if (method === "POST")
+				if (method === "POST") {
+					const metadata = await req.json();
+					if (metadata?.id !== mediaId) return new Response(null, { status: 400 });
 					return await withProjectLock(id, async () => {
 						const dir = path.join(projectDir(id), "media", "_metadata");
 						const file = path.join(dir, `${mediaId}.json`);
 						const old = await readJson(file);
-						const metadata = await req.json();
-						if (!old || metadata.id !== mediaId)
-							return new Response(null, { status: 400 });
-						const thumbnailUrl = parseMediaThumbnailReference(metadata.thumbnailUrl)
-							? old.thumbnailUrl
-							: metadata.thumbnailUrl;
-						await atomicWrite(
-							file,
-							JSON.stringify({
-								...old, ...metadata, thumbnailUrl, diskFile: old.diskFile,
-								words: metadata.words, staged: metadata.staged,
-							}),
-						);
-						const reference = mediaThumbnailReference(id, mediaId, thumbnailUrl);
+						if (!old) return new Response(null, { status: 400 });
+						for (const field of Object.keys(mediaEditorFields)) old[field] = metadata[field];
+						if (metadata.thumbnailUrl === null) delete old.thumbnailUrl;
+						else if (isEmbeddedMediaThumbnail(metadata.thumbnailUrl)) old.thumbnailUrl = metadata.thumbnailUrl;
+						await atomicWrite(file, JSON.stringify(old));
+						const reference = mediaThumbnailReference(id, mediaId, old.thumbnailUrl);
 						return Response.json({ ok: true }, {
-							headers: reference && reference !== thumbnailUrl
+							headers: reference && reference !== old.thumbnailUrl
 								? { "X-Media-Thumbnail": reference }
 								: undefined,
 						});
 					});
+				}
 				if (method === "DELETE")
 					return await withProjectLock(id, async () => {
 						await removeMedia(id, mediaId);

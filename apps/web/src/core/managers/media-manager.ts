@@ -84,7 +84,15 @@ export class MediaManager {
 		const send = () => {
 			try {
 				return asset
-					? storageService.saveMediaAsset({ projectId, mediaAsset: asset })
+					? storageService.saveMediaAsset({
+						projectId, mediaAsset: asset,
+						...(reference && { onThumbnailStored: (url: string | undefined) => {
+							if (asset.thumbnailUrl === url || !this.assets.includes(asset)) return;
+							asset.thumbnailUrl = url;
+							this.assets = [...this.assets];
+							this.notify();
+						} }),
+					})
 					: storageService.deleteMediaAsset({ projectId, id });
 			} finally {
 				started?.resolve();
