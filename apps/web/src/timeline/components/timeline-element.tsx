@@ -12,6 +12,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { useEditor } from "@/editor/use-editor";
+import { useVisibleThumbnail } from "@/media/use-visible-thumbnail";
 import { useAssetsPanelStore } from "@/components/editor/panels/assets/assets-panel-store";
 import { AudioWaveform, WAVEFORM_GAIN_SAMPLE_COUNT } from "./audio-waveform";
 import { AudioVolumeLine } from "./audio-volume-line";
@@ -1326,13 +1327,14 @@ function TiledMediaContent({
 	track: ClipTrack;
 }) {
 	const mediaAsset = useTimelineMediaAsset(element.mediaId);
-	const imageUrl = getClipThumbnailUrl(element, mediaAsset);
+	const { ref, thumbnailUrl } = useVisibleThumbnail(mediaAsset);
+	const imageUrl = thumbnailUrl ?? getClipThumbnailUrl(element, mediaAsset);
 
 	if (!imageUrl) {
 		return (
-			<span className="text-foreground/80 truncate text-xs">
-				{element.name}
-			</span>
+			<div ref={ref} className="flex size-full min-w-0 items-center">
+				<span className="text-foreground/80 truncate text-xs">{element.name}</span>
+			</div>
 		);
 	}
 
@@ -1340,7 +1342,7 @@ function TiledMediaContent({
 	const tileWidth = trackHeight * THUMBNAIL_ASPECT_RATIO;
 
 	return (
-		<>
+		<div ref={ref} className="absolute inset-0">
 			<div
 				className="absolute inset-0"
 				style={{
@@ -1361,7 +1363,7 @@ function TiledMediaContent({
 				}
 				hasFade={true}
 			/>
-		</>
+		</div>
 	);
 }
 

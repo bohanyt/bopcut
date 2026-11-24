@@ -1,10 +1,11 @@
 ﻿import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { spyOn } from "bun:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { GET, PUT, POST, DELETE } from "../../../app/api/storage/[...slug]/route";
-import { MediaThumbnailCache } from "./media-thumbnails";
-import { atomicWrite, withProjectLock } from "./files";
+import { MediaThumbnailCache, mediaThumbnailReference } from "./media-thumbnails";
+import { atomicWrite, repairedThumbnailFile, withProjectLock } from "./files";
 
 let root: string;
 let previous: string | undefined;
@@ -109,12 +110,147 @@ describe("media thumbnails", () => {
 		return { dir, metadata, metadataFile };
 	}
 
-	async function call(url: string, method = "GET", headers?: Record<string, string>, body?: string) {
-		const req = new Request(`http://127.0.0.1:3021${url}`, { method, headers, body });
+	async function call(url: string, method = "GET", headers?: Record<string, string>, body?: string, signal?: AbortSignal) {
+		const req = new Request(`http://127.0.0.1:3021${url}`, { method, headers, body, signal });
 		const slug = new URL(req.url).pathname.slice("/api/storage/".length).split("/");
 		const handler = method === "DELETE" ? DELETE : method === "POST" ? POST : method === "PUT" ? PUT : GET;
 		return handler(req, { params: Promise.resolve({ slug }) });
 	}
+
+	test("writes one matching missing thumbnail and leaves media and project bytes alone", async () => {
+		const id = "missing-thumbnail";
+		const { dir, metadata, metadataFile } = await legacyMedia(id);
+		const { thumbnailUrl: _thumbnail, ...withoutThumbnail } = metadata;
+		const metadataBytes = JSON.stringify({ ...withoutThumbnail, futureField: 42 });
+		await fs.writeFile(metadataFile, metadataBytes);
+		const projectFile = path.join(dir, "..", "project.json");
+		const project = JSON.stringify({ metadata: { id, name: id } });
+		await fs.writeFile(projectFile, project);
+		const source = `/api/storage/projects/${id}/media/m`;
+		const response = await call(source);
+		const revision = response.headers.get("X-Media-Revision")!;
+		expect(await response.text()).toBe("original");
+		expect((await call(`${source}/thumbnail`, "POST", { "X-Media-Revision": "stale" }, inline)).status).toBe(409);
+		const save = (data: string) => call(`${source}/thumbnail`, "POST", { "X-Media-Revision": revision }, data);
+		const alternate = "data:image/jpeg,%FF%D8%FF%D9%80";
+		const results = await Promise.all([save(inline), save(alternate)]);
+		const [winner, other] = await Promise.all(results.map((result) => result.json()));
+		expect(winner).toEqual(other);
+		const sidecar = repairedThumbnailFile(id, "m");
+		const stored = await fs.readFile(sidecar, "utf8");
+		const saved = JSON.parse(stored);
+		expect(saved.revision).toBe(revision);
+		expect([inline, alternate]).toContain(saved.thumbnail);
+		const expectedBytes = saved.thumbnail === inline ? bytes : [...bytes, 128];
+		expect(await (await call(winner.url)).arrayBuffer()).toEqual(Uint8Array.from(expectedBytes).buffer);
+		const [{ thumbnailUrl }] = await (await call(`/api/storage/projects/${id}/media`)).json();
+		expect(thumbnailUrl).toBe(winner.url);
+		const before = await fs.stat(sidecar);
+		await save(inline);
+		const after = await fs.stat(sidecar);
+		expect(after).toMatchObject({ ino: before.ino, mtimeMs: before.mtimeMs });
+		expect(await fs.readFile(metadataFile, "utf8")).toBe(metadataBytes);
+		expect(await fs.readFile(projectFile, "utf8")).toBe(project);
+		expect(await fs.readFile(path.join(dir, "m.mp4"), "utf8")).toBe("original");
+		await fs.writeFile(path.join(dir, "m.mp4"), "external replacement");
+		expect((await call(winner.url)).status).toBe(404);
+		expect((await (await call(`/api/storage/projects/${id}/media`)).json())[0].thumbnailUrl).toBeUndefined();
+		await fs.rm(path.join(dir, "m.mp4"));
+		expect((await call(source, "PUT", { "X-Media-Metadata": encodeURIComponent(JSON.stringify({
+			id: "m", fileName: "m.mp4", fileType: "video/mp4",
+		})) }, "uploaded replacement")).ok).toBe(true);
+		expect(await fs.stat(sidecar).catch(() => null)).toBeNull();
+		const nextMedia = await call(source);
+		const nextRevision = nextMedia.headers.get("X-Media-Revision")!;
+		await nextMedia.text();
+		expect((await call(`${source}/thumbnail`, "POST", { "X-Media-Revision": nextRevision }, inline)).ok).toBe(true);
+		expect((await call(source, "DELETE")).ok).toBe(true);
+		expect(await fs.stat(sidecar).catch(() => null)).toBeNull();
+	});
+
+	test("an aborted repair waiting for the project lock never writes", async () => {
+		const id = "aborted-thumbnail";
+		const { metadata, metadataFile } = await legacyMedia(id);
+		const { thumbnailUrl: _thumbnail, ...rest } = metadata;
+		await fs.writeFile(metadataFile, JSON.stringify(rest));
+		const source = `/api/storage/projects/${id}/media/m`;
+		const file = await call(source);
+		const revision = file.headers.get("X-Media-Revision")!;
+		await file.text();
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const lock = withProjectLock(id, async () => { entered.resolve(); await release.promise; });
+		await entered.promise;
+		const controller = new AbortController();
+		const pending = call(`${source}/thumbnail`, "POST", { "X-Media-Revision": revision }, inline, controller.signal);
+		await new Promise((resolve) => setImmediate(resolve));
+		controller.abort();
+		release.resolve();
+		await lock;
+		expect((await pending).status).toBe(499);
+		expect(await fs.stat(repairedThumbnailFile(id, "m")).catch(() => null)).toBeNull();
+	});
+
+	test.each(["junction", "hard link"])("ignores repaired thumbnails behind a %s", async (kind) => {
+		const id = kind === "junction" ? "thumbnail-junction" : "thumbnail-hard-link";
+		const { metadata, metadataFile } = await legacyMedia(id);
+		const { thumbnailUrl: _thumbnail, ...rest } = metadata;
+		await fs.writeFile(metadataFile, JSON.stringify(rest));
+		const source = `/api/storage/projects/${id}/media/m`;
+		const media = await call(source);
+		const revision = media.headers.get("X-Media-Revision")!;
+		await media.text();
+		const sidecar = repairedThumbnailFile(id, "m");
+		const outside = await fs.mkdtemp(path.join(root, "outside-thumbnails-"));
+		const target = path.join(outside, "m.json");
+		const data = JSON.stringify({ revision, thumbnail: inline });
+		await fs.writeFile(target, data);
+		if (kind === "junction") await fs.symlink(outside, path.dirname(sidecar), "junction");
+		else {
+			await fs.mkdir(path.dirname(sidecar));
+			await fs.link(target, sidecar);
+		}
+		try {
+			expect((await (await call(`/api/storage/projects/${id}/media`)).json())[0].thumbnailUrl).toBeUndefined();
+			const reference = mediaThumbnailReference(id, "m", inline)!;
+			expect((await call(reference)).status).toBe(404);
+			expect((await call(`${source}/thumbnail`, "POST", { "X-Media-Revision": revision }, inline)).status).toBe(409);
+			expect((await call(source, "DELETE")).ok).toBe(true);
+			expect(await fs.readFile(target, "utf8")).toBe(data);
+			expect(await fs.readFile(sidecar, "utf8")).toBe(data);
+		} finally {
+			if (kind === "junction") await fs.unlink(path.dirname(sidecar));
+		}
+	});
+
+	test("sidecar cleanup errors do not prevent media replacement or removal", async () => {
+		const id = "thumbnail-cleanup-error";
+		const { dir } = await legacyMedia(id);
+		const sidecar = repairedThumbnailFile(id, "m");
+		await fs.mkdir(path.dirname(sidecar));
+		await fs.writeFile(sidecar, "{}");
+		await fs.rm(path.join(dir, "m.mp4"));
+		const originalRemove = fs.rm.bind(fs);
+		const remove = spyOn(fs, "rm").mockImplementation(async (file, options) => {
+			if (file === sidecar) throw new Error("sidecar locked");
+			return originalRemove(file, options);
+		});
+		const log = spyOn(console, "warn").mockImplementation(() => {});
+		const source = `/api/storage/projects/${id}/media/m`;
+		try {
+			expect((await call(source, "PUT", { "X-Media-Metadata": encodeURIComponent(JSON.stringify({
+				id: "m", fileName: "m.mp4", fileType: "video/mp4",
+			})) }, "replacement")).ok).toBe(true);
+			expect(await (await call(source)).text()).toBe("replacement");
+			expect((await call(source, "DELETE")).ok).toBe(true);
+			expect((await call(source)).status).toBe(404);
+			expect(await fs.readFile(sidecar, "utf8")).toBe("{}");
+			expect(log).toHaveBeenCalledTimes(2);
+		} finally {
+			remove.mockRestore();
+			log.mockRestore();
+		}
+	});
 
 	test("projects legacy thumbnails into compact references without changing any files", async () => {
 		const id = "legacy";

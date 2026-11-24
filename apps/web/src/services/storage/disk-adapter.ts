@@ -1,5 +1,6 @@
 import { getBrowserTranslator } from "@/i18n/browser";
 import { toast } from "sonner";
+import { recordMediaFileVersion } from "./media-file-version";
 import type { SerializedProject, MediaAssetData, ProjectNavigation, ProjectSummary } from "./types";
 
 const base = "/api/storage/projects";
@@ -199,7 +200,7 @@ export class DiskAdapter {
 			fileName: metadata.fileName,
 			fileType: metadata.fileType,
 		};
-		await checked(
+		const upload = await checked(
 			await fetch(url, {
 				method: "PUT",
 				headers: {
@@ -208,6 +209,7 @@ export class DiskAdapter {
 				body: file,
 			}),
 		);
+		recordMediaFileVersion(file, upload.headers.get("X-Media-Revision"));
 		const response = await checked(
 			await fetch(url, {
 				method: "POST",

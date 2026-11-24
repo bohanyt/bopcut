@@ -4,7 +4,7 @@ import type { TProject, TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import type { MediaAsset, MediaLoadFailure } from "@/media/types";
 import { normalizeBookmarkBox } from "@/timeline/bookmarks/area";
-import { recordMediaFileVersion } from "./media-file-version";
+import { mediaFileVersion, recordMediaFileVersion } from "./media-file-version";
 import { parseMediaThumbnailReference } from "./media-thumbnail-reference";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
@@ -467,6 +467,20 @@ class StorageService {
 	/** Drops the cached media list of a project (closed or deleted). */
 	forgetMediaManifest({ projectId }: { projectId: string }): void {
 		this.manifests.delete(projectId);
+	}
+
+	async storeMissingMediaThumbnail(projectId: string, asset: MediaAsset, thumbnail: string, signal: AbortSignal): Promise<string> {
+		const revision = mediaFileVersion(asset.file);
+		if (!revision) return thumbnail;
+		try {
+			const response = await fetch(`${this.projectsAdapter.mediaUrl(projectId, asset.id)}/thumbnail`, {
+				method: "POST", headers: { "X-Media-Revision": revision }, body: thumbnail, signal,
+			});
+			if (response.ok) return (await response.json()).url;
+		} catch {
+			// A read-only folder or interrupted write still allows a thumbnail in this session.
+		}
+		return thumbnail;
 	}
 
 	private async readMediaAsset({

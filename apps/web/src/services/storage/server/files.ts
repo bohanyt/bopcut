@@ -61,10 +61,11 @@ export async function atomicWrite(file: string, data: string | Uint8Array, signa
 	const key = path.resolve(file).toLowerCase();
 	const previous = fileQueues.get(key) ?? Promise.resolve();
 	const current = previous.catch(() => undefined).then(async () => {
+		signal?.throwIfAborted();
 		await fs.mkdir(path.dirname(file), { recursive: true });
 		const temp = `${file}.${randomUUID()}.tmp`;
 		try {
-			await fs.writeFile(temp, data);
+			await fs.writeFile(temp, data, { signal });
 			await renameWithRetry(temp, file, signal);
 		} finally {
 			await fs.rm(temp, { force: true });
@@ -101,6 +102,42 @@ export function revision(value: unknown): string {
 	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+export function mediaRevision(stat: import("node:fs").Stats): string {
+	return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
+export function repairedThumbnailFile(projectId: string, mediaId: string): string {
+	return path.join(projectDir(projectId), "media", "_thumbnails", `${safeId(mediaId)}.json`);
+}
+
+export async function checkedRepairedThumbnailFile(projectId: string, mediaId: string, create = false) {
+	const file = repairedThumbnailFile(projectId, mediaId);
+	const dir = path.dirname(file);
+	const lstat = (target: string) => fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT") return undefined;
+		throw error;
+	});
+	let folder = await lstat(dir);
+	if (!folder && create) {
+		await fs.mkdir(dir).catch((error: NodeJS.ErrnoException) => {
+			if (error.code !== "EEXIST") throw error;
+		});
+		folder = await lstat(dir);
+	}
+	if (!folder?.isDirectory() || folder.isSymbolicLink()) return;
+	const entry = await lstat(file);
+	if (entry ? entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1 : create) return file;
+}
+
+async function removeRepairedThumbnail(projectId: string, mediaId: string) {
+	try {
+		const file = await checkedRepairedThumbnailFile(projectId, mediaId);
+		if (file) await fs.rm(file, { force: true });
+	} catch (error) {
+		console.warn("Could not remove repaired thumbnail", error);
+	}
+}
+
 // One queue per project keeps revision checks and renames ordered.
 const locks = new Map<string, Promise<void>>();
 export async function withProjectLock<T>(
@@ -127,7 +164,7 @@ export async function saveMedia(
 	mediaId: string,
 	metadata: any,
 	body: ReadableStream<Uint8Array>,
-): Promise<void> {
+): Promise<string | undefined> {
 	const dir = path.join(projectDir(id), "media");
 	safeId(mediaId);
 	if (
@@ -161,17 +198,21 @@ export async function saveMedia(
 			createWriteStream(temp, { flags: "wx" }),
 		);
 		await renameWithRetry(temp, file);
-		if (old) return;
-		try {
-			await atomicWrite(
-				metaFile,
-				JSON.stringify({ ...metadata, diskFile: fileName }),
-			);
-		} catch (error) {
-			// Without metadata the file is unreachable: do not leave it behind.
-			await fs.rm(file, { force: true });
-			throw error;
+		if (!old) {
+			try {
+				await atomicWrite(
+					metaFile,
+					JSON.stringify({ ...metadata, diskFile: fileName }),
+				);
+			} catch (error) {
+				// Without metadata the file is unreachable: do not leave it behind.
+				await fs.rm(file, { force: true });
+				throw error;
+			}
 		}
+		await removeRepairedThumbnail(id, mediaId);
+		const stat = await statFile(file);
+		return stat ? mediaRevision(stat) : undefined;
 	} finally {
 		await fs.rm(temp, { force: true });
 	}
@@ -235,7 +276,7 @@ export async function streamMediaFile(file: string, fileType: string | undefined
 			"Accept-Ranges": "bytes",
 			"Content-Type": fileType || "application/octet-stream",
 			"Cache-Control": "no-store",
-			"X-Media-Revision": `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`,
+			"X-Media-Revision": mediaRevision(stat),
 		};
 		if (range) {
 			const match = /^bytes=(\d*)-(\d*)$/.exec(range);
@@ -292,4 +333,5 @@ export async function removeMedia(id: string, mediaId: string): Promise<void> {
 		: (await fs.readdir(dir).catch(() => [] as string[])).filter((name) => own.test(name));
 	for (const name of files) await retryTransient(() => fs.rm(path.join(dir, name), { force: true }));
 	await retryTransient(() => fs.rm(metaFile, { force: true }));
+	await removeRepairedThumbnail(id, mediaId);
 }

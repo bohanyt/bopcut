@@ -26,6 +26,8 @@ import {
 	isEmbeddedMediaThumbnail,
 	mediaThumbnailReference,
 	readMediaThumbnail,
+	resolveMediaThumbnailReference,
+	storeMissingMediaThumbnail,
 } from "@/services/storage/server/media-thumbnails";
 import type { MediaAssetData } from "@/services/storage/types";
 
@@ -201,7 +203,7 @@ async function handle(
 							return null;
 						});
 						if (typeof metadata?.name !== "string" || typeof metadata.type !== "string") return null;
-						metadata.thumbnailUrl = mediaThumbnailReference(id, name.slice(0, -5), metadata.thumbnailUrl);
+						metadata.thumbnailUrl = await resolveMediaThumbnailReference(id, name.slice(0, -5), metadata);
 						return metadata;
 					}));
 					for (const metadata of batch) if (metadata) manifest.push(metadata);
@@ -221,6 +223,9 @@ async function handle(
 				if (s.length === 6 || (s.length === 5 && inline)) {
 					return await readMediaThumbnail(id, safeId(s[3]), s[5], req.headers.get("if-none-match"), inline);
 				}
+			}
+			if (s[2] === "media" && s[3] && s[4] === "thumbnail" && s.length === 5 && method === "POST") {
+				return await storeMissingMediaThumbnail(id, safeId(s[3]), req.headers.get("x-media-revision"), await req.text(), req.signal);
 			}
 			if (s[2] === "media" && s[3] && s.length === 4) {
 				const mediaId = safeId(s[3]);
@@ -246,8 +251,10 @@ async function handle(
 						const metadata = JSON.parse(
 							decodeURIComponent(req.headers.get("x-media-metadata") ?? ""),
 						);
-						await saveMedia(id, mediaId, metadata, req.body);
-						return Response.json({ ok: true });
+						const savedRevision = await saveMedia(id, mediaId, metadata, req.body);
+						return Response.json({ ok: true }, {
+							headers: savedRevision ? { "X-Media-Revision": savedRevision } : undefined,
+						});
 					});
 				if (method === "POST") {
 					const metadata = await req.json();
