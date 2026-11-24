@@ -6,13 +6,13 @@ import { withHumanFields, isHumanFieldPath, equalHumanValue } from "@/timeline/h
 // when it touches several scenes (the root timeline and compound clip contents).
 import type { ParamValues } from "@/params";
 import { type ElementRecord, StaleError, assertNoteNotStale, assertNotStale, assertRippleNotStale, fieldsMapOf, humanFieldsSince, touchedFields } from "./stale";
-import type { Bookmark, SceneTracks, TScene, TimelineElement, TimelineTrack } from "@/timeline";
+import { calculateTotalDuration, type Bookmark, type SceneTracks, type TScene, type TimelineElement, type TimelineTrack } from "@/timeline";
 import { buildGraphicElement } from "@/timeline/element-utils";
 import { resolveAnimationPathValueAtTime } from "@/animation";
 import { type MediaTime, TICKS_PER_SECOND, roundMediaTime } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
 import { getFrameTime } from "@/timeline/bookmarks";
-import { buildCompoundFromElements, isCompoundElement, relocateVisualCompounds, syncCompoundDurations, ungroupCompoundElement } from "@/timeline/compound";
+import { buildCompoundFromElements, isCompoundElement, relocateVisualCompounds, sceneHasVisualContent, syncCompoundDurations, ungroupCompoundElement } from "@/timeline/compound";
 import { applyRippleAdjustments, computeRippleAdjustments } from "@/ripple";
 import type { FrameRate } from "opencut-wasm";
 import { generateUUID } from "@/utils/id";
@@ -74,6 +74,27 @@ export type Touched = { sceneId: string; elementId: string };
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const INTERPOLATIONS: unknown[] = ["linear", "hold", "bezier"];
 const seconds = (ticks: number) => ticks / TICKS_PER_SECOND;
+const wordCutFields = ["start", "duration", "trimStart"] as const;
+
+/** Identify newly invalid audio wrappers using the same predicate as final scene relocation. */
+function protectedCompoundRelocation(before: TScene[], after: TScene[]): ElementHit | undefined {
+	const previousVisuals = new Map<string, boolean>();
+	const currentVisuals = new Map<string, boolean>();
+	for (const { id: sceneId, tracks } of after) {
+		for (const track of tracks.audio) {
+			for (const [index, element] of track.elements.entries()) {
+				if (!isCompoundElement(element) || !element.agentId || !element.humanFields?.includes("track")) continue;
+				if (!sceneHasVisualContent({ scenes: after, sceneId: element.sceneId, cache: currentVisuals })) continue;
+				const old = before.find((scene) => scene.id === sceneId)?.tracks.audio
+					.flatMap((lane) => lane.elements).find((clip) => clip.id === element.id);
+				// An earlier op with the legacy policy may already have caused this relocation.
+				if (old && isCompoundElement(old) &&
+					sceneHasVisualContent({ scenes: before, sceneId: old.sceneId, cache: previousVisuals })) continue;
+				return { sceneId, track, index, element };
+			}
+		}
+	}
+}
 
 /** Property paths (and values) one `set` keyframe writes: `scale` = both axes, relative to the element's own scale. */
 function keyframeTargets(el: any, k: AgentKeyframe): { propertyPath: string; value: number | string }[] {
@@ -169,6 +190,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		const scene = list.find((s) => s.id === sceneId);
 		if (!scene) throw new Error(`scene not found: ${sceneId}`);
 		return scene;
+	};
+	const compoundSourceDuration = (element: TimelineElement, workingScenes = list) => {
+		if (!isCompoundElement(element)) return undefined;
+		const nested = workingScenes.find((scene) => scene.id === element.sceneId);
+		return nested && calculateTotalDuration({ tracks: nested.tracks });
 	};
 	const replace = (scene: TScene) => { list = list.map((s) => (s.id === scene.id ? scene : s)); };
 	/** Edits one scene's tracks; plain edits ripple like a timeline edit when ripple editing is on. */
@@ -307,8 +333,15 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				let setWords: SourceWord[] | undefined;
 				const atWords = op.startAtWord !== undefined || op.endAfterWord !== undefined;
 				if (atWords && (op.trimStart !== undefined || op.duration !== undefined || cutWords)) throw new Error("startAtWord/endAfterWord replace trimStart, duration and cut");
+				const stale = staleFor(hit);
+				const protectedFields = protection(hit, stale);
 				if (cutWords || atWords) {
 					if (hit.element.type !== "video" && hit.element.type !== "audio") throw new Error('cut: "words" is for video and audio clips');
+					for (const field of wordCutFields) if (protectedFields.has(field)) kept.add(field);
+					if (kept.size) {
+						reportKept();
+						throw new Error("word cuts cannot change protected timing; take the protected fields or cut without keep");
+					}
 					setWords = needWords(wordsFor((hit.element as { mediaId?: unknown }).mediaId));
 				}
 				const fields = touchedFields(op);
@@ -316,8 +349,6 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					? fields.filter((field) => field.startsWith("params.") && (hit.element.type === "effect" || !isHumanFieldPath(field)))
 					: fields;
 				if (checked.length || !keep || !hit.element.agentId) assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: checked, scenes: list });
-				const stale = staleFor(hit);
-				const protectedFields = protection(hit, stale);
 				editTracks(hit.sceneId, (tracks) => {
 					const track = orderedTracks(tracks).find((t) => t.id === hit.track.id) as any;
 					const el = track.elements[hit.index];
@@ -336,13 +367,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					if (op.caption && el.type !== "text") throw new Error("caption can only update a text element");
 					let next = { ...el, ...patch };
 					const applyWordCut = (wordPatch: Pick<TimelineElement, "duration" | "trimStart" | "trimEnd">) => {
-						if (!keepSet) {
-							assertRoomForEnd(track.elements, hit.index, next.startTime + next.duration, next.startTime + wordPatch.duration);
-							return { ...next, ...wordPatch };
-						}
-						const final = keepTiming({ duration: seconds(wordPatch.duration), trimStart: seconds(wordPatch.trimStart) }, el, protectedFields, kept);
-						reportKept();
-						return { ...next, duration: secs(final.duration), trimStart: secs(final.trimStart) };
+						if (!keepSet) assertRoomForEnd(track.elements, hit.index, next.startTime + next.duration, next.startTime + wordPatch.duration);
+						return { ...next, ...wordPatch };
 					};
 					const applyWords = () => {
 						if (!setWords) return;
@@ -350,8 +376,8 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 							const cut = cutAtWords(next, setWords, fps, { startWord: op.startAtWord, endWord: op.endAfterWord, limit: sourceEnd(el) });
 							if (typeof cut === "string") throw new Error(cut);
 							next = applyWordCut(cut.patch);
-							if (cut.start && next.trimStart === cut.patch.trimStart) result.startWord = cut.start;
-							if (cut.end && next.duration === cut.patch.duration && next.trimStart === cut.patch.trimStart) result.endWord = cut.end;
+							if (cut.start) result.startWord = cut.start;
+							if (cut.end) result.endWord = cut.end;
 						} else {
 							const snapped = snapCutsToWords(next, setWords, fps, { limit: sourceEnd(el) });
 							if (snapped) next = applyWordCut(snapped);
@@ -386,8 +412,13 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					let merged = merge(hit, candidate, stale);
 					if (keepSet) {
 						const trimChanged = merged.duration !== el.duration || merged.trimStart !== el.trimStart;
-						const source = trimChanged && (el.type === "video" || el.type === "audio" || el.type === "compound")
-							? el.sourceDuration ?? (el.type === "compound" ? undefined : secs(sourceEnd(el))) : undefined;
+						let source: number | undefined;
+						if (isCompoundElement(merged) && (op.duration !== undefined || op.trimStart !== undefined)) {
+							source = compoundSourceDuration(merged);
+							if (source === undefined) throw new Error("cannot check the compound's source range because its content is missing");
+						} else if (trimChanged && (el.type === "video" || el.type === "audio")) {
+							source = el.sourceDuration ?? secs(sourceEnd(el));
+						}
 						merged = validateKeptFit({ before: el, element: merged, track, originalTrack: hit.track, source });
 					}
 					if (keep && equalHumanValue(el, merged)) return false;
@@ -764,6 +795,14 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		operation = {};
 		try {
 			run(op, result);
+			if (list !== saved.list && (op?.onConflict ?? onConflict) === "keep") {
+				const relocation = protectedCompoundRelocation(saved.list, list);
+				if (relocation) {
+					operation.hit = relocation;
+					result.kept = ["track"];
+					throw new Error(`the edit would move ${relocation.element.name || relocation.element.id} off its protected track`);
+				}
+			}
 			result.ok = true;
 			// Cuts this op left inside a spoken word (video and audio clips whose media has words).
 			const warnings = touched.slice(saved.touched).flatMap(({ sceneId, elementId }) => {
@@ -791,9 +830,10 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				result.current = error.current;
 			} else if (operation.hit) {
 				const { element, track } = operation.hit;
+				const sourceDuration = isCompoundElement(element) ? compoundSourceDuration(element) : element.sourceDuration;
 				result.current = { start: seconds(element.startTime), duration: seconds(element.duration),
 					trimStart: seconds(element.trimStart), trackId: track.id,
-					sourceDuration: element.sourceDuration === undefined ? undefined : seconds(element.sourceDuration) };
+					sourceDuration: sourceDuration === undefined ? undefined : seconds(sourceDuration) };
 			}
 		}
 		results[i] = result;

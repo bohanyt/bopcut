@@ -95,7 +95,7 @@ const run = (
 	ops: DraftOp[],
 	onConflict?: Draft["onConflict"],
 	base?: ReturnType<typeof fieldsMapOf>,
-	options?: Partial<Pick<Parameters<typeof computeAgentDraft>[0], "ripple" | "wordsOf">>,
+	options?: Partial<Pick<Parameters<typeof computeAgentDraft>[0], "ripple" | "wordsOf" | "mediaFor">>,
 ) =>
 	computeAgentDraft({
 		scenes: source,
@@ -642,11 +642,84 @@ test("keep validates the source range after retaining a trim and looks up words 
 	});
 	expect(rejected.scenes).toBe(input);
 	expect(run(input, [set]).results[0].ok).toBe(true);
-	const named = run(input, [{ op: "set", match: set.match, endAfterWord: "end" }], "keep", undefined, {
+	const named = run(input, [{ op: "set", match: set.match, endAfterWord: "end", take: ["trimStart"] }], "keep", undefined, {
 		wordsOf: () => [{ text: "end", start: 5, end: 6 }, { text: "end", start: 8, end: 9 }],
 	});
 	expect(named.results[0]).toMatchObject({ ok: true, endWord: { end: 9 } });
 	expect(find(named.scenes, "footage")).toMatchObject({ trimStart: t(7), duration: t(2), trimEnd: t(1) });
+});
+
+test("word cuts refuse each protected timing field before looking up words", () => {
+	const cases = [
+		{ field: "start", request: { startAtWord: "begin" } },
+		{ field: "duration", request: { cut: "words" as const } },
+		{ field: "trimStart", request: { endAfterWord: "end" } },
+	];
+	for (const { field, request } of cases) {
+		const clip = { ...v, trimStart: t(1), duration: t(3), trimEnd: t(6), humanFields: [field, "retime"] };
+		const input = [scene("main", { ...tracks, main: { ...tracks.main, elements: [clip] } })];
+		const op: DraftOp = { op: "set", match: { id: "video" }, ...request };
+		const denied = run(input, [op], "keep", undefined, {
+			wordsOf: () => { throw new Error("unexpected word lookup"); },
+		});
+		expect(denied.results[0]).toMatchObject({
+			ok: false, kept: [field], error: expect.stringContaining("word cuts cannot change protected timing"),
+		});
+		expect(denied.scenes).toBe(input);
+		const options = { wordsOf: () => [{ text: "begin", start: 2, end: 3 }, { text: "end", start: 4, end: 5 }] };
+		expect(run(input, [{ ...op, take: [field] }], "keep", undefined, options).results[0].ok).toBe(true);
+		expect(run(input, [op], undefined, undefined, options).results[0].ok).toBe(true);
+	}
+});
+
+test("keep checks a compound trim against changes to its nested tracks earlier in the draft", () => {
+	const built = run(scenes, [{
+		op: "compound", agent_id: "wrapper", name: "Wrapper", start: 12,
+		elements: [{ agent_id: "child", name: "Child", text: "source", start: 0, duration: 2, track: { name: "Titles" } }],
+	}]);
+	const resize = (agentId: string, duration: number): DraftOp => ({ op: "set", match: { agentId }, duration });
+	const grow = run(built.scenes, [resize("child", 5), resize("wrapper", 5)], "keep");
+	expect(grow.results.map((result) => result.ok)).toEqual([true, true]);
+	expect(find(grow.scenes, "wrapper")).toMatchObject({ duration: t(5), sourceDuration: t(5), trimEnd: t(0) });
+
+	const shorter = run(built.scenes, [resize("wrapper", 1)], "keep");
+	const shrink = run(shorter.scenes, [resize("child", 0.5), resize("wrapper", 1.75)], "keep");
+	expect(shrink.results[0].ok).toBe(true);
+	expect(shrink.results[1]).toMatchObject({
+		ok: false, error: expect.stringContaining("end of its source"), current: { sourceDuration: 0.5 },
+	});
+	expect(find(shrink.scenes, "wrapper")).toMatchObject({ duration: t(1), sourceDuration: t(0.5) });
+});
+
+test("keep refuses a child edit that would relocate its protected audio wrapper", () => {
+	const built = run(scenes, [{
+		op: "compound", agent_id: "wrapper", name: "Wrapper", start: 12,
+		track: { name: "Audio only", type: "audio" },
+		elements: [{ agent_id: "child", name: "Voice", mediaId: "voice", start: 0, duration: 2, track: { name: "Audio" } }],
+	}], undefined, undefined, { mediaFor: () => ({ id: "voice", type: "audio", duration: 12 }) });
+	const root = built.scenes[0];
+	const lane = root.tracks.audio[0];
+	const input = [{
+		...root, tracks: { ...root.tracks, audio: [{ ...lane, elements: lane.elements.map(
+			(element) => ({ ...element, humanFields: ["track"] }),
+		) }] },
+	}, ...built.scenes.slice(1)];
+	const replace: DraftOp = { op: "replace", match: { agentId: "child" }, element: { text: "Visual" } };
+	const refused = run(input, [
+		{ op: "set", match: { agentId: "wrapper" }, duration: 1 },
+		replace,
+	], "keep");
+	expect(refused.results[0].ok).toBe(true);
+	expect(refused.results[1]).toMatchObject({
+		ok: false, kept: ["track"], error: expect.stringContaining("off its protected track"),
+		current: { trackId: lane.id, duration: 1 },
+	});
+	expect(find(refused.scenes, "child")?.type).toBe("audio");
+	expect(refused.scenes[0].tracks.audio[0].elements[0].agentId).toBe("wrapper");
+
+	const legacy = run(input, [{ ...replace, onConflict: "refuse" }], "keep");
+	expect(legacy.results[0].ok).toBe(true);
+	expect(legacy.scenes[0].tracks.overlay.some((track) => track.elements.some((clip) => clip.agentId === "wrapper"))).toBe(true);
 });
 
 test("caption words are checked against the kept duration for set and replace", () => {
