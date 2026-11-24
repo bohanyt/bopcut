@@ -150,6 +150,7 @@ export class VoiceOver {
 		this.captureScope = this.session.scope;
 		this.editor.playback.pause();
 		this.editor.playback.seek({ time: this.session.startTime });
+		this.editor.playback.revealPlayhead();
 		this.update({ phase: "count-in", count: 3, ready: false, error: null });
 		void this.connect().then(() => {
 			if (this.state.phase === "count-in" && this.mic) this.beginCountIn();
@@ -375,6 +376,7 @@ export class VoiceOver {
 			this.captureScope = null;
 			this.session = session;
 			this.updateReview();
+			this.editor.playback.revealPlayhead();
 		} catch {
 			this.recover("recording.saveFailed");
 		}

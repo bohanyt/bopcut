@@ -11,6 +11,7 @@ import { useEditor } from "@/editor/use-editor";
 import { useElementSelection } from "@/timeline/hooks/element/use-element-selection";
 import {
 	addMediaTime,
+	type MediaTime,
 	maxMediaTime,
 	mediaTime,
 	mediaTimeFromSeconds,
@@ -71,6 +72,11 @@ export function useEditorActions() {
 		return activateScope({ entry: timelineScope });
 	}, [hasTimelineSelection, timelineScope]);
 
+	const navigate = ({ time }: { time: MediaTime }) => {
+		editor.playback.seek({ time });
+		editor.playback.revealPlayhead();
+	};
+
 	useActionHandler("record-voice-over", () => editor.voiceOver.toggle(), undefined);
 
 	useActionHandler(
@@ -98,7 +104,7 @@ export function useEditorActions() {
 		(args) => {
 			const seconds = args?.seconds ?? 1;
 			const delta = mediaTimeFromSeconds({ seconds });
-			editor.playback.seek({
+			navigate({
 				time: minMediaTime({
 					a: editor.timeline.getTotalDuration(),
 					b: addMediaTime({
@@ -116,7 +122,7 @@ export function useEditorActions() {
 		(args) => {
 			const seconds = args?.seconds ?? 1;
 			const delta = mediaTimeFromSeconds({ seconds });
-			editor.playback.seek({
+			navigate({
 				time: maxMediaTime({
 					a: ZERO_MEDIA_TIME,
 					b: subMediaTime({
@@ -138,7 +144,7 @@ export function useEditorActions() {
 					(TICKS_PER_SECOND * fps.denominator) / fps.numerator,
 				),
 			});
-			editor.playback.seek({
+			navigate({
 				time: minMediaTime({
 					a: editor.timeline.getTotalDuration(),
 					b: addMediaTime({
@@ -160,7 +166,7 @@ export function useEditorActions() {
 					(TICKS_PER_SECOND * fps.denominator) / fps.numerator,
 				),
 			});
-			editor.playback.seek({
+			navigate({
 				time: maxMediaTime({
 					a: ZERO_MEDIA_TIME,
 					b: subMediaTime({
@@ -178,7 +184,7 @@ export function useEditorActions() {
 		(args) => {
 			const seconds = args?.seconds ?? 5;
 			const delta = mediaTimeFromSeconds({ seconds });
-			editor.playback.seek({
+			navigate({
 				time: minMediaTime({
 					a: editor.timeline.getTotalDuration(),
 					b: addMediaTime({
@@ -196,7 +202,7 @@ export function useEditorActions() {
 		(args) => {
 			const seconds = args?.seconds ?? 5;
 			const delta = mediaTimeFromSeconds({ seconds });
-			editor.playback.seek({
+			navigate({
 				time: maxMediaTime({
 					a: ZERO_MEDIA_TIME,
 					b: subMediaTime({
@@ -212,7 +218,7 @@ export function useEditorActions() {
 	useActionHandler(
 		"goto-start",
 		() => {
-			editor.playback.seek({ time: ZERO_MEDIA_TIME });
+			navigate({ time: ZERO_MEDIA_TIME });
 		},
 		undefined,
 	);
@@ -220,7 +226,7 @@ export function useEditorActions() {
 	useActionHandler(
 		"goto-end",
 		() => {
-			editor.playback.seek({ time: editor.timeline.getTotalDuration() });
+			navigate({ time: editor.timeline.getTotalDuration() });
 		},
 		undefined,
 	);

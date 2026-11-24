@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
+import { useTimelineStore } from "@/timeline/timeline-store";
 import {
 	PlayheadController,
 	type PlayheadConfig,
@@ -32,6 +33,7 @@ export function useTimelinePlayhead({
 		getCurrentTime: () => editor.playback.getCurrentTime(),
 		getActiveProjectFps: () => editor.project.getActive()?.settings.fps ?? null,
 		isShiftHeld: () => isShiftHeldRef.current,
+		isSnappingEnabled: () => useTimelineStore.getState().snappingEnabled,
 		getIsPlaying: () => editor.playback.getIsPlaying(),
 		getRulerEl: () => rulerRef.current,
 		getRulerScrollEl: () => rulerScrollRef.current,
@@ -76,9 +78,19 @@ export function useTimelinePlayhead({
 		const unsubscribeSeek = editor.playback.onSeek((time) =>
 			ctrl.handlePlaybackUpdate(time, editor.playback.getIsScrubbing()),
 		);
+		let revealFrame = 0;
+		// A new clip can extend the timeline, so wait for its layout.
+		const unsubscribeReveal = editor.playback.onReveal(() => {
+			cancelAnimationFrame(revealFrame);
+			revealFrame = requestAnimationFrame(() => {
+				if (!editor.playback.getIsScrubbing()) ctrl.reveal(editor.playback.getCurrentTime());
+			});
+		});
 		return () => {
 			unsubscribeUpdate();
 			unsubscribeSeek();
+			unsubscribeReveal();
+			cancelAnimationFrame(revealFrame);
 		};
 	}, [ctrl, editor.playback]);
 

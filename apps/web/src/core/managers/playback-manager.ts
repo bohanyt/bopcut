@@ -28,6 +28,7 @@ export class PlaybackManager {
 	private updateListeners = new Set<(time: MediaTime) => void>();
 	private seekListeners = new Set<(time: MediaTime) => void>();
 	private interruptListeners = new Set<() => void>();
+	private revealListeners = new Set<() => void>();
 	private playbackTimer: number | null = null;
 	private readClock = wallClock;
 	private playbackStartClockTime = 0;
@@ -227,6 +228,16 @@ export class PlaybackManager {
 	onSeek(listener: (time: MediaTime) => void): () => void {
 		this.seekListeners.add(listener);
 		return () => this.seekListeners.delete(listener);
+	}
+
+	/** Asks the timeline to scroll the playhead into view. */
+	revealPlayhead(): void {
+		this.revealListeners.forEach((fn) => fn());
+	}
+
+	onReveal(listener: () => void): () => void {
+		this.revealListeners.add(listener);
+		return () => this.revealListeners.delete(listener);
 	}
 
 	/** Explicit pause or seek, independent of natural ends and timeline reconciliation. */
