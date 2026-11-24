@@ -103,6 +103,8 @@ function TimecodeDisplay() {
 	);
 
 	useEffect(() => {
+		// The saved position is restored after the first render and before this subscription.
+		setCurrentTime(editor.playback.getCurrentTime());
 		const unsubscribeUpdate = editor.playback.onUpdate(setCurrentTime);
 		const unsubscribeSeek = editor.playback.onSeek(setCurrentTime);
 		return () => {
