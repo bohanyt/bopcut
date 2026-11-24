@@ -292,6 +292,7 @@ export const id = {
 	"bookmark.addNote": "Tambahkan catatan...",
 	"bookmark.pointArea": "Tunjuk area gambar",
 	"bookmark.resizeArea": "Ubah ukuran area catatan",
+	"bookmark.areaInterrupted": "Draf area dibatalkan. Tunjuk area gambar lagi saat dijeda.",
 	"bookmark.agent": "Agen",
 	"bookmark.agentNote": "Catatan agen di {time} dtk",
 	"bookmark.author": "{author}:",

@@ -2,6 +2,15 @@
 export type BookmarkBox = { x: number; y: number; width: number; height: number };
 export type PicturePoint = { x: number; y: number };
 
+export function areaKeyAction(key: string, typing: boolean, corner: boolean, modified: boolean) {
+	if (key === "Escape") return "cancel";
+	if (key === "Tab") return "native";
+	if (key === "Enter" && !modified) return "confirm";
+	if (typing) return "native";
+	if (corner && !modified && key.startsWith("Arrow")) return "resize";
+	return "block";
+}
+
 const MIN_SIZE = 0.01;
 const clamp = (value: number, max = 1) => Math.max(0, Math.min(max, value));
 

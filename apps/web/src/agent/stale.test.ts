@@ -242,6 +242,31 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		expect(run(withNote(false), [{ op: "resolve-note", id: "n1" }], fieldsMapOf(withNote(false))).results[0]).toMatchObject({ ok: true });
 	});
 
+	test("replies and resolutions find compound notes by their owning scene and reject stale edits", () => {
+		const root = scenesWith([])[0];
+		const note = { id: "shared", time: T(0), note: "Check the logo" };
+		root.bookmarks = [note];
+		root.tracks.main.elements = [{
+			id: "clip", type: "compound", sceneId: "nested", name: "Nested",
+			startTime: T(0), duration: T(2), trimStart: T(0), trimEnd: T(0), params: {},
+		}];
+		const nested: TScene = { ...scenesWith([])[0], id: "nested", kind: "compound", isMain: false, bookmarks: [note] };
+		const scenes = [root, nested];
+		expect(run(scenes, [{ op: "resolve-note", id: "shared" }]).results[0]).toMatchObject({ ok: false });
+		const both = [
+			{ op: "reply-note", id: "shared", sceneId: "nested", text: "Done" },
+			{ op: "resolve-note", id: "shared", sceneId: "nested" },
+		];
+		const edited = run(scenes, both, fieldsMapOf(scenes));
+		expect(edited.results.map((result) => result.ok)).toEqual([true, true]);
+		expect(edited.scenes.find((scene) => scene.id === "nested")?.bookmarks[0]).toMatchObject({
+			resolved: true, replies: [{ text: "Done" }],
+		});
+		expect(edited.scenes[0].bookmarks[0]).toEqual(note);
+		const changed = { ...nested, bookmarks: [{ ...note, note: "Changed meanwhile" }] };
+		expect(run([root, changed], both, fieldsMapOf(scenes)).results.map((result) => result.stale)).toEqual([true, true]);
+	});
+
 	test("notes are told apart by scene, and grouping a wrapper the draft made again is not refused", () => {
 		const root = (resolved: boolean) => ({ ...scenesWith([])[0], bookmarks: [{ time: 0, note: "fix", resolved }] }) as unknown as TScene;
 		const later = { ...scenesWith([])[0], id: "later", isMain: false, bookmarks: [{ time: 0, note: "other", resolved: true }] } as unknown as TScene;

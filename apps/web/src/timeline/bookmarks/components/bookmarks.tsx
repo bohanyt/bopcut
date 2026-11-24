@@ -1,7 +1,7 @@
 "use client";
 
 import { useI18n } from "@/i18n/provider";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import type { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
 import type { BookmarkDragState } from "../hooks/use-bookmark-drag";
@@ -327,6 +327,7 @@ function BookmarkPopoverContent({
 }) {
 	const { t } = useI18n();
 	const editor = useEditor();
+	useSyncExternalStore(editor.voiceOver.subscribe, editor.voiceOver.getSnapshot, editor.voiceOver.getServerSnapshot);
 	const committedColor = (bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR)
 		.replace("#", "")
 		.toUpperCase();
@@ -455,7 +456,7 @@ function BookmarkPopoverContent({
 			{bookmark.replies?.map((reply) => <div key={reply.id} className="text-xs"><strong>{t("bookmark.author", { author: t(reply.author === "agent" ? "bookmark.agent" : "bookmark.user") })}</strong> {reply.text}</div>)}
 			{bookmark.note && <Button type="button" variant="outline" size="sm" onClick={() => editor.scenes.updateBookmark({ time, updates: { resolved: !bookmark.resolved } })}>{bookmark.resolved ? t("bookmark.reopen") : t("bookmark.resolve")}</Button>}
 			{bookmark.author === "agent" && <span className="text-xs">{t("bookmark.agent")}</span>}
-			<Button type="button" variant="outline" size="sm" onClick={() => {
+			<Button type="button" variant="outline" size="sm" disabled={editor.voiceOver.isCapturing()} onClick={() => {
 				onPopoverClose();
 				startBookmarkArea(editor, time);
 			}}>{t("bookmark.pointArea")}</Button>

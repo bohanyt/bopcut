@@ -2,6 +2,7 @@ import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import type { TProject, TProjectSettings } from "@/project/types";
 import type { TScene } from "@/timeline";
 import { mediaTimeFromSeconds } from "@/wasm";
+import { startBookmarkArea, useBookmarkArea } from "@/timeline/bookmarks/area-state";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
@@ -105,8 +106,45 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
+	useBookmarkArea.setState({ editing: null });
 	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 	EditorCore.reset();
+});
+
+test("area editing pauses on entry and cancels on external playback, seeks, and scene changes", () => {
+	const { editor, scenes } = setup();
+	for (const [key, value] of Object.entries({ requestAnimationFrame: () => 1, cancelAnimationFrame: () => {} })) {
+		const original = Object.getOwnPropertyDescriptor(globalThis, key);
+		Object.defineProperty(globalThis, key, { value, configurable: true });
+		cleanups.push(() => original ? Object.defineProperty(globalThis, key, original) : Reflect.deleteProperty(globalThis, key));
+	}
+	editor.playback.play();
+	startBookmarkArea(editor, T(1));
+	expect(editor.playback.getIsPlaying()).toBe(false);
+	expect(useBookmarkArea.getState().editing?.time).toBe(T(1));
+	editor.playback.seek({ time: T(0) });
+	expect(useBookmarkArea.getState().editing).toBeNull();
+	startBookmarkArea(editor, T(1));
+	editor.playback.play();
+	expect(useBookmarkArea.getState().editing).toBeNull();
+	editor.playback.pause();
+	startBookmarkArea(editor, T(1));
+	editor.scenes.setScenes({ scenes, activeSceneId: "b" });
+	expect(useBookmarkArea.getState().editing).toBeNull();
+});
+
+test("pointing at an area is unavailable during voice-over capture and cannot pause it", () => {
+	const { editor } = setup();
+	const capture = spyOn(editor.voiceOver, "isCapturing").mockReturnValue(true);
+	const pause = spyOn(editor.playback, "pause");
+	try {
+		startBookmarkArea(editor, T(1));
+		expect(useBookmarkArea.getState().editing).toBeNull();
+		expect(pause).not.toHaveBeenCalled();
+	} finally {
+		capture.mockRestore();
+		pause.mockRestore();
+	}
 });
 
 test("an area note captures its own scene and uploads the annotated frame and clean crop together", async () => {

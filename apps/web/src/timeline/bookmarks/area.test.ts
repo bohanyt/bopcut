@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { boxBetween, normalizeBookmarkBox, picturePoint } from "./area";
+import { areaKeyAction, boxBetween, normalizeBookmarkBox, picturePoint } from "./area";
 
 test("uses the displayed picture rather than the surrounding viewport at every zoom and orientation", () => {
 	const expected = { x: 0.25, y: 0.5 };
@@ -10,6 +10,17 @@ test("uses the displayed picture rather than the surrounding viewport at every z
 	]) {
 		expect(picturePoint({ x: rect.left + rect.width / 4, y: rect.top + rect.height / 2 }, rect)).toEqual(expected);
 	}
+});
+
+test("blocks timeline keys, preserves text input and reserves Escape and Enter for the area editor", () => {
+	for (const key of [" ", "Delete", "Backspace", "s", "q", "w", "d", "z"]) {
+		expect(areaKeyAction(key, false, false, key === "d" || key === "z")).toBe("block");
+		expect(areaKeyAction(key, true, false, false)).toBe("native");
+	}
+	expect(areaKeyAction("Escape", true, false, false)).toBe("cancel");
+	expect(areaKeyAction("Enter", true, false, false)).toBe("confirm");
+	expect(areaKeyAction("ArrowLeft", false, true, false)).toBe("resize");
+	expect(areaKeyAction("Tab", false, false, false)).toBe("native");
 });
 
 test("clamps a reversed drag, keeps valid saved fractions, and rejects corrupt boxes", () => {

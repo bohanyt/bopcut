@@ -5,6 +5,10 @@ import { getMaskDefinition } from "@/masks";
 import type { BookmarkBox } from "@/timeline/bookmarks/area";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { getReachableScenes } from "./scene-graph";
+import { getElementLocalTime } from "@/animation";
+import { resolveOpacityAtTime } from "@/animation/values";
+import { presetLayerAt, readPresetSettings } from "@/animation/presets";
+import { readOpacityFromParams } from "@/rendering";
 
 export function validNote(text: unknown, start: unknown, end: unknown): boolean {
 	return typeof text === "string" && !!text.trim() && typeof start === "number" && Number.isFinite(start) && start >= 0 && (end === undefined || (typeof end === "number" && Number.isFinite(end) && end >= start));
@@ -23,6 +27,9 @@ export function elementsInNoteBox(box: BookmarkBox, time: number, tracks: SceneT
 	return getVisibleElementsWithBounds({ tracks: visible, currentTime: time, canvasSize, mediaAssets, includeCompound: true })
 		.reverse().filter(({ bounds, element }) => {
 			if (!rectanglesOverlap(bounds, target)) return false;
+			const localTime = getElementLocalTime({ timelineTime: time, elementStartTime: element.startTime, elementDuration: element.duration });
+			const opacity = resolveOpacityAtTime({ baseOpacity: readOpacityFromParams({ params: element.params }), animations: element.animations, localTime });
+			if (opacity <= 0 || presetLayerAt(readPresetSettings(element.params), localTime, element.duration, height).opacity <= 0) return false;
 			const mask = "masks" in element ? element.masks?.[0] : undefined;
 			if (!mask) return true;
 			const definition = getMaskDefinition(mask.type);
@@ -31,15 +38,20 @@ export function elementsInNoteBox(box: BookmarkBox, time: number, tracks: SceneT
 			surface.width = surface.height = 96;
 			const ctx = surface.getContext("2d", { willReadFrequently: true });
 			if (!ctx) return true;
-			ctx.scale(96 / target.width, 96 / target.height);
-			ctx.translate(bounds.cx - target.cx + target.width / 2, bounds.cy - target.cy + target.height / 2);
+			const { body } = definition.renderer;
+			// Analytic masks already apply feather. The renderer's distance pass extends
+			// coverage for the other masks by half the feather distance past the edge.
+			const feather = body.kind === "drawWithFeather" ? 0 : mask.params.feather / 2;
+			const halfW = target.width / 2, halfH = target.height / 2;
+			const stepX = (target.width + 2 * feather) / 96, stepY = (target.height + 2 * feather) / 96;
+			ctx.scale(1 / stepX, 1 / stepY);
+			ctx.translate(bounds.cx - target.cx + halfW + feather, bounds.cy - target.cy + halfH + feather);
 			ctx.rotate(bounds.rotation * Math.PI / 180);
 			const w = Math.abs(bounds.width), h = Math.abs(bounds.height);
 			ctx.translate(-w / 2, -h / 2);
 			ctx.beginPath();
 			ctx.rect(0, 0, w, h);
 			ctx.clip();
-			const { body } = definition.renderer;
 			const args = { ctx, width: w, height: h, resolvedParams: mask.params };
 			ctx.fillStyle = "white";
 			if (body.kind === "fillPath") ctx.fill(body.buildPath(args));
@@ -51,7 +63,12 @@ export function elementsInNoteBox(box: BookmarkBox, time: number, tracks: SceneT
 				ctx.fillRect(0, 0, w, h);
 			}
 			const { data } = ctx.getImageData(0, 0, 96, 96);
-			for (let i = 3; i < data.length; i += 4) if (data[i] > 0) return true;
+			for (let i = 0; i < 96 * 96; i++) {
+				if (data[i * 4 + 3] === 0) continue;
+				const dx = Math.max(0, Math.abs((i % 96 + 0.5) * stepX - halfW - feather) - halfW);
+				const dy = Math.max(0, Math.abs((Math.floor(i / 96) + 0.5) * stepY - halfH - feather) - halfH);
+				if (Math.hypot(dx, dy) <= feather) return true;
+			}
 			return false;
 		}).map(({ element }) => ({ id: element.id, name: element.name, type: element.type }));
 }
