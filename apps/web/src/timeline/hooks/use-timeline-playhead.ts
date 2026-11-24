@@ -95,7 +95,7 @@ export function useTimelinePlayhead({
 			unsubscribeReveal();
 			cancelAnimationFrame(revealFrame);
 		};
-	}, [ctrl, editor.playback]);
+	}, [ctrl, editor.playback, editor.timeline]);
 
 	useEffect(() => {
 		const stopScene = editor.scenes.subscribe(ctrl.stopIfScopeChanged);
