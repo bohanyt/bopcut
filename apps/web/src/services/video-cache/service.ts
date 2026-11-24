@@ -173,7 +173,8 @@ class VideoCursor {
 /** Video samples and surfaces belong to one renderer. A cursor serves one source time per frame. */
 export class VideoCache {
 	private sources = new Map<File | string, VideoSource>();
-	private failedSources = new Map<File | string, { error: unknown }>();
+	private failedSources = new WeakMap<File, { error: unknown }>();
+	private failedUrls = new Map<string, { error: unknown }>();
 
 	async getFrameAt({
 		file,
@@ -191,7 +192,7 @@ export class VideoCache {
 		signal?: AbortSignal;
 	}): Promise<VideoFrame | null> {
 		signal?.throwIfAborted();
-		const failed = this.failedSources.get(file);
+		const failed = typeof file === "string" ? this.failedUrls.get(file) : this.failedSources.get(file);
 		if (failed) {
 			if (throwOnSeekError) throw failed.error;
 			return null;
@@ -262,7 +263,10 @@ export class VideoCache {
 		const track = getDecodableVideoTrack(input).catch((error) => {
 			if (this.sources.get(file)?.input === input) {
 				this.sources.delete(file);
-				this.failedSources.set(file, { error });
+				if (typeof file === "string") {
+					if (this.failedUrls.size >= 64) this.failedUrls.delete(this.failedUrls.keys().next().value!);
+					this.failedUrls.set(file, { error });
+				} else this.failedSources.set(file, { error });
 				input.dispose();
 				console.warn(`Failed to open video "${typeof file === "string" ? file : file.name}":`, error);
 			}
@@ -295,6 +299,7 @@ export class VideoCache {
 			source.input.dispose();
 		}
 		this.sources.clear();
-		this.failedSources.clear();
+		this.failedSources = new WeakMap();
+		this.failedUrls.clear();
 	}
 }
