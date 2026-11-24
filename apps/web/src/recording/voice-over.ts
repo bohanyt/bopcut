@@ -15,7 +15,7 @@ import { alignedStartFrame, trimPcmStart, wavParts } from "./wav";
 type Preferences = { deviceId: string; muteProject: boolean; noiseSuppression: boolean };
 type Scope = MediaImportSession & { sceneId: string };
 type Session = { scope: Scope; startTime: MediaTime; takes: TakeAsset[]; anchors: PlacedTake[] };
-type PendingTake = { session: Session; file: File; duration: MediaTime; silent: boolean; name: string; asset?: TakeAsset };
+type PendingTake = { session: Session; file: File; duration: MediaTime; silent: boolean; name: string; asset?: TakeAsset; saving?: Promise<void> };
 type Phase = "idle" | "setup" | "count-in" | "starting" | "recording" | "saving" | "review" | "recovery";
 type ErrorKey = ReturnType<typeof microphoneError>;
 
@@ -347,11 +347,13 @@ export class VoiceOver {
 			const { session, file, name, duration } = pending;
 			if (!this.isCurrent(session.scope)) return this.recover("recording.takeInMemory");
 			if (!pending.asset || !this.editor.media.getAssets().some(({ id }) => id === pending.asset?.mediaId)) {
-				const saving = this.editor.media.importFile({ session: session.scope, file, name, ratchetFps: false })
+				// A retry waits for a write that is still running, so a slow upload is stored once.
+				const saving = pending.saving ??= this.editor.media
+					.importFile({ session: session.scope, file, name, ratchetFps: false })
 					.then((asset) => {
-						// A write that finishes after the deadline is reused by a later retry.
 						if (asset) pending.asset = { mediaId: asset.id, name: asset.name, duration };
-					});
+					})
+					.finally(() => { pending.saving = undefined; });
 				// Storage that never answers must not hold the WAV or block leaving the project.
 				let timer: ReturnType<typeof setTimeout> | undefined;
 				const deadline = new Promise<void>((resolve) => {

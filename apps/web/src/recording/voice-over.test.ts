@@ -216,7 +216,7 @@ test.each(["stop", "pause", "seek", "unplug", "navigation", "empty", "silent", "
 	},
 );
 
-test("storage that never answers releases navigation, and a late write is reused by retry", async () => {
+test("storage that never answers releases navigation, and retry waits for the running write", async () => {
 	const { editor, manager, close, start, importFile } = harness();
 	try {
 		await start();
@@ -230,9 +230,11 @@ test("storage that never answers releases navigation, and a late write is reused
 		expect(manager.getSnapshot().phase).toBe("recovery");
 		expect(manager.canRetry()).toBe(true);
 		expect(editor.command.canUndo()).toBe(false);
-		finishWrite();
-		await Bun.sleep(1);
 		await manager.retryTake();
+		expect(manager.getSnapshot().phase).toBe("recovery");
+		const retry = manager.retryTake();
+		finishWrite();
+		await retry;
 		expect(importFile).toHaveBeenCalledTimes(1);
 		expect(manager.getSnapshot().phase).toBe("review");
 		expect(editor.scenes.getActiveScene().tracks.audio[0].elements.length).toBe(1);
