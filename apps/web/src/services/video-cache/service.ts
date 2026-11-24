@@ -197,7 +197,7 @@ export class VideoCache {
 		return (await this.readAt(seek)) !== null;
 	}
 
-	async getProxyFrameAt(file: string, time: number, maxTextureDimension: number, signal?: AbortSignal) {
+	async getProxyFrameAt(file: string, time: number, maxTextureDimension = Infinity, signal?: AbortSignal) {
 		const deadline = AbortSignal.timeout(1000);
 		const scope = signal ? AbortSignal.any([signal, deadline]) : deadline;
 		try {

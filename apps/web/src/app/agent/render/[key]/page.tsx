@@ -34,7 +34,7 @@ async function render(key: string) {
 			void fetch("/api/proxies", {
 				method: "POST", signal: proxyPause.signal, headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ action: "pause", id: crypto.randomUUID() }),
-			}).catch(() => {});
+			}).then(response => response.text()).catch(() => {});
 		}
 		const editor = EditorCore.createRenderOnly();
 		await editor.project.loadForRender(projectId, async () => { await send("stage", { stage: "loading media" }); }, { skipFonts: !!range });
