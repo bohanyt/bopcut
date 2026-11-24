@@ -392,17 +392,19 @@ export function getElementFontFamilies({
 }: {
 	tracks: SceneTracks;
 }): string[] {
+	return getFontFamiliesForElements([...tracks.overlay, tracks.main, ...tracks.audio].flatMap((track): TimelineElement[] => track.elements));
+}
+
+export function getFontFamiliesForElements(elements: Iterable<TimelineElement>): string[] {
 	const families = new Set<string>();
-	for (const track of [...tracks.overlay, tracks.main, ...tracks.audio]) {
-		for (const element of track.elements) {
-			if (element.type === "text" && typeof element.params.fontFamily === "string") {
-				families.add(element.params.fontFamily);
-			}
-			if ("masks" in element) {
-				for (const mask of element.masks ?? []) {
-					if (mask.type === "text" && mask.params.fontFamily) {
-						families.add(mask.params.fontFamily);
-					}
+	for (const element of elements) {
+		if (element.type === "text" && typeof element.params.fontFamily === "string") {
+			families.add(element.params.fontFamily);
+		}
+		if ("masks" in element) {
+			for (const mask of element.masks ?? []) {
+				if (mask.type === "text" && mask.params.fontFamily) {
+					families.add(mask.params.fontFamily);
 				}
 			}
 		}

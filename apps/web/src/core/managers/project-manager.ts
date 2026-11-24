@@ -147,7 +147,7 @@ export class ProjectManager {
 		}
 	}
 
-	async loadForRender(id: string, loadingMedia: () => Promise<void>) {
+	async loadForRender(id: string, loadingMedia: () => Promise<void>, { skipFonts = false }: { skipFonts?: boolean } = {}) {
 		if (!this.editor.renderOnly || this.active) throw new Error("This page cannot load a render job.");
 		const loaded = await storageService.loadProject({ id, readOnly: true });
 		if (!loaded || loaded.project.metadata.id !== id) throw new Error("The saved project was not found.");
@@ -156,7 +156,7 @@ export class ProjectManager {
 		await loadingMedia();
 		await this.editor.media.loadProjectMedia({ projectId: id });
 		if (!this.editor.media.isProjectMediaLoaded({ projectId: id })) throw new Error("Could not load the project's media.");
-		await this.loadProjectFonts(this.active);
+		if (!skipFonts) await this.loadProjectFonts(this.active);
 		this.isLoading = false;
 	}
 

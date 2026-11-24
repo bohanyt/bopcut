@@ -1,9 +1,9 @@
 export type RangeInput = { from: number; to: number; rows: number };
 export type RangeSpan = { start: number; end: number; label: string; text?: boolean };
-export type RangeWords = { start: number; end: number; text: string };
+export type RangeWords = { start: number; end: number; text: string; cutStart?: boolean; cutEnd?: boolean };
 export const RANGE_WIDTH = 960;
 export const RANGE_HEADER = 48;
-export const RANGE_ROW_HEIGHT = 122;
+export const RANGE_ROW_HEIGHT = 142;
 export const RANGE_FRAME_WIDTH = 196;
 export const RANGE_BUCKETS = 144;
 export const MAX_RANGE_PNG = 8 * 1024 * 1024;
@@ -34,7 +34,9 @@ export function accumulatePeaks(peaks: Float32Array, channel: Float32Array, offs
 	}
 }
 
-type Drawing = Pick<CanvasRenderingContext2D, "fillStyle" | "font" | "fillRect" | "fillText">;
+type Drawing = Pick<CanvasRenderingContext2D, "fillStyle" | "font" | "fillRect" | "fillText"> & {
+	measureText(text: string): { width: number };
+};
 type Frame = (left: number, top: number, width: number, height: number) => void;
 const stamp = (time: number) => time.toFixed(2) + "s";
 const line = (label: string) => label.replace(/\s+/g, " ").trim();
@@ -46,6 +48,7 @@ export function drawRangeView(ctx: Drawing, input: RangeInput, {
 	const right = RANGE_WIDTH - 18;
 	const left = RANGE_FRAME_WIDTH + 36;
 	const width = right - left;
+	const orderedWords = [...words].sort((a, b) => a.start - b.start);
 	ctx.fillStyle = "#101722";
 	ctx.fillRect(0, 0, RANGE_WIDTH, RANGE_HEADER + input.rows * RANGE_ROW_HEIGHT);
 	ctx.fillStyle = "#eef4ff";
@@ -77,21 +80,45 @@ export function drawRangeView(ctx: Drawing, input: RangeInput, {
 		ctx.fillStyle = "#e6b668";
 		for (const span of rowSpans) {
 			for (const edge of [span.start, span.end]) {
-				if (edge >= row.from && edge <= row.to) ctx.fillRect(at(edge), y + 23, 1, 33);
+				if (edge >= row.from && edge <= row.to) ctx.fillRect(at(edge), y + 23, 1, 46);
 			}
 		}
-		const spoken = words.filter((word) => word.start < row.to && word.end > input.from &&
-			Math.max(word.start, input.from) >= row.from);
+		const spoken = orderedWords.filter((word) => word.start < row.to && word.end > row.from);
+		const laneRight = [left, left];
 		ctx.fillStyle = "#eef4ff";
-		ctx.font = "14px sans-serif";
-		ctx.fillText(spoken.length ? spoken.map((word) => line(word.text)).join(" ").slice(0, 150)
-			: peak < 0.003 ? "Quiet · no known words" : "No known words", left, y + 76, width);
+		ctx.font = "13px sans-serif";
+		if (!spoken.length) ctx.fillText(peak < 0.003 ? "Quiet · no known words" : "No known words", left, y + 84, width);
+		for (const word of spoken) {
+			const x = at(Math.max(word.start, row.from));
+			const end = at(Math.min(word.end, row.to));
+			const startsHere = word.start >= row.from || i === 0;
+			ctx.fillStyle = "#a0b5d3";
+			ctx.fillRect(x, y + 63, Math.max(1, end - x), 1);
+			if (startsHere) ctx.fillRect(x, y + 57, 1, 10);
+			ctx.fillStyle = "#f0ab70";
+			if (startsHere && (word.cutStart || word.start < input.from)) ctx.fillRect(x, y + 57, 3, 10);
+			if ((word.end <= row.to && word.cutEnd) || (i === input.rows - 1 && word.end > input.to)) {
+				ctx.fillRect(Math.max(x, end - 2), y + 57, 3, 10);
+			}
+			if (!startsHere) continue;
+			const label = line(word.text);
+			if (!label) continue;
+			const labelWidth = ctx.measureText(label).width;
+			const lane = laneRight.findIndex((after) => x >= after && x + labelWidth <= right);
+			ctx.fillStyle = "#eef4ff";
+			if (lane < 0) {
+				ctx.fillText("•", x, y + 75);
+			} else {
+				ctx.fillText(label, x, y + 85 + lane * 16);
+				laneRight[lane] = x + labelWidth + 7;
+			}
+		}
 		ctx.font = "12px sans-serif";
 		ctx.fillStyle = "#e6b668";
 		ctx.fillText(rowSpans.filter((span) => !span.text).map((span) => line(span.label)).join(" / ").slice(0, 135),
-			left, y + 95, width);
+			left, y + 118, width);
 		ctx.fillStyle = "#b6ccf2";
 		ctx.fillText(rowSpans.filter((span) => span.text).map((span) => line(span.label)).join(" / ").slice(0, 135),
-			left, y + 111, width);
+			left, y + 134, width);
 	}
 }

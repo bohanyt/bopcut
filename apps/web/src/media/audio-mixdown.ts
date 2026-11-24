@@ -121,7 +121,7 @@ export async function* mixTimelineAudio({
 }): AsyncGenerator<AudioBuffer, void, unknown> {
 	const sources = new Map<string, MixSource>();
 	const clips: Array<MixClip & { source: MixSource }> = [];
-	for (const { element, mediaAsset } of collectAudibleCandidates({ tracks, mediaAssets, scenes, duration })) {
+	for (const { element, mediaAsset } of collectAudibleCandidates({ tracks, mediaAssets, scenes, rangeStart, duration })) {
 		if (isElementMuted({ element })) continue;
 		const library = element.type === "audio" && element.sourceType === "library" ? element : null;
 		const asset = mediaAsset?.file && mediaSupportsAudio({ media: mediaAsset }) ? mediaAsset : null;

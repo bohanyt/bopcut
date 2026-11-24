@@ -1,42 +1,17 @@
 import { EditorCore } from "@/core";
+import { loadFonts } from "@/fonts/google-fonts";
 import { mixTimelineAudio } from "@/media/audio-mixdown";
-import { calculateTotalDuration, type CompoundElement, type TScene } from "@/timeline";
+import { calculateTotalDuration } from "@/timeline";
+import { waitWithAbort } from "@/utils/abort";
 import { lastFrameMediaTime, mediaTimeFromSeconds, TICKS_PER_SECOND } from "@/wasm";
 import { captureFrame } from "./frames";
 import { timelineTranscript } from "./packed-transcript";
-import { accumulatePeaks, drawRangeView, parseRangeInput, rangeRows, RANGE_BUCKETS, RANGE_FRAME_WIDTH, RANGE_HEADER, RANGE_ROW_HEIGHT, RANGE_WIDTH, type RangeSpan } from "./range-view";
+import { accumulatePeaks, drawRangeView, rangeRows, RANGE_BUCKETS, RANGE_FRAME_WIDTH, RANGE_HEADER, RANGE_ROW_HEIGHT, RANGE_WIDTH, type RangeInput, type RangeSpan } from "./range-view";
+import { rangeFontFamilies, visibleRangeElements } from "./range-view-project";
 import type { RenderTransport } from "./render-transport";
-import { getRootScene, orderedTracks, toRootInterval } from "./scene-graph";
+import { getRootScene } from "./scene-graph";
 
-function visibleSpans(root: TScene, scenes: TScene[], from: number, to: number): RangeSpan[] {
-	const result: RangeSpan[] = [];
-	const byId = new Map(scenes.map((scene) => [scene.id, scene]));
-	function visit(scene: TScene, chain: CompoundElement[], seen: Set<string>) {
-		if (seen.has(scene.id) || chain.length > 32) return;
-		const ancestors = new Set(seen).add(scene.id);
-		for (const track of orderedTracks(scene.tracks)) {
-			if ("hidden" in track && track.hidden) continue;
-			for (const element of track.elements) {
-				if (result.length >= 1000) return;
-				if ("hidden" in element && element.hidden) continue;
-				const visible = toRootInterval(element.startTime, element.startTime + element.duration, chain);
-				if (!visible) continue;
-				const [start, end] = visible.map((ticks) => ticks / TICKS_PER_SECOND);
-				if (start >= to || end <= from) continue;
-				result.push({ start, end, label: element.type === "text" ? String(element.params.content ?? "") : element.name, text: element.type === "text" });
-				if (element.type === "compound") {
-					const nested = byId.get(element.sceneId);
-					if (nested) visit(nested, [...chain, element], ancestors);
-				}
-			}
-		}
-	}
-	visit(root, [], new Set());
-	return result;
-}
-
-export async function renderRangeView(options: Record<string, unknown>, job: RenderTransport) {
-	const input = parseRangeInput(options);
+export async function renderRangeView(input: RangeInput, job: RenderTransport) {
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActive();
 	const scenes = editor.scenes.getScenes();
@@ -47,6 +22,7 @@ export async function renderRangeView(options: Record<string, unknown>, job: Ren
 	if (input.to > duration / TICKS_PER_SECOND + 1e-9) throw new Error("The range ends outside the saved timeline.");
 	if (editor.media.getMissingMedia().length) throw new Error("Some stored media are missing. Restore them before making a range view.");
 	const signal = AbortSignal.any([editor.project.getSessionSignal(), ...(job.signal ? [job.signal] : [])]);
+	await waitWithAbort(loadFonts({ families: rangeFontFamilies(root, scenes, input) }), signal);
 	const last = lastFrameMediaTime({ duration, fps: project.settings.fps });
 	const tiles: HTMLCanvasElement[] = [];
 	for (const [index, row] of rangeRows(input).entries()) {
@@ -83,10 +59,15 @@ export async function renderRangeView(options: Record<string, unknown>, job: Ren
 	canvas.width = RANGE_WIDTH;
 	canvas.height = RANGE_HEADER + RANGE_ROW_HEIGHT * input.rows;
 	const ctx = canvas.getContext("2d")!;
+	const spans: RangeSpan[] = [];
+	for (const { element, start, end } of visibleRangeElements(root, scenes, input)) {
+		spans.push({ start, end, label: element.type === "text" ? String(element.params.content ?? "") : element.name, text: element.type === "text" });
+		if (spans.length === 1000) break;
+	}
 	drawRangeView(ctx, input, {
 		title: project.metadata.name, frames: tiles.map((tile) => (x, y, w, h) => ctx.drawImage(tile, x, y, w, h)),
 		peaks, words: clips.flatMap((clip) => clip.phrases).sort((a, b) => a.start - b.start),
-		spans: visibleSpans(root, scenes, input.from, input.to),
+		spans,
 	});
 	const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
 	if (!blob) throw new Error("Could not create PNG.");

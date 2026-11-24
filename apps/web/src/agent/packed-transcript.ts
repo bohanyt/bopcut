@@ -10,10 +10,13 @@ import { orderedTracks } from "./scene-graph";
 export type TranscriptMedia = {
 	id: string; name: string; duration?: number; hasAudio?: boolean; words?: SourceWord[];
 };
-export type Phrase = { start: number; end: number; sourceStart: number; sourceEnd: number; text: string };
-export type TranscriptClip = { id: string; name: string; media: string; start: number; end: number;
+type TimedWord = { start: number; end: number; sourceStart: number; sourceEnd: number; text: string };
+export type Phrase = TimedWord & { cutStart?: boolean; cutEnd?: boolean; words?: TimedWord[] };
+export type TranscriptClip = { id: string; name: string; media: string; mediaId?: string; mediaNameAmbiguous?: boolean; start: number; end: number;
 	sourceStart: number; sourceEnd: number; known: boolean; phrases: Phrase[] };
 export const PHRASE_GAP = 0.5;
+const MAX_PHRASE_SECONDS = 12;
+const MAX_PHRASE_WORDS = 25;
 const text = (value: string) => value.replace(/\s+/g, " ").trim();
 
 export function mapPhrases(words: SourceWord[], start: number, end: number, sourceStart: number, rate = 1, groupWords = true): Phrase[] {
@@ -29,12 +32,19 @@ export function mapPhrases(words: SourceWord[], start: number, end: number, sour
 		const at = start + (a - sourceStart) / rate;
 		const until = start + (b - sourceStart) / rate;
 		const previous = phrases.at(-1);
-		if (groupWords && previous && at - previous.end < PHRASE_GAP - 1e-9) {
+		const timed = { start: at, end: until, sourceStart: a, sourceEnd: b, text: label };
+		if (groupWords && previous && at - previous.end < PHRASE_GAP - 1e-9 &&
+			(previous.words?.length ?? 1) < MAX_PHRASE_WORDS && until - previous.start <= MAX_PHRASE_SECONDS) {
+			(previous.words ??= [{ ...previous }]).push(timed);
 			previous.end = Math.max(previous.end, until);
 			previous.sourceEnd = Math.max(previous.sourceEnd, b);
 			previous.text += " " + label;
 		} else {
-			phrases.push({ start: at, end: until, sourceStart: a, sourceEnd: b, text: label });
+			phrases.push({
+				...timed,
+				...(!groupWords && a - word.start > 1e-9 && { cutStart: true }),
+				...(!groupWords && word.end - b > 1e-9 && { cutEnd: true }),
+			});
 		}
 	}
 	return phrases;
@@ -46,6 +56,8 @@ export function timelineTranscript(root: TScene, scenes: TScene[], media: readon
 	from = 0, to = Infinity, groupWords = true,
 }: { from?: number; to?: number; groupWords?: boolean } = {}): TranscriptClip[] {
 	const assets = new Map(media.map((asset) => [asset.id, asset]));
+	const names = new Map<string, number>();
+	for (const { name } of media) names.set(name, (names.get(name) ?? 0) + 1);
 	const words = new Map<string, SourceWord[]>();
 	const result: TranscriptClip[] = [];
 	for (const track of orderedTracks(expandCompoundAudioTracks({ tracks: root.tracks, scenes }))) {
@@ -61,7 +73,8 @@ export function timelineTranscript(root: TScene, scenes: TScene[], media: readon
 			const sourceStart = seconds(element.trimStart) + (start - seconds(element.startTime)) * rate;
 			if (asset && !words.has(asset.id)) words.set(asset.id, parseSourceWords(asset.words) ?? []);
 			const knownWords = asset ? words.get(asset.id) ?? [] : [];
-			result.push({ id: element.id, name: element.name, media: asset?.name ?? element.name,
+			result.push({ id: element.id, name: element.name, media: asset?.name ?? element.name, mediaId: asset?.id,
+				mediaNameAmbiguous: !!asset && (names.get(asset.name) ?? 0) > 1,
 				start, end, sourceStart, sourceEnd: sourceStart + (end - start) * rate,
 				known: knownWords.length > 0, phrases: mapPhrases(knownWords, start, end, sourceStart, rate, groupWords) });
 		}
@@ -69,10 +82,10 @@ export function timelineTranscript(root: TScene, scenes: TScene[], media: readon
 	return result.sort((a, b) => a.start - b.start || a.end - b.end || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-export function sourceTranscript(media: TranscriptMedia): TranscriptClip {
+export function sourceTranscript(media: TranscriptMedia, mediaNameAmbiguous = false): TranscriptClip {
 	const words = parseSourceWords(media.words) ?? [];
 	const end = Math.max(media.duration ?? 0, words.reduce((maximum, word) => Math.max(maximum, word.end), 0));
-	return { id: media.id, name: media.name, media: media.name, start: 0, end, sourceStart: 0, sourceEnd: end,
+	return { id: media.id, name: media.name, media: media.name, mediaId: media.id, mediaNameAmbiguous, start: 0, end, sourceStart: 0, sourceEnd: end,
 		known: words.length > 0, phrases: mapPhrases(words, 0, end, 0) };
 }
 
@@ -90,7 +103,9 @@ export function packTranscript(clips: TranscriptClip[], mode: "timeline" | "sour
 	const mediaLabels = new Map<string, string>();
 	clips.forEach((clip, index) => {
 		events.push({ at: clip.start, clip: index });
-		if (clip.media !== clip.name) mediaCounts.set(clip.media, (mediaCounts.get(clip.media) ?? 0) + 1);
+		if (clip.mediaId && (clip.media !== clip.name || clip.mediaNameAmbiguous)) {
+			mediaCounts.set(clip.mediaId, (mediaCounts.get(clip.mediaId) ?? 0) + 1);
+		}
 		for (const phrase of clip.phrases) events.push({ at: phrase.start, clip: index, phrase });
 	});
 	events.sort((a, b) => a.at - b.at || a.clip - b.clip);
@@ -98,28 +113,51 @@ export function packTranscript(clips: TranscriptClip[], mode: "timeline" | "sour
 	const encoder = new TextEncoder();
 	let size = encoder.encode(heading).length + 1;
 	let spokenEnd = 0;
+	const contentLimit = MAX_BYTES - 150;
+	let truncated = false;
 	const append = (line: string) => {
-		size += encoder.encode(line).length + 1;
-		if (size >= MAX_BYTES - 100) return false;
+		const bytes = encoder.encode(line).length + 1;
+		if (size + bytes >= contentLimit) {
+			truncated = true;
+			return false;
+		}
+		size += bytes;
 		lines.push(line);
 		return true;
 	};
-	for (const { clip, phrase } of events) {
+	let omittedAt: number | undefined;
+	for (const { at, clip, phrase } of events) {
+		omittedAt = at;
 		const label = `#${clip + 1}`;
 		const item = clips[clip];
 		if (phrase) {
-			const source = mode === "timeline" ? `|${interval(phrase.sourceStart, phrase.sourceEnd)} ` : "";
-			if (!append(`${interval(phrase.start, phrase.end)} ${source}+${fmt(Math.max(0, phrase.start - spokenEnd))} ${label} ${phrase.text}`)) break;
+			const format = (part: TimedWord) => {
+				const source = mode === "timeline" ? `|${interval(part.sourceStart, part.sourceEnd)} ` : "";
+				return `${interval(part.start, part.end)} ${source}+${fmt(Math.max(0, part.start - spokenEnd))} ${label} ${part.text}`;
+			};
+			if (!append(format(phrase))) {
+				const words = phrase.words ?? [];
+				for (let count = words.length - 1; count > 0; count--) {
+					const prefix = words.slice(0, count);
+					if (append(format({ ...phrase, end: Math.max(...prefix.map((word) => word.end)),
+						sourceEnd: Math.max(...prefix.map((word) => word.sourceEnd)), text: prefix.map((word) => word.text).join(" ") }))) {
+						omittedAt = words[count].start;
+						break;
+					}
+				}
+				break;
+			}
 			spokenEnd = Math.max(spokenEnd, phrase.end);
 			continue;
 		}
-		let media = item.name === item.media ? "" : ` (${text(item.media)})`;
-		if (media && (mediaCounts.get(item.media) ?? 0) > 1) {
-			let reference = mediaLabels.get(item.media);
+		const mediaName = text(item.media) + (item.mediaNameAmbiguous ? ` [${item.mediaId}]` : "");
+		let media = item.name === item.media && !item.mediaNameAmbiguous ? "" : ` (${mediaName})`;
+		if (media && item.mediaId && (mediaCounts.get(item.mediaId) ?? 0) > 1) {
+			let reference = mediaLabels.get(item.mediaId);
 			if (!reference) {
 				reference = `@${mediaLabels.size + 1}`;
-				mediaLabels.set(item.media, reference);
-				if (!append(`${reference} ${text(item.media)}`)) break;
+				mediaLabels.set(item.mediaId, reference);
+				if (!append(`${reference} ${mediaName}`)) break;
 			}
 			media = " " + reference;
 		}
@@ -127,10 +165,11 @@ export function packTranscript(clips: TranscriptClip[], mode: "timeline" | "sour
 		const coverage = !item.known ? " [no words stored]" : !item.phrases.length ? " [no known words in this span]" : "";
 		if (!append(`${label} ${interval(item.start, item.end)}${source} ${text(item.name)}${media}${coverage}`)) break;
 	}
-	if (size < MAX_BYTES - 100) {
+	if (!truncated) {
+		omittedAt = spokenEnd;
 		if (end > spokenEnd) append(`# No known words ${interval(spokenEnd, end)}`);
 		if (!clips.length) append("# No audible clips.");
 	}
-	if (size >= MAX_BYTES - 100) lines.push("# Truncated at the output size limit.");
+	if (truncated) lines.push(`# Truncated at the output size limit. Entries omitted from ${fmt(omittedAt ?? 0)}s through ${fmt(end)}s.`);
 	return lines.join("\n") + "\n";
 }

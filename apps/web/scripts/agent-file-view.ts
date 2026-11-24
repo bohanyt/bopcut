@@ -7,7 +7,15 @@ import { accumulatePeaks, drawRangeView, MAX_RANGE_PNG, rangeRows, RANGE_BUCKETS
 import { parseSourceWords } from "../src/media/words";
 import { runProcess, withToolScratch } from "../src/retrieval/process";
 import { toolsFromEnv } from "../src/retrieval/server";
+import { parseTime } from "../src/retrieval/time";
 import { atomicWrite } from "../src/services/storage/server/files";
+
+export function checkFileRange(to: number, ffmpegInfo: string) {
+	const stamp = /^\s+Duration: (\d+:\d+:\d+\.\d+),/m.exec(ffmpegInfo)?.[1];
+	const duration = stamp ? parseTime(stamp) : NaN;
+	if (!Number.isFinite(duration)) throw new Error("Could not determine the video duration. Use a file with a known duration.");
+	if (to > duration) throw new Error("The range ends outside the video file.");
+}
 
 export async function fileRangeView(relative: string, input: RangeInput, workspace: string, filesRoot: string, signal: AbortSignal) {
 	relative = path.relative(filesRoot, inside(filesRoot, relative));
@@ -16,9 +24,11 @@ export async function fileRangeView(relative: string, input: RangeInput, workspa
 	const [ffmpeg, ...defaults] = toolsFromEnv(process.env).ffmpeg;
 	const rate = 8_000;
 	return withToolScratch(signal, filesRoot, async (scratch, active) => {
-		const run = (seek: number, args: string[]) => runProcess(ffmpeg, [...defaults, "-hide_banner", "-loglevel", "error",
+		const run = (seek: number, args: string[], loglevel = "error") => runProcess(ffmpeg, [...defaults, "-hide_banner", "-loglevel", loglevel,
 			"-y", "-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm,avi,mpegts,mpeg,m4v,ogg",
 			"-ss", String(seek), "-i", file, ...args], active, filesRoot);
+		const info = await run(0, ["-map", "0:v:0", "-t", "0", "-c:v", "copy", "-f", "null", "-"], "info");
+		checkFileRange(input.to, info.stderr);
 		const tile = path.join(scratch, "%03d.jpg");
 		const rows = rangeRows(input);
 		const span = input.to - input.from;
@@ -32,7 +42,9 @@ export async function fileRangeView(relative: string, input: RangeInput, workspa
 			return loadImage(frame).catch(() => { throw new Error("The file cannot show all requested frames. Shorten the range."); });
 		}));
 		const pcm = path.join(scratch, "audio.f32");
-		await run(input.from, ["-map", "0:a:0?", "-vn", "-t", String(span), "-ac", "1", "-ar", String(rate), "-f", "f32le", pcm]).catch((error: Error & { stderr?: string }) => {
+		// Audio packets keep their offset from the video after seeking. Pad to range time zero.
+		await run(input.from, ["-map", "0:a:0?", "-vn", "-t", String(span), "-ac", "1",
+			"-af", `aresample=${rate}:async=1:first_pts=0`, "-f", "f32le", pcm]).catch((error: Error & { stderr?: string }) => {
 			if (!/does not contain any stream|matches no streams/i.test(error.stderr ?? "")) throw error;
 		});
 		const audio = await fs.readFile(pcm).catch((error: NodeJS.ErrnoException) => {
