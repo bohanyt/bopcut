@@ -2,13 +2,14 @@ import { expect, spyOn, test } from "bun:test";
 import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createCanvas } from "@napi-rs/canvas";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { fileProbeCommand, toolsFromEnv } from "@/retrieval/server";
 import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
 import { audio, fixture, scene, t, text } from "@/timeline/__tests__/compound-fixtures";
 import type { TextElement, VideoElement } from "@/timeline";
 import { reserveEditorActivity, reserveReview } from "./review-activity";
 import { knownExportProfile, saveExportProfile } from "./export-profile";
+import { RANGE_FRAME_WIDTH, RANGE_HEADER, RANGE_ROW_HEIGHT } from "./range-view";
 import { cutPop, finding, summarizeReview, unusualPauses } from "./review-findings";
 import { inspectTimeline, reviewSourceCrop, textFindings } from "./review-timeline";
 import { writeReview } from "./review-server";
@@ -237,17 +238,25 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 			{ id: "reframe", name: "Landscape", diskFile: "reframe.mp4", fileType: "video/mp4", width: 640, height: 360, hasAudio: false },
 			{ id: "cover", name: "Cover", diskFile: "cover.jpg", fileType: "image/jpeg", width: 640, height: 360 },
 			{ id: "voice", name: "Voice", diskFile: "voice.wav", fileType: "audio/wav", hasAudio: true, words },
+			{ id: "rhythmic", name: "Rhythmic voice", diskFile: "rhythmic.wav", fileType: "audio/wav", hasAudio: true, words },
 		]) await fs.writeFile(path.join(media, "_metadata", asset.id + ".json"), JSON.stringify(asset));
 		const voice = path.join(media, "voice.wav");
 		const wav = Bun.spawn([ffmpeg, ...defaults, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
 			"sine=frequency=220:sample_rate=48000:duration=14", voice], { stderr: "pipe", stdout: "ignore" });
 		if (await wav.exited) throw new Error(await new Response(wav.stderr).text());
+		// The raw voice has peaks in the brief dips between the 100 ms window centers.
+		const pulse = "between(mod(t,0.1),0.020,0.030)";
+		const rhythmic = Bun.spawn([ffmpeg, ...defaults, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+			`aevalsrc='0.125*sin(2*PI*220*t)*if(between(t,3,4.5),${pulse},1)':s=48000:d=14`,
+			path.join(media, "rhythmic.wav")], { stderr: "pipe", stdout: "ignore" });
+		if (await rhythmic.exited) throw new Error(await new Response(rhythmic.stderr).text());
 		const read = async (name: string) => {
-			const summary = await writeReview({ projectId: "fixture", relative: name, pictures: name === "bad.mov", timeoutMs: 45_000,
+			const summary = await writeReview({ projectId: "fixture", relative: name, pictures: name === "bad.mov" || name === "short.mov", timeoutMs: 45_000,
 				workspace: dir, filesRoot: files, signal });
 			return { summary, report: await Bun.file(path.join(dir, "review.json")).json() as {
 				findings: { kind: string; severity: string; from: number; picture?: string }[]; pictures: string[]; sceneId: string;
-				timing: { totalSeconds: number }; observed: { frames: number }; cuts: { before: number; after: number }[];
+				timing: { totalSeconds: number }; observed: { frames: number };
+				cuts: { at: number; before: number; after: number; picture: string }[];
 			} };
 		};
 		const caption = (id: string, content: string, start: number, duration: number, params: TextElement["params"] = {}): TextElement =>
@@ -255,20 +264,31 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 		const portraitScale = 640 / 202;
 		const portraitFill = { "transform.scaleX": portraitScale, "transform.scaleY": portraitScale };
 		const centerCrop = "crop=202:360:219:0:exact=1,scale=360:640";
+		const portraitCut = 11.98, compoundCut = portraitCut + 3;
 		const save = async (bad: boolean, short: boolean) => {
 			const [root] = fixture();
 			const original = root.tracks.main.elements[0] as VideoElement;
 			const movie = { ...original, id: "movie", mediaId: "source", duration: t(12), params: short ? portraitFill : {} };
+			const portrait = { ...movie, id: "portrait-reframe", mediaId: "reframe", duration: t(3) };
+			const nested = scene("nested", { ...root.tracks, audio: [], overlay: [],
+				main: { ...root.tracks.main, elements: [portrait] } }, { kind: "compound" });
 			root.tracks.main.elements = short ? [
 				{ ...movie, id: "before", duration: t(2) },
 				{ ...movie, id: "zoom", startTime: t(2), trimStart: t(2), duration: t(2),
 					params: { "transform.scaleX": portraitScale * 1.2, "transform.scaleY": portraitScale * 1.2 } },
 				{ ...movie, id: "intentional-freeze", startTime: t(4), trimStart: t(4), duration: t(1.25), retime: { rate: 0 } },
-				{ ...movie, id: "after-freeze", startTime: t(5.25), trimStart: t(5.25), duration: t(6.75) },
-				{ ...movie, id: "portrait-reframe", mediaId: "reframe", startTime: t(12), duration: t(3) },
+				{ ...movie, id: "after-freeze", startTime: t(5.25), trimStart: t(5.25), duration: t(portraitCut - 5.25) },
+				{ ...portrait, startTime: t(portraitCut) },
+				{ ...text("zoomed-compound", compoundCut, 3), type: "compound", sceneId: nested.id,
+					params: { "transform.scaleX": 0.5, "transform.scaleY": 0.5 } },
 			] : bad ? [movie] : [{ ...movie, duration: t(9) }, { ...movie, id: "slow-pan", mediaId: "slow", startTime: t(9), duration: t(3) }];
-			const upload = { ...audio("voice-a", 0, 6), sourceType: "upload" as const, mediaId: "voice" };
+			const upload = { ...audio("voice-a", 0, 6), sourceType: "upload" as const, mediaId: short ? "rhythmic" : "voice" };
 			root.tracks.audio[0].elements = [upload, { ...upload, id: "voice-b", startTime: t(6), trimStart: t(bad ? 6.5 : 6) }];
+			if (short) upload.animations = { volume: { keys: Array.from({ length: 15 }, (_, i) =>
+				[0.01, 0.018, 0.035, 0.045].map((edge, j) => ({
+					id: `dip-${i}-${j}`, time: t(3 + i / 10 + edge), value: j === 1 || j === 2 ? -60 : 0,
+					segmentToNext: "linear" as const, tangentMode: "auto" as const,
+				}))).flat() } };
 			const titles = bad ? [
 				caption("unsafe", "Edge", 0, 1, { "transform.positionX": 620 }),
 				caption("overlap-a", "First", 1, 1), caption("overlap-b", "Second", 1, 1),
@@ -284,7 +304,7 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 				elements: [{ ...text("cover", 9, bad ? 1 : 2), type: "image", mediaId: "cover", params: short ? portraitFill : {} }] });
 			const alternate = scene("alternate", { ...root.tracks, audio: [], overlay: [] });
 			await fs.writeFile(path.join(projectDir, "project.json"), JSON.stringify({ version: CURRENT_PROJECT_VERSION,
-				metadata: { id: "fixture", name: "Review fixture" }, currentSceneId: root.id, scenes: [root, alternate],
+				metadata: { id: "fixture", name: "Review fixture" }, currentSceneId: root.id, scenes: short ? [root, alternate, nested] : [root, alternate],
 				settings: { canvasSize: short ? { width: 360, height: 640 } : { width: 1280, height: 720 },
 					fps: { numerator: 24, denominator: 1 }, background: { type: "color", color: "#000000" } } }));
 			return titles;
@@ -293,7 +313,7 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 			const bad = mode === "bad", short = mode === "short";
 			const titles = await save(bad, short);
 			const audioExpression = bad ? "if(between(t,5.999,6.001),0.55*sin(2*PI*14000*t),if(between(t,5.97,6.03),0.04,0.45)*sin(2*PI*220*t))"
-				: short ? "if(between(t,6,6.15),0.67,0.50)*sin(2*PI*220*t)" : "0.45*sin(2*PI*220*t)";
+				: short ? `if(between(t,3,4.5),0.000125*${pulse},if(between(t,6,6.15),0.67,0.50))*sin(2*PI*220*t)` : "0.45*sin(2*PI*220*t)";
 			const filters = short ? [
 				"[0:v]split[wide][zoom]", `[wide]${centerCrop}[base]`, "[zoom]crop=168:300,scale=360:640[punch]",
 				"[base][punch]overlay=enable='gte(t,2)*lt(t,4)',drawbox=c=gray:t=fill:enable='gte(t,4)*lt(t,5.25)'[v0]",
@@ -316,16 +336,18 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 			if (short) {
 				inputs.push("-i", reframe);
 				filters.push(`[v${titles.length}]drawbox=c=red:t=fill:enable='gte(t,9)*lt(t,11)',setsar=1[edited]`,
-					`[${2 + titles.length}:v]${centerCrop},setsar=1[reframed]`, "[edited][reframed]concat=n=2:v=1:a=0[out]");
+					`[${2 + titles.length}:v]${centerCrop},split[reframed][nested]`,
+					"[nested]scale=180:320,pad=360:640:90:160:black,setsar=1[zoomed]",
+					"[reframed]setsar=1[portrait]", "[edited][portrait][zoomed]concat=n=3:v=1:a=0[out]");
 			} else filters.push(`[v${titles.length}]${bad ? "drawbox=c=red:t=fill:enable='gte(t,9)*lt(t,10)'" : "null"}[out]`);
 			await encode(["-i", source, "-f", "lavfi", "-i", `aevalsrc='${audioExpression}':s=48000:d=12`,
 				...inputs, "-filter_complex_threads", "1", "-filter_complex", filters.join(";"), "-map", "[out]", "-map", "1:a:0", "-r", "24",
 				"-c:a", "pcm_s16le"], path.join(files, `${mode}.mov`));
 			const { report, summary } = await read(`${mode}.mov`);
 			expect(summary.sceneNotice).toContain("current saved scene");
-			const actionable = report.findings.filter(({ severity }) => severity !== "info").map(({ kind }) => kind).sort();
+			const actionableFindings = report.findings.filter(({ severity }) => severity !== "info");
 			if (bad) {
-				expect(actionable).toEqual(["black-picture", "covered-text", "cut-click", "cut-word", "frozen-picture",
+				expect(actionableFindings.map(({ kind }) => kind).sort()).toEqual(["black-picture", "covered-text", "cut-click", "cut-word", "frozen-picture",
 					"short-text", "small-text", "text-at-edge", "text-overlap"]);
 				for (const [kind, from] of Object.entries({ "black-picture": 2, "covered-text": 9, "cut-click": 6, "cut-word": 6,
 					"frozen-picture": 4, "short-text": 8, "small-text": 7, "text-at-edge": 0, "text-overlap": 1 })) {
@@ -336,14 +358,29 @@ test.skipIf(!available)("the planted export has ten findings and both clean twin
 				expect(report.pictures.length).toBeGreaterThan(0);
 				expect(report.pictures.length).toBeLessThanOrEqual(12);
 			} else {
-				expect(actionable.map((kind) => ({ kind, mode, finding: report.findings.find((hit) => hit.kind === kind), observed: report.observed }))).toEqual([]);
+				expect(actionableFindings.map((finding) => ({ mode, finding }))).toEqual([]);
 				if (short) {
-					expect(report.findings.find((hit) => hit.kind === "black-picture" && hit.from >= 12)?.severity).toBe("info");
-					expect(report.findings.find((hit) => hit.kind === "frozen-picture" && hit.from >= 12)?.severity).toBe("info");
+					for (const [from, to] of [[12, compoundCut], [15, 18]]) {
+						expect(report.findings.find((hit) => hit.kind === "black-picture" && hit.from >= from && hit.from < to)?.severity).toBe("info");
+						expect(report.findings.find((hit) => hit.kind === "frozen-picture" && hit.from >= from && hit.from < to)?.severity).toBe("info");
+					}
+					const cut = report.cuts.find(({ at }) => at === portraitCut)!;
+					expect([cut.before, cut.after]).toEqual([11958333 * 1e-6, 12]);
+					expect(typeof cut.picture).toBe("string");
+					const strip = await loadImage(path.join(dir, cut.picture));
+					const image = createCanvas(strip.width, strip.height).getContext("2d");
+					image.drawImage(strip, 0, 0);
+					const rows = new Set([...report.cuts.filter((other) => other.picture === cut.picture).map(({ at }) => at),
+						...report.findings.filter((hit) => hit.picture === cut.picture).map(({ from }) => from)]);
+					const y = RANGE_HEADER + RANGE_ROW_HEIGHT * [...rows].filter((at) => at < cut.at).length + 6;
+					const tilePeak = (slot: number) => image.getImageData(19 + slot * RANGE_FRAME_WIDTH / 2, y + 3, RANGE_FRAME_WIDTH / 2 - 6, 85)
+						.data.reduce((max, value, i) => i % 4 === 0 ? Math.max(max, value) : max, 0);
+					expect(tilePeak(0)).toBeGreaterThan(40);
+					expect(tilePeak(1)).toBeLessThanOrEqual(16);
 				} else expect(report.findings.some((hit) => hit.kind === "frozen-picture" && hit.from >= 9 && hit.severity === "info")).toBe(true);
 			}
 			expect(summary.clean).toBe(!bad);
-			expect(report.observed.frames).toBe(short ? 360 : 288);
+			expect(report.observed.frames).toBe(short ? 432 : 288);
 		}
 		await save(false, false);
 		await encode(["-i", source, "-an"], path.join(files, "silent.mov"));

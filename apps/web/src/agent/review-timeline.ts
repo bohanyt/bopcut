@@ -1,17 +1,19 @@
 import { createCanvas } from "@napi-rs/canvas";
+import { getChannelsFromData } from "@/animation/channel-data";
 import { presetLayerAt, readPresetSettings } from "@/animation/presets";
 import { resolveOpacityAtTime } from "@/animation/values";
 import { parseSourceWords } from "@/media/words";
 import { getElementBounds, type ElementBounds } from "@/preview/element-bounds";
 import { buildTransformFromParams, readOpacityFromParams } from "@/rendering";
 import { resolveTransformAtTime } from "@/rendering/animation-values";
+import { readShakeSettings } from "@/rendering/shake";
 import { getEffectiveRateAt } from "@/retime/resolve";
 import { textNumber } from "@/text/style";
 import { FONT_SIZE_SCALE_REFERENCE } from "@/text/typography";
 import { collectAudibleCandidates } from "@/media/audio";
 import type { MediaType } from "@/media/types";
 import { SUPPORTS_AUDIO } from "@/media/media-utils";
-import { isElementMuted, resolveEffectiveAudioGain } from "@/timeline/audio-state";
+import { getElementFades, isElementMuted, resolveEffectiveAudioGain } from "@/timeline/audio-state";
 import type { TimelineElement, TScene } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { timelineTranscript, type TranscriptMedia } from "./packed-transcript";
@@ -101,18 +103,24 @@ function projectBounds(bounds: ElementBounds, canvas: Canvas, parents: ReturnTyp
 export function reviewSourceCrop(item: Instance, canvas: Canvas, media: ReviewMedia) {
 	const { element, chain } = item;
 	if ((element.type !== "video" && element.type !== "image") || !media.width || !media.height) return null;
-	const parts = [...chain, element];
-	if (parts.some((part) => {
-		const { rotate, scaleX, scaleY } = buildTransformFromParams({ params: part.params });
-		return rotate || !scaleX || !scaleY || Object.keys(part.animations ?? {}).some((key) => key.startsWith("transform")) ||
+	const transform = buildTransformFromParams({ params: element.params });
+	if (!transform.scaleX || !transform.scaleY || transform.rotate) return null;
+	// A compound is rasterized to its parent canvas before its own transform is applied.
+	if (chain.some((parent) => {
+		const { rotate, scaleX, scaleY, position } = buildTransformFromParams({ params: parent.params });
+		const shake = readShakeSettings(parent.params);
+		return rotate || scaleX !== 1 || scaleY !== 1 || position.x || position.y || shake?.intensity || shake?.rotation;
+	})) return null;
+	if ([...chain, element].some((part) =>
+		Object.keys(part.animations ?? {}).some((key) => key.startsWith("transform")) ||
 			("masks" in part && part.masks?.length) || ("effects" in part && part.effects?.length) ||
 			(part.params.blendMode && part.params.blendMode !== "normal") ||
 			(part.params["animation.in"] && part.params["animation.in"] !== "none") ||
-			(part.params["animation.out"] && part.params["animation.out"] !== "none");
-	})) return null;
+			(part.params["animation.out"] && part.params["animation.out"] !== "none")
+	)) return null;
 	const bounds = getElementBounds({ element, canvasSize: canvas, localTime: 0, mediaAsset: media });
 	if (!bounds) return null;
-	const placed = projectBounds(bounds, canvas, chain.slice().reverse().map((part) => buildTransformFromParams({ params: part.params })));
+	const placed = projectBounds(bounds, canvas, []);
 	const x0 = Math.max(0, placed.x), x1 = Math.min(canvas.width, placed.x + placed.w);
 	const y0 = Math.max(0, placed.y), y1 = Math.min(canvas.height, placed.y + placed.h);
 	if (x1 <= x0 || y1 <= y0) return null;
@@ -121,10 +129,7 @@ export function reviewSourceCrop(item: Instance, canvas: Canvas, media: ReviewMe
 	const right = Math.min(media.width, Math.floor((x1 - placed.x) / placed.w * media.width + 1e-8));
 	const bottom = Math.min(media.height, Math.floor((y1 - placed.y) / placed.h * media.height + 1e-8));
 	if (right <= x || bottom <= y) return null;
-	const scale = parts.map((part) => buildTransformFromParams({ params: part.params }));
-	const flippedX = scale.reduce((sign, transform) => sign * Math.sign(transform.scaleX), 1) < 0;
-	const flippedY = scale.reduce((sign, transform) => sign * Math.sign(transform.scaleY), 1) < 0;
-	return { x: flippedX ? media.width - right : x, y: flippedY ? media.height - bottom : y,
+	return { x: transform.scaleX < 0 ? media.width - right : x, y: transform.scaleY < 0 ? media.height - bottom : y,
 		width: right - x, height: bottom - y, coverage: (x1 - x0) * (y1 - y0) / (canvas.width * canvas.height) };
 }
 
@@ -144,10 +149,30 @@ export function inspectTimeline(root: TScene, scenes: TScene[], media: ReviewMed
 			const from = element.startTime / TICKS_PER_SECOND, length = element.duration / TICKS_PER_SECOND;
 			if (length <= 0) return [];
 			const src = element.trimStart / TICKS_PER_SECOND;
+			const gain = (localTime: number) => resolveEffectiveAudioGain({ element, localTime });
+			const gainPoints = getChannelsFromData({ data: element.animations?.volume })
+				.flatMap(({ keys }) => keys.map(({ time }) => time / TICKS_PER_SECOND));
+			const { fadeIn, fadeOut } = getElementFades({ element });
+			if (fadeIn > 0) gainPoints.push(fadeIn);
+			if (fadeOut > 0) gainPoints.push(length - fadeOut);
+			gainPoints.sort((a, b) => a - b);
+			const minimumGain = (start: number, end: number) => {
+				if (!gainPoints.length) return gain(start);
+				let minimum = Math.min(gain(start), gain((start + end) / 2), gain(end));
+				let low = 0, high = gainPoints.length;
+				while (low < high) {
+					const middle = (low + high) >>> 1;
+					if (gainPoints[middle] <= start) low = middle + 1;
+					else high = middle;
+				}
+				for (let i = low; i < gainPoints.length && gainPoints[i] < end; i++) {
+					minimum = Math.min(minimum, gain(gainPoints[i]));
+				}
+				return minimum;
+			};
 			return [{ element, mediaId, from, to: from + length, src, srcEnd: src + length * rate,
-				rate, gain: (time: number) => time >= from && time <= from + length ? resolveEffectiveAudioGain({ element, localTime: time - from }) : 0,
-				audible: (time: number) => time >= from && time <= from + length &&
-					resolveEffectiveAudioGain({ element, localTime: time - from }) > 0.001 }];
+				rate, minimumGain,
+				audible: (time: number) => time >= from && time <= from + length && gain(time - from) > 0.001 }];
 	});
 	const cuts = new Map<number, Set<string>>();
 	const addCut = (time: number, id: string) => {

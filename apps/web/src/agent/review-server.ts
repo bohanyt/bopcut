@@ -166,7 +166,8 @@ export async function writeReview({
 				for (const entry of peaks) {
 					const index = first + Math.round(entry.at / sourceStep);
 					if (index < first || index >= last) continue;
-					const gain = sound.gain(origin + (index + 0.5) * step);
+					const local = origin - sound.from + index * step;
+					const gain = sound.minimumGain(Math.max(0, local), Math.min(sound.to - sound.from, local + step));
 					const peak = entry.peak + decibels(gain);
 					if (peak > -45 && peak > (expected.get(index)?.peak ?? -Infinity)) {
 						expected.set(index, { peak, id: sound.element.id.split("/").at(-1)! });
