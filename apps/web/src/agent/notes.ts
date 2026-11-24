@@ -19,12 +19,7 @@ export const noteId = (bookmark: Bookmark) => bookmark.id ?? `legacy-${bookmark.
 export function elementsInNoteBox(box: BookmarkBox, time: number, tracks: SceneTracks, canvasSize: { width: number; height: number }, mediaAssets: MediaAsset[]) {
 	const { width, height } = canvasSize;
 	const target = { cx: (box.x + box.width / 2) * width, cy: (box.y + box.height / 2) * height, width: box.width * width, height: box.height * height };
-	const visible = {
-		...tracks,
-		main: tracks.main.muted ? { ...tracks.main, hidden: true } : tracks.main,
-		overlay: tracks.overlay.filter((track) => !("muted" in track && track.muted)),
-	};
-	return getVisibleElementsWithBounds({ tracks: visible, currentTime: time, canvasSize, mediaAssets, includeCompound: true })
+	return getVisibleElementsWithBounds({ tracks, currentTime: time, canvasSize, mediaAssets, includeCompound: true })
 		.reverse().filter(({ bounds, element }) => {
 			if (!rectanglesOverlap(bounds, target)) return false;
 			const localTime = getElementLocalTime({ timelineTime: time, elementStartTime: element.startTime, elementDuration: element.duration });

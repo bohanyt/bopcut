@@ -24,7 +24,7 @@ const track = (id: string, elements: ImageElement[], hidden = false, muted = fal
 	id, name: id, type: "video", elements, hidden, muted,
 });
 
-test("reports transformed hits topmost first and omits hidden, muted and mask-clipped elements", () => {
+test("reports transformed hits topmost first, including muted tracks, and skips invisible elements", () => {
 	registerDefaultMasks();
 	const globals = { document: { createElement: () => createCanvas(96, 96) }, Path2D };
 	const previous = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -38,19 +38,23 @@ test("reports transformed hits topmost first and omits hidden, muted and mask-cl
 		const tracks: SceneTracks = {
 			overlay: [
 				track("hidden", [image("hidden")], true),
-				track("muted", [image("muted")], false, true),
+				track("muted", [image("muted"), { ...image("hidden-element"), hidden: true }], false, true),
 				track("top", [image("turned", { "transform.scaleX": 0.6, "transform.scaleY": 0.1, "transform.rotate": 90, "transform.positionX": 25 })]),
 				track("mask", [masked, image("outside", { "transform.positionX": -100 })]),
 				track("transparent", [image("invisible", { opacity: 0 }), image("fading-in", { "animation.in": "fade" })]),
 			],
-			main: track("main", [image("bottom")]),
+			main: track("main", [image("bottom")], false, true),
 			audio: [],
 		};
 		expect(elementsInNoteBox({ x: 0.72, y: 0.34, width: 0.06, height: 0.06 }, time, tracks, { width: 100, height: 100 }, []))
-			.toEqual([{ id: "turned", name: "turned", type: "image" }, { id: "bottom", name: "bottom", type: "image" }]);
+			.toEqual([
+				{ id: "muted", name: "muted", type: "image" },
+				{ id: "turned", name: "turned", type: "image" },
+				{ id: "bottom", name: "bottom", type: "image" },
+			]);
 		masked.masks[0].params.feather = 55;
 		expect(elementsInNoteBox({ x: 0.72, y: 0.34, width: 0.06, height: 0.06 }, time, tracks, { width: 100, height: 100 }, []).map(({ id }) => id))
-			.toEqual(["turned", "masked", "bottom"]);
+			.toEqual(["muted", "turned", "masked", "bottom"]);
 	} finally {
 		for (const [key, descriptor] of previous) {
 			if (descriptor) Object.defineProperty(globalThis, key, descriptor);

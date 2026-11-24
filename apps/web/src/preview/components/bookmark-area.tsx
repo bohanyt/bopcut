@@ -76,6 +76,8 @@ function AreaEditor({ initial, style, onSave, formHost }: {
 	const [box, setBox] = useState(initial?.box);
 	const [note, setNote] = useState(initial?.note ?? "");
 	const [drawing, setDrawing] = useState(false);
+	const formBox = drawing ? undefined : box;
+	const showForm = !!formBox;
 	const cancel = () => useBookmarkArea.setState({ editing: null });
 	const keydown = useEffectEvent((event: KeyboardEvent) => {
 		event.stopImmediatePropagation();
@@ -94,7 +96,7 @@ function AreaEditor({ initial, style, onSave, formHost }: {
 			if (box && note.trim()) onSave(box, note.trim());
 			else {
 				if (!box) setBox(boxBetween({ x: 0.25, y: 0.25 }, { x: 0.75, y: 0.75 }));
-				requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));
+				input.current?.focus({ preventScroll: true });
 			}
 		}
 		if (action === "resize" && corner && box) {
@@ -109,7 +111,7 @@ function AreaEditor({ initial, style, onSave, formHost }: {
 		}
 	});
 	useLayoutEffect(() => {
-		(input.current ?? layer.current)?.focus({ preventScroll: true });
+		layer.current?.focus({ preventScroll: true });
 		const key = (event: KeyboardEvent) => keydown(event);
 		const blur = () => {
 			const active = drag.current;
@@ -126,6 +128,9 @@ function AreaEditor({ initial, style, onSave, formHost }: {
 			window.removeEventListener("blur", blur);
 		};
 	}, []);
+	useLayoutEffect(() => {
+		if (showForm) input.current?.focus({ preventScroll: true });
+	}, [showForm, formHost]);
 
 	const point = (event: React.PointerEvent) => picturePoint(
 		{ x: event.clientX, y: event.clientY }, picture.current!.getBoundingClientRect(),
@@ -145,7 +150,6 @@ function AreaEditor({ initial, style, onSave, formHost }: {
 		setBox(cancelled ? previous : boxBetween(drag.current.anchor, point(event)));
 		drag.current = null;
 		setDrawing(false);
-		if (!cancelled && !previous) requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));
 	};
 
 	return <div ref={layer} tabIndex={0} aria-label={t("bookmark.pointArea")} className="absolute inset-0 z-40 touch-none"
@@ -163,8 +167,8 @@ function AreaEditor({ initial, style, onSave, formHost }: {
 					onPointerDown={(event) => start(event, anchor)} />;
 			})}</Box>}
 		</div>
-		{box && !drawing && formHost && createPortal(<form className="mx-auto flex max-w-md flex-wrap items-center gap-1 rounded-md border bg-popover p-2"
-			onSubmit={(event) => { event.preventDefault(); if (note.trim()) onSave(box, note.trim()); }}>
+		{formBox && formHost && createPortal(<form className="mx-auto flex max-w-md flex-wrap items-center gap-1 rounded-md border bg-popover p-2"
+			onSubmit={(event) => { event.preventDefault(); if (note.trim()) onSave(formBox, note.trim()); }}>
 			<Input ref={input} className="h-8" containerClassName="min-w-28 flex-1" value={note} aria-label={t("bookmark.note")}
 				placeholder={t("bookmark.addNote")} onChange={(event) => setNote(event.target.value)} />
 			<Button size="sm" type="submit" disabled={!note.trim()}>{t("common.save")}</Button>

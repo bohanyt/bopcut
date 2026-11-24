@@ -31,7 +31,7 @@ export function startBookmarkArea(editor: EditorCore, time: MediaTime) {
 	const cancel = () => {
 		if (useBookmarkArea.getState().editing !== target) return;
 		useBookmarkArea.setState({ editing: null });
-		toast.info(getBrowserTranslator()("bookmark.areaInterrupted"));
+		toast.info(getBrowserTranslator()("bookmark.areaInterrupted"), { style: { pointerEvents: "none" } });
 	};
 	const checkScene = () => {
 		if (editor.project.getSession() !== target.session ||
