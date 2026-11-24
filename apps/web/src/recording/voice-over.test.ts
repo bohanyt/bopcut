@@ -133,7 +133,7 @@ function harness({ samples = Int16Array.of(500, 10, -500), failImport = false } 
 	const manager = new VoiceOver(editor, async (_options, _signal, _level, lost) => {
 		onLost = lost;
 		return mic;
-	}, 1);
+	}, 1, 20);
 	const assets: MediaAsset[] = [];
 	spyOn(editor.media, "getAssets").mockImplementation(() => assets);
 	const importFile = spyOn(editor.media, "importFile").mockImplementation(async ({ file, name }) => {
@@ -215,6 +215,29 @@ test.each(["stop", "pause", "seek", "unplug", "navigation", "empty", "silent", "
 		} finally { manager.dispose(); }
 	},
 );
+
+test("storage that never answers releases navigation, and a late write is reused by retry", async () => {
+	const { editor, manager, close, start, importFile } = harness();
+	try {
+		await start();
+		const importNow = importFile.getMockImplementation()!;
+		let finishWrite = () => {};
+		importFile.mockImplementation((params) => new Promise((resolve) => {
+			finishWrite = () => resolve(importNow(params));
+		}));
+		await manager.finishForNavigation();
+		expect(close).toHaveBeenCalled();
+		expect(manager.getSnapshot().phase).toBe("recovery");
+		expect(manager.canRetry()).toBe(true);
+		expect(editor.command.canUndo()).toBe(false);
+		finishWrite();
+		await Bun.sleep(1);
+		await manager.retryTake();
+		expect(importFile).toHaveBeenCalledTimes(1);
+		expect(manager.getSnapshot().phase).toBe("review");
+		expect(editor.scenes.getActiveScene().tracks.audio[0].elements.length).toBe(1);
+	} finally { manager.dispose(); }
+});
 
 test("natural playback end leaves the recording open, while a scope change cannot insert it into the new scene", async () => {
 	const { editor, manager, start, importFile } = harness();

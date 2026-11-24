@@ -74,6 +74,7 @@ export class VoiceOver {
 		private editor: EditorCore,
 		private openMicrophone: OpenMicrophone = Microphone.open,
 		private countInMs = 1000,
+		private saveTimeoutMs = 20_000,
 	) {
 		this.unsubscribers = [
 			editor.playback.onPlaybackInterrupt(() => {
@@ -346,9 +347,23 @@ export class VoiceOver {
 			const { session, file, name, duration } = pending;
 			if (!this.isCurrent(session.scope)) return this.recover("recording.takeInMemory");
 			if (!pending.asset || !this.editor.media.getAssets().some(({ id }) => id === pending.asset?.mediaId)) {
-				const asset = await this.editor.media.importFile({ session: session.scope, file, name, ratchetFps: false });
-				if (!asset) return this.recover("recording.saveFailed");
-				pending.asset = { mediaId: asset.id, name: asset.name, duration };
+				const saving = this.editor.media.importFile({ session: session.scope, file, name, ratchetFps: false })
+					.then((asset) => {
+						// A write that finishes after the deadline is reused by a later retry.
+						if (asset) pending.asset = { mediaId: asset.id, name: asset.name, duration };
+					});
+				// Storage that never answers must not hold the WAV or block leaving the project.
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const deadline = new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, this.saveTimeoutMs + file.size / 4096);
+				});
+				try {
+					await Promise.race([saving, deadline]);
+				} finally {
+					clearTimeout(timer);
+					void saving.catch(() => {});
+				}
+				if (!pending.asset) return this.recover("recording.saveFailed");
 			}
 			if (this.disposed) return;
 			if (!this.isCurrent(session.scope)) return this.recover("recording.takeInMemory");
