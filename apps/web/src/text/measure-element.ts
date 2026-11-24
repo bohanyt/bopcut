@@ -10,6 +10,7 @@ import { TICKS_PER_SECOND } from "@/wasm";
 import { getTextVisualRect, setCanvasLetterSpacing } from "./layout";
 import {
 	measureTextLayout,
+	resolveTextLayout,
 	type MeasuredTextLayout,
 	type TextAlign,
 	type TextDecoration,
@@ -36,6 +37,27 @@ export interface MeasuredTextElement extends MeasuredTextLayout {
 	wordReveal: number[];
 	/** Share of the characters shown, in reading order (1 = all; the typewriter animation). */
 	typed: number;
+}
+
+type TextGeometry = { layout: MeasuredTextLayout; visualRect: MeasuredTextElement["visualRect"] };
+
+export class PreviewTextLayouts {
+	private entries = new Map<TextElement, { key: string; value: TextGeometry }>();
+	fontRevision = 0;
+
+	geometry(element: TextElement, key: string, measure: () => TextGeometry) {
+		const previous = this.entries.get(element);
+		const value = previous?.key === key ? previous.value : measure();
+		this.entries.delete(element);
+		this.entries.set(element, { key, value });
+		if (this.entries.size > 96) this.entries.delete(this.entries.keys().next().value!);
+		return value;
+	}
+
+	clear() {
+		this.entries.clear();
+		this.fontRevision++;
+	}
 }
 
 let textMeasurementContext:
@@ -77,6 +99,7 @@ export function measureTextElement({
 	localTime,
 	ctx,
 	presetTyped,
+	preview,
 }: {
 	element: TextElement;
 	canvasHeight: number;
@@ -84,6 +107,7 @@ export function measureTextElement({
 	ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 	/** The typewriter preset's share at this moment, when the caller has it (else read from the element). */
 	presetTyped?: number;
+	preview?: { layouts: PreviewTextLayouts; targetWidth: number; targetHeight: number };
 }): MeasuredTextElement {
 	const text = buildTextLayoutParamsFromElement({ element });
 	text.fontSize = Math.max(
@@ -106,11 +130,6 @@ export function measureTextElement({
 			noOrphan: element.params["caption.noOrphan"] !== false,
 			wordSpacing: textNumber(element, "caption.wordSpacing", 0, localTime),
 		};
-	const measuredLayout = measureTextLayout({
-		text,
-		canvasHeight,
-		ctx,
-	});
 
 	const bg = buildTextBackgroundFromElement({ element });
 	const resolvedBackground: ResolvedTextBackground = {
@@ -147,24 +166,75 @@ export function measureTextElement({
 		}),
 	};
 
+	const exactLayout = preview ? undefined : measureTextLayout({ text, canvasHeight, ctx });
+	const scaledFontSize = exactLayout?.scaledFontSize ?? resolveTextLayout({ text, canvasHeight }).scaledFontSize;
+	const style = resolveTextStyle(
+		element,
+		scaledFontSize,
+		localTime,
+	);
+	const measure = () => measureGeometry({ text, canvasHeight, ctx, resolvedBackground, style, exactLayout });
+	const { layout: measuredLayout, visualRect } = preview
+		? preview.layouts.geometry(element, JSON.stringify([text, canvasHeight, preview.targetWidth, preview.targetHeight,
+			resolvedBackground, style.strokes.map(stroke => stroke.width), style.shadow,
+			style.activeEnabled, style.activeScale]), measure)
+		: measure();
+
+	return {
+		...measuredLayout,
+		resolvedBackground,
+		visualRect,
+		style,
+		activeWord: element.caption
+			? activeWordIndex(
+					element.caption.words,
+					(localTime + element.trimStart) / TICKS_PER_SECOND,
+				)
+			: -1,
+		emphasisWords:
+			element.caption?.words.flatMap((word, index) =>
+				word.highlight ? [index] : [],
+			) ?? [],
+		wordReveal: element.caption
+			? wordRevealProgress(
+					element.caption.words,
+					(localTime + element.trimStart) / TICKS_PER_SECOND,
+					style,
+				)
+			: [],
+		// The typewriter param (keyframable) and the typewriter animation preset, whichever shows less.
+		typed: Math.min(
+			1,
+			Math.max(0, textNumber(element, "typewriter", 1, localTime)),
+			presetTyped ?? presetLayerAt(readPresetSettings(element.params), localTime, element.duration, canvasHeight).typed,
+		),
+	};
+}
+
+function measureGeometry({
+	text, canvasHeight, ctx, resolvedBackground, style, exactLayout,
+}: {
+	text: TextLayoutParams;
+	canvasHeight: number;
+	ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+	resolvedBackground: ResolvedTextBackground;
+	style: ResolvedTextStyle;
+	exactLayout?: MeasuredTextLayout;
+}): TextGeometry {
+	const measuredLayout = exactLayout ?? measureTextLayout({ text, canvasHeight, ctx });
 	const baseRect = getTextVisualRect({
 		textAlign: text.textAlign,
 		block: measuredLayout.block,
 		background: resolvedBackground,
 		fontSizeRatio: measuredLayout.fontSizeRatio,
 	});
-	const style = resolveTextStyle(
-		element,
-		measuredLayout.scaledFontSize,
-		localTime,
-	);
 	const radius = Math.max(0, ...style.strokes.map((stroke) => stroke.width));
 	// Include actual glyph overhangs and every potential active-word bump without moving the box during playback.
 	let left = baseRect.left;
 	let top = baseRect.top;
 	let right = left + baseRect.width;
 	let bottom = top + baseRect.height;
-	if (element.caption || radius > 0 || style.shadow.opacity > 0) {
+	if (text.caption || radius > 0 || style.shadow.opacity > 0) {
 		ctx.save();
 		ctx.font = measuredLayout.fontString;
 		ctx.textBaseline = "middle";
@@ -190,7 +260,7 @@ export function measureTextElement({
 		for (const run of runs) {
 			const metric = ctx.measureText(run.text);
 			const bump =
-				element.caption && style.activeEnabled ? style.activeScale : 1;
+				text.caption && style.activeEnabled ? style.activeScale : 1;
 			const center = run.x + run.width / 2;
 			left = Math.min(
 				left,
@@ -237,35 +307,7 @@ export function measureTextElement({
 			(shadow.opacity > 0 ? Math.max(0, shadow.offsetY) : 0),
 	};
 
-	return {
-		...measuredLayout,
-		resolvedBackground,
-		visualRect,
-		style,
-		activeWord: element.caption
-			? activeWordIndex(
-					element.caption.words,
-					(localTime + element.trimStart) / TICKS_PER_SECOND,
-				)
-			: -1,
-		emphasisWords:
-			element.caption?.words.flatMap((word, index) =>
-				word.highlight ? [index] : [],
-			) ?? [],
-		wordReveal: element.caption
-			? wordRevealProgress(
-					element.caption.words,
-					(localTime + element.trimStart) / TICKS_PER_SECOND,
-					style,
-				)
-			: [],
-		// The typewriter param (keyframable) and the typewriter animation preset, whichever shows less.
-		typed: Math.min(
-			1,
-			Math.max(0, textNumber(element, "typewriter", 1, localTime)),
-			presetTyped ?? presetLayerAt(readPresetSettings(element.params), localTime, element.duration, canvasHeight).typed,
-		),
-	};
+	return { layout: measuredLayout, visualRect };
 }
 
 export function buildTextLayoutParamsFromElement({

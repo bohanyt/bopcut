@@ -638,6 +638,11 @@ function resolveTextNode({
 			localTime,
 			ctx: getTextMeasurementContext(),
 			presetTyped: preset.typed,
+			preview: context.renderer.textLayouts && {
+				layouts: context.renderer.textLayouts,
+				targetWidth: context.renderer.outputWidth,
+				targetHeight: context.renderer.outputHeight,
+			},
 		}),
 	};
 }

@@ -53,6 +53,14 @@ class WasmCompositor {
 		this.cache.clear();
 	}
 
+	releasePreviewText() {
+		for (const [id, entry] of this.cache) {
+			if (entry.kind !== "rendered" || !entry.contentHash.startsWith("preview-text:")) continue;
+			releaseTexture(id);
+			this.cache.delete(id);
+		}
+	}
+
 	ensureInitialized({ width, height }: { width: number; height: number }) {
 		if (!this.canvas) {
 			initCompositor(width, height);

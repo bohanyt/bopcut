@@ -1,6 +1,7 @@
 import { drawCssBackground } from "@/gradients";
 import { getMaskDefinition } from "@/masks";
 import { incrementCounter } from "@/diagnostics/render-perf";
+import { drawStyledText } from "@/text/draw-styled";
 import type { AnyBaseNode } from "../nodes/base-node";
 import type { CanvasRenderer } from "../canvas-renderer";
 import { createCanvasSurface } from "../canvas-utils";
@@ -419,12 +420,16 @@ function collectTextNode({
 	}
 
 	const textureId = `${path}:text`;
-	const { outputWidth: width, outputHeight: height } = renderer;
-	// Text output is fully determined by node.params + node.resolved. Both are
-	// plain data we can stringify cheaply; the resolved measured layout is the
-	// expensive part of text setup, so stringifying it here is orders of
-	// magnitude cheaper than re-rasterizing when nothing changed.
-	const contentHash = `text:${width}x${height}:${JSON.stringify({
+	const preview = renderer.textLayouts;
+	const compact = preview && compactTextTexture(node, node.resolved, renderer);
+	const width = compact?.width ?? renderer.outputWidth;
+	const height = compact?.height ?? renderer.outputHeight;
+	const { measuredText, textColor, backgroundColor, transform } = node.resolved;
+	const baseline = node.params.textBaseline ?? "middle";
+	const contentHash = preview ? `preview-text:${preview.fontRevision}:${width}x${height}:${JSON.stringify([
+		measuredText, textColor, backgroundColor, baseline,
+		compact ? compact.raster : [node.params.canvasCenter, transform],
+	])}` : `text:${width}x${height}:${JSON.stringify({
 		params: node.params,
 		resolved: node.resolved,
 	})}`;
@@ -434,22 +439,61 @@ function collectTextNode({
 		contentHash,
 		width,
 		height,
-		draw: (ctx) => {
+		draw: compact?.draw ?? ((ctx) => {
 			ctx.save();
 			ctx.scale(width / renderer.width, height / renderer.height);
 			renderTextToContext({ node, ctx });
 			ctx.restore();
-		},
+		}),
 	});
 	items.push({
 		type: "layer",
 		textureId,
-		transform: fullCanvasTransform(renderer),
+		transform: compact?.transform ?? fullCanvasTransform(renderer),
 		opacity: node.resolved.opacity,
 		blendMode: node.params.blendMode ?? "normal",
 		effectPassGroups: node.resolved.effectPasses,
 		mask: null,
 	});
+}
+
+function compactTextTexture(node: TextNode, state: NonNullable<TextNode["resolved"]>, renderer: CanvasRenderer) {
+	const { measuredText: layout, transform, textColor, backgroundColor } = state;
+	const { position, scaleX, scaleY, rotate } = transform;
+	// A full-layer effect samples the project surface. Canvas also applies non-uniform scaling
+	// after rotation; a compositor quad cannot express that shear.
+	if (state.effectPasses.length || (node.params.textBaseline ?? "middle") !== "middle" ||
+		(rotate && (scaleX !== scaleY || scaleX < 0)) || !scaleX || !scaleY ||
+		layout.typed < 1 || layout.wordReveal.some(progress => progress > 0 && progress < 1)) return;
+	const density = renderer.renderScale;
+	const rect = layout.visualRect;
+	const pad = layout.scaledFontSize;
+	const left = Math.floor((rect.left - pad) * density);
+	const top = Math.floor((rect.top - pad) * density);
+	const width = Math.ceil((rect.left + rect.width + pad) * density) - left;
+	const height = Math.ceil((rect.top + rect.height + pad) * density) - top;
+	if (!(width > 0 && height > 0 && width <= renderer.outputWidth && height <= renderer.outputHeight)) return;
+	const x = (left + width / 2) / density, y = (top + height / 2) / density;
+	const radians = rotate * Math.PI / 180;
+	const cos = Math.cos(radians), sin = Math.sin(radians);
+	const quad = scaleQuad({
+		width: renderer.width, height: renderer.height,
+		targetWidth: renderer.outputWidth, targetHeight: renderer.outputHeight,
+		transform: {
+			centerX: node.params.canvasCenter.x + position.x + (x * cos - y * sin) * scaleX,
+			centerY: node.params.canvasCenter.y + position.y + (x * sin + y * cos) * scaleY,
+			width: width / density * Math.abs(scaleX), height: height / density * Math.abs(scaleY),
+			rotationDegrees: rotate, flipX: scaleX < 0, flipY: scaleY < 0,
+		},
+	});
+	const draw: TextureCanvasDrawFn = ctx => {
+		ctx.save();
+		ctx.translate(-left, -top);
+		ctx.scale(density, density);
+		drawStyledText({ ctx, layout, textColor, backgroundColor });
+		ctx.restore();
+	};
+	return { width, height, raster: [left, top, density], draw, transform: quad };
 }
 
 function computeVisualTransform({

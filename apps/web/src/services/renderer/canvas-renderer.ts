@@ -7,6 +7,7 @@ import { resolveRenderTree } from "./resolve";
 import type { ProxyInfo } from "@/services/proxies/mapping";
 import { waitWithAbort } from "@/utils/abort";
 import { VideoCache } from "@/services/video-cache/service";
+import { PreviewTextLayouts } from "@/text/measure-element";
 import { MIN_GPU_CANVAS_DIMENSION, previewCanvasSize } from "@/canvas/sizes";
 import { canvasSizeError, checkGraphicsContext, getRendererLimits, rendererDevice, rethrowGraphicsFailure } from "./renderer-device";
 import {
@@ -21,6 +22,7 @@ export type CanvasRendererParams = {
 	fps: FrameRate;
 	/** Preview target scale; project coordinates remain unchanged. */
 	renderScale?: number;
+	previewText?: boolean;
 	/**
 	 * Keep video textures at source resolution up to the device limit.
 	 */
@@ -59,8 +61,10 @@ export class CanvasRenderer {
 	readonly onMediaFailure?: CanvasRendererParams["onMediaFailure"];
 	readonly failedMediaIds = new Set<string>();
 	readonly videoCache = new VideoCache();
+	readonly textLayouts?: PreviewTextLayouts;
 
-	constructor({ width, height, fps, renderScale = 1, exactFrames = false, requireFullSize = false, strictVideoDecoding = false, onMediaFailure }: CanvasRendererParams) {
+	constructor({ width, height, fps, renderScale = 1, exactFrames = false, requireFullSize = false, strictVideoDecoding = false, onMediaFailure, previewText = false }: CanvasRendererParams) {
+		if (previewText) this.textLayouts = new PreviewTextLayouts();
 		this.exactFrames = exactFrames;
 		this.strictVideoDecoding = strictVideoDecoding;
 		this.onMediaFailure = onMediaFailure;
@@ -99,6 +103,11 @@ export class CanvasRenderer {
 
 	getOutputCanvas(): HTMLCanvasElement {
 		return this.outputCanvas;
+	}
+
+	releasePreviewText() {
+		this.textLayouts?.clear();
+		wasmCompositor.releasePreviewText();
 	}
 
 	async render({ node, time, signal, preview }: { node: AnyBaseNode; time: number; signal?: AbortSignal; preview?: PreviewRender }) {

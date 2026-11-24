@@ -236,6 +236,7 @@ function PreviewCanvas({
 			height: nativeHeight,
 			fps: activeProject.settings.fps,
 			renderScale: outputScale,
+			previewText: true,
 		});
 	}, [nativeWidth, nativeHeight, activeProject.settings.fps, outputScale]);
 
@@ -245,7 +246,14 @@ function PreviewCanvas({
 		if (!mount) return;
 		const controller = new AbortController();
 		const signal = AbortSignal.any([controller.signal, sessionSignal]);
-		const clearVideo = () => { renderer.videoCache.clear(); settle.reset(); };
+		const clearVideo = () => { renderer.videoCache.clear(); renderer.releasePreviewText(); settle.reset(); };
+		const onFontChange = () => {
+			renderer.textLayouts?.clear();
+			lastFrameRef.current = -1;
+			schedulerRef.current?.request();
+		};
+		document.fonts?.addEventListener("loadingdone", onFontChange);
+		document.fonts?.addEventListener("loadingerror", onFontChange);
 		signal.addEventListener("abort", clearVideo, { once: true });
 		renderSignalRef.current = signal;
 		lastFrameRef.current = -1;
@@ -255,6 +263,8 @@ function PreviewCanvas({
 		outputCanvas.style.height = "100%";
 		if (!mount.firstChild) mount.appendChild(outputCanvas);
 		return () => {
+			document.fonts?.removeEventListener("loadingdone", onFontChange);
+			document.fonts?.removeEventListener("loadingerror", onFontChange);
 			renderSignalRef.current = null;
 			controller.abort();
 		};

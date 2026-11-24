@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, mock, spyOn, test } from "bun:test";
 import { Canvas, createCanvas, GlobalFonts } from "@napi-rs/canvas";
-import { measureTextElement } from "./measure-element";
+import { measureTextElement, PreviewTextLayouts } from "./measure-element";
 import { drawStyledText } from "./draw-styled";
 import { makeCaption } from "./caption";
 import { buildSubtitleTextElement } from "@/subtitles/build-subtitle-text-element";
@@ -226,6 +226,28 @@ test("font size, spacing and line-height keyframes resolve before measurement", 
 	expect(layout.scaledFontSize).toBe(80);
 	expect(layout.lineHeightPx).toBe(120);
 	expect(layout.letterSpacing).toBe(2);
+});
+
+test("preview reuses caption geometry across word changes and invalidates it on resize or font load", () => {
+	const ctx = createCanvas(1, 1).getContext("2d") as unknown as CanvasRenderingContext2D;
+	const layouts = new PreviewTextLayouts();
+	const measure = (localTime: number, targetWidth = 640, target = element) => measureTextElement({
+		element: target,
+		canvasHeight: 360,
+		localTime: time(localTime),
+		ctx,
+		preview: { layouts, targetWidth, targetHeight: 360 },
+	});
+	const first = measure(0.5);
+	const second = measure(1.5);
+	expect(second.visualRect).toBe(first.visualRect);
+	expect(second.activeWord).toBe(1);
+	const edited = measure(1.5, 640, { ...element, params: { ...element.params, fontSize: 20 } });
+	expect(edited.visualRect).not.toBe(first.visualRect);
+	const resized = measure(1.5, 320);
+	expect(resized.visualRect).not.toBe(first.visualRect);
+	layouts.clear();
+	expect(measure(1.5, 320).visualRect).not.toBe(resized.visualRect);
 });
 
 test("400 phrase traversal activates only visible captions and clears the previous frame", async () => {
