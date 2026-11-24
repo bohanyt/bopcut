@@ -106,18 +106,20 @@ function getTransformedRectBounds({
  * glow) and mask-clipped regions are intentionally excluded — handles manipulate
  * the canonical element geometry, not visual effect output.
  */
-function getElementBounds({
+export function getElementBounds({
 	element,
 	canvasSize,
 	mediaAsset,
 	localTime,
 	includeCompound,
+	textContext,
 }: {
 	element: TimelineElement;
 	canvasSize: { width: number; height: number };
-	mediaAsset?: MediaAsset | null;
+	mediaAsset?: Pick<MediaAsset, "width" | "height"> | null;
 	localTime: number;
 	includeCompound?: boolean;
+	textContext?: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 }): ElementBounds | null {
 	if (element.type === "audio" || element.type === "effect") return null;
 	if ("hidden" in element && element.hidden) return null;
@@ -184,8 +186,7 @@ function getElementBounds({
 			localTime,
 		});
 
-		const canvas = document.createElement("canvas");
-		const ctx = canvas.getContext("2d");
+		const ctx = textContext ?? document.createElement("canvas").getContext("2d");
 		if (!ctx) return null;
 
 		const measured = measureTextElement({

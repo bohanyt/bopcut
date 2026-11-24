@@ -35,7 +35,7 @@ function transcriptScenes(project: SerializedProject): TScene[] {
 	});
 }
 
-export async function readTranscriptView(projectId: string, name: string | null, signal: AbortSignal): Promise<string> {
+export async function readReviewableProject(projectId: string, signal: AbortSignal, { includeStaged = true, timeline = true } = {}) {
 	const dir = projectDir(projectId);
 	const projectFile = await fileInside(path.dirname(dir), projectId, "project.json");
 	if (!projectFile) throw new Error("Project was not found on disk.");
@@ -51,21 +51,33 @@ export async function readTranscriptView(projectId: string, name: string | null,
 		if (error.code === "ENOENT") return [];
 		throw error;
 	});
-	const media: TranscriptMedia[] = [];
+	const media: (TranscriptMedia & { diskFile?: string; width?: number; height?: number; fileType?: string })[] = [];
 	for (const file of files.sort()) {
 		signal.throwIfAborted();
 		if (!/^[\w-]{1,128}\.json$/.test(file)) continue;
 		const safe = await fileInside(dir, "media", "_metadata", file);
 		const record = safe && await readJson(safe);
-		if (record && typeof record.name === "string" && (!record.staged || name === null)) {
+		if (record && typeof record.name === "string" && (!record.staged || includeStaged)) {
 			media.push({
 				id: file.slice(0, -5), name: record.name,
 				duration: Number.isFinite(record.duration) && record.duration >= 0 ? record.duration : undefined,
 				hasAudio: typeof record.hasAudio === "boolean" ? record.hasAudio : undefined,
 				words: record.words,
+				diskFile: typeof record.diskFile === "string" ? record.diskFile : undefined,
+				fileType: typeof record.fileType === "string" ? record.fileType : undefined,
+					width: typeof record.width === "number" ? record.width : undefined,
+				height: typeof record.height === "number" ? record.height : undefined,
 			});
 		}
 	}
+	const scenes = timeline ? transcriptScenes(project) : [];
+	const active = typeof saved?.currentSceneId === "string" && scenes.some((scene) => scene.id === saved.currentSceneId)
+		? saved.currentSceneId : project.currentSceneId ?? null;
+	return { project, projectFile, dir, activeSceneId: active, root: getRootScene(scenes, active), scenes, media };
+}
+
+export async function readTranscriptView(projectId: string, name: string | null, signal: AbortSignal): Promise<string> {
+	const { root, scenes, media } = await readReviewableProject(projectId, signal, { includeStaged: name === null, timeline: name === null });
 	if (name !== null) {
 		const exact = media.find((asset) => asset.id === name);
 		const matches = exact ? [exact] : media.filter((asset) => asset.name === name);
@@ -76,10 +88,6 @@ export async function readTranscriptView(projectId: string, name: string | null,
 		const clip = sourceTranscript(asset, media.some((other) => other.id !== asset.id && other.name === asset.name));
 		return packTranscript([clip], "source", clip.end);
 	}
-	const scenes = transcriptScenes(project);
-	const active = typeof saved?.currentSceneId === "string" && scenes.some((scene) => scene.id === saved.currentSceneId)
-		? saved.currentSceneId : project.currentSceneId ?? null;
-	const root = getRootScene(scenes, active);
 	if (!root) throw new Error("No timeline was saved for this project.");
 	return packTranscript(timelineTranscript(root, scenes, media), "timeline",
 		calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND);

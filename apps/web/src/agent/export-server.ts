@@ -6,6 +6,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { atomicWrite, renameWithRetry } from "@/services/storage/server/files";
 import { safeName } from "./export";
+import { saveExportProfile } from "./export-profile";
 
 /** The largest export saved (8 GiB). */
 export const MAX_EXPORT_BYTES = 8 * 1024 ** 3;
@@ -16,7 +17,7 @@ const RESULT_FILE = "export-result.json";
 const REV = /^[a-zA-Z0-9_-]{1,100}$/;
 const STATUSES = new Set(["exporting", "done", "error", "release"]);
 /** The fields of a final answer the editor sends along with the video. */
-const DONE_FIELDS = ["format", "quality", "width", "height", "fps", "duration", "seconds"] as const;
+const DONE_FIELDS = ["format", "quality", "width", "height", "fps", "duration", "seconds", "sceneId", "includeAudio", "range"] as const;
 
 /** Errors of `fs.link` on file systems without hard links (FAT, exFAT, some network drives). */
 const NO_HARD_LINKS = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "ENOSYS", "EINVAL", "EMLINK"]);
@@ -116,7 +117,10 @@ export async function handleExportFile(req: Request, workspace: string, job?: {
 	if ("error" in saved) return Response.json({ error: saved.error }, { status: saved.status });
 	const file = `exports/${saved.file}`;
 	const fields = Object.fromEntries(DONE_FIELDS.filter((key) => key in done).map((key) => [key, done[key]]));
-	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file, bytes: saved.bytes, ...fields };
+	const fileMtimeMs = await fs.stat(path.join(workspace, file)).then((stat) => stat.mtimeMs, () => undefined);
+	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file,
+		bytes: saved.bytes, fileMtimeMs, ...fields };
+	await saveExportProfile(workspace, file, result).catch(() => { /* The export can be reviewed without a known profile. */ });
 	if (job) await job.finish({ ...result, updatedAt: new Date().toISOString() });
 	else await writeExportResult({ workspace, result });
 	return Response.json({ file, bytes: saved.bytes });

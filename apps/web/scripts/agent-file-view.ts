@@ -1,21 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { fileInside, inside } from "../src/agent/inside";
 import { accumulatePeaks, drawRangeView, MAX_RANGE_PNG, rangeRows, RANGE_BUCKETS, RANGE_FRAME_WIDTH, RANGE_HEADER, RANGE_ROW_HEIGHT, RANGE_WIDTH, type RangeInput } from "../src/agent/range-view";
 import { parseSourceWords } from "../src/media/words";
 import { runProcess, withToolScratch } from "../src/retrieval/process";
-import { commandFromSetting, toolsFromEnv } from "../src/retrieval/server";
+import { fileProbeCommand, toolsFromEnv } from "../src/retrieval/server";
 import { atomicWrite } from "../src/services/storage/server/files";
 
 const inputFormats = ["-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm,avi,mpegts,mpeg,m4v,ogg"];
-
-export function fileProbeCommand(ffmpeg: string, configured = process.env.BOPENCUT_FFPROBE) {
-	const executable = process.platform === "win32" ? "ffprobe.exe" : "ffprobe";
-	const sibling = path.join(path.dirname(ffmpeg), executable);
-	return commandFromSetting(configured, path.dirname(ffmpeg) !== "." && existsSync(sibling) ? sibling : executable);
-}
 
 export function checkFileRange(input: RangeInput, info: string) {
 	const data = JSON.parse(info) as { format?: { duration?: string; start_time?: string };

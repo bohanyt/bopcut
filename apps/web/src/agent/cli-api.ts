@@ -3,7 +3,8 @@ import path from "node:path";
 import { projectDir, readJson } from "@/services/storage/server/files";
 import { fileInside } from "./inside";
 import { isForeignOrigin } from "./origin";
-import { startRender } from "./render-server";
+import { isCliRenderRunning, startRender } from "./render-server";
+import { reserveEditorActivity, reserveReview } from "./review-activity";
 import { readTranscriptView } from "./transcript-view-server";
 
 type Snapshot = { projectId?: string; notes?: unknown; syncedAt?: string };
@@ -25,6 +26,9 @@ async function readSnapshot(workspace: string, ...parts: string[]): Promise<Snap
 
 export async function handleCli(req: Request, action: string, workspace: string): Promise<Response> {
 	const url = new URL(req.url);
+	if (action === "activity" && req.method === "POST" && !isForeignOrigin(req) && req.headers.get("sec-fetch-site") !== "cross-site") {
+		return reserveEditorActivity(req.signal);
+	}
 	if (!["localhost", "127.0.0.1"].includes(url.hostname) || isForeignOrigin(req) || req.headers.get("sec-fetch-site") === "cross-site") {
 		return json({ error: "Use the agent CLI on the local editor server." }, 403);
 	}
@@ -33,6 +37,22 @@ export async function handleCli(req: Request, action: string, workspace: string)
 		return json({ error: "Pass a valid --project-id or open a project in the editor." }, 400);
 	}
 	try {
+		if (action === "review" && req.method === "POST") {
+			const options = await req.json();
+			if (!requested || typeof options?.file !== "string" || !options.file || typeof options.pictures !== "boolean" ||
+				(options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 86400000))) {
+				return json({ error: "Use review --project-id ID --file PATH [--pictures none]." }, 400);
+			}
+			const release = reserveReview(isCliRenderRunning());
+			if (!release) return json({ error: "Wait until the recording, export, or other review has finished." }, 409);
+			try {
+				const { writeReview } = await import("./review-server");
+				return json(await writeReview({ projectId: requested, relative: options.file, pictures: options.pictures,
+					timeoutMs: options.timeoutMs, workspace, filesRoot: path.resolve(process.env.AGENT_FILES_ROOT ?? workspace), signal: req.signal }));
+			} catch (error) {
+				return json({ error: error instanceof Error ? error.message : "Could not review the export." }, 400);
+			} finally { release(); }
+		}
 		if (action === "transcript-view" && req.method === "GET") {
 			if (!requested) return json({ error: "Pass --project-id for a transcript view." }, 400);
 			try {

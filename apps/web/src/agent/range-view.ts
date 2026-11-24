@@ -43,8 +43,9 @@ const line = (label: string) => label.replace(/\s+/g, " ").trim();
 
 /** Draws the same strip for project reviews and standalone files. Frame drawing is supplied by the caller. */
 export function drawRangeView(ctx: Drawing, input: RangeInput, {
-	title, frames, peaks, words, spans,
-}: { title: string; frames: Frame[]; peaks: Float32Array; words: RangeWords[]; spans: RangeSpan[] }) {
+	title, frames, peaks, words, spans, intervals,
+}: { title: string; frames: Frame[]; peaks: Float32Array; words: RangeWords[]; spans: RangeSpan[];
+	intervals?: readonly { from: number; to: number; time: number }[] }) {
 	const right = RANGE_WIDTH - 18;
 	const left = RANGE_FRAME_WIDTH + 36;
 	const width = right - left;
@@ -55,8 +56,8 @@ export function drawRangeView(ctx: Drawing, input: RangeInput, {
 	ctx.font = "bold 17px sans-serif";
 	ctx.fillText(`${line(title)}   •   ${stamp(input.from)}–${stamp(input.to)}`, 16, 29, RANGE_WIDTH - 32);
 
-	for (const [i, row] of rangeRows(input).entries()) {
-		const { y } = row;
+	for (const [i, row] of (intervals ?? rangeRows(input)).entries()) {
+		const y = RANGE_HEADER + RANGE_ROW_HEIGHT * i;
 		const at = (time: number) => left + (time - row.from) * width / (row.to - row.from);
 		ctx.fillStyle = i % 2 === 0 ? "#192437" : "#151f2f";
 		ctx.fillRect(8, y, RANGE_WIDTH - 16, RANGE_ROW_HEIGHT - 3);

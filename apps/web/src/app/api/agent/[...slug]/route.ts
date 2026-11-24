@@ -73,6 +73,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	if (slug[0] === "cli" && slug[1] === "render" && slug.length === 2) {
 		return new URL(req.url).searchParams.has("action") ? renderWorker(req, WORKSPACE) : handleCli(req, "render", WORKSPACE);
 	}
+	if (slug[0] === "cli" && slug.length === 2) return handleCli(req, slug[1], WORKSPACE);
 	if (slug[0] === "frame") {
 		const form = await req.formData();
 		const rev = form.get("rev"); const time = form.get("time"); const image = form.get("image"); const variant = form.get("variant");

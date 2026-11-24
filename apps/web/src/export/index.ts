@@ -30,7 +30,7 @@ export interface ExportOptions {
 export type ExportIssue =
 	| CanvasSizeIssue
 	| { kind: "evenDimensions"; width: number; height: number }
-	| { kind: "alreadyRunning" | "empty" | "sceneNotFound" | "noProject" | "noBuffer" | GraphicsIssueKind };
+	| { kind: "alreadyRunning" | "reviewRunning" | "empty" | "sceneNotFound" | "noProject" | "noBuffer" | GraphicsIssueKind };
 
 export interface ExportResult {
 	success: boolean;

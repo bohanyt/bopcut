@@ -6,6 +6,7 @@ import { CLAIM_MS, handleExportFile } from "./export-server";
 import { parseExportRequest } from "./export";
 import { parseFrameInput } from "./render-input";
 import { MAX_RANGE_PNG, parseRangeInput } from "./range-view";
+import { isReviewRunning } from "./review-activity";
 import { renderTimeoutMessage, waitingForGraphics, waitingForRender } from "./render-timeout";
 import { isRenderAdapterStage, renderGpuWorkaround } from "./render-gpu";
 import { isForeignOrigin } from "./origin";
@@ -33,6 +34,7 @@ type Job = {
 
 let active: Job | undefined;
 let reserved = false;
+export const isCliRenderRunning = () => reserved;
 const requestBody = (req: Request, signal: AbortSignal) =>
 	new Response(req.body?.pipeThrough(new TransformStream(), { signal }), { headers: req.headers });
 
@@ -67,6 +69,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 		grace?: number; seen?: number; claim?: number; watchRegistration?: number; profileRoot?: string;
 	} = {}) {
 	if (reserved) return json({ error: "A CLI render is already running." }, { status: 409 });
+	if (isReviewRunning()) return json({ error: "An export review is running." }, { status: 409 });
 	reserved = true;
 	let running = false;
 	try {

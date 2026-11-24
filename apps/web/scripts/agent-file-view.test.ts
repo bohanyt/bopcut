@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { RANGE_FRAME_WIDTH, RANGE_HEADER, RANGE_ROW_HEIGHT, RANGE_WIDTH } from "../src/agent/range-view";
-import { toolsFromEnv } from "../src/retrieval/server";
-import { checkFileRange, fileProbeCommand, fileRangeView } from "./agent-file-view";
+import { fileProbeCommand, toolsFromEnv } from "../src/retrieval/server";
+import { checkFileRange, fileRangeView } from "./agent-file-view";
 
 test("the file range check rejects a tail beyond the duration and unknown durations", () => {
 	const info = (duration: string) => JSON.stringify({ format: { duration }, streams: [{ codec_type: "video" }] });

@@ -57,6 +57,12 @@ export function commandFromSetting(value: string | undefined, fallback: string, 
 	return fileExists(unquoted) ? [unquoted] : splitCommand(raw);
 }
 
+export function fileProbeCommand(ffmpeg: string, configured = process.env.BOPENCUT_FFPROBE) {
+	const executable = process.platform === "win32" ? "ffprobe.exe" : "ffprobe";
+	const sibling = path.join(path.dirname(ffmpeg), executable);
+	return commandFromSetting(configured, ffmpeg !== path.basename(ffmpeg) && existsSync(sibling) ? sibling : executable);
+}
+
 export function toolsFromEnv(env: Record<string, string | undefined> = process.env, fileExists: (p: string) => boolean = existsSync): RetrievalTools {
 	return {
 		ytdlp: commandFromSetting(env.BOPENCUT_YTDLP, "yt-dlp", fileExists),

@@ -10,6 +10,7 @@ const nextConfig: NextConfig = {
 	reactStrictMode: true,
 	productionBrowserSourceMaps: true,
 	output: "standalone",
+	serverExternalPackages: ["@napi-rs/canvas"],
 	images: {
 		remotePatterns: [
 			{
