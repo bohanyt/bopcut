@@ -2,6 +2,8 @@ import { getBrowserTranslator } from "@/i18n/browser";
 import type { TProject, TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import type { MediaAsset, MediaLoadFailure } from "@/media/types";
+import { recordMediaFileVersion } from "./media-file-version";
+import { parseMediaThumbnailReference } from "./media-thumbnail-reference";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import { DiskAdapter, DiskSoundsAdapter } from "./disk-adapter";
@@ -95,6 +97,7 @@ class StorageService {
 	 * MB with thumbnails).
 	 */
 	private manifests = new Map<string, Map<string, MediaAssetData>>();
+	private removedThumbnails = new WeakMap<File, Map<string, string | undefined>>();
 	/** Manifests kept at once (the open project and the one before it); older ones are dropped. */
 	private static readonly MANIFEST_LIMIT = 2;
 
@@ -353,13 +356,25 @@ class StorageService {
 		projectId,
 		mediaAsset,
 		staged = false,
+		onThumbnailStored,
 	}: {
 		projectId: string;
 		mediaAsset: MediaAsset;
 		/** Saved for a draft that has not committed: hidden from loads until promoteMediaAssets. */
 		staged?: boolean;
+		onThumbnailStored?: (url: string | undefined) => void;
 	}): Promise<void> {
 
+		let thumbnailUrl = mediaAsset.thumbnailUrl;
+		const reference = parseMediaThumbnailReference(thumbnailUrl);
+		if (reference && thumbnailUrl) {
+			if (reference.projectId !== projectId || reference.mediaId !== mediaAsset.id) {
+				thumbnailUrl = await copyThumbnail(reference);
+			} else {
+				const removed = this.removedThumbnails.get(mediaAsset.file);
+				if (removed?.has(thumbnailUrl)) thumbnailUrl = removed.get(thumbnailUrl);
+			}
+		}
 		const metadata: MediaAssetData = {
 			id: mediaAsset.id,
 			name: mediaAsset.name,
@@ -374,14 +389,15 @@ class StorageService {
 			fps: mediaAsset.fps,
 			...(mediaAsset.hasVariableGifDelay && { hasVariableGifDelay: true }),
 			hasAudio: mediaAsset.hasAudio,
-			thumbnailUrl: mediaAsset.thumbnailUrl,
+			thumbnailUrl,
 			ephemeral: mediaAsset.ephemeral,
 			...(mediaAsset.words ? { words: mediaAsset.words } : {}),
 			...(staged ? { staged: true } : {}),
 		};
 
-		await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
+		metadata.thumbnailUrl = await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
 		this.manifests.get(projectId)?.set(metadata.id, metadata);
+		onThumbnailStored?.(metadata.thumbnailUrl);
 	}
 
 	/** Sets (or replaces) the spoken words stored with a media file. */
@@ -455,6 +471,7 @@ class StorageService {
 		if (!response.ok) throw new Error(`Media ${id} cannot be read`);
 		const blob = await response.blob();
 		const file = new File([blob], metadata.fileName ?? metadata.name, { type: metadata.fileType ?? blob.type, lastModified: metadata.lastModified });
+		recordMediaFileVersion(file, response.headers.get("X-Media-Revision"));
 
 		return {
 			id: metadata.id,
@@ -527,6 +544,18 @@ class StorageService {
 		await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), list.length) }, worker));
 		signal?.throwIfAborted();
 		return items.filter((item): item is MediaAsset => item !== null);
+	}
+
+	async captureRemovedThumbnail(asset: MediaAsset, restoring = false): Promise<void> {
+		const url = asset.thumbnailUrl;
+		const reference = parseMediaThumbnailReference(url);
+		if (!url || !reference) return;
+		const thumbnail = await copyThumbnail(reference);
+		let removed = this.removedThumbnails.get(asset.file);
+		// A redo can reach disk after the file PUT but before the restoring metadata POST.
+		if (restoring && thumbnail === undefined && removed?.has(url)) return;
+		if (!removed) this.removedThumbnails.set(asset.file, removed = new Map());
+		removed.set(url, thumbnail);
 	}
 
 	async deleteMediaAsset({
@@ -685,3 +714,15 @@ class StorageService {
 
 export const storageService = new StorageService();
 export { StorageService };
+
+async function copyThumbnail({ projectId, mediaId }: { projectId: string; mediaId: string }): Promise<string | undefined> {
+	try {
+		const url = `/api/storage/projects/${projectId}/media/${mediaId}/thumbnail`;
+		const response = await fetch(url, { headers: { Accept: "text/plain" }, signal: AbortSignal.timeout(2_000) });
+		if (!response.ok) return;
+		const thumbnail = await response.text();
+		return /^data:image\//i.test(thumbnail) ? thumbnail : undefined;
+	} catch {
+		// The copied media file is still usable if its thumbnail cannot be fetched.
+	}
+}

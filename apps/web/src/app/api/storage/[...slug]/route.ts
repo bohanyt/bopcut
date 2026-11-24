@@ -22,6 +22,12 @@ import {
 	writeProjectNavigation,
 	writeProjectThumbnail,
 } from "@/services/storage/server/projects";
+import {
+	isEmbeddedMediaThumbnail,
+	mediaThumbnailReference,
+	readMediaThumbnail,
+} from "@/services/storage/server/media-thumbnails";
+import type { MediaAssetData } from "@/services/storage/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,6 +42,11 @@ function allowed(req: Request): boolean {
 }
 const marker = (id: string) =>
 	path.join(dataRoot(), "migrated", `${safeId(id)}.json`);
+const mediaEditorFields = {
+	id: true, name: true, fileName: true, fileType: true, type: true, size: true, lastModified: true,
+	width: true, height: true, duration: true, fps: true, hasVariableGifDelay: true, hasAudio: true,
+	ephemeral: true, staged: true, words: true,
+} satisfies Record<Exclude<keyof MediaAssetData, "thumbnailUrl">, true>;
 async function names(dir: string): Promise<string[]> {
 	try {
 		return await fs.readdir(dir);
@@ -179,25 +190,21 @@ async function handle(
 			}
 			if (s[2] === "media" && s.length === 3 && method === "GET") {
 				const dir = path.join(projectDir(id), "media", "_metadata");
-				return Response.json(
-					(
-						await Promise.all(
-							(await names(dir))
-								.filter((n) => /^[a-zA-Z0-9_-]{1,128}\.json$/.test(n))
-								.map((n) =>
-									readJson(path.join(dir, n)).catch((error) => {
-										console.error(`Unreadable media metadata ${n}:`, error);
-										return null;
-									}),
-								),
-						)
-					).filter(
-						(meta) =>
-							meta &&
-							typeof meta.name === "string" &&
-							typeof meta.type === "string",
-					),
-				);
+				const files = (await names(dir)).filter((name) => /^[a-zA-Z0-9_-]{1,128}\.json$/.test(name));
+				const manifest = [];
+				for (let index = 0; index < files.length; index += 32) {
+					const batch = await Promise.all(files.slice(index, index + 32).map(async (name) => {
+						const metadata = await readJson(path.join(dir, name)).catch((error) => {
+							console.error(`Unreadable media metadata ${name}:`, error);
+							return null;
+						});
+						if (typeof metadata?.name !== "string" || typeof metadata.type !== "string") return null;
+						metadata.thumbnailUrl = mediaThumbnailReference(id, name.slice(0, -5), metadata.thumbnailUrl);
+						return metadata;
+					}));
+					for (const metadata of batch) if (metadata) manifest.push(metadata);
+				}
+				return Response.json(manifest);
 			}
 			if (s[2] === "media" && s.length === 3 && method === "DELETE")
 				return await withProjectLock(id, async () => {
@@ -207,6 +214,12 @@ async function handle(
 					});
 					return Response.json({ ok: true });
 				});
+			if (s[2] === "media" && s[3] && s[4] === "thumbnail" && method === "GET") {
+				const inline = req.headers.get("accept") === "text/plain";
+				if (s.length === 6 || (s.length === 5 && inline)) {
+					return await readMediaThumbnail(id, safeId(s[3]), s[5], req.headers.get("if-none-match"), inline);
+				}
+			}
 			if (s[2] === "media" && s[3] && s.length === 4) {
 				const mediaId = safeId(s[3]);
 				if (method === "HEAD") {
@@ -234,20 +247,26 @@ async function handle(
 						await saveMedia(id, mediaId, metadata, req.body);
 						return Response.json({ ok: true });
 					});
-				if (method === "POST")
+				if (method === "POST") {
+					const metadata = await req.json();
+					if (metadata?.id !== mediaId) return new Response(null, { status: 400 });
 					return await withProjectLock(id, async () => {
 						const dir = path.join(projectDir(id), "media", "_metadata");
 						const file = path.join(dir, `${mediaId}.json`);
 						const old = await readJson(file);
-						const metadata = await req.json();
-						if (!old || metadata.id !== mediaId)
-							return new Response(null, { status: 400 });
-						await atomicWrite(
-							file,
-							JSON.stringify({ ...metadata, diskFile: old.diskFile }),
-						);
-						return Response.json({ ok: true });
+						if (!old) return new Response(null, { status: 400 });
+						for (const field of Object.keys(mediaEditorFields)) old[field] = metadata[field];
+						if (metadata.thumbnailUrl === null) delete old.thumbnailUrl;
+						else if (isEmbeddedMediaThumbnail(metadata.thumbnailUrl)) old.thumbnailUrl = metadata.thumbnailUrl;
+						await atomicWrite(file, JSON.stringify(old));
+						const reference = mediaThumbnailReference(id, mediaId, old.thumbnailUrl);
+						return Response.json({ ok: true }, {
+							headers: reference && reference !== old.thumbnailUrl
+								? { "X-Media-Thumbnail": reference }
+								: undefined,
+						});
 					});
+				}
 				if (method === "DELETE")
 					return await withProjectLock(id, async () => {
 						await removeMedia(id, mediaId);

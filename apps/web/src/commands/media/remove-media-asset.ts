@@ -90,7 +90,7 @@ export class RemoveMediaAssetCommand extends Command {
 		}
 
 		editor.media
-			.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: null })
+			.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: null, removedAsset: this.removedAsset })
 			.catch((error) => {
 				console.error("Failed to delete media item:", error);
 			});

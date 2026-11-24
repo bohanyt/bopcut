@@ -5,7 +5,7 @@ import { getBrowserTranslator } from "@/i18n/browser";
 import { useI18n } from "@/i18n/provider";
 import type { StaticMessageKey } from "@/i18n/translate";
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PanelView } from "@/components/editor/panels/assets/views/base-panel";
 import { MediaDragOverlay } from "@/components/editor/panels/assets/drag-overlay";
 import { FromUrlDialog } from "@/components/editor/panels/assets/from-url-dialog";
@@ -445,6 +445,36 @@ function MediaTypePlaceholder({
 	);
 }
 
+const previewIntersections = new Map<Element, (visible: boolean) => void>();
+let previewObserver: IntersectionObserver | undefined;
+
+function MediaPreviewImage({ src, alt, className }: { src: string; alt: string; className: string }) {
+	const ref = useRef<HTMLDivElement>(null);
+	const [visible, setVisible] = useState(false);
+	useEffect(() => {
+		const node = ref.current;
+		if (!node) return;
+		if (typeof IntersectionObserver === "undefined") {
+			setVisible(true);
+			return;
+		}
+		previewObserver ??= new IntersectionObserver((entries) => {
+			for (const entry of entries) previewIntersections.get(entry.target)?.(entry.isIntersecting);
+		});
+		previewIntersections.set(node, setVisible);
+		previewObserver.observe(node);
+		return () => {
+			previewObserver?.unobserve(node);
+			previewIntersections.delete(node);
+		};
+	}, []);
+	return (
+		<div ref={ref} className="absolute inset-0">
+			{visible && <Image src={src} alt={alt} fill sizes="100vw" className={className} unoptimized />}
+		</div>
+	);
+}
+
 function MediaPreview({
 	item,
 	variant = "grid",
@@ -456,17 +486,11 @@ function MediaPreview({
 	const shouldShowDurationBadge = variant === "grid";
 
 	if (item.type === "image") {
+		const src = isModelFile(item.file) ? item.thumbnailUrl :
+			item.file.type === "image/gif" ? item.url : item.thumbnailUrl ?? item.url;
 		return (
 			<div className="relative flex size-full items-center justify-center bg-muted">
-				<Image
-					src={(isModelFile(item.file) ? item.thumbnailUrl : item.url) ?? ""}
-					alt={item.name}
-					fill
-					sizes="100vw"
-					className="object-cover"
-					loading="lazy"
-					unoptimized
-				/>
+				{src && <MediaPreviewImage src={src} alt={item.name} className="object-cover" />}
 			</div>
 		);
 	}
@@ -475,14 +499,10 @@ function MediaPreview({
 		if (item.thumbnailUrl) {
 			return (
 				<div className="relative size-full">
-					<Image
+					<MediaPreviewImage
 						src={item.thumbnailUrl}
 						alt={item.name}
-						fill
-						sizes="100vw"
 						className="rounded object-cover"
-						loading="lazy"
-						unoptimized
 					/>
 					{shouldShowDurationBadge ? (
 						<MediaDurationBadge duration={item.duration} />

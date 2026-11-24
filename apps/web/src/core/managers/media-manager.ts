@@ -6,6 +6,7 @@ import type { EditorCore } from "@/core";
 import { toast } from "sonner";
 import type { MediaAsset, MediaLoadFailure, MediaType } from "@/media/types";
 import { storageService } from "@/services/storage/service";
+import { parseMediaThumbnailReference } from "@/services/storage/media-thumbnail-reference";
 import { generateUUID } from "@/utils/id";
 import { waveformCache } from "@/services/waveform-cache/service";
 import { BatchCommand, RemoveMediaAssetCommand } from "@/commands";
@@ -30,7 +31,7 @@ type MediaRetry = {
 	read: Promise<{ asset: MediaAsset } | { failure: MediaLoadFailure }>;
 };
 
-type BinWrite = { asset: MediaAsset | null; done: Promise<void> };
+type BinWrite = { asset: MediaAsset | null; done: Promise<void>; started?: Promise<void> };
 
 export class MediaManager {
 	private assets: MediaAsset[] = [];
@@ -66,22 +67,48 @@ export class MediaManager {
 			this.editor.project.canImportMedia(projectId);
 	}
 
-	persistBinChange({ projectId, id, asset }: { projectId: string; id: string; asset: MediaAsset | null }): Promise<void> {
+	persistBinChange({ projectId, id, asset, removedAsset }: {
+		projectId: string;
+		id: string;
+		asset: MediaAsset | null;
+		removedAsset?: MediaAsset;
+	}): Promise<void> {
 		const publication = this.pendingPublications.get(id);
 		if (publication) publication.binChanged = true;
 		let writes = this.binWrites.get(projectId);
 		if (!writes) this.binWrites.set(projectId, writes = new Map());
 		const projectWrites = writes;
-		// Send immediately. The server coordinates disk access. A response taking longer than
-		// its disk operation must not hold up the next history action.
-		const done = (asset
-			? storageService.saveMediaAsset({ projectId, mediaAsset: asset })
-			: storageService.deleteMediaAsset({ projectId, id })
-		).finally(() => {
+		const reference = parseMediaThumbnailReference((asset ?? removedAsset)?.thumbnailUrl);
+		const pending = projectWrites.get(id);
+		const previous = pending?.started;
+		const started = reference || previous ? Promise.withResolvers<void>() : undefined;
+		const send = () => {
+			try {
+				return asset
+					? storageService.saveMediaAsset({
+						projectId, mediaAsset: asset,
+						...(reference && { onThumbnailStored: (url: string | undefined) => {
+							if (asset.thumbnailUrl === url || !this.assets.includes(asset)) return;
+							asset.thumbnailUrl = url;
+							this.assets = [...this.assets];
+							this.notify();
+						} }),
+					})
+					: storageService.deleteMediaAsset({ projectId, id });
+			} finally {
+				started?.resolve();
+			}
+		};
+		// Capture a projected thumbnail before its metadata disappears. A later history action
+		// only waits for the earlier request to be sent, even if its response is delayed.
+		const write = () => reference && removedAsset
+			? storageService.captureRemovedThumbnail(removedAsset, pending?.asset?.file === removedAsset.file).then(send, send)
+			: send();
+		const done = (previous ? previous.then(write) : write()).finally(() => {
 			if (projectWrites.get(id)?.done === done) projectWrites.delete(id);
 			if (!projectWrites.size && this.binWrites.get(projectId) === projectWrites) this.binWrites.delete(projectId);
 		});
-		projectWrites.set(id, { asset, done });
+		projectWrites.set(id, { asset, done, started: started?.promise });
 		if (this.loadingBinChanges?.projectId === projectId) this.loadingBinChanges.changes.set(id, asset);
 		return done;
 	}
@@ -143,7 +170,10 @@ export class MediaManager {
 		this.pendingPublications.set(newAsset.id, pending);
 
 		try {
-			await storageService.saveMediaAsset({ projectId, mediaAsset: newAsset });
+			await storageService.saveMediaAsset({
+				projectId, mediaAsset: newAsset,
+				onThumbnailStored: (url) => { newAsset.thumbnailUrl = url; },
+			});
 			if (!this.isCurrentImport(session)) {
 				release();
 				if (session.signal.aborted) await this.reconcileLatePublication(projectId, newAsset, pending);
@@ -423,7 +453,10 @@ export class MediaManager {
 		this.staged.set(staged.id, { projectId, asset: staged });
 		onId?.(staged.id);
 		try {
-			await storageService.saveMediaAsset({ projectId, mediaAsset: staged, staged: true });
+			await storageService.saveMediaAsset({
+				projectId, mediaAsset: staged, staged: true,
+				onThumbnailStored: (url) => { staged.thumbnailUrl = url; },
+			});
 			return staged;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
