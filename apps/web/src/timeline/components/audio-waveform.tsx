@@ -48,6 +48,7 @@ interface AudioWaveformProps {
 	audioBuffer?: AudioBuffer;
 	gainSamples?: number[];
 	pixelsPerSecond: number;
+	timelineLeft: number;
 	clipDurationSec: number;
 	retime?: RetimeConfig;
 	sourceStartSec: number;
@@ -63,6 +64,7 @@ export function AudioWaveform({
 	audioBuffer,
 	gainSamples,
 	pixelsPerSecond,
+	timelineLeft,
 	clipDurationSec,
 	retime,
 	sourceStartSec,
@@ -88,15 +90,12 @@ export function AudioWaveform({
 
 	const clearCanvas = useCallback(() => {
 		const canvas = canvasRef.current;
-		if (!canvas) {
+		if (!canvas || lastRenderSignatureRef.current === null) {
 			return;
 		}
 
-		const ctx = canvas.getContext("2d");
-		if (ctx) {
-			ctx.setTransform(1, 0, 0, 1, 0, 0);
-			ctx.clearRect(0, 0, canvas.width, canvas.height);
-		}
+		canvas.width = 1;
+		canvas.height = 1;
 		lastRenderSignatureRef.current = null;
 	}, []);
 
@@ -125,6 +124,13 @@ export function AudioWaveform({
 
 		if (scrollParent) {
 			const parentRect = scrollParent.getBoundingClientRect();
+			if (
+				parentRect.top >= containerRect.bottom ||
+				parentRect.bottom <= containerRect.top
+			) {
+				clearCanvas();
+				return;
+			}
 			clipLeft = Math.max(0, parentRect.left - containerRect.left);
 			clipRight = Math.min(elementWidth, parentRect.right - containerRect.left);
 		} else {
@@ -307,6 +313,7 @@ export function AudioWaveform({
 		drawVisible,
 		gainSamples,
 		pixelsPerSecond,
+		timelineLeft,
 		clipDurationSec,
 		retime,
 		sourceStartSec,
@@ -326,11 +333,30 @@ export function AudioWaveform({
 			return;
 		}
 
-		const handleScroll = () => {
-			drawVisible();
+		let frame: number | null = null;
+		const scheduleDraw = () => {
+			if (frame !== null) return;
+			frame = requestAnimationFrame(() => {
+				frame = null;
+				drawVisible();
+			});
 		};
-		scrollParent.addEventListener("scroll", handleScroll, { passive: true });
-		return () => scrollParent.removeEventListener("scroll", handleScroll);
+		const viewportResize = new ResizeObserver(scheduleDraw);
+		viewportResize.observe(scrollParent);
+		const visibility = new IntersectionObserver(
+			([entry]) => {
+				if (entry.isIntersecting) scheduleDraw();
+			},
+			{ root: scrollParent, threshold: [0, Number.EPSILON] },
+		);
+		visibility.observe(container);
+		scrollParent.addEventListener("scroll", scheduleDraw, { passive: true });
+		return () => {
+			scrollParent.removeEventListener("scroll", scheduleDraw);
+			viewportResize.disconnect();
+			visibility.disconnect();
+			if (frame !== null) cancelAnimationFrame(frame);
+		};
 	}, [drawVisible]);
 
 	const onResize = useCallback(
@@ -345,7 +371,7 @@ export function AudioWaveform({
 
 	return (
 		<div ref={containerRef} className={cn("relative size-full", className)}>
-			<canvas ref={canvasRef} className="absolute bottom-0" />
+			<canvas ref={canvasRef} width={1} height={1} className="absolute bottom-0" />
 		</div>
 	);
 }

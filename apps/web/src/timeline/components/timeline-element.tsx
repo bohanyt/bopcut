@@ -1,12 +1,20 @@
 "use client";
 
 import { useI18n } from "@/i18n/provider";
-import { createContext, useContext, useEffect, useSyncExternalStore } from "react";
+import {
+	createContext,
+	memo,
+	useCallback,
+	useContext,
+	useEffect,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useAssetsPanelStore } from "@/components/editor/panels/assets/assets-panel-store";
 import { AudioWaveform, WAVEFORM_GAIN_SAMPLE_COUNT } from "./audio-waveform";
 import { AudioVolumeLine } from "./audio-volume-line";
-import { useElementPreview } from "@/timeline/hooks/use-element-preview";
 import {
 	useKeyframeDrag,
 	type KeyframeDragState,
@@ -49,14 +57,13 @@ import type { SelectionBoxBounds } from "@/selection/types";
 import type {
 	TimelineElement as TimelineElementType,
 	TimelineTrack,
-	ElementDragView,
 	VideoElement,
 	ImageElement,
 	AudioElement,
 	CompoundElement,
 } from "@/timeline";
-import type { MediaAsset } from "@/media/types";
 import { mediaSupportsAudio } from "@/media/media-utils";
+import type { MediaAsset } from "@/media/types";
 import {
 	canToggleSourceAudio,
 	isSourceAudioSeparated,
@@ -64,7 +71,7 @@ import {
 import { buildWaveformGainSamples, isElementMuted } from "@/timeline/audio-state";
 import { getTimelinePixelsPerSecond } from "@/timeline";
 import { buildWaveformSourceKey } from "@/media/waveform-summary";
-import { addMediaTime, type MediaTime, TICKS_PER_SECOND } from "@/wasm";
+import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 import {
 	getActionDefinition,
 	type TAction,
@@ -111,7 +118,31 @@ const KEYFRAME_INDICATOR_MIN_WIDTH_PX = 40;
 const ELEMENT_RING_WIDTH_PX = 1.5;
 
 const PixelsPerSecondContext = createContext<number | null>(null);
+const ClipLeftContext = createContext(0);
 const THUMBNAIL_ASPECT_RATIO = 16 / 9;
+const mediaIndexes = new WeakMap<
+	readonly MediaAsset[],
+	Map<string, MediaAsset>
+>();
+
+function useTimelineMediaAsset(id: string | null) {
+	const { media } = useEditor();
+	const subscribe = useCallback(
+		(listener: () => void) => media.subscribe(listener),
+		[media],
+	);
+	const getSnapshot = useCallback(() => {
+		if (id === null) return undefined;
+		const assets = media.getAssets();
+		let index = mediaIndexes.get(assets);
+		if (!index) {
+			index = new Map(assets.map((asset) => [asset.id, asset]));
+			mediaIndexes.set(assets, index);
+		}
+		return index.get(id);
+	}, [id, media]);
+	return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
 
 interface KeyframeIndicator {
 	time: MediaTime;
@@ -213,15 +244,18 @@ export function getDisplayShortcut({ action }: { action: TAction }) {
 	});
 }
 
+type ClipTrack = Pick<TimelineTrack, "id" | "type">;
+
 interface TimelineElementProps {
 	element: TimelineElementType;
-	track: TimelineTrack;
+	displayElement: TimelineElementType;
+	track: ClipTrack;
 	zoomLevel: number;
 	isSelected: boolean;
+	isExpanded: boolean;
 	onResizeStart: (params: {
 		event: React.MouseEvent;
 		element: TimelineElementType;
-		track: TimelineTrack;
 		side: "left" | "right";
 	}) => void;
 	onElementMouseDown: (params: {
@@ -232,63 +266,33 @@ interface TimelineElementProps {
 		event: React.MouseEvent;
 		element: TimelineElementType;
 	}) => void;
-	dragView: ElementDragView;
+	onFocusChange: (id: string | null) => void;
+	onMenuChange: (id: string, open: boolean) => void;
+	draggedStartTime?: MediaTime;
+	dragOffsetY: number;
 	isDropTarget?: boolean;
 }
 
-export function TimelineElement({
+export const TimelineElement = memo(function TimelineElement({
 	element,
+	displayElement,
 	track,
 	zoomLevel,
 	isSelected,
+	isExpanded,
 	onResizeStart,
 	onElementMouseDown,
 	onElementClick,
-	dragView,
+	onFocusChange,
+	onMenuChange,
+	draggedStartTime,
+	dragOffsetY,
 	isDropTarget = false,
 }: TimelineElementProps) {
 	const { t } = useI18n();
-	const editor = useEditor();
-	const mediaAssets = useEditor((e) => e.media.getAssets());
-	const { selectedElements } = useElementSelection();
-	const requestRevealMedia = useAssetsPanelStore((s) => s.requestRevealMedia);
-	const { renderElement } = useElementPreview({
-		trackId: track.id,
-		elementId: element.id,
-		fallback: element,
-	});
-
-	let mediaAsset: MediaAsset | null = null;
-
-	if (hasMediaId(element)) {
-		mediaAsset =
-			mediaAssets.find((asset) => asset.id === element.mediaId) ?? null;
-	}
-
-	const hasAudio = mediaSupportsAudio({ media: mediaAsset });
-
-	const isCurrentElementSelected = selectedElements.some(
-		(selected) =>
-			selected.elementId === element.id && selected.trackId === track.id,
-	);
-
-	const isDragging = dragView.kind === "dragging";
-	const dragTimeOffset = isDragging
-		? dragView.memberTimeOffsets.get(element.id)
-		: undefined;
-	const isBeingDragged = dragTimeOffset !== undefined;
-	const dragOffsetY =
-		isDragging && isBeingDragged
-			? dragView.currentMouseY - dragView.startMouseY
-			: 0;
-	const elementStartTime =
-		isDragging && isBeingDragged
-			? addMediaTime({ a: dragView.currentTime, b: dragTimeOffset })
-			: renderElement.startTime;
-	const displayedStartTime = elementStartTime;
-	const displayedDuration = renderElement.duration;
+	const displayedStartTime = draggedStartTime ?? displayElement.startTime;
 	const elementWidth = timelineTimeToPixels({
-		time: displayedDuration,
+		time: displayElement.duration,
 		zoomLevel,
 	});
 	const timelinePixelsPerSecond = getTimelinePixelsPerSecond({ zoomLevel });
@@ -296,10 +300,138 @@ export function TimelineElement({
 		time: displayedStartTime,
 		zoomLevel,
 	});
+	const baseTrackHeight = getTrackHeight({ type: track.type });
+	const elementKeyframes = useMemo(
+		() => getElementKeyframes({ animations: element.animations }),
+		[element.animations],
+	);
+
+	const renderContent = (
+		expandedContent: ReactNode,
+		expansionHeight: number,
+		indicators?: ReactNode,
+	) => (
+		<div
+			className="absolute top-0 select-none"
+			data-timeline-element-id={element.id}
+			title={
+				element.groupId
+					? t("timeline.group", { id: element.groupId })
+					: undefined
+			}
+			style={{
+				left: `${elementLeft}px`,
+				width: `${elementWidth}px`,
+				height:
+					expansionHeight > 0
+						? `${baseTrackHeight + expansionHeight}px`
+						: "100%",
+				transform:
+					draggedStartTime !== undefined
+						? `translate3d(0, ${dragOffsetY}px, 0)`
+						: undefined,
+			}}
+			onFocus={() => onFocusChange(element.id)}
+			onBlur={(event) => {
+				if (!event.currentTarget.contains(event.relatedTarget))
+					onFocusChange(null);
+			}}
+		>
+			{element.groupId && (
+				<span
+					className="pointer-events-none absolute right-1 top-0 z-10 text-xs"
+					title={t("timeline.group", { id: element.groupId })}
+				>
+					?
+				</span>
+			)}
+			<ElementInner
+				element={element}
+				displayElement={displayElement}
+				track={track}
+				isSelected={isSelected}
+				isExpanded={expansionHeight > 0}
+				baseTrackHeight={baseTrackHeight}
+				expandedContent={expandedContent}
+				onElementClick={onElementClick}
+				onElementMouseDown={onElementMouseDown}
+				onResizeStart={onResizeStart}
+				isDropTarget={isDropTarget}
+			/>
+			{indicators}
+		</div>
+	);
+
+	return (
+		<PixelsPerSecondContext.Provider value={timelinePixelsPerSecond}>
+			<ClipLeftContext.Provider value={elementLeft}>
+				<ContextMenu onOpenChange={(open) => onMenuChange(element.id, open)}>
+					{elementKeyframes.length > 0 ? (
+						<TimelineElementKeyframes
+							element={element}
+							elementKeyframes={elementKeyframes}
+							trackId={track.id}
+							zoomLevel={zoomLevel}
+							displayedStartTime={displayedStartTime}
+							elementLeft={elementLeft}
+							elementWidth={elementWidth}
+							baseTrackHeight={baseTrackHeight}
+							isExpanded={isExpanded}
+							isSelected={isSelected}
+							renderContent={renderContent}
+						/>
+					) : (
+						<ContextMenuTrigger asChild>
+							{renderContent(null, 0)}
+						</ContextMenuTrigger>
+					)}
+					<ContextMenuContent className="w-64">
+						<TimelineElementMenu
+							element={element}
+							track={track}
+							hasKeyframes={elementKeyframes.length > 0}
+							isExpanded={isExpanded}
+						/>
+					</ContextMenuContent>
+				</ContextMenu>
+			</ClipLeftContext.Provider>
+		</PixelsPerSecondContext.Provider>
+	);
+});
+
+function TimelineElementKeyframes({
+	element,
+	elementKeyframes,
+	trackId,
+	zoomLevel,
+	displayedStartTime,
+	elementLeft,
+	elementWidth,
+	baseTrackHeight,
+	isExpanded,
+	isSelected,
+	renderContent,
+}: {
+	element: TimelineElementType;
+	elementKeyframes: ElementKeyframe[];
+	trackId: string;
+	zoomLevel: number;
+	displayedStartTime: MediaTime;
+	elementLeft: number;
+	elementWidth: number;
+	baseTrackHeight: number;
+	isExpanded: boolean;
+	isSelected: boolean;
+	renderContent: (
+		expandedContent: ReactNode,
+		expansionHeight: number,
+		indicators: ReactNode,
+	) => React.ReactElement;
+}) {
 	const keyframeIndicators = isSelected
 		? getKeyframeIndicators({
-				keyframes: getElementKeyframes({ animations: element.animations }),
-				trackId: track.id,
+				keyframes: elementKeyframes,
+				trackId: trackId,
 				elementId: element.id,
 				displayedStartTime,
 				zoomLevel,
@@ -315,16 +447,6 @@ export function TimelineElement({
 		getVisualOffsetPx,
 	} = useKeyframeDrag({ zoomLevel, element, displayedStartTime });
 
-	const elementKeyframes = getElementKeyframes({
-		animations: element.animations,
-	});
-
-	const isExpanded = useTimelineStore((s) =>
-		s.expandedElementIds.has(element.id),
-	);
-	const toggleElementExpanded = useTimelineStore(
-		(s) => s.toggleElementExpanded,
-	);
 	const expandedRows = useMemo(
 		() =>
 			isExpanded ? getExpandedRows({ animations: element.animations }) : [],
@@ -338,7 +460,7 @@ export function TimelineElement({
 		handleExpandedAreaMouseDown,
 		handleExpandedAreaClick,
 	} = useKeyframeBoxSelect({
-		trackId: track.id,
+		trackId: trackId,
 		elementId: element.id,
 		rows: expandedRows,
 		keyframes: elementKeyframes,
@@ -347,30 +469,12 @@ export function TimelineElement({
 		elementLeft,
 	});
 
-	const handleRevealInMedia = ({ event }: { event: React.MouseEvent }) => {
-		event.stopPropagation();
-		if (hasMediaId(element)) {
-			requestRevealMedia(element.mediaId);
-		}
-	};
-
-	const isMuted = canElementHaveAudio(element) && isElementMuted({ element });
-	const canToggleCurrentSourceAudio =
-		selectedElements.length === 1 &&
-		isCurrentElementSelected &&
-		canToggleSourceAudio(element, mediaAsset);
-		const isElementSourceAudioSeparated =
-		element.type === "video" && isSourceAudioSeparated({ element });
-	const hasKeyframes = elementKeyframes.length > 0;
-	const expansionHeight = getExpansionHeight({ rows: expandedRows });
-	const baseTrackHeight = getTrackHeight({ type: track.type });
-
 	const expandedContent =
 		isExpanded && expandedRows.length > 0 ? (
 			<ExpandedKeyframeLanes
 				rows={expandedRows}
 				keyframes={elementKeyframes}
-				trackId={track.id}
+				trackId={trackId}
 				elementId={element.id}
 				displayedStartTime={displayedStartTime}
 				zoomLevel={zoomLevel}
@@ -387,177 +491,194 @@ export function TimelineElement({
 			/>
 		) : null;
 
+	const indicators = isSelected ? (
+		<div
+			className="pointer-events-none absolute inset-x-0 top-0 overflow-hidden"
+			style={{ height: `${baseTrackHeight}px` }}
+		>
+			<KeyframeIndicators
+				indicators={keyframeIndicators}
+				dragState={keyframeDragState}
+				displayedStartTime={displayedStartTime}
+				elementLeft={elementLeft}
+				onKeyframeMouseDown={handleKeyframeMouseDown}
+				onKeyframeClick={handleKeyframeClick}
+				getVisualOffsetPx={getVisualOffsetPx}
+			/>
+		</div>
+	) : null;
+
 	return (
-		<PixelsPerSecondContext.Provider value={timelinePixelsPerSecond}>
-			<ContextMenu>
-				<ContextMenuTrigger asChild>
-					<div
-						className="absolute top-0 select-none"
-						title={element.groupId ? t("timeline.group", { id: element.groupId }) : undefined}
-						style={{
-							left: `${elementLeft}px`,
-							width: `${elementWidth}px`,
-							height:
-								expandedRows.length > 0
-									? `${baseTrackHeight + expansionHeight}px`
-									: "100%",
-							transform:
-								isDragging && isBeingDragged
-									? `translate3d(0, ${dragOffsetY}px, 0)`
-									: undefined,
+		<ContextMenuTrigger asChild>
+			{renderContent(
+				expandedContent,
+				getExpansionHeight({ rows: expandedRows }),
+				indicators,
+			)}
+		</ContextMenuTrigger>
+	);
+}
+
+function TimelineElementMenu({
+	element,
+	track,
+	hasKeyframes,
+	isExpanded,
+}: {
+	element: TimelineElementType;
+	track: ClipTrack;
+	hasKeyframes: boolean;
+	isExpanded: boolean;
+}) {
+	const { t } = useI18n();
+	const editor = useEditor();
+	const mediaId = hasMediaId(element) ? element.mediaId : null;
+	const mediaAsset = useTimelineMediaAsset(mediaId) ?? null;
+	const { selectedElements, isElementSelected } = useElementSelection();
+	const requestRevealMedia = useAssetsPanelStore((s) => s.requestRevealMedia);
+	const toggleElementExpanded = useTimelineStore(
+		(s) => s.toggleElementExpanded,
+	);
+	const hasAudio = mediaSupportsAudio({ media: mediaAsset });
+	const isCurrentElementSelected = isElementSelected({
+		trackId: track.id,
+		elementId: element.id,
+	});
+	const isMuted = canElementHaveAudio(element) && isElementMuted({ element });
+	const canToggleCurrentSourceAudio =
+		selectedElements.length === 1 &&
+		isCurrentElementSelected &&
+		canToggleSourceAudio(element, mediaAsset);
+	const isElementSourceAudioSeparated =
+		element.type === "video" && isSourceAudioSeparated({ element });
+
+	const handleRevealInMedia = ({ event }: { event: React.MouseEvent }) => {
+		event.stopPropagation();
+		if (mediaId !== null) requestRevealMedia(mediaId);
+	};
+
+	return (
+		<>
+			{isCompoundElement(element) && (
+				<>
+					<ContextMenuItem
+						icon={<HugeiconsIcon icon={FolderOpenIcon} />}
+						onClick={(event: React.MouseEvent) => {
+							event.stopPropagation();
+							void editor.scenes.enterCompound({
+								trackId: track.id,
+								elementId: element.id,
+							});
 						}}
 					>
-						{element.groupId && <span className="pointer-events-none absolute right-1 top-0 z-10 text-xs" title={t("timeline.group", { id: element.groupId })}>?</span>}
-						<ElementInner
-							element={element}
-							displayElement={renderElement}
-							track={track}
-							isSelected={isSelected}
-							isExpanded={expandedRows.length > 0}
-							baseTrackHeight={baseTrackHeight}
-							expandedContent={expandedContent}
-							onElementClick={onElementClick}
-							onElementMouseDown={onElementMouseDown}
-							onResizeStart={onResizeStart}
-							isDropTarget={isDropTarget}
-						/>
-						{isSelected && (
-							<div
-								className="pointer-events-none absolute inset-x-0 top-0 overflow-hidden"
-								style={{ height: `${baseTrackHeight}px` }}
-							>
-								<KeyframeIndicators
-									indicators={keyframeIndicators}
-									dragState={keyframeDragState}
-									displayedStartTime={displayedStartTime}
-									elementLeft={elementLeft}
-									onKeyframeMouseDown={handleKeyframeMouseDown}
-									onKeyframeClick={handleKeyframeClick}
-									getVisualOffsetPx={getVisualOffsetPx}
-								/>
-							</div>
-						)}
-					</div>
-				</ContextMenuTrigger>
-				<ContextMenuContent className="w-64">
-					{isCompoundElement(element) && (
-						<>
-							<ContextMenuItem
-								icon={<HugeiconsIcon icon={FolderOpenIcon} />}
-								onClick={(event: React.MouseEvent) => {
-									event.stopPropagation();
-									void editor.scenes.enterCompound({
-										trackId: track.id,
-										elementId: element.id,
-									});
-								}}
-							>
-								{t("timeline.openCompound")}
-							</ContextMenuItem>
-							{selectedElements.length === 1 && (
-								<ActionMenuItem
-									action="break-apart-compound"
-									icon={<HugeiconsIcon icon={Unlink01Icon} />}
-								>
-									{t("timeline.breakApart")}
-								</ActionMenuItem>
-							)}
-							<ContextMenuSeparator />
-						</>
-					)}
-					<ActionMenuItem
-						action="split"
-						icon={<HugeiconsIcon icon={ScissorIcon} />}
-					>
-						{t("timeline.split")}
-					</ActionMenuItem>
-					<CopyMenuItem />
+						{t("timeline.openCompound")}
+					</ContextMenuItem>
 					{selectedElements.length === 1 && (
 						<ActionMenuItem
-							action="duplicate-selected"
-							icon={<HugeiconsIcon icon={Copy01Icon} />}
+							action="break-apart-compound"
+							icon={<HugeiconsIcon icon={Unlink01Icon} />}
 						>
-							{t("common.duplicate")}
+							{t("timeline.breakApart")}
 						</ActionMenuItem>
-					)}
-					{isCurrentElementSelected && (
-						<ActionMenuItem
-							action="create-compound"
-							icon={<HugeiconsIcon icon={LayerAddIcon} />}
-						>
-							{t("timeline.createCompound")}
-						</ActionMenuItem>
-					)}
-					{canElementHaveAudio(element) && hasAudio && (
-						<MuteMenuItem
-							isMultipleSelected={selectedElements.length > 1}
-							isCurrentElementSelected={isCurrentElementSelected}
-							isMuted={isMuted}
-						/>
-					)}
-					{canToggleCurrentSourceAudio && (
-						<ContextMenuItem
-							icon={
-								<HugeiconsIcon
-									icon={
-										isElementSourceAudioSeparated ? ScissorIcon : ScissorIcon
-									}
-								/>
-							}
-							onClick={(event: React.MouseEvent) => {
-								event.stopPropagation();
-								invokeAction("toggle-source-audio");
-							}}
-						>
-							{t(isElementSourceAudioSeparated ? "timeline.recoverAudio" : "timeline.extractAudio")}
-						</ContextMenuItem>
-					)}
-					{canElementBeHidden(element) && (
-						<VisibilityMenuItem
-							element={element}
-							isMultipleSelected={selectedElements.length > 1}
-							isCurrentElementSelected={isCurrentElementSelected}
-						/>
-					)}
-					{hasKeyframes && (
-						<ContextMenuItem
-							icon={<HugeiconsIcon icon={KeyframeIcon} />}
-							onClick={(event: React.MouseEvent) => {
-								event.stopPropagation();
-								toggleElementExpanded(element.id);
-							}}
-						>
-							{isExpanded ? t("timeline.collapseKeyframes") : t("timeline.expandKeyframes")}
-						</ContextMenuItem>
-					)}
-					{selectedElements.length === 1 && hasMediaId(element) && (
-						<>
-							<ContextMenuItem
-								icon={<HugeiconsIcon icon={Search01Icon} />}
-								onClick={(event: React.MouseEvent) =>
-									handleRevealInMedia({ event })
-								}
-							>
-								{t("timeline.revealMedia")}
-							</ContextMenuItem>
-							<ContextMenuItem
-								icon={<HugeiconsIcon icon={Exchange01Icon} />}
-								disabled
-							>
-								{t("timeline.replaceMedia")}
-							</ContextMenuItem>
-						</>
 					)}
 					<ContextMenuSeparator />
-					<DeleteMenuItem
-						isMultipleSelected={selectedElements.length > 1}
-						isCurrentElementSelected={isCurrentElementSelected}
-						elementType={element.type}
-						selectedCount={selectedElements.length}
-					/>
-				</ContextMenuContent>
-			</ContextMenu>
-		</PixelsPerSecondContext.Provider>
+				</>
+			)}
+			<ActionMenuItem
+				action="split"
+				icon={<HugeiconsIcon icon={ScissorIcon} />}
+			>
+				{t("timeline.split")}
+			</ActionMenuItem>
+			<CopyMenuItem />
+			{selectedElements.length === 1 && (
+				<ActionMenuItem
+					action="duplicate-selected"
+					icon={<HugeiconsIcon icon={Copy01Icon} />}
+				>
+					{t("common.duplicate")}
+				</ActionMenuItem>
+			)}
+			{isCurrentElementSelected && (
+				<ActionMenuItem
+					action="create-compound"
+					icon={<HugeiconsIcon icon={LayerAddIcon} />}
+				>
+					{t("timeline.createCompound")}
+				</ActionMenuItem>
+			)}
+			{canElementHaveAudio(element) && hasAudio && (
+				<MuteMenuItem
+					isMultipleSelected={selectedElements.length > 1}
+					isCurrentElementSelected={isCurrentElementSelected}
+					isMuted={isMuted}
+				/>
+			)}
+			{canToggleCurrentSourceAudio && (
+				<ContextMenuItem
+					icon={
+						<HugeiconsIcon
+							icon={isElementSourceAudioSeparated ? ScissorIcon : ScissorIcon}
+						/>
+					}
+					onClick={(event: React.MouseEvent) => {
+						event.stopPropagation();
+						invokeAction("toggle-source-audio");
+					}}
+				>
+					{t(
+						isElementSourceAudioSeparated
+							? "timeline.recoverAudio"
+							: "timeline.extractAudio",
+					)}
+				</ContextMenuItem>
+			)}
+			{canElementBeHidden(element) && (
+				<VisibilityMenuItem
+					element={element}
+					isMultipleSelected={selectedElements.length > 1}
+					isCurrentElementSelected={isCurrentElementSelected}
+				/>
+			)}
+			{hasKeyframes && (
+				<ContextMenuItem
+					icon={<HugeiconsIcon icon={KeyframeIcon} />}
+					onClick={(event: React.MouseEvent) => {
+						event.stopPropagation();
+						toggleElementExpanded(element.id);
+					}}
+				>
+					{isExpanded
+						? t("timeline.collapseKeyframes")
+						: t("timeline.expandKeyframes")}
+				</ContextMenuItem>
+			)}
+			{selectedElements.length === 1 && hasMediaId(element) && (
+				<>
+					<ContextMenuItem
+						icon={<HugeiconsIcon icon={Search01Icon} />}
+						onClick={(event: React.MouseEvent) =>
+							handleRevealInMedia({ event })
+						}
+					>
+						{t("timeline.revealMedia")}
+					</ContextMenuItem>
+					<ContextMenuItem
+						icon={<HugeiconsIcon icon={Exchange01Icon} />}
+						disabled
+					>
+						{t("timeline.replaceMedia")}
+					</ContextMenuItem>
+				</>
+			)}
+			<ContextMenuSeparator />
+			<DeleteMenuItem
+				isMultipleSelected={selectedElements.length > 1}
+				isCurrentElementSelected={isCurrentElementSelected}
+				elementType={element.type}
+				selectedCount={selectedElements.length}
+			/>
+		</>
 	);
 }
 
@@ -576,7 +697,7 @@ function ElementInner({
 }: {
 	element: TimelineElementType;
 	displayElement?: TimelineElementType;
-	track: TimelineTrack;
+	track: ClipTrack;
 	isSelected: boolean;
 	isExpanded: boolean;
 	baseTrackHeight: number;
@@ -592,7 +713,6 @@ function ElementInner({
 	onResizeStart: (params: {
 		event: React.MouseEvent;
 		element: TimelineElementType;
-		track: TimelineTrack;
 		side: "left" | "right";
 	}) => void;
 	isDropTarget?: boolean;
@@ -668,7 +788,9 @@ function ElementInner({
 									aria-hidden="true"
 									data-animation-span="in"
 									className="pointer-events-none absolute inset-y-0 left-0 border-r border-white/20 bg-black/25"
-									style={{ width: `${(100 * inTicks) / visibleElement.duration}%` }}
+									style={{
+										width: `${(100 * inTicks) / visibleElement.duration}%`,
+									}}
 								/>
 							)}
 							{outTicks > 0 && (
@@ -676,7 +798,9 @@ function ElementInner({
 									aria-hidden="true"
 									data-animation-span="out"
 									className="pointer-events-none absolute inset-y-0 right-0 border-l border-white/20 bg-black/25"
-									style={{ width: `${(100 * outTicks) / visibleElement.duration}%` }}
+									style={{
+										width: `${(100 * outTicks) / visibleElement.duration}%`,
+									}}
 								/>
 							)}
 						</div>
@@ -690,13 +814,11 @@ function ElementInner({
 					<ResizeHandle
 						side="left"
 						element={element}
-						track={track}
 						onResizeStart={onResizeStart}
 					/>
 					<ResizeHandle
 						side="right"
 						element={element}
-						track={track}
 						onResizeStart={onResizeStart}
 					/>
 				</>
@@ -708,16 +830,13 @@ function ElementInner({
 function ResizeHandle({
 	side,
 	element,
-	track,
 	onResizeStart,
 }: {
 	side: "left" | "right";
 	element: TimelineElementType;
-	track: TimelineTrack;
 	onResizeStart: (params: {
 		event: React.MouseEvent;
 		element: TimelineElementType;
-		track: TimelineTrack;
 		side: "left" | "right";
 	}) => void;
 }) {
@@ -730,9 +849,11 @@ function ResizeHandle({
 				"absolute top-0 bottom-0 w-2",
 				isLeft ? "-left-1 cursor-w-resize" : "-right-1 cursor-e-resize",
 			)}
-			onMouseDown={(event) => onResizeStart({ event, element, track, side })}
+			onMouseDown={(event) => onResizeStart({ event, element, side })}
 			onClick={(event) => event.stopPropagation()}
-			aria-label={t(isLeft ? "timeline.leftResizeHandle" : "timeline.rightResizeHandle")}
+			aria-label={t(
+				isLeft ? "timeline.leftResizeHandle" : "timeline.rightResizeHandle",
+			)}
 		></button>
 	);
 }
@@ -983,7 +1104,7 @@ function ExpandedKeyframeLanes({
 
 interface ElementContentProps {
 	element: TimelineElementType;
-	track: TimelineTrack;
+	track: ClipTrack;
 }
 
 function TextElementContent({
@@ -1071,16 +1192,15 @@ function AudioElementContent({
 	trackId: string;
 }) {
 	const pixelsPerSecond = useContext(PixelsPerSecondContext);
+	const timelineLeft = useContext(ClipLeftContext);
 	if (pixelsPerSecond === null) {
 		throw new Error(
 			"AudioElementContent must be rendered inside PixelsPerSecondContext.Provider",
 		);
 	}
-	const mediaAssets = useEditor((e) => e.media.getAssets());
-	const mediaAsset =
-		element.sourceType === "upload"
-			? (mediaAssets.find((asset) => asset.id === element.mediaId) ?? null)
-			: null;
+	const mediaAsset = useTimelineMediaAsset(
+		element.sourceType === "upload" ? element.mediaId : null,
+	);
 
 	const audioBuffer =
 		element.sourceType === "library" ? element.buffer : undefined;
@@ -1113,6 +1233,7 @@ function AudioElementContent({
 						audioUrl={audioUrl}
 						gainSamples={gainSamples}
 						pixelsPerSecond={pixelsPerSecond}
+						timelineLeft={timelineLeft}
 						clipDurationSec={element.duration / TICKS_PER_SECOND}
 						retime={element.retime}
 						sourceStartSec={element.trimStart / TICKS_PER_SECOND}
@@ -1141,8 +1262,9 @@ function EffectsButton({
 	track,
 }: {
 	element: VideoElement | ImageElement;
-	track: TimelineTrack;
+	track: ClipTrack;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const setActiveTab = usePropertiesStore((s) => s.setActiveTab);
 
@@ -1157,6 +1279,8 @@ function EffectsButton({
 	return (
 		<button
 			type="button"
+			data-timeline-effects
+			aria-label={t("properties.openEffects")}
 			className="flex shrink-0 justify-center text-white cursor-pointer"
 			onMouseDown={(event) => event.stopPropagation()}
 			onClick={handleClick}
@@ -1166,20 +1290,24 @@ function EffectsButton({
 	);
 }
 
+export function getClipThumbnailUrl(
+	element: VideoElement | ImageElement,
+	mediaAsset: MediaAsset | undefined,
+) {
+	return element.type === "video"
+		? mediaAsset?.thumbnailUrl
+		: (mediaAsset?.thumbnailUrl ?? mediaAsset?.url);
+}
+
 function TiledMediaContent({
 	element,
 	track,
 }: {
 	element: VideoElement | ImageElement;
-	track: TimelineTrack;
+	track: ClipTrack;
 }) {
-	const mediaAssets = useEditor((e) => e.media.getAssets());
-
-	const mediaAsset = mediaAssets.find((asset) => asset.id === element.mediaId);
-	const imageUrl =
-		element.type === "video"
-			? mediaAsset?.thumbnailUrl
-			: (mediaAsset?.thumbnailUrl ?? mediaAsset?.url);
+	const mediaAsset = useTimelineMediaAsset(element.mediaId);
+	const imageUrl = getClipThumbnailUrl(element, mediaAsset);
 
 	if (!imageUrl) {
 		return (
@@ -1248,7 +1376,10 @@ function MediaElementHeader({
 	);
 }
 
-function ElementContent({ element, track }: ElementContentProps) {
+const ElementContent = memo(function ElementContent({
+	element,
+	track,
+}: ElementContentProps) {
 	switch (element.type) {
 		case "text":
 			return <TextElementContent element={element} />;
@@ -1266,22 +1397,37 @@ function ElementContent({ element, track }: ElementContentProps) {
 		case "compound":
 			return <CompoundElementContent element={element} track={track} />;
 	}
-}
+});
 
 function CompoundElementContent({
 	element,
 	track,
 }: {
 	element: CompoundElement;
-	track: TimelineTrack;
+	track: ClipTrack;
 }) {
+	const ref = useRef<HTMLDivElement>(null);
+	const [isVisible, setIsVisible] = useState(false);
+	useEffect(() => {
+		const node = ref.current;
+		if (!node) return;
+		// Account for clipping by both axes of the tracks scroller.
+		const observer = new IntersectionObserver(
+			([entry]) => setIsVisible(entry.isIntersecting && entry.intersectionRatio > 0),
+			{ threshold: [0, Number.EPSILON] },
+		);
+		observer.observe(node);
+		return () => observer.disconnect();
+	}, []);
+
 	return (
-		<div className="relative size-full">
-			{track.type === "audio" ? (
-				<CompoundAudioLanes element={element} />
-			) : (
-				<CompoundThumbnailStrip element={element} />
-			)}
+		<div ref={ref} className="relative size-full">
+			{isVisible &&
+				(track.type === "audio" ? (
+					<CompoundAudioLanes element={element} />
+				) : (
+					<CompoundThumbnailStrip element={element} />
+				))}
 			<div
 				className="pointer-events-none absolute inset-x-0 top-0 h-0.5"
 				style={{ backgroundColor: TIMELINE_COMPOUND_THEME.accentColor }}

@@ -317,14 +317,17 @@ export class ElementInteractionController {
 	get view(): ElementDragView {
 		if (this.session.kind !== "dragging") return IDLE_VIEW;
 		const { mousedown, drag } = this.session;
+		const sourceTrackIds = new Set<string>();
 		const memberTimeOffsets = new Map<string, MediaTime>();
 		for (const member of drag.moveGroup.members) {
+			sourceTrackIds.add(member.trackId);
 			memberTimeOffsets.set(member.elementId, member.timeOffset);
 		}
 		return {
 			kind: "dragging",
 			anchorElementId: mousedown.elementId,
 			trackId: mousedown.trackId,
+			sourceTrackIds,
 			memberTimeOffsets,
 			startMouseX: mousedown.origin.x,
 			startMouseY: mousedown.origin.y,

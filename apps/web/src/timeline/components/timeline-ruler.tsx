@@ -55,7 +55,7 @@ export function TimelineRuler({
 
 	// Keep extra buffer because zoom layout and scroll position can briefly
 	// settle on different frames.
-	const bufferPx = Math.max(200, (scrollLeft + viewportWidth) * 0.15);
+	const bufferPx = Math.max(200, viewportWidth * 0.25);
 
 	const visibleStartTimeSeconds = Math.max(
 		0,
