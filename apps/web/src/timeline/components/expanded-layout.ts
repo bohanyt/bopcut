@@ -100,6 +100,7 @@ export function computeTrackExpansionHeight({
 	track: TimelineTrack;
 	expandedElementIds: Set<string>;
 }): number {
+	if (expandedElementIds.size === 0) return 0;
 	let maxHeight = 0;
 	for (const element of track.elements) {
 		if (!expandedElementIds.has(element.id)) continue;
@@ -116,6 +117,7 @@ export function getTrackExpandedRows({
 	track: TimelineTrack;
 	expandedElementIds: Set<string>;
 }): ExpandedRow[] {
+	if (expandedElementIds.size === 0) return [];
 	let maxHeight = 0;
 	let maxRows: ExpandedRow[] = [];
 	let expandedElement: TimelineElement | undefined;

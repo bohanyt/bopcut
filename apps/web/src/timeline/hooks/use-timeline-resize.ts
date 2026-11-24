@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
@@ -10,7 +10,9 @@ import {
 } from "@/timeline/controllers/resize-controller";
 import type { ResizeSide } from "@/timeline/group-resize";
 import type { SnapPoint } from "@/timeline/snapping";
-import type { TimelineElement } from "@/timeline";
+import type { ElementRef, TimelineElement } from "@/timeline";
+
+const NO_RESIZE_PINS: readonly ElementRef[] = [];
 
 export type { ResizeSide };
 
@@ -64,6 +66,24 @@ export function useTimelineResize({
 	};
 	const configRef = useCommittedRef(config);
 	const [controller] = useState(() => new ResizeController({ configRef }));
+	const [resizePins, setResizePins] =
+		useState<readonly ElementRef[]>(NO_RESIZE_PINS);
+	const handleResizeStart = useCallback<ResizeController["onResizeStart"]>(
+		(args) => {
+			controller.onResizeStart(args);
+			if (!controller.isResizing) return;
+			const { track, element } = args;
+			const selection = configRef.current.selectedElements;
+			setResizePins(
+				selection.some(
+					(ref) => ref.trackId === track.id && ref.elementId === element.id,
+				)
+					? selection
+					: [{ trackId: track.id, elementId: element.id }],
+			);
+		},
+		[controller, configRef],
+	);
 
 	const [, rerender] = useReducer((n: number) => n + 1, 0);
 	useEffect(() => controller.subscribe(rerender), [controller]);
@@ -72,6 +92,7 @@ export function useTimelineResize({
 
 	return {
 		isResizing: controller.isResizing,
-		handleResizeStart: controller.onResizeStart,
+		resizePins: controller.isResizing ? resizePins : NO_RESIZE_PINS,
+		handleResizeStart,
 	};
 }
