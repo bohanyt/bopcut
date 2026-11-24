@@ -27,6 +27,7 @@ export function createElementSelectionResult(
 export abstract class Command {
 	/** False for commands that move elements between scenes; ripple would read that as a delete. */
 	readonly ripples: boolean = true;
+	readonly recordsHumanFields: boolean = false;
 
 	abstract execute(context?: CommandContext): CommandResult | undefined;
 

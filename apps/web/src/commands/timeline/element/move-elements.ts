@@ -1,3 +1,4 @@
+import { recordHumanElementEdit } from "@/timeline/human-fields";
 import {
 	Command,
 	createElementSelectionResult,
@@ -81,10 +82,9 @@ export class MoveElementCommand extends Command {
 				throw new Error(validation.errorMessage);
 			}
 
-			movedElementsById.set(move.elementId, {
-				...sourceElement,
-				startTime: move.newStartTime,
-			});
+			const moved = { ...sourceElement, startTime: move.newStartTime };
+			movedElementsById.set(move.elementId, editor.command.isAgent ? moved :
+				recordHumanElementEdit(sourceElement, moved, move.sourceTrackId !== move.targetTrackId));
 		}
 
 		const movedElementIds = new Set(this.moves.map((move) => move.elementId));

@@ -691,6 +691,8 @@ export const en = {
 	"timeline.recoverAudio": "Recover audio",
 	"timeline.removeBookmark": "Remove bookmark",
 	"timeline.replaceMedia": "Replace media",
+	"timeline.humanFieldsProtected": "Human edits protected",
+	"timeline.releaseHumanFields": "Let the agent change this again",
 	"timeline.revealMedia": "Reveal media",
 	"timeline.rightResizeHandle": "Right resize handle",
 	"timeline.ripple": "Ripple editing",

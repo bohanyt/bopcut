@@ -1060,6 +1060,7 @@ function withoutAgentId<E extends TimelineElement>(element: E): E {
 	if (!("agentId" in element)) return element;
 	const copy: E & WithAgentId = { ...element };
 	delete copy.agentId;
+	delete (copy as WithAgentId & { humanFields?: string[] }).humanFields;
 	return copy;
 }
 

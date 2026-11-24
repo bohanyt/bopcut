@@ -1,7 +1,8 @@
 import { EditorCore } from "@/core";
 import { Command, type CommandResult } from "@/commands/base-command";
-import type { SceneTracks } from "@/timeline";
+import type { SceneTracks, TimelineElement } from "@/timeline";
 import { applyElementUpdates, type ElementUpdate } from "@/timeline/update-pipeline";
+import { patchEditsHumanField, recordHumanTrackEdit } from "@/timeline/human-fields";
 import { generateUUID } from "@/utils/id";
 
 export class UpdateElementsCommand extends Command {
@@ -21,11 +22,25 @@ export class UpdateElementsCommand extends Command {
 	execute(): CommandResult | undefined {
 		const editor = EditorCore.getInstance();
 		this.savedState = editor.scenes.getActiveScene().tracks;
-		editor.timeline.updateTracks(applyElementUpdates({
+		const after = applyElementUpdates({
 			tracks: this.savedState,
 			updates: this.updates,
 			boundaryIdPrefix: this.boundaryIdPrefix,
-		}));
+		});
+		if (editor.command.isAgent) {
+			editor.timeline.updateTracks(after);
+		} else {
+			const patches = new Map<string, Partial<TimelineElement>[]>();
+			for (const { elementId, patch } of this.updates) {
+				const previous = patches.get(elementId);
+				if (previous) previous.push(patch);
+				else patches.set(elementId, [patch]);
+			}
+			editor.timeline.updateTracks(recordHumanTrackEdit(
+				this.savedState, after, undefined,
+				(id, field) => patches.get(id)?.some((patch) => patchEditsHumanField(patch, field)) ?? false,
+			));
+		}
 		return undefined;
 	}
 

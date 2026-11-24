@@ -32,6 +32,7 @@ export function buildSceneSnapshot({ scenes, rootSceneId, mediaName, wordsOf }: 
 			start: sec(e.startTime), duration: sec(e.duration), end: sec(e.startTime + e.duration), trimStart: sec(e.trimStart), trimEnd: sec(e.trimEnd),
 			effectType: x.effectType ?? null, graphic: x.definitionId ? { definitionId: x.definitionId } : null, icon: x.definitionId === "icon" ? { name: e.params.iconName, color: e.params.color } : null, groupId: e.groupId ?? null, params: e.params, hasKeyframes: !!e.animations && Object.keys(e.animations).length > 0,
 			sceneId, path: own[0]?.path ?? null,
+			...(e.agentId && e.humanFields?.length ? { humanFields: e.humanFields } : {}),
 			...(e.type === "text" && e.caption ? { caption: { text: e.params.content, ...e.caption } } : {}),
 			...cutWarningsOf(e),
 			// Where it shows in the root timeline, once per path to its scene; [] = trimmed out by an enclosing clip.

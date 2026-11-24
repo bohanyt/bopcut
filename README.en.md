@@ -9,6 +9,7 @@
 ## What you can do
 
 **Work with an agent**
+- **Keep your changes during rewrites.** An agent draft can preserve the fields you edited on its clips, including caption corrections, color, and placement. Release them from the clip menu when you want the agent to change them again.
 - **The agent can read the timeline.** Each change is written to the workspace as JSON, including tracks, items, times, positions, and notes.
 - **The agent can edit the timeline.** It sends per-item additions, updates, and deletions. The editor applies them in about two seconds as **one Undo step** and selects the affected items.
 - **Two-way notes.** Leave a note on a range or an item. The agent can read, reply to, and resolve it.

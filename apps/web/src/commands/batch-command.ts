@@ -43,7 +43,7 @@ export class BatchCommand extends Command {
 					context.rippleEnabled && command.ripples
 						? (editor.scenes.getActiveSceneOrNull()?.tracks ?? null)
 						: null;
-				const result = run(command);
+				const result = editor.command.run(command, () => run(command));
 				if (result?.changed === false) continue;
 				done.push(command);
 				editor.command.applyRipple({ beforeTracks });

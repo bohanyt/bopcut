@@ -6,11 +6,12 @@
 // Every check compares the snapshot (`base`) with the timeline as it was before the draft (`now`), never
 // with the draft's own intermediate state, so two ops of one draft never trip over each other.
 import type { TimelineElement, TScene } from "@/timeline";
+import { isHumanFieldPath } from "@/timeline/human-fields";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { orderedTracks } from "./scene-graph";
 
 /** The comparable state of one element: timing in seconds, each param and the keyframes as JSON. */
-export type ElementFields = { start: number; duration: number; trimStart: number; params: Record<string, string>; animations: string; caption: string; whole: string };
+export type ElementFields = { start: number; duration: number; trimStart: number; params: Record<string, string>; animations: string; caption: string; retime?: string; unmanaged?: string; whole: string };
 
 /**
  * One element in a snapshot: its fields, the track it is on and that track's own settings (name, mute,
@@ -78,7 +79,7 @@ function jsonOf(value: unknown): { json: string; digest: string } {
 export function fieldsOf(element: TimelineElement): ElementFields {
 	const cached = fieldsCache.get(element);
 	if (cached) return cached;
-	const { params: rawParams, animations: rawAnimations, caption: rawCaption, ...rest } = element as TimelineElement & { animations?: unknown; caption?: unknown };
+	const { humanFields: _ownership, params: rawParams, animations: rawAnimations, caption: rawCaption, ...rest } = element as TimelineElement & { animations?: unknown; caption?: unknown };
 	const params = paramsOf(rawParams);
 	const animations = jsonOf(rawAnimations ?? null);
 	// A caption's words, timings and highlights (kept beside the text).
@@ -90,6 +91,18 @@ export function fieldsOf(element: TimelineElement): ElementFields {
 		params: params.params,
 		animations: animations.json,
 		caption: caption.digest,
+		retime: stableJson("retime" in element ? element.retime : undefined),
+		unmanaged: (() => {
+			const { startTime, duration, trimStart, trimEnd, retime, ...unmanaged } = rest as typeof rest & { retime?: unknown };
+			const untouchedChannels = Object.fromEntries(
+				Object.entries(rawAnimations && typeof rawAnimations === "object" ? rawAnimations : {})
+					.filter(([path]) => !isHumanFieldPath(`keyframes.${path}`)),
+			);
+			const untouchedParams = element.type === "effect" ? params.params : Object.fromEntries(
+				Object.entries(params.params).filter(([key]) => !isHumanFieldPath(`params.${key}`)),
+			);
+			return digest(stableJson({ unmanaged, untouchedChannels, untouchedParams }));
+		})(),
 		whole: digest(`${stableJson(rest)}|${params.digest}|${animations.digest}|${caption.digest}`),
 	};
 	fieldsCache.set(element, fields);
@@ -205,8 +218,10 @@ export function touchedFields(op: { start?: unknown; duration?: unknown; trimSta
 function differs(field: string, then: ElementRecord, now: ElementRecord): boolean {
 	if (field === "keyframes") return then.fields.animations !== now.fields.animations;
 	if (field === "caption") return then.fields.caption !== now.fields.caption;
+	if (field === "retime" || field === "unmanaged") return then.fields[field] !== now.fields[field];
 	if (field === "element") return then.fields.whole !== now.fields.whole;
 	if (field === "track") return then.trackId !== now.trackId || then.trackState !== now.trackState;
+	if (field === "trackSettings") return then.trackId === now.trackId && then.trackState !== now.trackState;
 	if (field === "content") return then.content !== now.content;
 	if (field.startsWith("params.")) return then.fields.params[field.slice(7)] !== now.fields.params[field.slice(7)];
 	return then.fields[field as "start" | "duration" | "trimStart"] !== now.fields[field as "start" | "duration" | "trimStart"];
@@ -217,8 +232,8 @@ function currentValues(fields: string[], element: TimelineElement, record: Eleme
 	for (const field of fields) {
 		if (field === "keyframes") out.keyframes = (element as { animations?: unknown }).animations ?? null;
 		else if (field === "caption") out.caption = (element as { caption?: unknown }).caption ?? null;
-		else if (field === "element") out.element = element;
-		else if (field === "track") out.trackId = record.trackId; // or its settings (mute, hidden, name) changed
+		else if (field === "element" || field === "unmanaged") out.element = element;
+		else if (field === "track" || field === "trackSettings") out.trackId = record.trackId; // or its settings (mute, hidden, name) changed
 		else if (field === "content") out.content = "changed";
 		else if (field.startsWith("params.")) out[field] = element.params?.[field.slice(7)];
 		else out[field] = record.fields[field as "start" | "duration" | "trimStart"];
@@ -263,6 +278,33 @@ export function assertNotStale({ base, now, sceneId, element, fields, scenes }: 
 	if (changed.length) throw new StaleError(changed, currentValues(changed, element, current));
 }
 
+/** Supported and unmanaged field changes since the snapshot, before any op in this draft. */
+export function humanFieldsSince(
+	base: ReadonlyMap<string, ElementRecord> | undefined,
+	now: ReadonlyMap<string, ElementRecord> | undefined,
+	sceneId: string,
+	element: TimelineElement,
+): string[] {
+	if (!base || !now) return [];
+	const current = recordOf(now, sceneId, element.id);
+	if (!current) return [];
+	const then = recordOf(base, sceneId, element.id);
+	if (!then) throw new StaleError(["the element (added after basedOn)"], { id: element.id });
+	const fields = ["start", "duration", "trimStart", "caption", "retime"].filter((field) => differs(field, then, current));
+	if (then.trackId !== current.trackId) fields.push("track");
+	for (const key of new Set([...Object.keys(then.fields.params), ...Object.keys(current.fields.params)])) {
+		if (!differs(`params.${key}`, then, current)) continue;
+		const field = key === "content" && element.type === "text" && element.caption ? "caption" : `params.${key}`;
+		if (!fields.includes(field)) fields.push(field);
+	}
+	const previousKeys = JSON.parse(then.fields.animations) ?? {};
+	const currentKeys = JSON.parse(current.fields.animations) ?? {};
+	for (const key of new Set([...Object.keys(previousKeys), ...Object.keys(currentKeys)])) {
+		if (stableJson(previousKeys[key]) !== stableJson(currentKeys[key])) fields.push(`keyframes.${key}`);
+	}
+	return fields;
+}
+
 /** Throws StaleError when a note changed (resolved, reopened, edited) between the snapshot and now. */
 export function assertNoteNotStale({ base, now, sceneId, noteId }: { base: ReadonlyMap<string, ElementRecord> | undefined; now: ReadonlyMap<string, ElementRecord> | undefined; sceneId: string; noteId: string }) {
 	if (!base || !now) return;
@@ -278,14 +320,17 @@ export function assertNoteNotStale({ base, now, sceneId, noteId }: { base: Reado
  * op based on that snapshot: throws StaleError for the first element of `after` whose start differs from
  * `before` (this op's own edit) and whose start the user changed since `base`.
  */
-export function assertRippleNotStale({ base, now, sceneId, before, after }: { base: ReadonlyMap<string, ElementRecord> | undefined; now: ReadonlyMap<string, ElementRecord> | undefined; sceneId: string; before: TScene["tracks"]; after: TScene["tracks"] }) {
+export function assertRippleNotStale({ base, now, sceneId, before, after, startReleased }: {
+	base: ReadonlyMap<string, ElementRecord> | undefined; now: ReadonlyMap<string, ElementRecord> | undefined;
+	sceneId: string; before: TScene["tracks"]; after: TScene["tracks"]; startReleased?: (id: string) => boolean;
+}) {
 	if (!base || !now) return;
 	const startOf = new Map<string, number>();
 	for (const track of orderedTracks(before)) for (const element of track.elements) startOf.set(element.id, element.startTime);
 	for (const track of orderedTracks(after)) {
 		for (const element of track.elements) {
 			const was = startOf.get(element.id);
-			if (was === undefined || was === element.startTime) continue;
+			if (was === undefined || was === element.startTime || startReleased?.(element.id)) continue;
 			const then = recordOf(base, sceneId, element.id);
 			const current = recordOf(now, sceneId, element.id);
 			if (!current) continue;

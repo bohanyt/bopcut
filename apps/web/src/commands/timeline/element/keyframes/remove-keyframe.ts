@@ -48,6 +48,7 @@ function removeKeyframeAndPersist({
 }
 
 export class RemoveKeyframeCommand extends Command {
+	override readonly recordsHumanFields = true;
 	private savedState: SceneTracks | null = null;
 	private readonly trackId: string;
 	private readonly elementId: string;

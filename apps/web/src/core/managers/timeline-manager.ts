@@ -1,3 +1,4 @@
+import { patchEditsHumanField, recordHumanTrackEdit } from "@/timeline/human-fields";
 import type { EditorCore } from "@/core";
 import { registerCanceller } from "@/editor/cancel-interaction";
 import { reconcileCaptionEdit } from "@/text/caption";
@@ -81,6 +82,7 @@ export class TimelineManager {
 	private listeners = new Set<() => void>();
 	private previewOverlay = new Map<string, Partial<TimelineElement>>();
 	private previewTracks: SceneTracks | null = null;
+	private retimePreviewTarget?: string;
 	private previewGesture: PreviewGesture | null = null;
 	private durations = new WeakMap<SceneTracks, MediaTime>();
 	public readonly dragSource = new TimelineDragSource();
@@ -171,7 +173,9 @@ export class TimelineManager {
 			this.discardPreview();
 			return after === null ? "overlap" : undefined;
 		}
-		const command = new TracksSnapshotCommand({ before, after, ripples: false });
+		const recorded = pushHistory && !this.editor.command.isAgent
+			? recordHumanTrackEdit(before, after, elementId, (_, field) => field === "retime" || field === "duration") : after;
+		const command = new TracksSnapshotCommand({ before, after: recorded, ripples: false });
 		if (pushHistory) this.editor.command.execute({ command });
 		else command.execute();
 		return undefined;
@@ -192,6 +196,7 @@ export class TimelineManager {
 			this.discardPreview();
 			return;
 		}
+		this.retimePreviewTarget = elementId;
 		this.previewTrackChanges(tracks, next);
 	}
 
@@ -853,8 +858,13 @@ export class TimelineManager {
 		if (!committedTracks) {
 			return;
 		}
-		const afterTracks =
-			this.previewTracks ?? this.applyPreviewOverlay(committedTracks);
+		const preview = this.previewTracks ?? this.applyPreviewOverlay(committedTracks);
+		const afterTracks = this.editor.command.isAgent ? preview : recordHumanTrackEdit(
+			committedTracks, preview, this.retimePreviewTarget,
+			(id, field) => this.retimePreviewTarget
+				? field === "retime" || field === "duration"
+				: patchEditsHumanField(this.previewOverlay.get(id) ?? {}, field),
+		);
 		const command = new TracksSnapshotCommand({
 			before: committedTracks,
 			after: afterTracks,
@@ -862,6 +872,7 @@ export class TimelineManager {
 		this.editor.command.push({ command });
 		this.previewOverlay.clear();
 		this.previewTracks = null;
+		this.retimePreviewTarget = undefined;
 		this.updateTracks(afterTracks);
 	}
 
@@ -869,6 +880,7 @@ export class TimelineManager {
 		if (this.previewOverlay.size === 0) return;
 		this.previewOverlay.clear();
 		this.previewTracks = null;
+		this.retimePreviewTarget = undefined;
 		if (notify) this.notify();
 	}
 
@@ -1040,7 +1052,10 @@ export class TimelineManager {
 		this.cancelPreviewGesture();
 		this.previewOverlay.clear();
 		this.previewTracks = null;
-		this.editor.scenes.updateSceneTracks({ tracks: newTracks });
+		this.retimePreviewTarget = undefined;
+		const before = this.editor.scenes.getActiveSceneOrNull()?.tracks;
+		const tracks = before && this.editor.command.recordsHumanFields ? recordHumanTrackEdit(before, newTracks) : newTracks;
+		this.editor.scenes.updateSceneTracks({ tracks });
 		this.notify();
 	}
 }

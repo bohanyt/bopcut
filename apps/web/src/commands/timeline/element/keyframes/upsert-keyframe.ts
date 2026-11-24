@@ -18,6 +18,7 @@ import {
 } from "@/wasm";
 
 export class UpsertKeyframeCommand extends Command {
+	override readonly recordsHumanFields = true;
 	private savedState: SceneTracks | null = null;
 	private readonly trackId: string;
 	private readonly elementId: string;

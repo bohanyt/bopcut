@@ -9,6 +9,7 @@
 ## Yang bisa dilakukan
 
 **Kerja bareng agen**
+- **Pertahankan edit saat agen menulis ulang.** Draft agen bisa mempertahankan bagian klip yang kamu edit, termasuk koreksi teks, warna, dan posisi. Izinkan agen mengubahnya lagi dari menu klip.
 - **Agen tahu isi timeline:** setiap perubahan ditulis ke folder kerja sebagai JSON (trek, item, waktu, posisi, catatan).
 - **Agen ikut mengedit:** agen mengirim draf per item (tambah, ubah, hapus). Editor menerapkannya dalam ±2 detik sebagai **satu langkah Undo**, dan item yang diubah langsung terpilih.
 - **Catatan dua arah:** tandai rentang waktu atau item dengan catatan; agen bisa membaca, membalas, dan menandai selesai.

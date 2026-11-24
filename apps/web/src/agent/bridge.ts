@@ -242,7 +242,25 @@ export function installAgentBridge() {
 		if (snap) snapshotHistory.record(snap.syncedAt, editor.scenes.getScenes(), stateMeta(snap.sceneId));
 		return snap;
 	};
-	(window as any).agent = { editor, snapshot: consoleSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
+	const agentMethods = <T extends object>(manager: T): T => new Proxy(manager, {
+		get(target, key) {
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function"
+				? (...args: unknown[]) => editor.command.asAgent(() => Reflect.apply(value, target, args))
+				: value;
+		},
+	});
+	const managers = {
+		timeline: agentMethods(editor.timeline), command: agentMethods(editor.command), clipboard: agentMethods(editor.clipboard),
+	};
+	const agentEditor = new Proxy(editor, {
+		get(target, key) {
+			if (key === "timeline" || key === "command" || key === "clipboard") return managers[key];
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	(window as any).agent = { editor: agentEditor, snapshot: consoleSnapshot, selection: agentSelection, push, applyDraft, ready: agentReadiness, whenReady: whenAgentReady, retryMissingMedia };
 	push();
 	setInterval(pollDraft, 2000);
 	// Frames wait for media and saves too: otherwise a frame can miss content that is still loading.
@@ -794,7 +812,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	const before = editor.scenes.getScenes();
 	const openScene = editor.scenes.getActiveScene();
 	const outcome = computeAgentDraft({
-		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true,
+		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true, onConflict: draft.onConflict,
 		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled, base,
 		// Also the words of media this draft imports (a later set can cut by them).
 		wordsOf: ((project) => (id: string) => loadedWords.get(id) ?? project(id))(mediaWords()),
@@ -826,7 +844,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 			// pick them up first, and the timeline never shows clips without their media.
 			editor.media.publishStagedMediaAssets({ ids: publish });
 			try {
-				if (command.getChangedSceneIds().length) editor.command.execute({ command });
+				if (command.getChangedSceneIds().length) editor.command.asAgent(() => editor.command.execute({ command }));
 				// What the draft changed, for changes and before/after frames (`{draft: rev}`).
 				draftHistory.record(draft.rev, { ...stateMeta(root.id), scenes: before }, { ...stateMeta(root.id), scenes: editor.scenes.getScenes() });
 			} catch (e) {
