@@ -262,10 +262,10 @@ class StorageService {
 	 * re-read, not overwritten). The new metadata, or null when the project does not exist.
 	 */
 	async renameProject({ id, name }: { id: string; name: string }): Promise<TProjectMetadata | null> {
-		const updated = await this.projectsAdapter.update(id, (stored) => ({
-			...stored,
-			metadata: { ...stored.metadata, name, updatedAt: new Date().toISOString() },
-		}));
+		const updated = await this.projectsAdapter.update(id, (stored) => {
+			readProjectVersion(stored.version);
+			return { ...stored, metadata: { ...stored.metadata, name, updatedAt: new Date().toISOString() } };
+		});
 		if (!updated) return null;
 		return deserializeSummary(updated);
 	}
