@@ -1,3 +1,4 @@
+import type { createTranslator, StaticMessageKey } from "@/i18n/translate";
 import type {
 	TranscriptionLanguage,
 	TranscriptionResult,
@@ -11,6 +12,25 @@ import {
 import type { WorkerMessage, WorkerResponse } from "./worker";
 
 type ProgressCallback = (progress: TranscriptionProgress) => void;
+
+export const TRANSCRIPTION_PANEL_ERROR_KEYS = new Map<string, StaticMessageKey>([
+	["Failed to load model", "captions.modelLoadFailed"],
+	["Model not initialized", "captions.modelNotReady"],
+	["Transcription failed", "captions.transcriptionFailed"],
+	["Worker not initialized", "captions.workerNotReady"],
+	["Transcription cancelled", "captions.transcriptionCancelled"],
+]);
+
+export function localizeTranscriptionPanelError(
+	message: string,
+	t: ReturnType<typeof createTranslator>,
+): string {
+	const key = TRANSCRIPTION_PANEL_ERROR_KEYS.get(message);
+	if (key) return t(key);
+	const unknownModel = /^Unknown model: (.+)$/.exec(message);
+	if (unknownModel) return t("captions.unknownModel", { model: unknownModel[1] });
+	return message;
+}
 
 class TranscriptionService {
 	private worker: Worker | null = null;

@@ -21,7 +21,10 @@ import type {
 	TranscriptionLanguage,
 	TranscriptionProgress,
 } from "@/transcription/types";
-import { transcriptionService } from "@/services/transcription/service";
+import {
+	localizeTranscriptionPanelError,
+	transcriptionService,
+} from "@/services/transcription/service";
 import { decodeAudioToFloat32 } from "@/media/audio";
 import { buildCaptionChunks } from "@/transcription/caption";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
@@ -246,7 +249,11 @@ export function Captions() {
 
 	const error = processing.status === "idle" ? processing.error : null;
 	const warnings = processing.status === "idle" ? processing.warnings : [];
-	const localizeMessage = (message: PanelMessage) => typeof message === "string" ? localizeErrorDetail(message, t) : message(t);
+	const localizeMessage = (message: PanelMessage) => {
+		if (typeof message !== "string") return message(t);
+		const localized = localizeTranscriptionPanelError(message, t);
+		return localized === message ? localizeErrorDetail(message, t) : localized;
+	};
 
 	return (
 		<PanelView
