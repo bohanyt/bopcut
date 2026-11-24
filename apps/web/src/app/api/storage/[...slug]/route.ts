@@ -22,6 +22,12 @@ import {
 	writeProjectNavigation,
 	writeProjectThumbnail,
 } from "@/services/storage/server/projects";
+import {
+	mediaThumbnailReference,
+	preserveMediaThumbnail,
+	readMediaThumbnail,
+	storeMediaThumbnail,
+} from "@/services/storage/server/media-thumbnails";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -179,25 +185,21 @@ async function handle(
 			}
 			if (s[2] === "media" && s.length === 3 && method === "GET") {
 				const dir = path.join(projectDir(id), "media", "_metadata");
-				return Response.json(
-					(
-						await Promise.all(
-							(await names(dir))
-								.filter((n) => /^[a-zA-Z0-9_-]{1,128}\.json$/.test(n))
-								.map((n) =>
-									readJson(path.join(dir, n)).catch((error) => {
-										console.error(`Unreadable media metadata ${n}:`, error);
-										return null;
-									}),
-								),
-						)
-					).filter(
-						(meta) =>
-							meta &&
-							typeof meta.name === "string" &&
-							typeof meta.type === "string",
-					),
-				);
+				const files = (await names(dir)).filter((name) => /^[a-zA-Z0-9_-]{1,128}\.json$/.test(name));
+				const manifest = [];
+				for (let index = 0; index < files.length; index += 32) {
+					const batch = await Promise.all(files.slice(index, index + 32).map(async (name) => {
+						const metadata = await readJson(path.join(dir, name)).catch((error) => {
+							console.error(`Unreadable media metadata ${name}:`, error);
+							return null;
+						});
+						if (typeof metadata?.name !== "string" || typeof metadata.type !== "string") return null;
+						metadata.thumbnailUrl = mediaThumbnailReference(id, name.slice(0, -5), metadata.thumbnailUrl);
+						return metadata;
+					}));
+					for (const metadata of batch) if (metadata) manifest.push(metadata);
+				}
+				return Response.json(manifest);
 			}
 			if (s[2] === "media" && s.length === 3 && method === "DELETE")
 				return await withProjectLock(id, async () => {
@@ -207,6 +209,9 @@ async function handle(
 					});
 					return Response.json({ ok: true });
 				});
+			if (s[2] === "media" && s[3] && s[4] === "thumbnail" && s.length === 6 && method === "GET") {
+				return await readMediaThumbnail(id, safeId(s[3]), s[5], req.headers.get("if-none-match"));
+			}
 			if (s[2] === "media" && s[3] && s.length === 4) {
 				const mediaId = safeId(s[3]);
 				if (method === "HEAD") {
@@ -242,14 +247,20 @@ async function handle(
 						const metadata = await req.json();
 						if (!old || metadata.id !== mediaId)
 							return new Response(null, { status: 400 });
+						const thumbnailUrl = await storeMediaThumbnail(id, mediaId, metadata.thumbnailUrl);
 						await atomicWrite(
 							file,
-							JSON.stringify({ ...metadata, diskFile: old.diskFile }),
+							JSON.stringify({ ...metadata, thumbnailUrl, diskFile: old.diskFile }),
 						);
-						return Response.json({ ok: true });
+						return Response.json({ ok: true }, {
+							headers: thumbnailUrl && thumbnailUrl !== metadata.thumbnailUrl
+								? { "X-Media-Thumbnail": thumbnailUrl }
+								: undefined,
+						});
 					});
 				if (method === "DELETE")
 					return await withProjectLock(id, async () => {
+						await preserveMediaThumbnail(id, mediaId);
 						await removeMedia(id, mediaId);
 						return Response.json({ ok: true });
 					});

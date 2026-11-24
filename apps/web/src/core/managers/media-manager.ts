@@ -143,7 +143,10 @@ export class MediaManager {
 		this.pendingPublications.set(newAsset.id, pending);
 
 		try {
-			await storageService.saveMediaAsset({ projectId, mediaAsset: newAsset });
+			await storageService.saveMediaAsset({
+				projectId, mediaAsset: newAsset,
+				onThumbnailStored: (url) => { newAsset.thumbnailUrl = url; },
+			});
 			if (!this.isCurrentImport(session)) {
 				release();
 				if (session.signal.aborted) await this.reconcileLatePublication(projectId, newAsset, pending);
@@ -423,7 +426,10 @@ export class MediaManager {
 		this.staged.set(staged.id, { projectId, asset: staged });
 		onId?.(staged.id);
 		try {
-			await storageService.saveMediaAsset({ projectId, mediaAsset: staged, staged: true });
+			await storageService.saveMediaAsset({
+				projectId, mediaAsset: staged, staged: true,
+				onThumbnailStored: (url) => { staged.thumbnailUrl = url; },
+			});
 			return staged;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);

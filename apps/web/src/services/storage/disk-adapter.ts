@@ -192,7 +192,7 @@ export class DiskAdapter {
 		id: string,
 		metadata: MediaAssetData,
 		file: File,
-	): Promise<void> {
+	): Promise<string | undefined> {
 		const url = this.mediaUrl(id, metadata.id);
 		const minimal = {
 			id: metadata.id,
@@ -208,13 +208,14 @@ export class DiskAdapter {
 				body: file,
 			}),
 		);
-		await checked(
+		const response = await checked(
 			await fetch(url, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(metadata),
 			}),
 		);
+		return response.headers.get("X-Media-Thumbnail") ?? metadata.thumbnailUrl;
 	}
 	/** Replaces the metadata of stored media (its file stays). */
 	async updateMediaMetadata(id: string, metadata: MediaAssetData): Promise<void> {

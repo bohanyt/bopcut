@@ -122,6 +122,12 @@ export async function withProjectLock<T>(
 	}
 }
 
+/** Optional maintenance can skip its write if the project already has work queued. */
+export function withIdleProjectLock<T>(id: string, action: () => Promise<T>): Promise<T> | undefined {
+	if (locks.has(id)) return;
+	return withProjectLock(id, action);
+}
+
 export async function saveMedia(
 	id: string,
 	mediaId: string,
@@ -215,6 +221,7 @@ export async function mediaResponse(
 			"Accept-Ranges": "bytes",
 			"Content-Type": meta.fileType || "application/octet-stream",
 			"Cache-Control": "no-store",
+			"X-Media-Revision": `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`,
 		};
 		if (range) {
 			const match = /^bytes=(\d*)-(\d*)$/.exec(range);

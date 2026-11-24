@@ -2,6 +2,7 @@ import { getBrowserTranslator } from "@/i18n/browser";
 import type { TProject, TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import type { MediaAsset, MediaLoadFailure } from "@/media/types";
+import { recordMediaFileVersion } from "./media-file-version";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import { DiskAdapter, DiskSoundsAdapter } from "./disk-adapter";
@@ -353,11 +354,13 @@ class StorageService {
 		projectId,
 		mediaAsset,
 		staged = false,
+		onThumbnailStored,
 	}: {
 		projectId: string;
 		mediaAsset: MediaAsset;
 		/** Saved for a draft that has not committed: hidden from loads until promoteMediaAssets. */
 		staged?: boolean;
+		onThumbnailStored?: (url: string) => void;
 	}): Promise<void> {
 
 		const metadata: MediaAssetData = {
@@ -380,8 +383,9 @@ class StorageService {
 			...(staged ? { staged: true } : {}),
 		};
 
-		await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
+		metadata.thumbnailUrl = await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
 		this.manifests.get(projectId)?.set(metadata.id, metadata);
+		if (metadata.thumbnailUrl) onThumbnailStored?.(metadata.thumbnailUrl);
 	}
 
 	/** Sets (or replaces) the spoken words stored with a media file. */
@@ -455,6 +459,7 @@ class StorageService {
 		if (!response.ok) throw new Error(`Media ${id} cannot be read`);
 		const blob = await response.blob();
 		const file = new File([blob], metadata.fileName ?? metadata.name, { type: metadata.fileType ?? blob.type, lastModified: metadata.lastModified });
+		recordMediaFileVersion(file, response.headers.get("X-Media-Revision"));
 
 		return {
 			id: metadata.id,
