@@ -2,7 +2,13 @@ import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, type ReactNode } from "react";
 import type { Root } from "react-dom/client";
-import { bindAction, unbindAction } from "@/actions";
+import { bindAction, invokeAction, unbindAction } from "@/actions";
+import { useEditorActions } from "@/actions/use-editor-actions";
+import { AnimationTab } from "@/animation/components/animation-tab";
+import { applyAnimationPresets, readPresetSettings } from "@/animation/presets";
+import { PreviewFramingProvider, usePreviewViewportState } from "@/preview/components/preview-viewport";
+import { fixture, t, video } from "@/timeline/__tests__/compound-fixtures";
+import { storageService } from "@/services/storage/service";
 import { useKeybindingsListener } from "@/actions/use-keybindings";
 import { EditableTimecode } from "@/components/editable-timecode";
 import { EditableProjectName } from "@/components/editor/editor-header";
@@ -26,6 +32,7 @@ beforeEach(async () => {
 		Node: dom.Node,
 		HTMLElement: dom.HTMLElement,
 		HTMLInputElement: dom.HTMLInputElement,
+		getComputedStyle: dom.getComputedStyle.bind(dom),
 		requestAnimationFrame: dom.requestAnimationFrame.bind(dom),
 		IS_REACT_ACT_ENVIRONMENT: true,
 	};
@@ -319,6 +326,129 @@ test("Enter commits an inline color once", () => {
 	typeValue(input, "abcdef");
 	pressKey(input, "Enter");
 	expect(onChangeEnd.mock.calls).toEqual([["abcdef"]]);
+});
+
+function setupEditingProject() {
+	EditorCore.reset();
+	const editor = EditorCore.getInstance();
+	const scenes = fixture();
+	const date = new Date(0);
+	editor.scenes.initializeScenes({ scenes, currentSceneId: "main" });
+	editor.project.setActiveProject({ project: {
+		metadata: { id: "editing", name: "Editing", duration: t(10), createdAt: date, updatedAt: date },
+		settings: {
+			fps: { numerator: 30, denominator: 1 },
+			canvasSize: { width: 1920, height: 1080 },
+			background: { type: "color", color: "#000000" },
+		},
+		currentSceneId: "main",
+		timelineViewState: { zoomLevel: 2, scrollLeft: 23, playheadTime: t(1) },
+		scenes,
+		version: 1,
+	} });
+	return editor;
+}
+
+test("animation preset length accepts a decimal comma and restores the value after invalid input", () => {
+	const editor = setupEditingProject();
+	editor.save.stop();
+	const element = applyAnimationPresets(video("bg", 0, 10), { in: { type: "fade" } });
+	const scene = editor.scenes.getActiveScene();
+	editor.timeline.updateTracks({ ...scene.tracks, main: { ...scene.tracks.main, elements: [element] } });
+	try {
+		render(<AnimationTab element={element} trackId={scene.tracks.main.id} />);
+		const input = document.querySelector<HTMLInputElement>('input[inputmode="decimal"]')!;
+		for (const [value, expected] of [["0.5x", 0.3], ["1,5", 1.5], ["1,5.2", 1.5]] as const) {
+			act(() => input.focus());
+			typeValue(input, value);
+			pressKey(input, "Enter");
+			const [updated] = editor.scenes.getActiveScene().tracks.main.elements;
+			render(<AnimationTab element={updated} trackId={scene.tracks.main.id} />);
+			expect(readPresetSettings(updated.params).in?.seconds).toBe(expected);
+			expect(input.value).toBe(String(expected));
+		}
+	} finally {
+		render(null);
+		EditorCore.reset();
+	}
+});
+
+function EditingActions() {
+	useEditorActions();
+	return null;
+}
+
+test("keyboard frame steps and jumps persist together when the project closes", async () => {
+	const editor = setupEditingProject();
+	const stored = structuredClone(editor.project.getActive());
+	const save = spyOn(storageService, "saveProject").mockResolvedValue();
+	const saveNavigation = spyOn(storageService, "saveProjectNavigation").mockImplementation(async ({ navigation }) => {
+		stored.timelineViewState = navigation.timelineViewState;
+	});
+	const load = spyOn(storageService, "loadProject").mockImplementation(async () => ({ project: stored }));
+	const migrations = spyOn(storageService, "ensureMigrations").mockResolvedValue();
+	const media = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([]);
+	try {
+		editor.playback.seek({ time: t(1) });
+		render(<EditingActions />);
+		act(() => {
+			invokeAction("frame-step-forward");
+			invokeAction("frame-step-forward");
+			invokeAction("jump-forward");
+		});
+		const finalTime = t(6 + 2 / 30);
+		expect(editor.playback.getCurrentTime()).toBe(finalTime);
+		expect(saveNavigation).not.toHaveBeenCalled();
+		render(null);
+		editor.project.closeProject();
+		await editor.project.loadProject({ id: stored.metadata.id });
+		expect(saveNavigation).toHaveBeenCalledTimes(1);
+		expect(save).not.toHaveBeenCalled();
+		expect(editor.project.getTimelineViewState()).toEqual({ zoomLevel: 2, scrollLeft: 23, playheadTime: finalTime });
+	} finally {
+		render(null);
+		EditorCore.reset();
+		save.mockRestore();
+		saveNavigation.mockRestore();
+		load.mockRestore();
+		migrations.mockRestore();
+		media.mockRestore();
+	}
+});
+
+const viewportRef = { current: null };
+
+function ViewportSample({ width, height }: { width: number; height: number }) {
+	const viewport = usePreviewViewportState({
+		canvasWidth: 1000, canvasHeight: 1000, viewportWidth: width, viewportHeight: height, viewportRef,
+	});
+	return (
+		<button
+			data-scale={viewport.zoomPercent}
+			data-center={(width / 2 - viewport.sceneLeft) / (viewport.sceneWidth / 1000)}
+			onClick={() => viewport.isAtFit ? viewport.scaleZoom({ factor: 2 }) : viewport.panByScreenDelta({ deltaX: 140, deltaY: 0 })}
+		/>
+	);
+}
+
+test("changing preview parents preserves zoom and clamps the displayed center for each layout", () => {
+	const layout = (right: boolean) => render(
+		<PreviewFramingProvider canvasWidth={1000} canvasHeight={1000}>
+			{right
+				? <aside><ViewportSample width={600} height={400} /></aside>
+				: <section><ViewportSample width={400} height={400} /></section>}
+		</PreviewFramingProvider>,
+	);
+	const sample = () => document.querySelector("button")!;
+	const framing = () => [Number(sample().dataset.scale), Number(sample().dataset.center)];
+	layout(false);
+	act(() => sample().click());
+	act(() => sample().click());
+	expect(framing()).toEqual([80, 675]);
+	layout(true);
+	expect(framing()).toEqual([80, 625]);
+	layout(false);
+	expect(framing()).toEqual([80, 675]);
 });
 
 test("Escape still blurs an ordinary field and runs its shortcut outside the field", () => {

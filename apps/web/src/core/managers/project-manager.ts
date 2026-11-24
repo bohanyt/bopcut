@@ -59,6 +59,7 @@ export class ProjectManager {
 	private invalidProjectIds = new Set<string>();
 	private storageMigrationPromise: Promise<void> | null = null;
 	private listeners = new Set<() => void>();
+	private pendingPlayheadSave = false;
 	private migrationState: MigrationState = {
 		isMigrating: false,
 		fromVersion: null,
@@ -168,6 +169,7 @@ export class ProjectManager {
 	async loadProject({ id }: { id: string }): Promise<void> {
 		const take = this.editor.voiceOver.finishForNavigation();
 		if (take) await take;
+		if (id === this.active?.metadata.id) this.savePendingPlayhead();
 		if (!this.isInitialized) {
 			this.isLoading = true;
 			this.notify();
@@ -831,6 +833,18 @@ export class ProjectManager {
 		return this.active?.timelineViewState ?? DEFAULTS.timeline.viewState;
 	}
 
+	rememberPlayheadForExit(): void {
+		this.pendingPlayheadSave = true;
+	}
+
+	savePendingPlayhead(): void {
+		if (!this.pendingPlayheadSave) return;
+		this.pendingPlayheadSave = false;
+		this.setTimelineViewState({
+			viewState: { ...this.getTimelineViewState(), playheadTime: this.editor.playback.getCurrentTime() },
+		});
+	}
+
 	setTimelineViewState({ viewState, sceneId = this.active?.currentSceneId }: { viewState: TTimelineViewState; sceneId?: string }): void {
 		if (!this.active) return;
 		const current = this.getTimelineViewState();
@@ -881,6 +895,7 @@ export class ProjectManager {
 
 	private advanceSession(): void {
 		if (this.editor.playback.getIsPlaying()) this.editor.playback.pause();
+		this.savePendingPlayhead();
 		const previous = this.sessionController;
 		this.session++;
 		this.sessionController = new AbortController();

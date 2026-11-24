@@ -4,7 +4,6 @@ import type { FrameRate } from "opencut-wasm";
 import { BASE_TIMELINE_PIXELS_PER_SECOND } from "@/timeline/scale";
 import {
 	addMediaTime,
-	clampMediaTime,
 	type MediaTime,
 	mediaTime,
 	roundFrameTicks,
@@ -35,6 +34,8 @@ interface ActiveSession {
 	keyframeRefs: SelectedKeyframeRef[];
 	startMouseX: number;
 	deltaTicks: number;
+	minDeltaTicks: number;
+	maxDeltaTicks: number;
 }
 
 type Session = { kind: "idle" } | PendingSession | ActiveSession;
@@ -156,7 +157,8 @@ export class KeyframeDragController {
 
 		this.session = {
 			kind: "pending",
-			keyframeRefs: anySelected ? this.config.selectedKeyframes : keyframes,
+			keyframeRefs: (anySelected ? this.config.selectedKeyframes : keyframes)
+				.filter((ref) => ref.elementId === this.config.element.id),
 			startMouseX: event.clientX,
 		};
 		this.activate();
@@ -230,15 +232,13 @@ export class KeyframeDragController {
 	}): number {
 		if (!isBeingDragged || this.session.kind !== "active")
 			return indicatorOffsetPx;
-		const deltaTime = mediaTime({ ticks: this.session.deltaTicks });
-		const clampedTime = clampMediaTime({
-			time: addMediaTime({ a: indicatorTime, b: deltaTime }),
-			min: ZERO_MEDIA_TIME,
-			max: this.config.element.duration,
+		const shiftedTime = addMediaTime({
+			a: indicatorTime,
+			b: mediaTime({ ticks: this.session.deltaTicks }),
 		});
 		return (
 			timelineTimeToSnappedPixels({
-				time: addMediaTime({ a: displayedStartTime, b: clampedTime }),
+				time: addMediaTime({ a: displayedStartTime, b: shiftedTime }),
 				zoomLevel: this.config.zoomLevel,
 			}) - elementLeft
 		);
@@ -287,14 +287,10 @@ export class KeyframeDragController {
 					elementId: ref.elementId,
 					propertyPath: ref.propertyPath,
 					keyframeId: ref.keyframeId,
-				nextTime: clampMediaTime({
-					time: addMediaTime({
+					nextTime: addMediaTime({
 						a: keyframe.time,
 						b: mediaTime({ ticks: deltaTicks }),
 					}),
-					min: ZERO_MEDIA_TIME,
-					max: element.duration,
-				}),
 				}),
 			];
 		});
@@ -313,11 +309,27 @@ export class KeyframeDragController {
 			const deltaX = Math.abs(clientX - this.session.startMouseX);
 			if (deltaX <= TIMELINE_DRAG_THRESHOLD_PX) return;
 
+			const { element } = this.config;
+			let earliest: number = element.duration;
+			let latest = 0;
+			for (const ref of this.session.keyframeRefs) {
+				const keyframe = getKeyframeById({
+					animations: element.animations,
+					propertyPath: ref.propertyPath,
+					keyframeId: ref.keyframeId,
+				});
+				if (!keyframe) continue;
+				earliest = Math.min(earliest, keyframe.time);
+				latest = Math.max(latest, keyframe.time);
+			}
+
 			this.session = {
 				kind: "active",
 				keyframeRefs: this.session.keyframeRefs,
 				startMouseX: this.session.startMouseX,
 				deltaTicks: 0,
+				minDeltaTicks: -earliest,
+				maxDeltaTicks: element.duration - latest,
 			};
 			this.notify();
 			return;
@@ -334,7 +346,11 @@ export class KeyframeDragController {
 			((clientX - this.session.startMouseX) / pixelsPerSecond) *
 				TICKS_PER_SECOND,
 		);
-		this.session.deltaTicks = roundFrameTicks({ ticks: rawDeltaTicks, fps });
+		const snappedDelta = roundFrameTicks({ ticks: rawDeltaTicks, fps });
+		this.session.deltaTicks = Math.max(
+			this.session.minDeltaTicks,
+			Math.min(this.session.maxDeltaTicks, snappedDelta),
+		);
 		this.notify();
 	}
 

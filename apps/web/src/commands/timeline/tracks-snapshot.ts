@@ -3,19 +3,24 @@ import type { ElementRef, SceneTracks } from "@/timeline";
 import { EditorCore } from "@/core";
 
 export class TracksSnapshotCommand extends Command {
+	override readonly ripples: boolean;
+
 	constructor({
 		before,
 		after,
 		selectedElements,
+		ripples = true,
 	}: {
 		before: SceneTracks;
 		after: SceneTracks;
 		selectedElements?: ElementRef[];
+		ripples?: boolean;
 	}) {
 		super();
 		this.before = before;
 		this.after = after;
 		this.selectedElements = selectedElements;
+		this.ripples = ripples;
 	}
 
 	private before: SceneTracks;

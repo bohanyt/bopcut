@@ -2,12 +2,15 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { TScene, TextElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
+import { collectAudioClips } from "@/media/audio";
 import { buildEffectParamPath, getKeyframeAtTime } from "@/animation";
 import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
 import { cancelInteraction } from "@/editor/cancel-interaction";
 import { PreviewInteractionController } from "@/preview/controllers/preview-interaction-controller";
 import { PreviewPointerCapture } from "@/preview/pointer-capture";
+import { KeyframeDragController } from "@/timeline/controllers/keyframe-drag-controller";
+import { computeGroupResize } from "@/timeline/group-resize";
 import { ElementInteractionController } from "@/timeline/controllers/element-interaction-controller";
 import { startColorDrag } from "@/components/ui/color-drag";
 import { appendAlpha, parseHexAlpha } from "@/utils/color";
@@ -92,6 +95,132 @@ function setupSplitHistory() {
 		});
 	return { editor, tracks, main, first, second, keyAt };
 }
+
+test("a non-ripple left trim on the first main clip keeps the previewed out-point", () => {
+	const { editor, first, main } = setupSplitHistory();
+	editor.command.isRippleEnabled = false;
+	const { updates: [update] } = computeGroupResize({
+		side: "left",
+		deltaTime: t(1),
+		fps: { numerator: 30, denominator: 1 },
+		members: [{ ...main()[0], ...first, leftNeighborBound: null, rightNeighborBound: t(2) }],
+	});
+	editor.timeline.previewElements({ updates: [{ ...first, updates: update.patch }] });
+	const span = ({ startTime, duration }: { startTime: number; duration: number }) =>
+		[startTime, startTime + duration];
+	const preview = editor.timeline.getPreviewTracks()!.main.elements.map(span);
+	expect(preview).toEqual([[t(1), t(2)], [t(2), t(4)]]);
+	editor.timeline.discardPreview();
+	editor.timeline.updateElements({ updates: [update] });
+	expect(main().map(span)).toEqual(preview);
+});
+
+test("dragging keyframes to either edge preserves their spacing in preview and on release", () => {
+	const scenes = fixture();
+	const element = video("a", 0, 5);
+	getHost(scenes).tracks.main.elements = [element];
+	const editor = setup(scenes);
+	const first = { trackId: "t-main", elementId: "a" };
+	const selectedKeyframes = [1, 2].map((seconds) => {
+		editor.timeline.upsertKeyframes({ keyframes: [{
+			...first, propertyPath: "opacity", time: t(seconds), value: seconds / 2,
+		}] });
+		const clip = editor.scenes.getActiveScene().tracks.main.elements[0];
+		return { ...first, propertyPath: "opacity", keyframeId: getKeyframeAtTime({
+			animations: clip.animations, propertyPath: "opacity", time: t(seconds),
+		})!.id };
+	});
+	const clip = editor.scenes.getActiveScene().tracks.main.elements[0];
+	editor.command.clear();
+	const doc = new EventTarget();
+	const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+	Object.defineProperty(globalThis, "document", { configurable: true, value: doc });
+	const controller = new KeyframeDragController({ configRef: { current: {
+		zoomLevel: 1, getFps: () => ({ numerator: 30, denominator: 1 }),
+		element: clip, displayedStartTime: t(0), selectedKeyframes,
+		isKeyframeSelected: () => true, setKeyframeSelection: () => {},
+		toggleKeyframeSelection: () => {}, selectKeyframeRange: () => {},
+		executeCommand: (command) => editor.command.execute({ command }),
+		beginPreviewGesture: editor.timeline.beginPreviewGesture,
+		seek: () => {}, getTotalDuration: () => t(5),
+	} } });
+	try {
+		for (const [clientX, delta, times] of [[200, 3, [4, 5]], [-200, -1, [0, 1]]] as const) {
+			controller.onKeyframeMouseDown({
+				keyframes: [selectedKeyframes[0]],
+				event: {
+					clientX: 0, preventDefault() {}, stopPropagation() {}, currentTarget: { ownerDocument: doc },
+				} as unknown as ReactMouseEvent,
+			});
+			const move = Object.assign(new Event("mousemove"), { clientX });
+			doc.dispatchEvent(move);
+			doc.dispatchEvent(move);
+			const previewDelta = controller.keyframeDragState.deltaTicks;
+			doc.dispatchEvent(new Event("mouseup"));
+			const updated = editor.scenes.getActiveScene().tracks.main.elements[0];
+			expect(times.map((seconds) => getKeyframeAtTime({
+				animations: updated.animations, propertyPath: "opacity", time: t(seconds),
+			})?.id)).toEqual(selectedKeyframes.map(({ keyframeId }) => keyframeId));
+			expect(previewDelta).toBe(t(delta));
+			editor.command.undo();
+			expect(editor.scenes.getActiveScene().tracks.main.elements[0]).toBe(clip);
+			expect(editor.command.canUndo()).toBe(false);
+		}
+	} finally {
+		controller.destroy();
+		if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+		else Reflect.deleteProperty(globalThis, "document");
+	}
+});
+
+test.each([false, true])("a slowdown respects ripple=%s and stays clear of the next clip", async (ripple) => {
+	const { editor, first, main, tracks } = setupSplitHistory();
+	editor.command.isRippleEnabled = ripple;
+	const before = tracks();
+	editor.timeline.previewElementRetime({ ...first, retime: { rate: 0.5 } });
+	const preview = editor.timeline.getPreviewTracks()!;
+	expect(preview.main.elements.map(({ startTime, duration }) => [startTime, duration]))
+		.toEqual([[t(0), t(ripple ? 4 : 2)], [t(ripple ? 4 : 2), t(2)]]);
+	expect(tracks()).toBe(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.timeline.updateElementRetime({ ...first, retime: { rate: 0.5 } });
+	expect(editor.timeline.isPreviewActive()).toBe(false);
+	expect(main()).toEqual(preview.main.elements);
+	expect(main()[0].duration).toBe(ripple ? t(4) : t(2));
+	expect(main()[1].startTime).toBe(ripple ? t(4) : t(2));
+	if (ripple) {
+		const mediaAssets = ["a", "b"].map((id): MediaAsset => ({
+			id: `media-${id}`, name: id, type: "video", hasAudio: true,
+			file: new File([], `${id}.mp4`, { type: "video/mp4" }),
+		}));
+		const audio = await collectAudioClips({ tracks: tracks(), mediaAssets });
+		expect(audio.map(({ id, startTime, duration, retime }) => [id, startTime, duration, retime?.rate]))
+			.toEqual([["a", 0, 4, 0.5], ["b", 4, 2, undefined]]);
+		editor.command.undo();
+		expect(tracks()).toBe(before);
+		expect(editor.command.canUndo()).toBe(false);
+		editor.command.isRippleEnabled = false;
+		editor.command.redo();
+		expect(main()[1].startTime).toBe(t(4));
+	} else {
+		expect(tracks()).toBe(before);
+		expect(editor.command.canUndo()).toBe(false);
+	}
+});
+
+test("changing speed into a gap works without ripple, and speeding up with ripple closes the freed span", () => {
+	const scenes = fixture();
+	getHost(scenes).tracks.main.elements = [video("a", 0, 2), video("b", 5, 2)];
+	const editor = setup(scenes);
+	const first = { trackId: "t-main", elementId: "a" };
+	const timings = () => editor.scenes.getActiveScene().tracks.main.elements
+		.map(({ startTime, duration }) => [startTime, duration]);
+	editor.timeline.updateElementRetime({ ...first, retime: { rate: 0.5 } });
+	expect(timings()).toEqual([[t(0), t(4)], [t(5), t(2)]]);
+	editor.command.isRippleEnabled = true;
+	editor.timeline.updateElementRetime({ ...first, retime: { rate: 2 } });
+	expect(timings()).toEqual([[t(0), t(1)], [t(2), t(2)]]);
+});
 
 test("large subtitle imports publish one complete track and keep its IDs and selection in history", () => {
 	const editor = setup();

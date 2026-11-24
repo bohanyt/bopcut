@@ -14,6 +14,8 @@ import type {
 import { calculateTotalDuration } from "@/timeline";
 import { TimelineDragSource } from "@/timeline/drag-source";
 import { findTrackInSceneTracks } from "@/timeline/track-element-update";
+import { applyElementRetime } from "@/timeline/update-pipeline";
+import { generateUUID } from "@/utils/id";
 import { lastFrameMediaTime, type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import {
 	canElementBeHidden,
@@ -155,18 +157,43 @@ export class TimelineManager {
 		retime?: RetimeConfig;
 		pushHistory?: boolean;
 	}): void {
-		this.updateElements({
-			updates: [
-				{
-					trackId,
-					elementId,
-					patch: {
-						retime,
-					},
-				},
-			],
-			pushHistory,
+		const before = this.editor.scenes.getActiveSceneOrNull()?.tracks;
+		if (!before) return;
+		const after = applyElementRetime({
+			tracks: before,
+			trackId,
+			elementId,
+			retime,
+			rippleEnabled: pushHistory && this.editor.command.isRippleEnabled,
+			boundaryIdPrefix: generateUUID(),
 		});
+		if (before === after) {
+			this.discardPreview();
+			return;
+		}
+		const command = new TracksSnapshotCommand({ before, after, ripples: false });
+		if (pushHistory) this.editor.command.execute({ command });
+		else command.execute();
+	}
+
+	previewElementRetime({ trackId, elementId, retime }: ElementRef & { retime?: RetimeConfig }): void {
+		const tracks = this.editor.scenes.getActiveSceneOrNull()?.tracks;
+		if (!tracks) return;
+		const next = applyElementRetime({
+			tracks,
+			trackId,
+			elementId,
+			retime,
+			rippleEnabled: this.editor.command.isRippleEnabled,
+			boundaryIdPrefix: `${elementId}:retime-preview`,
+		});
+		if (next === tracks) {
+			this.discardPreview();
+			return;
+		}
+		this.previewOverlay.clear();
+		this.previewTracks = next;
+		this.notify();
 	}
 
 	moveElements({
@@ -771,7 +798,7 @@ export class TimelineManager {
 	}
 
 	isPreviewActive(): boolean {
-		return this.previewOverlay.size > 0;
+		return this.previewTracks !== null;
 	}
 
 	previewElements({
@@ -812,13 +839,12 @@ export class TimelineManager {
 	}
 
 	commitPreview(): void {
-		if (this.previewOverlay.size === 0) return;
+		const afterTracks = this.previewTracks;
+		if (!afterTracks) return;
 		const committedTracks = this.editor.scenes.getActiveSceneOrNull()?.tracks;
 		if (!committedTracks) {
 			return;
 		}
-		const afterTracks =
-			this.previewTracks ?? this.applyPreviewOverlay(committedTracks);
 		const command = new TracksSnapshotCommand({
 			before: committedTracks,
 			after: afterTracks,
@@ -830,7 +856,7 @@ export class TimelineManager {
 	}
 
 	discardPreview({ notify = true }: { notify?: boolean } = {}): void {
-		if (this.previewOverlay.size === 0) return;
+		if (!this.previewTracks) return;
 		this.previewOverlay.clear();
 		this.previewTracks = null;
 		if (notify) this.notify();

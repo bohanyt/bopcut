@@ -74,6 +74,7 @@ export function useEditorActions() {
 
 	const navigate = ({ time }: { time: MediaTime }) => {
 		editor.playback.seek({ time });
+		editor.project.rememberPlayheadForExit();
 		editor.playback.revealPlayhead();
 	};
 
@@ -95,6 +96,7 @@ export function useEditorActions() {
 				editor.playback.toggle();
 			}
 			editor.playback.seek({ time: ZERO_MEDIA_TIME });
+			editor.project.rememberPlayheadForExit();
 		},
 		undefined,
 	);

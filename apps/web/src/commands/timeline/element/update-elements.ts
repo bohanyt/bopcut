@@ -1,5 +1,5 @@
 import { EditorCore } from "@/core";
-import { Command, type CommandResult } from "@/commands/base-command";
+import { Command, type CommandContext, type CommandResult } from "@/commands/base-command";
 import type { SceneTracks, TimelineElement } from "@/timeline";
 import {
 	findTrackInSceneTracks,
@@ -30,7 +30,7 @@ export class UpdateElementsCommand extends Command {
 		this.updates = updates;
 	}
 
-	execute(): CommandResult | undefined {
+	execute(context?: CommandContext): CommandResult | undefined {
 		const editor = EditorCore.getInstance();
 		this.savedState = editor.scenes.getActiveScene().tracks;
 		let updatedTracks = this.savedState;
@@ -54,6 +54,7 @@ export class UpdateElementsCommand extends Command {
 					tracks: updatedTracks,
 					trackId: updateEntry.trackId,
 					boundaryIdPrefix: `${this.boundaryIdPrefix}:${index}`,
+					rippleEnabled: context?.rippleEnabled,
 				},
 			});
 

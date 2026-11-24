@@ -226,8 +226,10 @@ function PresetDuration({
 					onChange={(event) => setDraft(event.target.value)}
 					onBlur={() => {
 						if (draft === null) return;
-						const seconds = Number.parseFloat(draft);
 						setDraft(null);
+						const input = draft.trim();
+						if (!/^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)$/.test(input)) return;
+						const seconds = Number(input.replace(",", "."));
 						if (!Number.isFinite(seconds)) return;
 						const next = clampDuration(seconds);
 						if (next !== duration) onApply(next);
