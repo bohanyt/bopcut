@@ -71,6 +71,7 @@ type Tokens = {
 	emValue: RegExp;
 	angleValue: RegExp;
 	radianValue: RegExp;
+	hueValue: RegExp;
 	startCall: RegExp;
 	endCall: RegExp;
 	comma: RegExp;
@@ -103,6 +104,7 @@ const tokens: Tokens = {
 	emValue: /^(-?(([0-9]*\.[0-9]+)|([0-9]+\.?)))em/,
 	angleValue: /^(-?(([0-9]*\.[0-9]+)|([0-9]+\.?)))deg/,
 	radianValue: /^(-?(([0-9]*\.[0-9]+)|([0-9]+\.?)))rad/,
+	hueValue: /^(-?(([0-9]*\.[0-9]+)|([0-9]+\.?)))(deg|rad|turn|grad)?/i,
 	startCall: /^\(/,
 	endCall: /^\)/,
 	comma: /^,/,
@@ -439,34 +441,110 @@ const matchLiteralColor = (): Color | undefined =>
 const matchHexColor = (): Color | undefined =>
 	match({ type: "hex", pattern: tokens.hexColor, captureIndex: 1 });
 
+const matchHueScan = (): string | undefined => {
+	const captures = scan({ regexp: tokens.hueValue });
+	if (!captures) {
+		return undefined;
+	}
+	let degrees = Number.parseFloat(captures[1]);
+	const unit = captures[5]?.toLowerCase();
+	if (unit === "rad") degrees = (degrees * 180) / Math.PI;
+	else if (unit === "turn") degrees *= 360;
+	else if (unit === "grad") degrees *= 0.9;
+	return String(Math.round(degrees * 10000) / 10000);
+};
+
+const matchHue = (): string =>
+	matchHueScan() ?? error({ message: "Expected number" });
+
+const matchRgbChannelScan = (): string | undefined => {
+	const percent = scan({ regexp: tokens.percentageValue });
+	if (percent) {
+		return String(
+			Math.round((Number.parseFloat(percent[1]) / 100) * 255),
+		);
+	}
+	const number = scan({ regexp: tokens.number });
+	if (number) {
+		return number[1];
+	}
+	return undefined;
+};
+
+const matchAlphaScan = (): string | undefined => {
+	const percent = scan({ regexp: tokens.percentageValue });
+	if (percent) {
+		return String(Number.parseFloat(percent[1]) / 100);
+	}
+	const number = scan({ regexp: tokens.number });
+	if (number) {
+		return number[1];
+	}
+	return undefined;
+};
+
 const matchSpaceSeparatedRgb = (): Color | undefined => {
 	const start = input;
 	const components: string[] = [];
 	for (let i = 0; i < 3; i++) {
-		const n = scan({ regexp: tokens.number });
-		if (!n) {
+		const channel = matchRgbChannelScan();
+		if (!channel) {
 			input = start;
 			return undefined;
 		}
-		components.push(n[1]);
+		components.push(channel);
 		if (scan({ regexp: tokens.comma })) {
 			input = start;
 			return undefined;
 		}
 	}
 	if (scan({ regexp: /^\// })) {
-		const percent = scan({ regexp: tokens.percentageValue });
-		const alpha = percent
-			? String(Number.parseFloat(percent[1]) / 100)
-			: matchNumber();
+		const alpha = matchAlphaScan();
+		if (!alpha) {
+			input = start;
+			return undefined;
+		}
 		return { type: "rgba", value: [...components, alpha] };
 	}
 	return { type: "rgb", value: components };
 };
 
+const matchCommaSeparatedRgb = ({
+	colorType,
+}: {
+	colorType: "rgb" | "rgba";
+}): Color | undefined => {
+	const start = input;
+	const components: string[] = [];
+	for (let i = 0; i < 3; i++) {
+		const channel = matchRgbChannelScan();
+		if (!channel) {
+			input = start;
+			return undefined;
+		}
+		components.push(channel);
+		if (i < 2 && !scan({ regexp: tokens.comma })) {
+			input = start;
+			return undefined;
+		}
+	}
+	if (scan({ regexp: tokens.comma })) {
+		const alpha =
+			matchAlphaScan() ?? error({ message: "Expected number" });
+		components.push(alpha);
+		if (scan({ regexp: tokens.comma })) {
+			error({ message: "One extra comma" });
+		}
+	}
+	return { type: colorType, value: components };
+};
+
 const matchHslSpaceComponents = (): Color | undefined => {
 	const start = input;
-	const hue = matchNumber();
+	const hue = matchHueScan();
+	if (!hue) {
+		return undefined;
+	}
 	const channels: string[] = [];
 	for (let i = 0; i < 2; i++) {
 		if (scan({ regexp: tokens.comma })) {
@@ -481,10 +559,11 @@ const matchHslSpaceComponents = (): Color | undefined => {
 		channels.push(p[1]);
 	}
 	if (scan({ regexp: /^\// })) {
-		const percent = scan({ regexp: tokens.percentageValue });
-		const alpha = percent
-			? String(Number.parseFloat(percent[1]) / 100)
-			: matchNumber();
+		const alpha = matchAlphaScan();
+		if (!alpha) {
+			input = start;
+			return undefined;
+		}
 		return { type: "hsla", value: [hue, channels[0], channels[1], alpha] };
 	}
 	return { type: "hsl", value: [hue, channels[0], channels[1]] };
@@ -493,15 +572,29 @@ const matchHslSpaceComponents = (): Color | undefined => {
 const matchRGBColor = (): Color | undefined =>
 	matchCall({
 		pattern: tokens.rgbColor,
-		callback: () =>
-			matchSpaceSeparatedRgb() ?? { type: "rgb", value: matchListing({ matcher: matchNumber }) },
+		callback: () => {
+			const color =
+				matchSpaceSeparatedRgb() ??
+				matchCommaSeparatedRgb({ colorType: "rgb" });
+			if (!color) {
+				error({ message: "Expected number" });
+			}
+			return color;
+		},
 	});
 
 const matchRGBAColor = (): Color | undefined =>
 	matchCall({
 		pattern: tokens.rgbaColor,
-		callback: () =>
-			matchSpaceSeparatedRgb() ?? { type: "rgba", value: matchListing({ matcher: matchNumber }) },
+		callback: () => {
+			const color =
+				matchSpaceSeparatedRgb() ??
+				matchCommaSeparatedRgb({ colorType: "rgba" });
+			if (!color) {
+				error({ message: "Expected number" });
+			}
+			return color;
+		},
 	});
 
 const matchVarColor = (): Color | undefined =>
@@ -530,7 +623,7 @@ const matchHSLColor = (): Color | undefined =>
 				});
 			}
 
-			const hue = matchNumber();
+			const hue = matchHue();
 			scan({ regexp: tokens.comma });
 			let captures = scan({ regexp: tokens.percentageValue });
 			const sat = captures ? captures[1] : null;
@@ -565,7 +658,7 @@ const matchHSLAColor = (): Color | undefined =>
 				return space;
 			}
 
-			const hue = matchNumber();
+			const hue = matchHue();
 			scan({ regexp: tokens.comma });
 			let captures = scan({ regexp: tokens.percentageValue });
 			const sat = captures ? captures[1] : null;
@@ -573,7 +666,8 @@ const matchHSLAColor = (): Color | undefined =>
 			captures = scan({ regexp: tokens.percentageValue });
 			const light = captures ? captures[1] : null;
 			scan({ regexp: tokens.comma });
-			const alpha = matchNumber();
+			const alpha =
+				matchAlphaScan() ?? error({ message: "Expected number" });
 			const ensuredSat =
 				sat ??
 				error({

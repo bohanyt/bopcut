@@ -3,12 +3,17 @@
 import { useI18n } from "@/i18n/provider";
 
 import { ArrowRightIcon } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { SOCIAL_LINKS } from "@/site/social";
 import { useLocalStorage } from "@/services/storage/use-local-storage";
 import { Button } from "../ui/button";
 import { Dialog, DialogBody, DialogContent, DialogTitle } from "../ui/dialog";
+
+const ReactMarkdown = dynamic(() => import("react-markdown"), {
+	ssr: false,
+	loading: () => null,
+});
 
 export function Onboarding() {
 	const { t } = useI18n();
