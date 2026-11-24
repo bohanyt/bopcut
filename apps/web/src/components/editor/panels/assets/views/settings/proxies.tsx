@@ -21,7 +21,9 @@ export function ProxySettings() {
 					<input type="checkbox" checked={settings.software} onChange={event => save({ ...settings, software: event.currentTarget.checked })} />
 					{t("proxies.softwareEncoder")}
 				</label>
-				<p className="text-sm" role="status">{t("proxies." + status as "proxies.ready", { done: update?.done ?? 0, total: update?.total ?? 0 })}</p>
+				<p className="text-sm" role="status">{status === "preparing"
+					? t("proxies.preparing", { done: update?.done ?? 0, total: update?.total ?? 0 })
+					: t(`proxies.${status}`)}</p>
 				<p className="text-sm">{t("proxies.diskUsage", { size: ((update?.bytes ?? 0) / 1_000_000).toFixed(1) })}</p>
 				<Button variant="outline" size="sm" onClick={() => { void clear().catch(() => {}); }}>{t("proxies.deleteAll")}</Button>
 			</SectionContent>
