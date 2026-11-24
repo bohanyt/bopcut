@@ -5,6 +5,7 @@ import type { ComponentType } from "react";
 import { useI18n } from "@/i18n/provider";
 import { Separator } from "@/components/ui/separator";
 import { type Tab, useAssetsPanelStore } from "@/components/editor/panels/assets/assets-panel-store";
+import { LoadBoundary } from "@/components/editor/load-boundary";
 import { TabBar } from "./tabbar";
 import { MediaView } from "./views/assets";
 
@@ -22,31 +23,29 @@ export function AssetsPanel() {
 	const { t } = useI18n();
 	const { activeTab } = useAssetsPanelStore();
 
-	const viewMap: Record<Tab, React.ReactNode> = {
-		media: <MediaView />,
-		sounds: <SoundsView />,
-		text: <TextView />,
-		stickers: <StickersView />,
-		effects: <EffectsView />,
-		transitions: (
-			<div className="text-muted-foreground p-4">
-				{t("assets.transitionsComing")}
-			</div>
+	const viewFactories: Record<Tab, () => React.ReactNode> = {
+		media: () => <MediaView />,
+		sounds: () => <SoundsView />,
+		text: () => <TextView />,
+		stickers: () => <StickersView />,
+		effects: () => <EffectsView />,
+		transitions: () => (
+			<div className="text-muted-foreground p-4">{t("assets.transitionsComing")}</div>
 		),
-		captions: <Captions />,
-		adjustment: (
-			<div className="text-muted-foreground p-4">
-				{t("assets.adjustmentComing")}
-			</div>
+		captions: () => <Captions />,
+		adjustment: () => (
+			<div className="text-muted-foreground p-4">{t("assets.adjustmentComing")}</div>
 		),
-		settings: <SettingsView />,
+		settings: () => <SettingsView />,
 	};
 
 	return (
 		<div className="panel bg-background flex h-full rounded-sm border overflow-hidden">
 			<TabBar />
 			<Separator orientation="vertical" />
-			<div className="flex-1 overflow-hidden">{viewMap[activeTab]}</div>
+			<div className="flex-1 overflow-hidden">
+				<LoadBoundary key={activeTab}>{viewFactories[activeTab]()}</LoadBoundary>
+			</div>
 		</div>
 	);
 }

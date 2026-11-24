@@ -694,12 +694,6 @@ const matchVariableName = (): string => {
 	return captures[1];
 };
 
-const matchNumber = (): string => {
-	const captures =
-		scan({ regexp: tokens.number }) ?? error({ message: "Expected number" });
-	return captures[1];
-};
-
 const matchDistance = (): Distance | undefined =>
 	match({ type: "%", pattern: tokens.percentageValue, captureIndex: 1 }) ||
 	matchPositionKeyword() ||

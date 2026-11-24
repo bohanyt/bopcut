@@ -30,7 +30,7 @@ const clip = (start: number, keyTicks: number[], duration = 600_000): VideoEleme
 	animations: { opacity: { keys: keyTicks.map((time, i) => ({ id: `k${i}`, time: mediaTime({ ticks: time }), value: 1, segmentToNext: "linear", tangentMode: "flat" })) } },
 });
 
-function harness(element: VideoElement, fps: FrameRate, selected = [keyRef("k0")]) {
+function harness(element: VideoElement, fps: FrameRate, selected = [keyRef("k0")], grabbed = selected) {
 	const page = Object.assign(new EventTarget(), { activeElement: null });
 	const prev = Object.getOwnPropertyDescriptor(globalThis, "document");
 	Object.defineProperty(globalThis, "document", { configurable: true, value: page });
@@ -45,13 +45,28 @@ function harness(element: VideoElement, fps: FrameRate, selected = [keyRef("k0")
 	const down = () => c.onKeyframeMouseDown({
 		event: { button: 0, clientX: START, clientY: 0, metaKey: false, ctrlKey: false, shiftKey: false,
 			preventDefault: () => {}, stopPropagation: () => {}, currentTarget: { ownerDocument: page } } as unknown as ReactMouseEvent,
-		keyframes: selected,
+		keyframes: grabbed,
 	});
 	const move = (x: number) => page.dispatchEvent(Object.assign(new Event("mousemove"), { clientX: x }));
 	const drag = (x: number) => { down(); move(START + DRAG); move(x); return c.keyframeDragState.deltaTicks; };
 	const xFor = (ticks: number) => START + (ticks / TICKS_PER_SECOND) * PPS;
 	return { drag, move, down, xFor, state: () => c.keyframeDragState, raw: (x: number) => Math.round(((x - START) / PPS) * TICKS_PER_SECOND) };
 }
+
+test("grabbed key anchors frame snapping when it is not the first selected key", () => {
+	const fps = NTSC;
+	const offFrame = 55_555;
+	const onFrame = roundFrameTime({ time: mediaTime({ ticks: 30_000 }), fps });
+	expect(roundFrameTime({ time: mediaTime({ ticks: offFrame }), fps })).not.toBe(mediaTime({ ticks: offFrame }));
+	const sel = [keyRef("k0"), keyRef("k1")];
+	const element = clip(0, [offFrame, onFrame]);
+	const anchor = addMediaTime({ a: element.startTime, b: onFrame });
+	const h = harness(element, fps, sel, [keyRef("k1")]);
+	for (const raw of D) {
+		const landed = addMediaTime({ a: anchor, b: mediaTime({ ticks: h.drag(h.xFor(raw)) }) });
+		expect(landed).toBe(roundFrameTime({ time: landed, fps }));
+	}
+});
 
 test("fractional fps: anchor timeline time stays on frame grid for many drags", () => {
 	for (const fps of [NTSC, FILM]) {
