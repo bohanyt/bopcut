@@ -4,7 +4,7 @@ import path from "node:path";
 import { runBackgroundProcess } from "@/retrieval/process";
 import { toolsFromEnv } from "@/retrieval/server";
 import { projectDir, safeId } from "@/services/storage/server/files";
-import { acquireProxyWriter, ownsProxyWriter, proxyDirectory, proxyFile } from "./cache-files";
+import { acquireProxyWriter, ownsProxyWriter, proxyDirectory, proxyFile, ProxyWriterLost, requireProxyWriter } from "./cache-files";
 import { cachedProxyKey, proxyFingerprintRegions, proxyProfile } from "./identity";
 import type { ProxyInfo, ProxyUpdate } from "./mapping";
 
@@ -69,10 +69,12 @@ function run(dir: string, args: string[], signal: AbortSignal) {
 	return runBackgroundProcess(exe, [...leading, "-nostdin", ...args], signal, dir);
 }
 async function encode(dir: string, args: string[], output: string, signal: AbortSignal) {
+	await requireProxyWriter(dir);
 	const stall = new AbortController();
 	let previousSize = -1;
 	let progress = Date.now();
 	const monitor = setInterval(() => {
+		void ownsProxyWriter(dir).then(owns => { if (!owns) stall.abort(new ProxyWriterLost()); });
 		void fs.stat(output).then(({ size }) => {
 			if (size !== previousSize) { previousSize = size; progress = Date.now(); }
 		}).catch(() => {}).finally(() => {
@@ -80,7 +82,11 @@ async function encode(dir: string, args: string[], output: string, signal: Abort
 		});
 	}, 1_000);
 	try { await run(dir, args, AbortSignal.any([signal, stall.signal])); }
-	finally { clearInterval(monitor); }
+	finally {
+		clearInterval(monitor);
+		if (stall.signal.reason instanceof ProxyWriterLost) throw stall.signal.reason;
+		await requireProxyWriter(dir);
+	}
 }
 async function probe(dir: string, file: string, signal: AbortSignal): Promise<Probe> {
 	const result = await runBackgroundProcess(probeCommand(), ["-v", "error", ...safeInput, "-select_streams", "v",
@@ -114,6 +120,7 @@ async function files(dir: string) {
 	return result.filter(entry => entry !== undefined);
 }
 async function cleanInterruptedJobs(dir: string) {
+	await requireProxyWriter(dir);
 	const names = new Set(await fs.readdir(dir));
 	for (const name of names) {
 		const key = path.basename(name, path.extname(name));
@@ -122,7 +129,10 @@ async function cleanInterruptedJobs(dir: string) {
 			(cachedProxyKey.test(key) && (extension === ".mp4" || extension === ".json") &&
 				!names.has(key + (extension === ".mp4" ? ".json" : ".mp4")))) {
 			const file = path.join(dir, name);
-			if (await proxyFile(file)) await fs.rm(file, { force: true }).catch(() => {});
+			if (await proxyFile(file)) {
+				await requireProxyWriter(dir);
+				await fs.rm(file, { force: true }).catch(() => {});
+			}
 		}
 	}
 }
@@ -139,10 +149,14 @@ export async function ensureProxySpace(bytes: number, alreadyWritten = 0, dir?: 
 		if (used + bytes <= limit() && free >= required) break;
 		const video = path.join(dir, entry.name);
 		if (!await proxyFile(video)) continue;
+		await requireProxyWriter(dir);
 		await fs.rm(video, { force: true }).catch(() => {});
 		if (await proxyFile(video)) continue;
 		const sidecar = path.join(dir, entry.name.replace(/\.mp4$/, ".json"));
-		if (await proxyFile(sidecar)) await fs.rm(sidecar, { force: true });
+		if (await proxyFile(sidecar)) {
+			await requireProxyWriter(dir);
+			await fs.rm(sidecar, { force: true });
+		}
 		used -= entry.stat.size;
 		free += entry.stat.size;
 		notifyEvicted(entry.name.slice(0, -4));
@@ -158,7 +172,7 @@ async function cached(dir: string, source: Source, writable: boolean): Promise<P
 	if (!await proxyFile(video) || !await proxyFile(metadata)) return;
 	const info = await fs.readFile(metadata, "utf8").then(JSON.parse).catch(() => null);
 	if (info?.key !== source.key || info.size !== source.size || !await sameSource(source)) return;
-	if (writable) { const now = new Date(); await fs.utimes(video, now, now).catch(() => {}); }
+	if (writable && await ownsProxyWriter(dir)) { const now = new Date(); await fs.utimes(video, now, now).catch(() => {}); }
 	return info;
 }
 
@@ -209,7 +223,7 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 	const filter = `scale=${w}:${h}:flags=lanczos${range === "pc" ? ":in_range=full:out_range=full" : ""},setsar=1`;
 	const temp = path.join(dir, ".job-" + randomUUID() + ".mp4");
 	const sidecar = temp + ".json";
-	const estimate = Math.min(limit(), Math.ceil(duration * 650_000 + pts.length * 48 + 4096));
+	const estimate = Math.ceil(duration * 650_000 + pts.length * 48 + 4096);
 	const used = await ensureProxySpace(estimate, 0, dir);
 	const free = await fs.statfs(dir);
 	const maxBytes = Math.floor(Math.min(limit() - used, free.bavail * free.bsize - reserve()));
@@ -233,6 +247,7 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 					success = true;
 					break;
 				} catch (error) {
+					if (error instanceof ProxyWriterLost) throw error;
 					signal.throwIfAborted();
 					const stderr = (error as { stderr?: string })?.stderr ?? "";
 					busy ||= /temporarily unavailable|encoder is busy|too many (sessions|concurrent)|out of memory|no free (session|encoder)/i.test(stderr);
@@ -261,25 +276,29 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 		const info = { key, width, height, source: pts, proxy, size, duration, frameCount: pts.length };
 		const serialized = JSON.stringify(info);
 		await ensureProxySpace(stat.size + Buffer.byteLength(serialized), stat.size, dir);
+		await requireProxyWriter(dir);
 		await fs.writeFile(sidecar, serialized);
 		signal.throwIfAborted();
+		await requireProxyWriter(dir);
 		await fs.rename(temp, video);
 		try {
 			signal.throwIfAborted();
+			await requireProxyWriter(dir);
 			await fs.rename(sidecar, metadata);
 		} catch (error) {
-			await fs.rm(video, { force: true });
+			if (await ownsProxyWriter(dir)) await fs.rm(video, { force: true });
 			throw error;
 		}
 		return info;
 	} finally {
-		await Promise.all([temp, sidecar].map(file => fs.rm(file, { force: true }).catch(() => {})));
+		if (await ownsProxyWriter(dir)) await Promise.all([temp, sidecar].map(file => fs.rm(file, { force: true }).catch(() => {})));
 	}
 }
 
 type Session = {
 	project: string; ids: string[]; software: boolean; paused: boolean; send: (update: ProxyUpdate) => void;
 	done: Set<string>; revisions: Map<string, number>; disk: boolean; bytes: number; written: Map<string, string>;
+	sequence: number; readerChecked?: number;
 };
 type Job = { session: Session; id: string; revision: number; source?: Source; controller: AbortController };
 const sessions = new Map<string, Session>();
@@ -329,10 +348,16 @@ async function keepNeededJob() {
 	}
 	if (active === job && ![...sessions.values()].some(session => usesJob(session, job))) job.controller.abort();
 }
-export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" | "paused">, replaced: string[] = []) {
+const readerInterval = 60_000;
+export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" | "paused">, sequence: number, replaced: string[] = []) {
 	const session = sessions.get(id);
-	if (!session) return;
+	if (!session || sequence <= session.sequence) return;
+	session.sequence = sequence;
 	Object.assign(session, changes);
+	if (session.readerChecked !== undefined && Date.now() - session.readerChecked >= readerInterval) {
+		session.readerChecked = undefined;
+		session.done.clear();
+	}
 	for (const id of session.done) if (!session.ids.includes(id) || replaced.includes(id)) session.done.delete(id);
 	for (const id of replaced) session.revisions.set(id, (session.revisions.get(id) ?? 0) + 1);
 	for (const id of session.written.keys()) if (!session.ids.includes(id) || replaced.includes(id)) session.written.delete(id);
@@ -340,8 +365,8 @@ export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" 
 	void keepNeededJob();
 	void pump();
 }
-export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "disk" | "bytes" | "written">) {
-	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>() };
+export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "disk" | "bytes" | "written" | "sequence" | "readerChecked">) {
+	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>(), sequence: 0 };
 	sessions.set(id, entry);
 	void keepNeededJob();
 	void pump();
@@ -397,21 +422,36 @@ async function pump() {
 	idle = Promise.withResolvers<void>();
 	try {
 		const dir = await proxyDirectory(true);
-		if (!dir) { for (const session of sessions.values()) send(session, "readonly"); return; }
-		const writable = await acquireProxyWriter(dir);
+		if (!dir) {
+			for (const session of sessions.values()) {
+				session.readerChecked ??= Date.now();
+				send(session, "readonly");
+			}
+			return;
+		}
+		let writable = await ownsProxyWriter(dir) || ([...sessions.values()].some(session => session.readerChecked === undefined) &&
+			await acquireProxyWriter(dir));
 		if (writable && initialized !== dir) {
-			await cleanInterruptedJobs(dir);
-			initialized = dir;
+			try {
+				await cleanInterruptedJobs(dir);
+				initialized = dir;
+			} catch (error) {
+				if (!(error instanceof ProxyWriterLost)) throw error;
+				writable = false;
+			}
+		}
+		if (writable) for (const session of sessions.values()) {
+			if (session.readerChecked !== undefined) session.done.clear();
+			session.readerChecked = undefined;
 		}
 		const blocked = new Set<Session>();
 		while (!wiping && !isPaused()) {
 			const entry = [...sessions.entries()].find(([, session]) => !blocked.has(session) &&
+				(writable || session.readerChecked === undefined) &&
 				session.ids.some(id => !session.done.has(id)));
 			if (!entry) break;
 			const [sessionId, session] = entry;
 			const id = session.ids.find(id => !session.done.has(id))!;
-			sessions.delete(sessionId);
-			sessions.set(sessionId, session);
 			const job: Job = { session, id, revision: session.revisions.get(id) ?? 0, controller: new AbortController() };
 			active = job;
 			const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(20 * 60_000)]);
@@ -423,6 +463,7 @@ async function pump() {
 				signal.throwIfAborted();
 				let info = source && await cached(dir, source, writable);
 				if (source && !info && writable) {
+					await requireProxyWriter(dir);
 					const encoders = await detectEncoders(dir, signal);
 					if (!encoders || (!encoders.length && !session.software)) {
 						send(session, encoders ? "software" : "missing");
@@ -437,12 +478,23 @@ async function pump() {
 				}
 				if (!signal.aborted && usesJob(session, job)) {
 					session.done.add(id);
+					const previous = session.written.get(id);
+					if (previous && previous !== info?.key) {
+						session.written.delete(id);
+						send(session, writable ? "preparing" : "readonly", { evicted: previous });
+					}
 					if (info) {
 						session.written.set(id, info.key);
 						send(session, writable ? "preparing" : "readonly", { media: { id, info } });
 					}
 				}
 			} catch (error) {
+				if (error instanceof ProxyWriterLost) {
+					job.controller.abort();
+					writable = false;
+					initialized = undefined;
+					continue;
+				}
 				if (job.controller.signal.aborted || !usesJob(session, job)) continue;
 				const key = job.source?.key;
 				if (error instanceof EncoderBusy) {
@@ -457,10 +509,18 @@ async function pump() {
 					failures.add(key);
 				}
 				session.done.add(id);
-			} finally { active = undefined; }
+			} finally {
+				active = undefined;
+				if (sessions.get(sessionId) === session) {
+					sessions.delete(sessionId);
+					sessions.set(sessionId, session);
+				}
+			}
 		}
 		const bytes = (await files(dir)).reduce((n, file) => n + file.stat.size, 0);
 		for (const session of sessions.values()) {
+			if (writable) session.readerChecked = undefined;
+			else session.readerChecked ??= Date.now();
 			if (blocked.has(session)) continue;
 			session.bytes = bytes;
 			if (session.ids.every(id => session.done.has(id))) send(session, !writable ? "readonly" : session.disk ? "disk" : "ready");
@@ -480,11 +540,15 @@ export async function clearProxies() {
 	try {
 		active?.controller.abort();
 		await idle?.promise;
+		await requireProxyWriter(dir);
 		for (const entry of await files(dir)) {
 			const key = entry.name.slice(0, -4);
 			for (const ext of [".mp4", ".json"]) {
 				const file = path.join(dir, key + ext);
-				if (await proxyFile(file)) await fs.rm(file);
+				if (await proxyFile(file)) {
+					await requireProxyWriter(dir);
+					await fs.rm(file);
+				}
 			}
 			notifyEvicted(key);
 		}
@@ -495,6 +559,9 @@ export async function clearProxies() {
 			send(session, "off");
 		}
 		return true;
+	} catch (error) {
+		if (error instanceof ProxyWriterLost) return false;
+		throw error;
 	} finally { wiping = false; }
 }
 export async function proxyPath(key: string) {

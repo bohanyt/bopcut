@@ -181,13 +181,13 @@ function PreviewCanvas({
 		editor.timeline.getLastFrameTime(),
 	), [editor]);
 	const settle = useMemo(() => createScrubSettle<RootNode, VideoCache>({
-		async prepare(scene, time) {
+		async prepare(scene, time, decodeSignal) {
 			const signal = renderSignalRef.current;
 			const ready = useProxyStore.getState().ready;
 			if (!signal || signal.aborted || rendererDevice.status.state !== "ready" ||
 				editor.renderer.isExportRunning() || !ready.size) return null;
 			const cache = new VideoCache();
-			const scope = AbortSignal.any([signal, rendererDevice.signal]);
+			const scope = AbortSignal.any([signal, rendererDevice.signal, decodeSignal]);
 			const clear = () => cache.clear();
 			scope.addEventListener("abort", clear, { once: true });
 			try {
@@ -245,7 +245,7 @@ function PreviewCanvas({
 		if (!mount) return;
 		const controller = new AbortController();
 		const signal = AbortSignal.any([controller.signal, sessionSignal]);
-		const clearVideo = () => renderer.videoCache.clear();
+		const clearVideo = () => { renderer.videoCache.clear(); settle.reset(); };
 		signal.addEventListener("abort", clearVideo, { once: true });
 		renderSignalRef.current = signal;
 		lastFrameRef.current = -1;
@@ -257,7 +257,6 @@ function PreviewCanvas({
 		return () => {
 			renderSignalRef.current = null;
 			controller.abort();
-			settle.reset();
 		};
 	}, [renderer, sessionSignal, settle]);
 

@@ -106,7 +106,22 @@ export function useProxySession(editor: EditorCore, project: string) {
 		const evicted = new Map<string, string[]>();
 		const announced = new Map<string, string>();
 		const rejected = new Map<string, number>();
-		const refresh = () => {
+		let sequence = 0;
+		let readerRequestedAt = 0;
+		const pendingReplaced = new Map<string, number>();
+		function update(replaced: string[]) {
+			const current = ++sequence;
+			for (const id of replaced) pendingReplaced.set(id, current);
+			const pending = [...pendingReplaced];
+			void post({ action: "update", sequence: current, ids: queue, paused: isPaused,
+				replaced: pending.map(([id]) => id) }).then(response => {
+				if (!response.ok) return;
+				for (const [id, revision] of pending) {
+					if (pendingReplaced.get(id) === revision) pendingReplaced.delete(id);
+				}
+			}).catch(() => {});
+		}
+		const refresh = (allowReaderRecheck = false) => {
 			if (!opened) return;
 			const next = mediaOrder(editor);
 			const state = paused();
@@ -123,10 +138,13 @@ export function useProxySession(editor: EditorCore, project: string) {
 					evicted.delete(key);
 				}
 			}
-			if (state === isPaused && next.join() === queue.join() && !replaced.length && !retry.length) return;
+			const readerRecheck = allowReaderRecheck && useProxyStore.getState().update?.state === "readonly" &&
+				Date.now() - readerRequestedAt >= 60_000;
+			if (readerRecheck) readerRequestedAt = Date.now();
+			if (!readerRecheck && state === isPaused && next.join() === queue.join() && !replaced.length && !retry.length) return;
 			queue = next;
 			isPaused = state;
-			void post({ action: "update", ids: queue, paused: isPaused, replaced: [...replaced, ...retry] }).catch(() => {});
+			update([...replaced, ...retry]);
 		};
 		void (async () => {
 			const response = await post({ project, ids: queue, paused: isPaused, ...settings });
@@ -147,6 +165,9 @@ export function useProxySession(editor: EditorCore, project: string) {
 						if (!line) continue;
 						const update: ProxyUpdate = JSON.parse(line);
 						if (controller.signal.aborted) return;
+						if (update.state === "readonly" && useProxyStore.getState().update?.state !== "readonly") {
+							readerRequestedAt = Date.now();
+						}
 						useProxyStore.setState({ update });
 						if (update.evicted) {
 							evicted.set(update.evicted, [...announced]
@@ -176,21 +197,25 @@ export function useProxySession(editor: EditorCore, project: string) {
 			} finally { await reader.cancel().catch(() => {}); }
 		})().catch(() => {});
 		let scrubbing = editor.playback.getIsScrubbing();
-		const dispose = [editor.timeline.subscribe(refresh), editor.scenes.subscribe(refresh), editor.media.subscribe(refresh),
-			editor.renderer.subscribe(refresh), editor.voiceOver.subscribe(refresh),
+		const onVisible = () => { if (!document.hidden) refresh(true); };
+		document.addEventListener("visibilitychange", onVisible);
+		const refreshQueue = () => refresh();
+		const dispose = [editor.timeline.subscribe(refreshQueue), editor.scenes.subscribe(refreshQueue), editor.media.subscribe(() => refresh(true)),
+			editor.renderer.subscribe(refreshQueue), editor.voiceOver.subscribe(refreshQueue),
 			useProxyStore.subscribe((state, previous) => {
 				const missing = state.missing;
 				if (!opened || !missing || missing === previous.missing) return;
 				evicted.set(missing.key, missing.ids);
 				if (Date.now() - (rejected.get(missing.key) ?? 0) <= 10_000) return;
 				rejected.set(missing.key, Date.now());
-				void post({ action: "update", replaced: missing.ids }).catch(() => {});
+				update(missing.ids);
 			}),
 			editor.playback.subscribeState(() => {
 				const next = editor.playback.getIsScrubbing();
 				if (scrubbing && !next) refresh();
+				if (!scrubbing && next) refresh(true);
 				scrubbing = next;
 			})];
-		return () => { controller.abort(); dispose.forEach(fn => fn()); };
+		return () => { controller.abort(); document.removeEventListener("visibilitychange", onVisible); dispose.forEach(fn => fn()); };
 	}, [editor, project, settings]);
 }

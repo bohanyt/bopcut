@@ -2,8 +2,11 @@ import { expect, spyOn, test } from "bun:test";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { clearProxies, ensureProxySpace, fingerprint, openSession, updateSession } from "./server";
+import { acquireProxyWriter } from "./cache-files";
 import * as processes from "@/retrieval/process";
+import type { ProxyUpdate } from "./mapping";
 
 test("proxy cache identity follows content across copies and hard links", async () => {
 	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-fingerprint-"));
@@ -11,13 +14,14 @@ test("proxy cache identity follows content across copies and hard links", async 
 	const link = path.join(dir, "two.mp4");
 	const copy = path.join(dir, "three.mp4");
 	try {
-		await fs.writeFile(original, Buffer.alloc(256 * 1024, 3));
+		await fs.writeFile(original, Buffer.alloc(32 * 1024 * 1024, 3));
 		await fs.link(original, link);
 		await fs.copyFile(original, copy);
 		expect((await fingerprint(original)).key).toBe((await fingerprint(link)).key);
 		expect((await fingerprint(original)).key).toBe((await fingerprint(copy)).key);
 		const file = await fs.open(copy, "r+");
-		try { await file.write(Buffer.from([2]), 0, 1, 128 * 1024); }
+		// This is in sampled region 7, far from the original head, middle and tail blocks.
+		try { await file.write(Buffer.from([2]), 0, 1, Math.floor((32 * 1024 * 1024 - 65536) * 7 / 31) + 100); }
 		finally { await file.close(); }
 		expect((await fingerprint(original)).key).not.toBe((await fingerprint(copy)).key);
 	} finally {
@@ -37,21 +41,23 @@ test("evicts the least recently used file and preserves the cache below the disk
 	process.env.BOPENCUT_PROXY_FREE_BYTES = "0";
 	try {
 		await fs.mkdir(dir);
+		expect(await acquireProxyWriter(dir)).toBe(true);
 		for (const [index, name] of names.entries()) {
 			const file = path.join(dir, name);
 			await fs.writeFile(file, Buffer.alloc(40));
 			await fs.utimes(file, 10 + index, 10 + index);
 		}
 		expect(await ensureProxySpace(40)).toBe(40);
-		expect(await fs.readdir(dir)).toEqual([names[1]]);
+		expect((await fs.readdir(dir)).filter(name => name.endsWith(".mp4"))).toEqual([names[1]]);
 		process.env.BOPENCUT_PROXY_FREE_BYTES = String(Number.MAX_SAFE_INTEGER);
 		await expect(ensureProxySpace(0)).rejects.toThrow();
-		expect(await fs.readdir(dir)).toEqual([names[1]]);
+		expect((await fs.readdir(dir)).filter(name => name.endsWith(".mp4"))).toEqual([names[1]]);
 	} finally {
 		for (const [index, key] of ["BOPENCUT_DATA", "BOPENCUT_PROXY_LIMIT_BYTES", "BOPENCUT_PROXY_FREE_BYTES"].entries()) {
 			if (old[index] === undefined) delete process.env[key]; else process.env[key] = old[index];
 		}
 		for (const name of names) await fs.rm(path.join(dir, name), { force: true });
+		await fs.rm(path.join(dir, ".writer"), { force: true });
 		await fs.rmdir(dir);
 		await fs.rmdir(root);
 	}
@@ -99,7 +105,7 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 		close = openSession("tab", { project: "fixture", ids, paused: false, software: false, send() {} });
 		expect(await started.promise).toBe("near.mp4");
 		expect(await fs.readdir(cache)).toEqual([".writer"]);
-		updateSession("tab", { ids: ["near", "far", "middle"] });
+		updateSession("tab", { ids: ["near", "far", "middle"] }, 1);
 		firstFinished.resolve();
 		expect(await second.promise).toBe("far.mp4");
 		close();
@@ -120,5 +126,248 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 		for (const folder of [meta, dir, project, path.dirname(project), cache, root]) {
 			await fs.rmdir(folder).catch(() => {});
 		}
+	}
+});
+
+async function fixture(ids: string[], budget = "8000000000") {
+	const root = await fs.mkdtemp(path.join(tmpdir(), "proxy-session-"));
+	const cache = path.join(root, "proxies");
+	const project = path.join(root, "projects", "fixture");
+	const media = path.join(project, "media");
+	const metadata = path.join(media, "_metadata");
+	const env = { BOPENCUT_DATA: root, BOPENCUT_PROXY_FREE_BYTES: "0", BOPENCUT_PROXY_LIMIT_BYTES: budget };
+	const previous = Object.keys(env).map(key => [key, process.env[key]] as const);
+	Object.assign(process.env, env);
+	await fs.mkdir(metadata, { recursive: true });
+	await fs.mkdir(cache);
+	for (const id of ids) {
+		await fs.writeFile(path.join(media, id + ".mp4"), id);
+		await fs.writeFile(path.join(metadata, id + ".json"), JSON.stringify({ type: "video", diskFile: id + ".mp4" }));
+	}
+	const close: (() => void)[] = [];
+	return {
+		cache, media,
+		tab(id: string, ids: string[], paused = false) {
+			const events: ProxyUpdate[] = [];
+			let changed = Promise.withResolvers<void>();
+			const end = openSession(id, { project: "fixture", ids, paused, software: false, send(event) {
+				events.push(event);
+				changed.resolve();
+				changed = Promise.withResolvers<void>();
+			} });
+			close.push(end);
+			return { events, end, async wait(predicate: (event: ProxyUpdate) => boolean, since = 0) {
+				while (!events.slice(since).some(predicate)) await changed.promise;
+			} };
+		},
+		async dispose() {
+			for (const fn of close) fn();
+			await clearProxies();
+			for (const [key, value] of previous) {
+				if (value === undefined) delete process.env[key]; else process.env[key] = value;
+			}
+			for (const dir of [cache, metadata, media]) {
+				for (const file of await fs.readdir(dir)) await fs.rm(path.join(dir, file), { force: true });
+				await fs.rmdir(dir);
+			}
+			for (const dir of [project, path.dirname(project), root]) await fs.rmdir(dir);
+		},
+	};
+}
+
+const toolResult = (stdout = "") => ({ stdout, stderr: "" });
+const noVideo = () => toolResult('{"streams":[],"frames":[]}');
+function videoProbe(duration: number, encoded = false) {
+	return toolResult(JSON.stringify({
+		streams: [{ width: encoded ? 960 : 1920, height: encoded ? 540 : 1080, pix_fmt: "yuv420p", time_base: "1/1", duration }],
+		frames: [0, 1, 2].map(best_effort_timestamp => ({ best_effort_timestamp, key_frame: 1, pict_type: "I" })),
+	}));
+}
+
+test("reversed pause and resume updates cannot override the newest sequence", async () => {
+	const f = await fixture(["source"]);
+	const started = Promise.withResolvers<void>();
+	const stopped = Promise.withResolvers<void>();
+	let probes = 0;
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args, signal) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (!args.includes("-show_frames")) return toolResult();
+		probes++;
+		started.resolve();
+		await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+		stopped.resolve();
+		throw signal.reason;
+	});
+	try {
+		f.tab("ordered", ["source"], true);
+		updateSession("ordered", { paused: false }, 2);
+		updateSession("ordered", { paused: true }, 1);
+		await started.promise;
+		updateSession("ordered", { paused: true }, 4);
+		updateSession("ordered", { paused: false }, 3);
+		await stopped.promise;
+		await sleep(50);
+		expect(probes).toBe(1);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
+test("an oversized estimate preserves the cache and yields to the next source", async () => {
+	const f = await fixture(["large", "small"], "2500000");
+	const preserved = "a".repeat(64) + "-p1-v1";
+	const existingVideo = path.join(f.cache, preserved + ".mp4");
+	const encoded: string[] = [];
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-show_frames")) {
+			const name = path.basename(args.at(-1)!);
+			return videoProbe(name === "large.mp4" ? 90 : 3, name.startsWith(".job-"));
+		}
+		if (args.includes("-fs")) {
+			encoded.push(path.basename(args[args.indexOf("-i") + 1]));
+			await fs.writeFile(args.at(-1)!, "proxy");
+		}
+		return toolResult();
+	});
+	try {
+		await fs.writeFile(existingVideo, Buffer.alloc(100_000));
+		await fs.writeFile(path.join(f.cache, preserved + ".json"), "{}");
+		const tab = f.tab("sizes", ["large", "small"]);
+		await tab.wait(event => event.state === "disk" && event.done === 2);
+		expect(await fs.stat(existingVideo)).toBeDefined();
+		expect(encoded).toEqual(["small.mp4"]);
+		expect(tab.events.some(event => event.media?.id === "small")).toBe(true);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
+test.each(["live writer", "permission denied"])("a reader rediscovers copies and claims a free lock on an update (%s)", async (mode) => {
+	const f = await fixture(["source"]);
+	const lock = path.join(f.cache, ".writer");
+	const holder = mode === "live writer"
+		? Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" })
+		: undefined;
+	const time = Date.now();
+	const clock = spyOn(Date, "now").mockReturnValue(time);
+	const writeFile = fs.writeFile.bind(fs);
+	let permission = !holder;
+	const writes = spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
+		if (permission && file === lock) throw Object.assign(new Error("read-only"), { code: "EACCES" });
+		return writeFile(file, data, options);
+	});
+	try {
+		if (holder) await fs.writeFile(lock, `${holder.pid}:live-token`);
+		const tab = f.tab("reader", ["source"]);
+		const readonly = (event: ProxyUpdate) => event.state === "readonly" && !event.media;
+		await tab.wait(readonly);
+		const { key, size } = await fingerprint(path.join(f.media, "source.mp4"));
+		await fs.writeFile(path.join(f.cache, key + ".mp4"), "proxy");
+		await fs.writeFile(path.join(f.cache, key + ".json"), JSON.stringify({ key, size }));
+		let since = tab.events.length;
+		updateSession("reader", {}, 1);
+		await tab.wait(readonly, since);
+		expect(tab.events.some(event => event.media)).toBe(false);
+		since = tab.events.length;
+		clock.mockReturnValue(time + 60_000);
+		expect(tab.events).toHaveLength(since);
+		updateSession("reader", {}, 2);
+		await tab.wait(event => event.media?.info.key === key, since);
+		await tab.wait(readonly, since);
+		if (holder) { holder.kill(); await holder.exited; }
+		permission = false;
+		clock.mockReturnValue(time + 120_000);
+		since = tab.events.length;
+		updateSession("reader", {}, 3);
+		await tab.wait(event => event.state === "ready", since);
+		expect(await fs.readFile(lock, "utf8")).toMatch(new RegExp(`^${process.pid}:`));
+	} finally {
+		if (holder) { holder.kill(); await holder.exited; }
+		writes.mockRestore();
+		clock.mockRestore();
+		await f.dispose();
+	}
+});
+
+test("tabs take turns even when the second joins during a job", async () => {
+	const f = await fixture(["a1", "a2", "b1", "b2"]);
+	const started = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	const probes: string[] = [];
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (!args.includes("-show_frames")) return toolResult();
+		const name = path.basename(args.at(-1)!);
+		probes.push(name);
+		if (name === "a1.mp4") { started.resolve(); await finish.promise; }
+		return noVideo();
+	});
+	try {
+		const a = f.tab("a", ["a1", "a2"]);
+		await started.promise;
+		const b = f.tab("b", ["b1", "b2"]);
+		finish.resolve();
+		await Promise.all([a.wait(event => event.state === "ready"), b.wait(event => event.state === "ready")]);
+		expect(probes).toEqual(["a1.mp4", "b1.mp4", "a2.mp4", "b2.mp4"]);
+	} finally { finish.resolve(); await f.dispose(); run.mockRestore(); }
+});
+
+test("a shared encode stays alive after its first tab closes", async () => {
+	const f = await fixture(["shared"]);
+	const started = Promise.withResolvers<AbortSignal>();
+	const finish = Promise.withResolvers<void>();
+	let encodes = 0;
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args, signal) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-show_frames")) return videoProbe(3, path.basename(args.at(-1)!).startsWith(".job-"));
+		if (args.includes("-fs")) {
+			encodes++;
+			started.resolve(signal);
+			await finish.promise;
+			signal.throwIfAborted();
+			await fs.writeFile(args.at(-1)!, "proxy");
+		}
+		return toolResult();
+	});
+	try {
+		const a = f.tab("a", ["shared"]);
+		const signal = await started.promise;
+		const b = f.tab("b", ["shared"]);
+		a.end();
+		await sleep(50);
+		expect(signal.aborted).toBe(false);
+		finish.resolve();
+		await b.wait(event => event.media?.id === "shared");
+		expect(encodes).toBe(1);
+	} finally { finish.resolve(); await f.dispose(); run.mockRestore(); }
+});
+
+test("losing the writer token stops encoding and switches the session to reading", async () => {
+	const f = await fixture(["source"]);
+	const holder = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+	const started = Promise.withResolvers<void>();
+	const stopped = Promise.withResolvers<void>();
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args, signal) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-show_frames")) return videoProbe(3);
+		if (args.includes("-fs")) {
+			await fs.writeFile(args.at(-1)!, "partial");
+			started.resolve();
+			await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+			stopped.resolve();
+			throw signal.reason;
+		}
+		return toolResult();
+	});
+	try {
+		const tab = f.tab("displaced", ["source"]);
+		await started.promise;
+		await fs.writeFile(path.join(f.cache, ".writer"), `${holder.pid}:new-owner`);
+		await stopped.promise;
+		await tab.wait(event => event.state === "readonly");
+		expect(tab.events.some(event => event.media)).toBe(false);
+		expect((await fs.readdir(f.cache)).every(name => name === ".writer" || name.startsWith(".job-"))).toBe(true);
+	} finally {
+		holder.kill();
+		await holder.exited;
+		await f.dispose();
+		run.mockRestore();
 	}
 });

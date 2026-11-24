@@ -5,23 +5,30 @@ import { safeId, streamMediaFile } from "@/services/storage/server/files";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function allowed(request: Request) {
+	const host = request.headers.get("host") ?? new URL(request.url).host;
+	return /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(host) &&
+		request.headers.get("sec-fetch-site") !== "cross-site" && !isForeignOrigin(request);
+}
+
 function ids(value: unknown): string[] {
 	if (!Array.isArray(value) || value.length > 2000) throw new Error("Invalid asset list");
 	return [...new Set(value.map((id: unknown) => typeof id === "string" ? safeId(id) : ""))].filter(Boolean);
 }
 export async function GET(request: Request) {
-	if (isForeignOrigin(request)) return new Response(null, { status: 403 });
+	if (!allowed(request)) return new Response(null, { status: 403 });
 	const file = await proxyPath(new URL(request.url).searchParams.get("key") ?? "");
 	return file ? streamMediaFile(file, "video/mp4", request.headers.get("range")) : new Response(null, { status: 404 });
 }
 export async function POST(request: Request) {
-	if (isForeignOrigin(request)) return new Response(null, { status: 403 });
+	if (!allowed(request)) return new Response(null, { status: 403 });
 	try {
 		const body = await request.json();
 		const id = safeId(body.id ?? "");
 		if (body.action === "update") {
+			if (!Number.isSafeInteger(body.sequence) || body.sequence < 1) return new Response(null, { status: 400 });
 			updateSession(id, { ...(body.ids === undefined ? {} : { ids: ids(body.ids) }), ...(typeof body.paused === "boolean" ? { paused: body.paused } : {}) },
-				body.replaced === undefined ? [] : ids(body.replaced));
+				body.sequence, body.replaced === undefined ? [] : ids(body.replaced));
 			return new Response(null, { status: 204 });
 		}
 		if (body.enabled === false && body.action !== "pause") return new Response(null, { status: 204 });
@@ -50,7 +57,7 @@ export async function POST(request: Request) {
 	} catch { return new Response(null, { status: 400 }); }
 }
 export async function DELETE(request: Request) {
-	if (isForeignOrigin(request)) return new Response(null, { status: 403 });
+	if (!allowed(request)) return new Response(null, { status: 403 });
 	if (!await clearProxies()) return new Response(null, { status: 409 });
 	return new Response(null, { status: 204 });
 }
