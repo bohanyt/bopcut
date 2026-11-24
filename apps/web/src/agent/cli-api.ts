@@ -4,6 +4,7 @@ import { projectDir, readJson } from "@/services/storage/server/files";
 import { fileInside } from "./inside";
 import { isForeignOrigin } from "./origin";
 import { startRender } from "./render-server";
+import { readTranscriptView } from "./transcript-view-server";
 
 type Snapshot = { projectId?: string; notes?: unknown; syncedAt?: string };
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -32,6 +33,15 @@ export async function handleCli(req: Request, action: string, workspace: string)
 		return json({ error: "Pass a valid --project-id or open a project in the editor." }, 400);
 	}
 	try {
+		if (action === "transcript-view" && req.method === "GET") {
+			if (!requested) return json({ error: "Pass --project-id for a transcript view." }, 400);
+			try {
+				const result = await readTranscriptView(requested, url.searchParams.get("media"), req.signal);
+				return new Response(result, { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+			} catch (error) {
+				return json({ error: error instanceof Error ? error.message : "Could not read the saved transcript." }, 400);
+			}
+		}
 		if (action === "selection") {
 			const selected = await readInside(workspace, "selection.json");
 			return json({ selection: !requested || requested === selected?.projectId ? selected : null });

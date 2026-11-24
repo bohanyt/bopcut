@@ -13,6 +13,7 @@ const { snapshotHistory } = await import("./history");
 const graphics = await import("@/services/renderer/renderer-device");
 const { rendererDevice } = graphics;
 const { storageService, normalizeBookmarks } = await import("@/services/storage/service");
+const fonts = await import("@/fonts/google-fonts");
 
 const T = (seconds: number) => mediaTimeFromSeconds({ seconds });
 const date = new Date(0);
@@ -194,6 +195,28 @@ test("a render-only core hydrates a saved project without opening a save session
 	expect(editor.scenes.getScenes()).toHaveLength(1);
 	await pollFrames(() => { throw new Error("render-only poll read an unassigned request"); });
 	await pollExport();
+});
+
+test("a range job can hydrate the project without waiting for project-wide fonts", async () => {
+	const editor = EditorCore.createRenderOnly();
+	const saved = scene("a", 10);
+	saved.tracks.overlay.push({
+		id: "titles", type: "text", name: "Titles", hidden: false,
+		elements: [{
+			id: "later-title", name: "Later title", type: "text", startTime: T(5), duration: T(1), trimStart: T(0), trimEnd: T(0),
+			params: { content: "Later", fontFamily: "Remote font" },
+		}],
+	});
+	const project: TProject = {
+		metadata: { id: "range", name: "Range", duration: T(10), createdAt: date, updatedAt: date },
+		currentSceneId: saved.id, scenes: [saved], settings, version: 31,
+	};
+	const load = spyOn(storageService, "loadProject").mockResolvedValue({ project });
+	const media = spyOn(storageService, "loadAllMediaAssets").mockResolvedValue([]);
+	const loadFonts = spyOn(fonts, "loadFonts").mockResolvedValue(undefined);
+	cleanups.push(() => { load.mockRestore(); media.mockRestore(); loadFonts.mockRestore(); });
+	await editor.project.loadForRender("range", async () => {}, { skipFonts: true });
+	expect(loadFonts).not.toHaveBeenCalled();
 });
 
 const ready = () => ({ ready: true, missingMedia: [] });

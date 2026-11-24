@@ -14,6 +14,7 @@
 - **Agen ikut mengedit:** agen mengirim draf per item (tambah, ubah, hapus). Editor menerapkannya dalam ±2 detik sebagai **satu langkah Undo**, dan item yang diubah langsung terpilih.
 - **Catatan dua arah:** beri catatan pada rentang waktu, item, atau area yang ditandai dengan kotak di pratinjau. Agen bisa membaca, membalas, dan menandai catatan selesai.
 - **Agen melihat frame:** agen bisa meminta gambar frame pada detik mana pun.
+- **Tinjau rentang waktu.** Baca transkrip ringkas dari kata yang tersimpan lewat `transcript-view`, atau buat PNG berisi frame, bentuk gelombang audio, kata, dan batas klip lewat `view`. Editor boleh tetap tertutup. [CLI agen](AGENT.md#agent-cli)
 - **Ambil potongan video dari link:** cukup link + waktu mulai/selesai (misalnya 20 detik dari live 3 jam). Yang diunduh hanya bagian itu, lewat yt-dlp, dengan potongan yang pas di frame. Bisa dari draf agen, dari CLI, atau dari tombol link di panel Assets.
 - **Sound effect tinggal sebut nama:** cari di folder SFX-mu sendiri dan di Myinstants (tanpa akun). Bisa dari tab Library di panel Sounds, atau agen cukup menulis `sfx: "vine boom"` di draf. Suara yang pernah diambil tersimpan dan ikut jadi library.
 - **Lagu tinggal sebut judul:** dari folder musikmu atau dicari online (hanya suaranya, lewat yt-dlp), langsung dinormalisasi kerasnya. Agen juga bisa membuat musik otomatis mengecil saat ada suara bicara (*ducking*), sebagai keyframe volume yang tetap bisa kamu geser.

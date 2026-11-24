@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
+import { audio, fixture } from "@/timeline/__tests__/compound-fixtures";
 import { handleCli } from "./cli-api";
 
 test("the local CLI reads the last project and filters selection without writing", async () => {
@@ -41,6 +43,63 @@ test("preferences are not served, and requests from another origin are refused",
 		const foreign = await handleCli(new Request(endpoint + "status", { headers: { Origin: "http://localhost:4100" } }), "status", workspace);
 		expect(foreign.status).toBe(403);
 	} finally {
+		await fs.rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test("transcript view reads the saved root and media without a workspace snapshot", async () => {
+	const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "agent-cli-transcript-view-"));
+	const data = process.env.BOPENCUT_DATA;
+	process.env.BOPENCUT_DATA = workspace;
+	const call = (media?: string) => {
+		const params = new URLSearchParams({ projectId: "demo", ...(media && { media }) });
+		return handleCli(new Request(`http://localhost:3100/api/agent/cli/transcript-view?${params}`), "transcript-view", workspace);
+	};
+	try {
+		const project = path.join(workspace, "projects", "demo");
+		const projectFile = path.join(project, "project.json");
+		const metadata = path.join(project, "media", "_metadata");
+		await fs.mkdir(metadata, { recursive: true });
+		const [root] = fixture();
+		root.tracks.main.elements = [];
+		root.tracks.overlay = [];
+		const { params: _params, ...clip } = audio("voice", 3, 5);
+		const metadataHeader = { id: "demo", name: "Saved fixture" };
+		const tracks = { ...root.tracks, audio: [{ ...root.tracks.audio[0], elements: [clip] }] };
+		const current = { version: CURRENT_PROJECT_VERSION, metadata: metadataHeader,
+			scenes: [{ ...root, tracks }], currentSceneId: root.id };
+		await fs.writeFile(projectFile, JSON.stringify(current));
+		await fs.writeFile(path.join(metadata, "media-voice.json"),
+			JSON.stringify({ name: "Recording", duration: 8, words: [{ text: "hello", start: 1, end: 2 }] }));
+		await fs.writeFile(path.join(metadata, "other.json"), JSON.stringify({ name: "Recording", duration: 2 }));
+		const timeline = await call();
+		expect(timeline.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+		expect(await timeline.text()).toContain("4-5 |1-2 +4 #1 hello");
+		const source = await (await call("media-voice")).text();
+		expect(source).toContain("1-2 +1 #1 hello");
+		expect(source).toContain("Recording [media-voice]");
+		expect(await (await call("other")).text()).toContain("[no words stored]");
+		expect(await (await call("Recording")).json()).toMatchObject({ error: "More than one media file has this name. Use a media ID: media-voice, other." });
+		expect((await call("missing")).status).toBe(400);
+		expect(await fs.readdir(workspace)).toEqual(["projects"]);
+
+		const legacy = JSON.stringify({
+			...current, version: 22,
+			scenes: [{ ...root, tracks: [{ ...root.tracks.main, isMain: true },
+				{ ...root.tracks.audio[0], elements: [{ ...clip, startTime: 3, duration: 5, params: {} }] }] }],
+		});
+		await fs.writeFile(projectFile, legacy);
+		expect(await (await call()).text()).toContain("4-5 |1-2 +4 #1 hello");
+		expect(await fs.readFile(projectFile, "utf8")).toBe(legacy);
+
+		await fs.writeFile(projectFile, JSON.stringify({ ...current, version: CURRENT_PROJECT_VERSION + 1 }));
+		expect(await (await call()).json()).toMatchObject({ error: expect.stringContaining("unsupported version") });
+		const invalid = { ...tracks, audio: [{ ...tracks.audio[0], elements: [{ ...clip, duration: null }] }] };
+		await fs.writeFile(projectFile, JSON.stringify({ ...current, scenes: [{ ...root, tracks: invalid }] }));
+		expect(await (await call()).json()).toMatchObject({ error: expect.stringContaining("invalid clip timing") });
+	} finally {
+		if (data === undefined) delete process.env.BOPENCUT_DATA;
+		else process.env.BOPENCUT_DATA = data;
 		await fs.rm(workspace, { recursive: true, force: true });
 	}
 });

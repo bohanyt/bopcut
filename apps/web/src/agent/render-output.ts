@@ -44,12 +44,12 @@ export async function rollbackOutput(workspace: string, scratch: string) {
 	const rev = jobRevision(scratch);
 	const output = await readJson(path.join(scratch, "output.json"));
 	if (!output) return;
-	const kind = output.file === `frames/${rev}` ? "frames" : "export";
+	const kind = output.file === `frames/${rev}` ? "frames" : output.file === `views/${rev}.png` ? "view" : "export";
 	if (kind === "export" && !/^exports\/[^/\\]+\.(?:mp4|webm)$/.test(output.file)) throw new Error("Invalid render output record.");
 	const name = `${kind}-result.json`;
 	const committed = await readJson(path.join(scratch, name));
 	const file = path.join(workspace, output.file);
-	const published = committed?.rev === rev && (kind === "export" ? committed.file === output.file :
+	const published = committed?.rev === rev && (kind !== "frames" ? committed.file === output.file :
 		Array.isArray(committed.files) && committed.files.some((frame: unknown) => typeof frame === "string" && frame.startsWith(`${output.file}/`)));
 	const actual = published ? null : await identity(file).catch((error: NodeJS.ErrnoException) => {
 		if (error.code === "ENOENT") return null;

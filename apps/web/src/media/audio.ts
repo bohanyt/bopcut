@@ -93,6 +93,7 @@ export function collectAudibleCandidates({
 	tracks: sceneTracks,
 	mediaAssets,
 	scenes = [],
+	rangeStart = 0,
 	duration = Infinity,
 	includeMissingVideo = false,
 	silentMissingVideoIds,
@@ -101,6 +102,7 @@ export function collectAudibleCandidates({
 	mediaAssets: MediaAsset[];
 	/** All project scenes; needed to mix the audio inside compound clips. */
 	scenes?: TScene[];
+	rangeStart?: number;
 	duration?: number;
 	/** Include enabled video audio even when its file is absent, for export preflight. */
 	includeMissingVideo?: boolean;
@@ -116,7 +118,7 @@ export function collectAudibleCandidates({
 
 		for (const element of track.elements) {
 			if (!canElementHaveAudio(element)) continue;
-			if (element.duration <= 0 || element.startTime >= duration || element.startTime + element.duration <= 0) continue;
+			if (element.duration <= 0 || element.startTime >= duration || element.startTime + element.duration <= rangeStart) continue;
 
 			const mediaAsset = hasMediaId(element)
 				? (mediaMap.get(element.mediaId) ?? null)

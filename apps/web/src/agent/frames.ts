@@ -229,7 +229,6 @@ async function renderFrame({ request, time, state, variant, box, settings, signa
 	request: { rev: string; width?: number }; time: number; state: TimelineState; variant?: string;
 	box?: BookmarkBox; settings: NonNullable<TimelineState["settings"]>; signal: AbortSignal; checkMedia: () => string | null; send: RenderFetch;
 }): Promise<{ file: string; crop?: string }> {
-	const editor = EditorCore.getInstance();
 	const { scenes, rootSceneId } = state;
 	const root = scenes.find((scene) => scene.id === rootSceneId);
 	if (!root) throw new Error("No scene");
@@ -238,12 +237,7 @@ async function renderFrame({ request, time, state, variant, box, settings, signa
 	if (duration === 0) throw new Error("The timeline of that state is empty");
 	if (ticks > lastFrameMediaTime({ duration, fps: settings.fps })) throw new Error(`Time outside timeline: ${time}`);
 	const { maxSurfaceDimension = 4096 } = getRendererLimits();
-	const snapshot = await editor.renderer.createSnapshot({ time: ticks, sceneId: root.id, scenes, settings });
-	signal.throwIfAborted();
-	const error = checkMedia();
-	if (error) throw new Error(error);
-	if (!snapshot.success) throw new Error(snapshot.error);
-	const image = await createImageBitmap(snapshot.blob);
+	const image = await captureFrame({ ticks, sceneId: root.id, scenes, settings, signal, checkMedia });
 	const canvas = document.createElement("canvas");
 	let crop: HTMLCanvasElement | undefined;
 	try {
@@ -292,4 +286,17 @@ async function renderFrame({ request, time, state, variant, box, settings, signa
 	const response = await send("/api/agent/frame", { method: "POST", body: form, signal });
 	if (!response.ok) throw new Error(await response.text());
 	return response.json();
+}
+
+export async function captureFrame({ ticks, sceneId, scenes, settings, signal, checkMedia }: {
+	ticks: ReturnType<typeof mediaTimeFromSeconds>; sceneId: string; scenes: TimelineState["scenes"];
+	settings: NonNullable<TimelineState["settings"]>; signal: AbortSignal; checkMedia?: () => string | null;
+}) {
+	signal.throwIfAborted();
+	const snapshot = await EditorCore.getInstance().renderer.createSnapshot({ time: ticks, sceneId, scenes, settings });
+	signal.throwIfAborted();
+	const error = checkMedia?.();
+	if (error) throw new Error(error);
+	if (!snapshot.success) throw new Error(snapshot.error);
+	return createImageBitmap(snapshot.blob);
 }

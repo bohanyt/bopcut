@@ -23,22 +23,12 @@ import type {
 	ProjectSummary,
 } from "./types";
 import type { SavedSoundsData, SavedSound, SoundEffect } from "@/sounds/types";
-import { CURRENT_PROJECT_VERSION, migrations } from "@/services/storage/migrations";
+import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
+import { migrateProject } from "./project-migration";
 import type { Bookmark, SceneTracks } from "@/timeline";
 import { roundMediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 const browserMigrationKey = "bopencut:browser-storage-copied";
-
-async function migrateProject(project: ProjectRecord, id: string, version: number) {
-	for (const migration of migrations) {
-		if (migration.from !== version) continue;
-		const result = await migration.run({ projectId: id, project });
-		if (result.skipped) throw new Error(`Project migration ${id}: ${result.reason ?? "failed"}`);
-		project = result.project;
-		version = migration.to;
-	}
-	return project as unknown as SerializedProject;
-}
 
 function deserializeMetadata(metadata: ProjectSummary["metadata"], duration = metadata.duration): TProjectMetadata {
 	return {

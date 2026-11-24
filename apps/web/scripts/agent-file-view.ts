@@ -1,0 +1,96 @@
+import { randomUUID } from "node:crypto";
+import { existsSync, promises as fs } from "node:fs";
+import path from "node:path";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
+import { fileInside, inside } from "../src/agent/inside";
+import { accumulatePeaks, drawRangeView, MAX_RANGE_PNG, rangeRows, RANGE_BUCKETS, RANGE_FRAME_WIDTH, RANGE_HEADER, RANGE_ROW_HEIGHT, RANGE_WIDTH, type RangeInput } from "../src/agent/range-view";
+import { parseSourceWords } from "../src/media/words";
+import { runProcess, withToolScratch } from "../src/retrieval/process";
+import { commandFromSetting, toolsFromEnv } from "../src/retrieval/server";
+import { atomicWrite } from "../src/services/storage/server/files";
+
+const inputFormats = ["-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm,avi,mpegts,mpeg,m4v,ogg"];
+
+export function fileProbeCommand(ffmpeg: string, configured = process.env.BOPENCUT_FFPROBE) {
+	const executable = process.platform === "win32" ? "ffprobe.exe" : "ffprobe";
+	const sibling = path.join(path.dirname(ffmpeg), executable);
+	return commandFromSetting(configured, path.dirname(ffmpeg) !== "." && existsSync(sibling) ? sibling : executable);
+}
+
+export function checkFileRange(input: RangeInput, info: string) {
+	const data = JSON.parse(info) as { format?: { duration?: string; start_time?: string };
+		streams?: { codec_type: string; channels?: number; start_time?: string }[] };
+	const duration = Number(data.format?.duration);
+	if (!Number.isFinite(duration) || duration <= 0) throw new Error("Could not determine the video duration. Use a file with a known duration.");
+	if (input.to > duration) throw new Error("The range ends outside the video file.");
+	const video = data.streams?.find((stream) => stream.codec_type === "video");
+	if (!video) throw new Error("The file has no video stream.");
+	const start = Number(video.start_time) - Number(data.format?.start_time ?? 0);
+	if (start > rangeRows(input)[0].time + 1e-6) throw new Error("The range starts before the file has a video frame.");
+	const audio = data.streams?.find((stream) => stream.codec_type === "audio");
+	if (!audio) return 0;
+	const channels = audio.channels ?? 0;
+	if (!Number.isInteger(channels) || channels < 1 || channels > 64) throw new Error("Could not determine a supported audio channel count.");
+	return channels;
+}
+
+export async function fileRangeView(relative: string, input: RangeInput, workspace: string, filesRoot: string, signal: AbortSignal) {
+	relative = path.relative(filesRoot, inside(filesRoot, relative));
+	const file = await fileInside(filesRoot, relative);
+	if (!file) throw new Error("The video was not found under AGENT_FILES_ROOT.");
+	const [ffmpeg, ...defaults] = toolsFromEnv(process.env).ffmpeg;
+	const [ffprobe, ...probeDefaults] = fileProbeCommand(ffmpeg);
+	const rate = 8_000;
+	return withToolScratch(signal, filesRoot, async (scratch, active) => {
+		const run = (seek: number, args: string[], seekOptions: string[] = []) => runProcess(ffmpeg, [...defaults, "-hide_banner", "-loglevel", "error",
+			"-y", ...inputFormats, "-ss", String(seek), ...seekOptions, "-i", file, ...args], active, filesRoot);
+		const info = await runProcess(ffprobe, [...probeDefaults, "-v", "error", ...inputFormats,
+			"-show_entries", "format=duration,start_time:stream=codec_type,start_time,channels", "-of", "json", file], active, filesRoot)
+			.catch((error: NodeJS.ErrnoException) => {
+				if (error.code === "ENOENT") throw new Error("FFprobe is required for file views. Set BOPENCUT_FFPROBE or put ffprobe on PATH.");
+				throw error;
+			});
+		const channels = checkFileRange(input, info.stdout);
+		const tile = path.join(scratch, "%03d.jpg");
+		const rows = rangeRows(input);
+		const span = input.to - input.from;
+		const seek = Math.max(0, rows[0].time - 1);
+		const firstMidpoint = Math.round((rows[0].time - seek) * 1_000_000);
+		const fps = `${input.rows * 1_000_000}/${Math.round(span * 1_000_000)}`;
+		const tileHeight = 90;
+		// Keep frames before the seek, then align the sampling grid with the first midpoint.
+		// Upward rounding retains the most recent frame at each midpoint. Hold the final picture through the file tail.
+		await run(seek, ["-map", "0:v:0", "-an", "-vf",
+			`tpad=stop=-1:stop_mode=clone,settb=AVTB,setpts=PTS-${firstMidpoint},fps=fps=${fps}:start_time=0:round=up,scale=${RANGE_FRAME_WIDTH}:${tileHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${RANGE_FRAME_WIDTH}:${tileHeight}:(ow-iw)/2:(oh-ih)/2`,
+			"-frames:v", String(input.rows), "-threads", "1", tile], ["-noaccurate_seek"]);
+		const frames = await Promise.all(rows.map(async (_, i) => {
+			const frame = path.join(scratch, `${String(i + 1).padStart(3, "0")}.jpg`);
+			return loadImage(frame).catch(() => { throw new Error("The file cannot show all requested frames. Shorten the range."); });
+		}));
+		const peaks = new Float32Array(input.rows * RANGE_BUCKETS);
+		if (channels) {
+			const pcm = path.join(scratch, "audio.f32");
+			// Audio packets keep their offset from the video after seeking. Pad to range time zero and retain their channels.
+			await run(input.from, ["-map", "0:a:0", "-vn", "-t", String(span),
+				"-af", `aresample=${rate}:async=1:first_pts=0`, "-f", "f32le", pcm]);
+			const audio = await fs.readFile(pcm);
+			const samples = new Float32Array(audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength));
+			accumulatePeaks(peaks, samples, 0, Math.ceil(span * rate), channels);
+		}
+		const sidecar = await fileInside(filesRoot, relative + ".words.json");
+		const words = sidecar ? parseSourceWords(JSON.parse(await fs.readFile(sidecar, "utf8"))) : [];
+		if (!words) throw new Error("Invalid source words sidecar.");
+		const canvas = createCanvas(RANGE_WIDTH, RANGE_HEADER + RANGE_ROW_HEIGHT * input.rows);
+		const ctx = canvas.getContext("2d");
+		drawRangeView(ctx, input, { title: path.basename(file), peaks, words, spans: [], frames: frames.map((image) =>
+			(x, y, w, h) => ctx.drawImage(image, x, y, w, h)) });
+		const bytes = await canvas.encode("png");
+		if (bytes.length > MAX_RANGE_PNG) throw new Error("The range picture exceeds the PNG size limit.");
+		const views = path.join(workspace, "views");
+		await fs.mkdir(views, { recursive: true });
+		if (!(await fs.lstat(views)).isDirectory()) throw new Error("The views folder must be a directory.");
+		const output = `views/file-${randomUUID()}.png`;
+		await atomicWrite(path.join(workspace, output), bytes, active);
+		return { file: output, bytes: bytes.length, ...input };
+	}, workspace);
+}
