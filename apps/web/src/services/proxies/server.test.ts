@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { clearProxies, ensureProxySpace, fingerprint, openSession } from "./server";
+import { clearProxies, ensureProxySpace, fingerprint, openSession, updateSession } from "./server";
 import * as processes from "@/retrieval/process";
 
 test("proxy cache identity follows content across copies and hard links", async () => {
@@ -57,38 +57,55 @@ test("evicts the least recently used file and preserves the cache below the disk
 	}
 });
 
-test("starts the nearest queued asset and aborts its work when the tab closes", async () => {
+test("reorders pending assets, cleans interrupted jobs and aborts when the tab closes", async () => {
 	const root = await fs.mkdtemp(path.join(tmpdir(), "proxy-queue-"));
 	const project = path.join(root, "projects", "fixture");
 	const dir = path.join(project, "media");
 	const meta = path.join(dir, "_metadata");
+	const cache = path.join(root, "proxies");
+	const interrupted = [".job-12345678-1234-1234-1234-123456789123.mp4", "a".repeat(64) + "-p1-v1.mp4"];
 	const previousRoot = process.env.BOPENCUT_DATA;
 	const previousReserve = process.env.BOPENCUT_PROXY_FREE_BYTES;
 	process.env.BOPENCUT_DATA = root;
 	process.env.BOPENCUT_PROXY_FREE_BYTES = "0";
 	const started = Promise.withResolvers<string>();
+	const firstFinished = Promise.withResolvers<void>();
+	const second = Promise.withResolvers<string>();
 	const cancelled = Promise.withResolvers<void>();
 	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args, signal) => {
 		if (args.includes("-encoders")) return { stdout: "h264_nvenc", stderr: "" };
 		if (!args.includes("-show_frames")) return { stdout: "", stderr: "" };
-		started.resolve(path.basename(args.at(-1)!));
+		const file = path.basename(args.at(-1)!);
+		if (file === "near.mp4") {
+			started.resolve(file);
+			await firstFinished.promise;
+			return { stdout: '{"streams":[],"frames":[]}', stderr: "" };
+		}
+		second.resolve(file);
 		await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
 		cancelled.resolve();
 		throw signal.reason;
 	});
 	let close: (() => void) | undefined;
-	const ids = ["near", "far"];
+	const ids = ["near", "middle", "far"];
 	try {
 		await fs.mkdir(meta, { recursive: true });
+		await fs.mkdir(cache);
+		for (const file of interrupted) await fs.writeFile(path.join(cache, file), "");
 		for (const id of ids) {
 			await fs.writeFile(path.join(dir, id + ".mp4"), id);
 			await fs.writeFile(path.join(meta, id + ".json"), JSON.stringify({ type: "video", diskFile: id + ".mp4" }));
 		}
 		close = openSession("tab", { project: "fixture", ids, paused: false, software: false, send() {} });
 		expect(await started.promise).toBe("near.mp4");
+		expect(await fs.readdir(cache)).toEqual([]);
+		updateSession("tab", { ids: ["near", "far", "middle"] });
+		firstFinished.resolve();
+		expect(await second.promise).toBe("far.mp4");
 		close();
 		await cancelled.promise;
 	} finally {
+		firstFinished.resolve();
 		close?.();
 		await clearProxies();
 		run.mockRestore();
@@ -98,7 +115,8 @@ test("starts the nearest queued asset and aborts its work when the tab closes", 
 			await fs.rm(path.join(dir, id + ".mp4"), { force: true });
 			await fs.rm(path.join(meta, id + ".json"), { force: true });
 		}
-		for (const folder of [meta, dir, project, path.dirname(project), path.join(root, "proxies"), root]) {
+		for (const file of interrupted) await fs.rm(path.join(cache, file), { force: true });
+		for (const folder of [meta, dir, project, path.dirname(project), cache, root]) {
 			await fs.rmdir(folder).catch(() => {});
 		}
 	}

@@ -68,7 +68,7 @@ async function probe(file: string, signal: AbortSignal): Promise<Probe> {
 	const [exe] = command();
 	const suffix = process.platform === "win32" ? ".exe" : "";
 	const ffprobe = path.isAbsolute(exe) ? path.join(path.dirname(exe), "ffprobe" + suffix) : "ffprobe" + suffix;
-	const result = await runBackgroundProcess(ffprobe, ["-v", "error", "-select_streams", "v:0",
+	const result = await runBackgroundProcess(ffprobe, ["-v", "error", "-select_streams", "v",
 		"-show_frames", "-show_streams", "-show_entries",
 		"frame=best_effort_timestamp,key_frame,pict_type:stream=width,height,pix_fmt,time_base,duration,sample_aspect_ratio:stream_tags=alpha_mode:stream_side_data=rotation",
 		"-of", "json", file], signal, directory());
@@ -79,6 +79,14 @@ function timestamps(probe: Probe) {
 	const times = (probe.frames ?? []).map((frame) => frame.best_effort_timestamp * num / den);
 	return times.length && times.every((t, i) => Number.isFinite(t) && (!i || t > times[i - 1])) ? times : undefined;
 }
+function shortGop(frames: Probe["frames"]) {
+	let position = 8;
+	for (const frame of frames) {
+		position = frame.key_frame ? 0 : position + 1;
+		if (position >= 8) return false;
+	}
+	return true;
+}
 async function files() {
 	const entries = await fs.readdir(directory()).catch(() => []);
 	return Promise.all(entries.filter((name) => name.endsWith(".mp4") && keyPattern.test(name.slice(0, -4)))
@@ -87,6 +95,16 @@ async function files() {
 			const sidecar = await fs.stat(path.join(directory(), name.replace(/\.mp4$/, ".json"))).catch(() => null);
 			return { name, stat: { size: video.size + (sidecar?.size ?? 0), mtimeMs: video.mtimeMs } };
 		}));
+}
+async function cleanInterruptedJobs() {
+	const names = new Set(await fs.readdir(directory()));
+	for (const name of names) {
+		const match = /^([a-f0-9]{64}-p1-v1)\.(mp4|json)$/.exec(name);
+		if (/^\.job-[a-f0-9-]{36}\.mp4(?:\.json)?$/.test(name) ||
+			(match && !names.has(match[1] + (match[2] === "mp4" ? ".json" : ".mp4")))) {
+			await fs.rm(path.join(directory(), name), { force: true }).catch(() => {});
+		}
+	}
 }
 export async function ensureProxySpace(bytes: number, keep?: string, alreadyWritten = 0): Promise<number> {
 	const available = await fs.statfs(directory());
@@ -115,13 +133,15 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 	}
 	await ensureProxySpace(0);
 	const source = await probe(file, signal);
+	// The editor and FFmpeg can select different tracks when there is more than one.
+	if (source.streams.length !== 1) return;
 	const stream = source.streams[0];
 	const pts = timestamps(source);
 	if (!stream || !pts || stream.tags?.alpha_mode === "1" || /^(yuva|gbrap|rgba|bgra|argb|abgr|ya|pal)/.test(stream.pix_fmt)) return;
 	if (stream.sample_aspect_ratio && !["1:1", "N/A"].includes(stream.sample_aspect_ratio)) return;
 	const duration = Number(stream.duration) || pts.at(-1)! - pts[0];
 	if (duration < 2) return;
-	if (Math.min(stream.width, stream.height) <= 540 && source.frames.filter(f => f.key_frame).length * 8 >= pts.length) return;
+	if (Math.min(stream.width, stream.height) <= 540 && shortGop(source.frames)) return;
 	const rotation = stream.side_data_list?.find(s => s.rotation !== undefined)?.rotation ?? 0;
 	if (rotation % 90) return;
 	const [width, height] = Math.abs(rotation % 180) ? [stream.height, stream.width] : [stream.width, stream.height];
@@ -130,8 +150,10 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 	const h = Math.max(2, Math.round(height * scale / 2) * 2);
 	const temp = path.join(directory(), ".job-" + randomUUID() + ".mp4");
 	const sidecar = temp + ".json";
+	const estimate = Math.min(limit(), Math.ceil(duration * 650_000 + pts.length * 48 + 4096));
+	const used = await ensureProxySpace(estimate);
 	const free = await fs.statfs(directory());
-	const maxBytes = Math.floor(Math.min(limit(), free.bavail * free.bsize - reserve()));
+	const maxBytes = Math.floor(Math.min(limit() - used, free.bavail * free.bsize - reserve()));
 	if (maxBytes < 1024) throw new LowDisk();
 	try {
 		let success = false;
@@ -167,7 +189,13 @@ async function prepare(file: string, software: boolean, encoders: string[], sign
 		await fs.writeFile(sidecar, serialized);
 		signal.throwIfAborted();
 		await fs.rename(temp, video);
-		await fs.rename(sidecar, metadata).catch(async error => { await fs.rm(video, { force: true }); throw error; });
+		try {
+			signal.throwIfAborted();
+			await fs.rename(sidecar, metadata);
+		} catch (error) {
+			await fs.rm(video, { force: true });
+			throw error;
+		}
 		return info;
 	} finally {
 		await Promise.all([temp, sidecar].map(file => fs.rm(file, { force: true }).catch(() => {})));
@@ -196,6 +224,7 @@ export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" 
 export function openSession(id: string, session: Omit<Session, "done">) {
 	const entry = { ...session, done: new Set<string>() };
 	sessions.set(id, entry);
+	if (entry.paused) active?.controller.abort();
 	void pump();
 	return () => {
 		if (sessions.get(id) !== entry) return;
@@ -213,9 +242,7 @@ async function pump() {
 		await fs.mkdir(directory(), { recursive: true });
 		if (!initialized) {
 			initialized = true;
-			for (const name of await fs.readdir(directory())) {
-				if (/^\.job-[a-f0-9-]{36}\.mp4(?:\.json)?$/.test(name)) await fs.rm(path.join(directory(), name), { force: true }).catch(() => {});
-			}
+			await cleanInterruptedJobs();
 		}
 		encoderProbe ??= run(["-hide_banner", "-encoders"], AbortSignal.timeout(10_000))
 			.then(async ({ stdout }) => {
@@ -242,9 +269,10 @@ async function pump() {
 			if (!encoders.length && !session.software) { report("software"); continue; }
 			if ([...sessions.values()].some(entry => entry.paused)) continue;
 			let failed = false;
-			for (const id of session.ids) {
-				if (session.done.has(id)) continue;
+			for (;;) {
 				if (wiping || [...sessions.values()].some(entry => entry.paused) || ![...sessions.values()].includes(session)) break;
+				const id = session.ids.find(id => !session.done.has(id));
+				if (!id) break;
 				const controller = new AbortController();
 				active = { session, media: id, controller };
 				report("preparing");
