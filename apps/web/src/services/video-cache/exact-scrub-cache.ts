@@ -8,7 +8,7 @@ const READ_BYTES = 8 * 1024 * 1024;
 const FRAME_LIMIT = 180;
 const FRAME_BYTES = 128 * 1024 * 1024;
 
-type Source = { input: Input; track: Promise<InputVideoTrack>; bytes: number; lastTime?: number; backward?: boolean };
+type Source = { input: Input; track: Promise<InputVideoTrack>; bytes: number };
 type Entry = { source: Source; start: number; end: number; frame: VideoFrame; bytes: number };
 type Options = {
 	getScale: (size: { width: number; height: number }) => number;
@@ -19,12 +19,14 @@ type Cursor = {
 	source: Source;
 	clip: object;
 	time: number;
-	backfill: boolean;
+	windowStart?: number;
+	bounds?: Promise<{ start: number; end: number }>;
 	end: number;
 	start?: number;
 	current?: VideoSample;
 	next?: VideoSample;
 	exhausted?: boolean;
+	requested?: boolean;
 	samples?: ReturnType<VideoSampleSink["samples"]>;
 	work?: Promise<void>;
 };
@@ -37,15 +39,15 @@ export class ExactScrubCache {
 	private bytes = 0;
 	private sourceBytes = 0;
 	private cursor?: Cursor;
-	private retired = Promise.resolve();
+	private retiring = new Set<Promise<void>>();
+	private target?: { clip: object; time: number; previous?: number };
+	private fill?: () => void;
 
 	async getFrameAt(file: File, clip: object, time: number, options: Options): Promise<VideoFrame | null> {
 		options.signal?.throwIfAborted();
 		const source = this.open(file);
-		const backward = source.lastTime !== undefined && time < source.lastTime;
-		const backfill = backward && source.backward === true;
-		if (time !== source.lastTime) source.backward = backward;
-		source.lastTime = time;
+		const previous = this.target?.clip === clip ? this.target : undefined;
+		if (time !== previous?.time) this.target = { clip, time, previous: previous?.time };
 		const track = await source.track;
 		options.signal?.throwIfAborted();
 		if (this.sources.get(file) !== source) return null;
@@ -54,8 +56,8 @@ export class ExactScrubCache {
 		}), options.maxTextureDimension);
 		let cursor = this.cursor;
 		if (cursor && (cursor.source !== source || (cursor.clip !== clip && cursor.time !== time) ||
-			time < (cursor.start ?? (cursor.backfill ? -Infinity : cursor.time)))) {
-			this.stop();
+			time < (cursor.start ?? cursor.time))) {
+			this.retire(cursor);
 			cursor = undefined;
 		}
 		const hit = this.find(source, time, size);
@@ -74,11 +76,12 @@ export class ExactScrubCache {
 			return this.getFrameAt(file, clip, time, options);
 		}
 		if (!cursor || (!cursor.work && time >= cursor.end)) {
-			this.stop();
-			cursor = this.cursor = { source, clip, time, backfill, end: Infinity };
+			if (cursor) this.retire(cursor);
+			cursor = this.cursor = { source, clip, time, end: Infinity };
 		}
-		if (time > cursor.time) cursor.backfill = false;
+		if (time > cursor.time) cursor.windowStart = undefined;
 		cursor.time = time;
+		cursor.requested = true;
 		if (!cursor.work) {
 			const active = cursor;
 			active.work = this.decode(active, track, size).finally(() => { active.work = undefined; });
@@ -93,24 +96,43 @@ export class ExactScrubCache {
 		}
 		// An oversized surface may exceed the ring's budget by itself.
 		const current = cursor.current;
-		return current && time >= (cursor.start ?? Infinity) &&
-			(time === current.timestamp || cursor.exhausted || (cursor.next && time < cursor.next.timestamp))
-			? this.rasterize(current, track, size)
-			: null;
+		if (!current || time < (cursor.start ?? Infinity) ||
+			!(time === current.timestamp || cursor.exhausted || (cursor.next && time < cursor.next.timestamp))) return null;
+		if (cursor.windowStart === undefined && previous?.previous !== undefined &&
+			time < previous.time && previous.time < previous.previous) {
+			const active = cursor;
+			const prior = previous.previous;
+			const duration = current.duration;
+			this.fill = () => {
+				void active.bounds?.then(({ start, end }) => {
+					if (this.cursor !== active || active.time !== time || active.work || prior >= end ||
+						time < start || this.target?.time !== time || this.target.clip !== clip) return;
+					const windowStart = Math.max(start, time - (duration > 0 ? 80 * duration : 3));
+					this.retire(active);
+					const filling: Cursor = this.cursor = { source, clip, time, windowStart, end };
+					filling.work = this.decode(filling, track, size).catch(() => {}).finally(() => { filling.work = undefined; });
+				});
+			};
+		}
+		return this.rasterize(current, track, size);
 	}
 
 	private async decode(cursor: Cursor, track: InputVideoTrack, size: { width: number; height: number }): Promise<void> {
-		await this.retired;
-		if (this.cursor !== cursor) return;
 		if (!cursor.samples) {
-			const packets = new EncodedPacketSink(track);
-			const key = await packets.getKeyPacket(cursor.time, { verifyKeyPackets: true });
-			const next = key && await packets.getNextKeyPacket(key, { metadataOnly: true });
+			while (this.retiring.size >= 2) await Promise.race(this.retiring);
 			if (this.cursor !== cursor) return;
-			cursor.end = next?.timestamp ?? Infinity;
-			cursor.start = cursor.backfill && key && key.timestamp <= cursor.time ? key.timestamp : cursor.time;
+			cursor.start = cursor.windowStart ?? cursor.time;
 			cursor.samples = new VideoSampleSink(track).samples(cursor.start);
+			const at = cursor.time;
+			cursor.bounds = (async () => {
+				const packets = new EncodedPacketSink(track);
+				const key = await packets.getKeyPacket(at, { verifyKeyPackets: true });
+				const next = key && await packets.getNextKeyPacket(key, { metadataOnly: true });
+				cursor.end = next?.timestamp ?? Infinity;
+				return { start: key?.timestamp ?? at, end: cursor.end };
+			})().catch(() => ({ start: at, end: Infinity }));
 		}
+		let copied = 0;
 		while (this.cursor === cursor) {
 			if (!cursor.current) {
 				const first = await cursor.samples.next();
@@ -118,11 +140,7 @@ export class ExactScrubCache {
 				cursor.current = first.value;
 				cursor.start = Math.min(cursor.time, first.value.timestamp);
 			}
-			if (!cursor.backfill && !cursor.next && cursor.current.timestamp === cursor.time) {
-				// A sample at the exact timestamp can be used before its interval is known.
-				this.remember(cursor.source, cursor.time, cursor.time, cursor.current, track, size);
-				return;
-			}
+			if (cursor.current.timestamp === cursor.time && cursor.requested) return;
 			if (!cursor.next) {
 				const next = await cursor.samples.next();
 				if (this.cursor !== cursor) { next.value?.close(); return; }
@@ -137,10 +155,13 @@ export class ExactScrubCache {
 				return;
 			}
 			const reached = cursor.time < end;
+			if (reached && cursor.requested) return;
 			// The next presentation timestamp covers gaps between VFR samples.
-			if ((reached || cursor.backfill) && cursor.start !== undefined && end > cursor.start) {
+			if (cursor.windowStart !== undefined && cursor.start !== undefined && end > cursor.start) {
 				this.remember(cursor.source, cursor.start, end, current, track, size);
+				if (!reached && ++copied % 8 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			}
+			if (this.cursor !== cursor || cursor.time < end) return;
 			if (reached || !cursor.next) return;
 			current.close();
 			cursor.current = cursor.next;
@@ -221,17 +242,30 @@ export class ExactScrubCache {
 		for (const entry of this.entries) if (entry.source === source) this.drop(entry);
 	}
 
-	finishFrame(): void { this.pinned.clear(); }
+	finishFrame(presented = false): void {
+		this.pinned.clear();
+		const fill = this.fill;
+		this.fill = undefined;
+		if (presented) fill?.();
+	}
 
 	stop(): void {
-		const cursor = this.cursor;
-		if (!cursor) return;
+		this.target = undefined;
+		this.fill = undefined;
+		if (this.cursor) this.retire(this.cursor);
+	}
+
+	private retire(cursor: Cursor): void {
 		this.cursor = undefined;
-		this.retired = Promise.allSettled([this.retired, cursor.work]).then(async () => {
+		if (!cursor.samples) return;
+		const retirement = Promise.allSettled([cursor.work]).then(async () => {
 			cursor.current?.close();
 			cursor.next?.close();
 			await cursor.samples?.return().catch(() => {});
+		}).finally(() => {
+			this.retiring.delete(retirement);
 		});
+		this.retiring.add(retirement);
 	}
 
 	clear(): void {

@@ -168,15 +168,17 @@ export class CanvasRenderer {
 		signal?.throwIfAborted();
 		const generation = rendererDevice.requireReady();
 		const frameSignal = signal ? AbortSignal.any([signal, generation]) : generation;
+		let presented = false;
 		const task = renderQueue.then(async () => {
 			frameSignal.throwIfAborted();
 			checkGraphicsContext();
 			await this.renderFrame({ node, time, signal: frameSignal, targetCanvas, scrubCache });
+			presented = true;
 		}).catch((error: unknown) => {
 			frameSignal.throwIfAborted();
 			rethrowGraphicsFailure(error);
 		}).finally(() => {
-			scrubCache?.finishFrame();
+			scrubCache?.finishFrame(presented);
 			if (frameSignal.aborted) this.videoCache.clear();
 			else this.videoCache.finishFrame();
 		});

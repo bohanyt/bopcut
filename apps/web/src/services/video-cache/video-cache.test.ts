@@ -33,9 +33,11 @@ async function withVideo(
 		closed: number[];
 		pixels: Map<OffscreenCanvas, TestFrame>;
 	}) => Promise<void>,
-	{ width = 3840, height = 2160, rotation = 0, seekError, draw }: {
+	{ width = 3840, height = 2160, rotation = 0, seekError, draw, beforeFirstSample, beforeReturn }: {
 		width?: number; height?: number; rotation?: number; seekError?: Error;
 		draw?: (ctx: OffscreenCanvasRenderingContext2D, frame: TestFrame) => void;
+		beforeFirstSample?: () => Promise<void>;
+		beforeReturn?: (time: number) => Promise<void> | undefined;
 	} = {},
 ) {
 	const previous = Object.getOwnPropertyDescriptors(globalThis);
@@ -61,9 +63,11 @@ async function withVideo(
 		async function* (start = 0) {
 			starts.push(start);
 			if (seekError) throw seekError;
+			if (beforeFirstSample) await beforeFirstSample();
 			const after = frames.findIndex((frame) => frame.timestamp > start);
 			const first = after < 0 ? frames.length - 1 : Math.max(0, after - 1);
-			for (const frame of frames.slice(first)) {
+			try {
+				for (const frame of frames.slice(first)) {
 				decoded.push(frame.timestamp);
 				const sample: VideoSample = Object.create(VideoSample.prototype, {
 					timestamp: { value: frame.timestamp },
@@ -78,6 +82,9 @@ async function withVideo(
 					close: { value: () => closed.push(frame.timestamp) },
 				});
 				yield sample;
+			}
+			} finally {
+				await beforeReturn?.(start);
 			}
 		},
 	);
@@ -121,42 +128,41 @@ const constantRate = (seconds: number) => Array.from({ length: seconds * 30 }, (
 }));
 
 test("the exact scrub ring reuses a backward GOP decode, including gaps, at the regular preview size", () =>
-	withVideo([0, 0.5, 1, 2].map((timestamp) => ({ timestamp, duration: 0.03 })), async ({ file, starts, closed }) => {
+	withVideo([0, 0.5, 1, 2].map((timestamp) => ({ timestamp, duration: 0.03 })), async ({ file, starts, closed, decoded }) => {
 		const cache = new ExactScrubCache();
 		const clip = {};
 		const key = spyOn(EncodedPacketSink.prototype, "getKeyPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 0, 0.03));
 		const nextKey = spyOn(EncodedPacketSink.prototype, "getNextKeyPacket").mockResolvedValue(null);
 		const read = async (time: number) => {
 			const frame = await cache.getFrameAt(file, clip, time, { getScale: () => 0.5, maxTextureDimension: 1920 });
-			cache.finishFrame();
+			cache.finishFrame(true);
+			await new Promise((resolve) => setTimeout(resolve, 0));
 			return frame;
 		};
 		try {
 			expect(await read(2)).toMatchObject({ timestamp: 2, canvas: { width: 960, height: 540 } });
 			expect((await read(1.8))?.timestamp).toBe(1);
+			expect(starts).toEqual([2, 1.8]);
 			expect((await read(0.8))?.timestamp).toBe(0.5);
 			expect((await read(0.2))?.timestamp).toBe(0);
 			expect((await read(1.5))?.timestamp).toBe(1);
-			expect(starts).toEqual([2, 1.8, 0]);
+			expect(starts.slice(0, 4)).toEqual([2, 1.8, 0.8, 0]);
 		} finally {
 			cache.clear();
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			key.mockRestore();
 			nextKey.mockRestore();
 		}
-		expect(closed.sort()).toEqual([0, 0.5, 1, 1, 2, 2]);
+		expect(closed.sort()).toEqual(decoded.sort());
 	}, { width: 1920, height: 1080 }));
 
-test("a newer forward scrub target reuses the same in-flight decoder request", () =>
-	withVideo(constantRate(2), async ({ file, starts }) => {
+test("a newer forward scrub target reuses the same in-flight decoder request", () => {
+	const entered = Promise.withResolvers<void>();
+	const decode = Promise.withResolvers<void>();
+	return withVideo(constantRate(2), async ({ file, starts }) => {
 		const cache = new ExactScrubCache();
 		const clip = {};
-		const entered = Promise.withResolvers<void>();
-		const packet = Promise.withResolvers<EncodedPacket>();
-		const key = spyOn(EncodedPacketSink.prototype, "getKeyPacket").mockImplementation(() => {
-			entered.resolve();
-			return packet.promise;
-		});
+		const key = spyOn(EncodedPacketSink.prototype, "getKeyPacket").mockResolvedValue(new EncodedPacket(Uint8Array.of(1), "key", 0, 0.03));
 		const nextKey = spyOn(EncodedPacketSink.prototype, "getNextKeyPacket").mockResolvedValue(null);
 		const options = { getScale: () => 0.5, maxTextureDimension: 1920 };
 		try {
@@ -164,17 +170,36 @@ test("a newer forward scrub target reuses the same in-flight decoder request", (
 			await entered.promise;
 			const newest = cache.getFrameAt(file, clip, 1.2, options);
 			await Promise.resolve();
-			packet.resolve(new EncodedPacket(Uint8Array.of(1), "key", 0, 0.03));
+			decode.resolve();
 			expect(await old).toBeNull();
 			expect((await newest)?.timestamp).toBe(1.2);
-			expect(starts).toEqual([1.2]);
+			expect(starts).toEqual([1]);
 		} finally {
 			cache.clear();
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			key.mockRestore();
 			nextKey.mockRestore();
 		}
-	}, { width: 1920, height: 1080 }));
+	}, { width: 1920, height: 1080, beforeFirstSample: () => { entered.resolve(); return decode.promise; } });
+});
+
+test("a new clip can decode while the previous scrub iterator retires", () => {
+	const previousReturn = Promise.withResolvers<void>();
+	return withVideo(constantRate(2), async ({ file, starts }) => {
+		const cache = new ExactScrubCache();
+		const options = { getScale: () => 0.5, maxTextureDimension: 1920 };
+		try {
+			expect((await cache.getFrameAt(file, {}, 0.5, options))?.timestamp).toBe(0.5);
+			const other = new File([], "other.mp4");
+			expect((await cache.getFrameAt(other, {}, 1, options))?.timestamp).toBe(1);
+			expect(starts).toEqual([0.5, 1]);
+		} finally {
+			previousReturn.resolve();
+			cache.clear();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+	}, { width: 1920, height: 1080, beforeReturn: (time) => time === 0.5 ? previousReturn.promise : undefined });
+});
 
 test.each(["preview", "export"])("%s video textures retain alpha when a frame surface is reused", (mode) =>
 	withVideo(constantRate(1), async ({ file }) => {
