@@ -16,7 +16,7 @@ import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
 import { handleExportFile, handleExportResult } from "@/agent/export-server";
 import { handleCli } from "@/agent/cli-api";
-import { inside as resolveInsideRoot } from "@/agent/inside";
+import { fileInside, inside as resolveInsideRoot } from "@/agent/inside";
 import { renderPresence, renderRequest, renderWorker } from "@/agent/render-server";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
@@ -28,6 +28,19 @@ const inside = (rel: string) => resolveInsideRoot(FILES_ROOT, rel);
 
 // Unique temp file, rename retried on transient Windows locks, writes to one file queued.
 const writeAtomic = atomicWrite;
+
+const frameFileName = /^(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?(?:-compare|-crop)?\.jpg$/i;
+
+async function discardFrameFiles(workspace: string, rev: unknown, discard: unknown) {
+	if (typeof rev !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(rev) || !Array.isArray(discard)) return;
+	for (const rel of discard) {
+		if (typeof rel !== "string" || !rel.startsWith(`frames/${rev}/`)) continue;
+		const name = rel.slice(`frames/${rev}/`.length);
+		if (!name || name.includes("/") || !frameFileName.test(name)) continue;
+		const file = await fileInside(workspace, "frames", rev, name);
+		if (file) await fs.unlink(file).catch(() => {});
+	}
+}
 
 /**
  * Browser requests must come from the editor's own origin (same host and port). A page on another site,
@@ -92,7 +105,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		return Response.json({ file });
 	}
 	if (slug[0] === "frames-result") {
-		await writeAtomic(path.join(WORKSPACE, "frames-result.json"), JSON.stringify(await req.json(), null, 1));
+		const body = await req.json();
+		await discardFrameFiles(WORKSPACE, body.rev, body.discard);
+		const { discard: _discard, ...result } = body;
+		await writeAtomic(path.join(WORKSPACE, "frames-result.json"), JSON.stringify(result, null, 1));
 		return Response.json({ ok: true });
 	}
 	// Agent exports (see AGENT.md): progress and errors, and the video with its final answer.

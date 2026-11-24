@@ -66,6 +66,24 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		expect(history.get("t3")?.get("main:a1")?.fields.params.color).toBe(JSON.stringify("#ff0000"));
 	});
 
+	test("evicting the last snapshot for a scene array rebuilds its index on the next record", () => {
+		const history = new SnapshotHistory(2);
+		const scenes = scenesWith([text("a1", "cap-1", { color: "#111111" })]);
+		history.record("first", scenes);
+		const first = history.get("first");
+		history.record("also", scenes);
+		expect(history.get("also")).toBe(first);
+
+		const other = scenesWith([text("b1", "b1", {})]);
+		history.record("fill-a", other);
+		history.record("fill-b", other);
+		expect(history.get("first")).toBeUndefined();
+		expect(history.get("also")).toBeUndefined();
+
+		history.record("after-evict", scenes);
+		expect(history.get("after-evict")).not.toBe(first);
+	});
+
 	test("unchanged scene snapshots share an index but retain independent timestamps and roots", () => {
 		const history = new SnapshotHistory(3);
 		history.record("before", read, { projectId: "p", rootSceneId: "main" });

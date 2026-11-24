@@ -1,5 +1,4 @@
 import type { NextConfig } from "next";
-import { withBotId } from "botid/next/config";
 import { withContentCollections } from "@content-collections/next";
 
 const nextConfig: NextConfig = {
@@ -8,7 +7,6 @@ const nextConfig: NextConfig = {
 		removeConsole: process.env.NODE_ENV === "production",
 	},
 	reactStrictMode: true,
-	productionBrowserSourceMaps: true,
 	output: process.env.BOPENCUT_STANDALONE === "1" ? "standalone" : undefined,
 	serverExternalPackages: ["@napi-rs/canvas"],
 	images: {
@@ -53,4 +51,4 @@ const nextConfig: NextConfig = {
 	},
 };
 
-export default withContentCollections(withBotId(nextConfig));
+export default withContentCollections(nextConfig);

@@ -715,6 +715,34 @@ describe("the export poller", () => {
 		}
 	});
 
+	test("a browser retry abandons the encode when the project changes during a missing-media read", async () => {
+		const editor = open("p");
+		editor.save.stop();
+		const failure = { success: false, missingMedia: [{ id: "old-file", name: "Old file", error: "Missing" }] };
+		const render = spyOn(editor.renderer, "exportProject")
+			.mockResolvedValueOnce(failure)
+			.mockResolvedValueOnce({ success: true });
+		const pending = Promise.withResolvers<MediaAsset | null>();
+		const read = spyOn(storageService, "loadMediaAsset").mockImplementation(() => pending.promise);
+		try {
+			const options = { format: "mp4", quality: "high" } as const;
+			const failed = await editor.project.export({ options });
+			const retry = editor.project.export({ options, retryResult: failed, restoreMissingMedia: true });
+			await Promise.resolve();
+			expect(read).toHaveBeenCalledWith({ projectId: "p", id: "old-file" });
+			open("q");
+			pending.resolve(videoAsset);
+			expect(await retry).toEqual({ success: false, cancelled: true });
+			expect(editor.project.getExportState().result).toBeNull();
+			expect(render).toHaveBeenCalledTimes(1);
+			expect(editor.media.getMissingMedia()).toEqual([]);
+		} finally {
+			pending.resolve(null);
+			read.mockRestore();
+			render.mockRestore();
+		}
+	});
+
 	test("a browser retry from a previous project never reads or marks its files missing in the new project", async () => {
 		const editor = open("p");
 		editor.save.stop();

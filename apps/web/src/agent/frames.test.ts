@@ -34,8 +34,8 @@ const settings: TProjectSettings = {
 	fps: { numerator: 30, denominator: 1 },
 };
 
-function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failCancellation = false, failResult, imageSize = settings.canvasSize }: {
-	compare?: { syncedAt: string }; times?: readonly number[]; pauseAt?: string; failCancellation?: boolean;
+function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", pauseAfterFrames, realisticFramePaths = false, failCancellation = false, failResult, imageSize = settings.canvasSize }: {
+	compare?: { syncedAt: string }; times?: readonly number[]; pauseAt?: string; pauseAfterFrames?: number; realisticFramePaths?: boolean; failCancellation?: boolean;
 	failResult?: "HTTP error" | "network error";
 	imageSize?: { width: number; height: number };
 } = {}) {
@@ -59,6 +59,7 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 	const uploads: FormData[] = [];
 	const drawImage = mock((_image: ImageBitmap, _x: number, _y: number, _width: number, _height: number) => {});
 	const stored = new Map<string, string>();
+	const frameStore = new Map<string, true>();
 	let paused = false;
 	let failed = false;
 	const globals = {
@@ -74,20 +75,45 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 			if (action === "stage") return Response.json({ ok: true });
 			if (url === "/api/agent/frames-request") return Response.json({ rev: "frame-test", compare, times });
 			if (url === "/api/agent/frame") {
-				uploads.push(init?.body as FormData);
-				return Response.json({ file: `frame-${uploads.length}.jpg`, ...(uploads.at(-1)?.has("crop") && { crop: "note-crop.jpg" }) });
+				const form = init?.body as FormData;
+				uploads.push(form);
+				if (realisticFramePaths) {
+					const rev = String(form.get("rev"));
+					const time = String(form.get("time"));
+					const variant = form.get("variant");
+					const name = variant === "compare" ? `${time}-compare.jpg` : `${time}.jpg`;
+					frameStore.set(`frames/${rev}/${name}`, true);
+					if (form.has("crop")) frameStore.set(`frames/${rev}/${time}-crop.jpg`, true);
+				}
+				if (pauseAfterFrames && uploads.length === pauseAfterFrames && !paused) {
+					paused = true;
+					entered.resolve();
+					await release.promise;
+				}
+				const payload = realisticFramePaths
+					? (() => {
+						const rev = String(form.get("rev"));
+						const time = String(form.get("time"));
+						const variant = form.get("variant");
+						const name = variant === "compare" ? `${time}-compare.jpg` : `${time}.jpg`;
+						return { file: `frames/${rev}/${name}`, ...(form.has("crop") && { crop: `frames/${rev}/${time}-crop.jpg` }) };
+					})()
+					: { file: `frame-${uploads.length}.jpg`, ...(uploads.at(-1)?.has("crop") && { crop: "note-crop.jpg" }) };
+				return Response.json(payload);
 			}
 			if (url === "/api/agent/frames-result") {
 				const result = JSON.parse(init?.body as string);
-				if (result.files.length && failResult) {
+				for (const rel of result.discard ?? []) frameStore.delete(rel);
+				const { discard: _discard, ...posted } = result;
+				if (posted.files.length && failResult) {
 					if (failResult === "network error") throw new Error("Network error");
 					return new Response("Write failed", { status: 500 });
 				}
-				if (failCancellation && !failed && result.error?.startsWith("cancelled:")) {
+				if (failCancellation && !failed && posted.error?.startsWith("cancelled:")) {
 					failed = true;
 					return new Response(null, { status: 500 });
 				}
-				results.push(result);
+				results.push(posted);
 				return Response.json({});
 			}
 			throw new Error(`Unexpected request: ${url}`);
@@ -102,7 +128,7 @@ function setup({ compare, times = [0, 1.95], pauseAt = "/api/agent/frame", failC
 		cleanups.push(() => original ? Object.defineProperty(globalThis, key, original) : Reflect.deleteProperty(globalThis, key));
 	}
 	cleanups.push(() => render.mockRestore());
-	return { editor, scenes, open, render, uploads, results, drawImage, entered: entered.promise, release: release.resolve };
+	return { editor, scenes, open, render, uploads, results, drawImage, frameStore, entered: entered.promise, release: release.resolve };
 }
 
 const cleanups: (() => void)[] = [];
@@ -401,6 +427,31 @@ test.each([
 	await pollFrames(ready);
 	expect(render).toHaveBeenCalledTimes(1);
 	expect(results).toEqual([{ rev: "frame-test", projectId: "p", ...expected }]);
+});
+
+test("discards written frames when a batch is cancelled", async () => {
+	const rev = "frame-test";
+	const { open, render, results, entered, release, frameStore } = setup({ times: [0, 0.5, 1, 1.5], pauseAfterFrames: 2, pauseAt: "", realisticFramePaths: true });
+	frameStore.set(`frames/${rev}/legacy.jpg`, true);
+	const running = pollFrames(ready);
+	await entered;
+	try {
+		open("q");
+		open("p");
+	} finally {
+		release();
+		await running;
+	}
+	expect(render).toHaveBeenCalledTimes(2);
+	expect(results).toEqual([{ rev, projectId: "p", files: [], error: "cancelled: the project session changed during the frame request" }]);
+	expect(frameStore.has(`frames/${rev}/0.jpg`)).toBe(false);
+	expect(frameStore.has(`frames/${rev}/0.5.jpg`)).toBe(false);
+	expect(frameStore.has(`frames/${rev}/legacy.jpg`)).toBe(true);
+
+	const done = setup({ times: [0, 0.5, 1, 1.5], pauseAt: "", realisticFramePaths: true });
+	await pollFrames(ready);
+	expect(done.results).toEqual([{ rev, projectId: "p", files: ["frames/frame-test/0.jpg", "frames/frame-test/0.5.jpg", "frames/frame-test/1.jpg", "frames/frame-test/1.5.jpg"] }]);
+	for (const time of [0, 0.5, 1, 1.5]) expect(done.frameStore.has(`frames/${rev}/${time}.jpg`)).toBe(true);
 });
 
 test("reports media removed between live frames instead of rendering without them", async () => {

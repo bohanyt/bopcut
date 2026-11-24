@@ -243,6 +243,7 @@ function buildAgentElementOnly({ e, media, trackId, sceneId, canvas, keyframes: 
 	}
 	if (e.model3d && media?.type !== "model") throw new Error("Model asset missing for " + e.name);
 	if (!media) throw new Error("Asset missing for " + e.name);
+	if (e.trimStart != null && (!Number.isFinite(e.trimStart) || e.trimStart < 0)) throw new Error(`trimStart must be 0 or more for ${e.name}`);
 	const trimStart = e.trimStart ?? 0;
 	// Without a duration, audio and video play to the end of the media (e.g. a sound effect found by name).
 	const duration = typeof e.duration === "number" && e.duration > 0 ? e.duration : media.duration ? Math.max(0.01, media.duration - trimStart) : 5;

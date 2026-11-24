@@ -39,6 +39,14 @@ export function bundleProjectSettings(bundle: Pick<Bundle, "width" | "height" | 
 	return Object.keys(settings).length ? settings : null;
 }
 
+export function checkBundleAssetKeys(bundle: Pick<Bundle, "assets">): void {
+	const seen = new Set<string>();
+	for (const a of bundle.assets ?? []) {
+		if (seen.has(a.key)) throw new Error(`Duplicate asset key: ${a.key}`);
+		seen.add(a.key);
+	}
+}
+
 /** Root tracks and nested compound scenes of a bundle (pure, given its loaded media). */
 export function buildBundleScenes({ bundle, media, sceneId }: { bundle: Bundle; media: Map<string, LoadedMedia>; sceneId: string }): { tracks: SceneTracks; scenes: TScene[] } {
 	const ctx: BuildContext = {
@@ -77,6 +85,7 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 		if (e.caption?.preset) e.caption = resolveCaptionPreset(e.caption, await (presets ??= loadTextPresets()));
 		checkAgentCaption(e);
 	}
+	checkBundleAssetKeys(bundle);
 	const projectId = await editor.project.createNewProject({ name: bundle.name });
 	const session = editor.media.startImport();
 	if (!session || session.projectId !== projectId) throw new Error("The bundle's project is no longer open");

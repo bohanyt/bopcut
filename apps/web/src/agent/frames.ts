@@ -34,7 +34,7 @@ export function framesStates(request: { state?: unknown; compare?: unknown }, pr
 
 let busy = false;
 let refusedMissing: string | null = null;
-type PendingCancellation = { rev: string; projectId: string; key: string; send: RenderFetch };
+type PendingCancellation = { rev: string; projectId: string; key: string; send: RenderFetch; written: string[] };
 let pendingCancellation: PendingCancellation | null = null;
 
 function postFramesResult({ rev, projectId, send }: { rev: string; projectId: string; send: RenderFetch }, body: Record<string, unknown>) {
@@ -42,7 +42,7 @@ function postFramesResult({ rev, projectId, send }: { rev: string; projectId: st
 }
 
 async function postCancellation(cancellation: PendingCancellation) {
-	const response = await postFramesResult(cancellation, { files: [], error: "cancelled: the project session changed during the frame request" });
+	const response = await postFramesResult(cancellation, { files: [], discard: cancellation.written, error: "cancelled: the project session changed during the frame request" });
 	if (response.ok) {
 		markAnswered(cancellation.key, cancellation.rev);
 		pendingCancellation = null;
@@ -88,9 +88,13 @@ export async function pollFrames(readiness: () => { ready: boolean; missingMedia
 		const switchKey = typeof request.projectId === "string" ? key : "agent-frames-answered-on-switch";
 		if (!editor.renderOnly && switchKey !== key && wasAnswered(switchKey, rev)) return;
 		const result = (body: Record<string, unknown>) => postFramesResult({ rev, projectId, send }, body);
-		const cancel = () => {
-			if (jobSignal) return jobSignal.aborted ? undefined : result({ files: [], error: "cancelled: the project session changed during the frame request" });
-			pendingCancellation = { rev, projectId, key: switchKey, send };
+		const cancel = async () => {
+			const discard = [...files, ...compared, ...(crop ? [crop] : [])];
+			if (jobSignal) {
+				if (jobSignal.aborted) return;
+				return postFramesResult({ rev, projectId, send }, { files: [], discard, error: "cancelled: the project session changed during the frame request" });
+			}
+			pendingCancellation = { rev, projectId, key: switchKey, send, written: discard };
 			return postCancellation(pendingCancellation);
 		};
 		const finish = async (body: Record<string, unknown>, answerKey = key) => {
