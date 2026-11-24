@@ -344,10 +344,10 @@ function PreviewCanvas({
 		};
 		const updateTarget = () => {
 			const scene = editor.renderer.getRenderTree();
-			if (!scene || editor.playback.getIsPlaying()) settle.reset();
+			if (!scene) settle.reset();
 			else settle.update(scene, getRenderTime(), !document.hidden &&
 				editor.playback.getIsScrubbing() &&
-				!editor.renderer.isExportRunning() && useProxyStore.getState().ready.size > 0);
+				!editor.renderer.isExportRunning() && useProxyStore.getState().ready.size > 0, editor.playback.getIsPlaying());
 			scheduler.request();
 		};
 		const onVisibility = () => {

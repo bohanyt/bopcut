@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { promises as fs } from "node:fs";
 import { tmpdir, uptime } from "node:os";
 import path from "node:path";
@@ -30,7 +30,7 @@ test("a live writer is exclusive and a stopped writer's lock can be reclaimed", 
 	}
 });
 
-function contender(dir: string) {
+function contender(dir: string, stallAfterCreate = false) {
 	const childProgram = `
 		import { promises as fs } from "node:fs";
 		const { acquireProxyWriter } = await import(${JSON.stringify(path.join(import.meta.dir, "cache-files.ts").replaceAll("\\", "/"))});
@@ -40,7 +40,12 @@ function contender(dir: string) {
 			return next;
 		};
 		const write = fs.writeFile.bind(fs);
-		fs.writeFile = async (...args) => { await wait("stale"); return write(...args); };
+		fs.writeFile = async (file, record, options) => {
+			if (!${stallAfterCreate}) { await wait("stale"); return write(file, record, options); }
+			const handle = await fs.open(file, options.flag);
+			try { await wait("stale"); await handle.writeFile(record); }
+			finally { await handle.close(); }
+		};
 		process.send(await acquireProxyWriter(process.argv[1]));
 	`;
 	const stale = Promise.withResolvers<void>();
@@ -100,9 +105,68 @@ test("a delayed contender cannot take over a generation already replaced by a th
 test("a pre-boot lock is stale even if its pid is alive", async () => {
 	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-boot-"));
 	try {
-		await fs.writeFile(path.join(dir, "writer-1.lock"), lockRecord(process.pid, Date.now() - (uptime() + 60) * 1000));
+		await fs.writeFile(path.join(dir, "writer-1.lock"), lockRecord(process.pid, Date.now() - (uptime() + 86_400) * 1000));
 		expect(await acquireProxyWriter(dir)).toBe(true);
 		expect(await fs.readdir(dir)).toEqual(["writer-2.lock"]);
+	} finally { await removeLocks(dir); }
+});
+
+test("a five-minute forward clock correction keeps a live writer", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-clock-"));
+	const now = Date.now();
+	const record = lockRecord(process.pid, now - uptime() * 1000 + 1000);
+	const clock = spyOn(Date, "now").mockReturnValue(now + 300_000);
+	try {
+		await fs.writeFile(path.join(dir, "writer-1.lock"), record);
+		expect(await acquireProxyWriter(dir)).toBe(false);
+		expect(await fs.readdir(dir)).toEqual(["writer-1.lock"]);
+	} finally { clock.mockRestore(); await removeLocks(dir); }
+});
+
+test.each(["", '{"pid":'])("an incomplete record stays exclusive until its mtime reaches ten seconds (%j)", async record => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-incomplete-"));
+	const file = path.join(dir, "writer-1.lock");
+	const now = Math.floor(Date.now() / 1000) * 1000;
+	const clock = spyOn(Date, "now").mockReturnValue(now);
+	try {
+		await fs.writeFile(file, record);
+		await fs.utimes(file, new Date(now - 9000), new Date(now - 9000));
+		expect(await acquireProxyWriter(dir)).toBe(false);
+		clock.mockReturnValue(now + 1000);
+		expect(await acquireProxyWriter(dir)).toBe(true);
+		expect(await fs.readdir(dir)).toEqual(["writer-2.lock"]);
+	} finally { clock.mockRestore(); await removeLocks(dir); }
+});
+
+test("a writer stalled after exclusive create gives way to the successor", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-incomplete-race-"));
+	const delayed = contender(dir, true);
+	try {
+		await delayed.stale;
+		const file = path.join(dir, "writer-1.lock");
+		expect(await fs.readFile(file, "utf8")).toBe("");
+		const aged = new Date(Date.now() - 11_000);
+		await fs.utimes(file, aged, aged);
+		expect(await acquireProxyWriter(dir)).toBe(true);
+		delayed.release();
+		expect(await delayed.result).toBe(false);
+		expect(await ownsProxyWriter(dir)).toBe(true);
+		expect(await fs.readdir(dir)).toEqual(["writer-2.lock"]);
+	} finally { delayed.child.kill(); await delayed.child.exited; await removeLocks(dir); }
+});
+
+test("lock names are case-insensitive and only safe generations count", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "proxy-writer-generation-"));
+	const ignored = "writer-9007199254740992.lock";
+	const largest = "writer-9007199254740991.lock";
+	try {
+		await fs.writeFile(path.join(dir, "WRITER-1.LOCK"), lockRecord(process.pid, 0));
+		await fs.writeFile(path.join(dir, ignored), "");
+		expect(await acquireProxyWriter(dir)).toBe(true);
+		expect(await fs.readdir(dir)).toEqual([ignored, "writer-2.lock"].sort());
+		await fs.writeFile(path.join(dir, largest), lockRecord(process.pid, 0));
+		expect(await acquireProxyWriter(dir)).toBe(false);
+		expect(await ownsProxyWriter(dir)).toBe(false);
 	} finally { await removeLocks(dir); }
 });
 

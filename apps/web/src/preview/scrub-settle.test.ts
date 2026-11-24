@@ -104,6 +104,18 @@ test("release on the same target waits at most one second for a hung decode", ()
 	expect(results).toHaveLength(1);
 });
 
+test("starting playback aborts the in-flight settle even if the ruler is still held", async () => {
+	const { settle, advance, signals, results, discarded, finish } = fixture();
+	settle.update("scene", 1, true);
+	advance(150);
+	settle.update("scene", 1, true, true);
+	expect(signals.get(1)?.aborted).toBe(true);
+	expect(settle.isPending("scene", 1)).toBe(false);
+	await finish(1);
+	expect(discarded).toEqual([1]);
+	expect(results).toEqual([]);
+});
+
 test("release at another time aborts immediately, as do hide, project close and unmount", () => {
 	const { settle, advance, signals, results } = fixture();
 	settle.update("scene", 1, true);

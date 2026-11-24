@@ -39,6 +39,11 @@ export function createScrubSettle<Scene, Frames>({
 		target = undefined;
 	}
 
+	function reset() {
+		clearTarget();
+		scrubbing = false;
+	}
+
 	function schedule() {
 		if (!scrubbing || stopTimer || !target || target.attempted) return;
 		const requested = target;
@@ -62,7 +67,8 @@ export function createScrubSettle<Scene, Frames>({
 	}
 
 	return {
-		update(scene: Scene, time: number, dragging: boolean) {
+		update(scene: Scene, time: number, dragging: boolean, playing = false) {
+			if (playing) return reset();
 			if (!matches(scene, time)) {
 				clearTarget();
 				target = { scene, time, due: now() + SETTLE_DELAY, attempted: false, prepared: false };
@@ -93,9 +99,6 @@ export function createScrubSettle<Scene, Frames>({
 			target.frames = undefined;
 			return frames;
 		},
-		reset() {
-			clearTarget();
-			scrubbing = false;
-		},
+		reset,
 	};
 }

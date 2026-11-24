@@ -28,30 +28,49 @@ export async function proxyFile(file: string) {
 	return stat?.isFile() && stat.nlink === 1 ? stat : undefined;
 }
 
-type Claim = { generation: bigint; record: string };
+type Lock = { name: string; generation: number };
+type Claim = Lock & { record: string };
 const claims = new Map<string, Claim>();
-const lockPath = (dir: string, generation: bigint) => path.join(dir, `writer-${generation}.lock`);
+const incompleteLockAge = 10_000;
+const bootClockMargin = 10 * 60_000;
 
 async function generations(dir: string) {
 	const names = await fs.readdir(dir).catch(() => undefined);
 	return names?.flatMap(name => {
-		const match = /^writer-([1-9]\d*)\.lock$/.exec(name);
-		return match ? [BigInt(match[1])] : [];
+		const match = /^writer-([1-9]\d*)\.lock$/i.exec(name);
+		const generation = Number(match?.[1]);
+		return Number.isSafeInteger(generation) ? [{ name, generation }] : [];
 	});
 }
 
-const highest = (values: bigint[]) => values.reduce((latest, generation) => generation > latest ? generation : latest, BigInt(0));
+const highest = (values: Lock[]) => values.reduce((latest, lock) => Math.max(latest, lock.generation), 0);
+const isHighest = (values: Lock[], lock: Lock) => values.some(entry => entry.name === lock.name) &&
+	values.every(entry => entry.generation < lock.generation || entry.name === lock.name);
 
-async function readLock(dir: string, generation: bigint) {
-	const file = lockPath(dir, generation);
+async function readLock(file: string) {
 	if (await proxyFile(file)) return fs.readFile(file, "utf8").catch(() => undefined);
+}
+
+async function staleLock(file: string, now: number) {
+	const stat = await proxyFile(file);
+	if (!stat) return false;
+	let previous: { pid: number; token: string; startedAt: number } | undefined;
+	try {
+		const parsed = JSON.parse(await fs.readFile(file, "utf8"));
+		if (parsed && Number.isSafeInteger(parsed.pid) && parsed.pid > 0 &&
+			typeof parsed.token === "string" && Number.isFinite(parsed.startedAt)) previous = parsed;
+	} catch { /* An incomplete record may still be in the process of being written. */ }
+	if (!previous) return now - stat.mtimeMs >= incompleteLockAge;
+	if (previous.startedAt < now - uptime() * 1000 - bootClockMargin) return true;
+	try { process.kill(previous.pid, 0); return false; }
+	catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }
 
 export async function ownsProxyWriter(dir: string) {
 	const claim = claims.get(dir);
-	if (!claim || await readLock(dir, claim.generation) !== claim.record) return false;
+	if (!claim || await readLock(path.join(dir, claim.name)) !== claim.record) return false;
 	const values = await generations(dir);
-	return !!values && highest(values) === claim.generation;
+	return !!values && isHighest(values, claim);
 }
 
 export class ProxyWriterLost extends Error {}
@@ -65,24 +84,16 @@ export async function acquireProxyWriter(dir: string): Promise<boolean> {
 	const values = await generations(dir);
 	if (!values) return false;
 	const latest = highest(values);
-	if (latest > BigInt(0)) {
-		const raw = await readLock(dir, latest);
-		if (!raw) return false;
-		let previous: { pid: number; token: string; startedAt: number };
-		try {
-			previous = JSON.parse(raw);
-			if (!previous || !Number.isSafeInteger(previous.pid) || previous.pid <= 0 ||
-				typeof previous.token !== "string" || !Number.isFinite(previous.startedAt)) return false;
-		} catch { return false; }
-		if (previous.startedAt >= Date.now() - uptime() * 1000) {
-			try { process.kill(previous.pid, 0); return false; }
-			catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
-		}
+	const generation = latest + 1;
+	if (!Number.isSafeInteger(generation)) return false;
+	const now = Date.now();
+	for (const lock of values) {
+		if (lock.generation === latest && !await staleLock(path.join(dir, lock.name), now)) return false;
 	}
-	const generation = latest + BigInt(1);
-	const record = JSON.stringify({ pid: process.pid, token: randomUUID(), startedAt: Date.now() });
-	const file = lockPath(dir, generation);
-	try { await fs.writeFile(file, record, { flag: "wx" }); }
+	const claim = { name: `writer-${generation}.lock`, generation,
+		record: JSON.stringify({ pid: process.pid, token: randomUUID(), startedAt: Date.now() }) };
+	const file = path.join(dir, claim.name);
+	try { await fs.writeFile(file, claim.record, { flag: "wx" }); }
 	catch (error) {
 		const failure = error as NodeJS.ErrnoException;
 		if (failure.code === "EEXIST" || denied(failure)) return false;
@@ -90,14 +101,14 @@ export async function acquireProxyWriter(dir: string): Promise<boolean> {
 	}
 	const updated = await generations(dir);
 	if (!updated) return false;
-	if (highest(updated) !== generation) {
-		if (await readLock(dir, generation) === record) await fs.unlink(file).catch(() => {});
+	if (!isHighest(updated, claim)) {
+		if (await readLock(file) === claim.record) await fs.unlink(file).catch(() => {});
 		return false;
 	}
-	claims.set(dir, { generation, record });
+	claims.set(dir, claim);
 	for (const older of updated) {
-		if (older >= generation) continue;
-		const oldFile = lockPath(dir, older);
+		if (older.generation >= generation) continue;
+		const oldFile = path.join(dir, older.name);
 		if (!await proxyFile(oldFile)) continue;
 		if (!await ownsProxyWriter(dir)) return false;
 		await fs.unlink(oldFile).catch(() => {});
