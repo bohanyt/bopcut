@@ -171,11 +171,11 @@ export class PlayheadController {
 	// --- Public non-session methods ---
 
 	/**
-	 * Imperatively updates the playhead DOM element's `left` style.
+	 * Moves the playhead without changing its layout.
 	 * Called on scroll and playback events to avoid React re-renders
 	 * during animation frame updates.
 	 */
-	updatePlayheadLeft(time: MediaTime): void {
+	updatePlayheadPosition(time: MediaTime, scrollLeft = this.config.getRulerScrollEl()?.scrollLeft ?? 0): void {
 		const playheadEl = this.config.getPlayheadEl();
 		if (!playheadEl) return;
 
@@ -183,9 +183,9 @@ export class PlayheadController {
 			time,
 			zoomLevel: this.config.zoomLevel,
 		});
-		const scrollLeft = this.config.getRulerScrollEl()?.scrollLeft ?? 0;
-		const left = `${getCenteredLineLeft({ centerPixel }) - scrollLeft}px`;
-		if (playheadEl.style.left !== left) playheadEl.style.left = left;
+		const offset = getCenteredLineLeft({ centerPixel }) - scrollLeft;
+		const transform = `translateX(${offset}px)`;
+		if (playheadEl.style.transform !== transform) playheadEl.style.transform = transform;
 		const value = String(time);
 		if (playheadEl.getAttribute("aria-valuenow") !== value) {
 			playheadEl.setAttribute("aria-valuenow", value);
@@ -193,7 +193,7 @@ export class PlayheadController {
 	}
 
 	handleScroll(time: MediaTime): void {
-		this.updatePlayheadLeft(time);
+		this.updatePlayheadPosition(time);
 		if (this.session.kind === "scrubbing" && this.session.hasMoved) {
 			this.scheduleScrub();
 		}
@@ -204,20 +204,22 @@ export class PlayheadController {
 	 * visible during playback.
 	 */
 	handlePlaybackUpdate(time: MediaTime, isScrubbing: boolean): void {
-		this.updatePlayheadLeft(time);
-
-		// Auto-scroll only during playback, not while scrubbing.
-		if (!this.config.getIsPlaying() || isScrubbing)
-			return;
-
-		this.reveal(time);
+		if (this.config.getIsPlaying() && !isScrubbing) {
+			this.reveal(time);
+		} else {
+			this.updatePlayheadPosition(time);
+		}
 	}
 
 	/** Scrolls the timeline to center a playhead that is out of view. */
 	reveal(time: MediaTime): void {
 		const rulerViewport = this.config.getRulerScrollEl();
 		const tracksViewport = this.config.getTracksScrollEl();
-		if (!rulerViewport || !tracksViewport) return;
+		let scrollLeft = rulerViewport?.scrollLeft ?? 0;
+		if (!rulerViewport || !tracksViewport) {
+			this.updatePlayheadPosition(time, scrollLeft);
+			return;
+		}
 
 		const playheadPixels = timelineTimeToPixels({
 			time,
@@ -225,8 +227,8 @@ export class PlayheadController {
 		});
 		const viewportWidth = rulerViewport.clientWidth;
 		const isOutOfView =
-			playheadPixels < rulerViewport.scrollLeft ||
-			playheadPixels > rulerViewport.scrollLeft + viewportWidth;
+			playheadPixels < scrollLeft ||
+			playheadPixels > scrollLeft + viewportWidth;
 
 		if (isOutOfView) {
 			const desiredScroll = Math.max(
@@ -237,7 +239,9 @@ export class PlayheadController {
 				),
 			);
 			rulerViewport.scrollLeft = tracksViewport.scrollLeft = desiredScroll;
+			scrollLeft = rulerViewport.scrollLeft;
 		}
+		this.updatePlayheadPosition(time, scrollLeft);
 	}
 
 	// --- Private ---
@@ -353,7 +357,7 @@ export class PlayheadController {
 			return result.snapPoint ? result.snappedTime : frameTime;
 		})();
 
-		this.updatePlayheadLeft(time);
+		this.updatePlayheadPosition(time);
 		if (forceSeek || this.config.getCurrentTime() !== time) {
 			this.config.seek(time);
 		}

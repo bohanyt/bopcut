@@ -1,7 +1,7 @@
 "use client";
 
 import { useI18n } from "@/i18n/provider";
-import { useRef } from "react";
+import type { PointerEventHandler } from "react";
 import { useContainerSize } from "@/hooks/use-container-size";
 import {
 	getCenteredLineLeft,
@@ -9,7 +9,6 @@ import {
 	timelineTimeToSnappedPixels,
 } from "@/timeline";
 import { useScrollPosition } from "@/timeline/hooks/use-scroll-position";
-import { useTimelinePlayhead } from "@/timeline/hooks/use-timeline-playhead";
 import {
 	addMediaTime,
 	maxMediaTime,
@@ -25,37 +24,25 @@ import { TIMELINE_LAYERS } from "./layers";
 interface TimelinePlayheadProps {
 	zoomLevel: number;
 	hasHorizontalScrollbar: boolean;
-	rulerRef: React.RefObject<HTMLDivElement | null>;
-	rulerScrollRef: React.RefObject<HTMLDivElement | null>;
 	tracksScrollRef: React.RefObject<HTMLDivElement | null>;
 	timelineRef: React.RefObject<HTMLDivElement | null>;
-	playheadRef?: React.RefObject<HTMLDivElement | null>;
+	playheadRef: React.RefObject<HTMLDivElement | null>;
+	onPointerDown: PointerEventHandler<HTMLButtonElement>;
 	isSnappingToPlayhead?: boolean;
 }
 
 export function TimelinePlayhead({
 	zoomLevel,
 	hasHorizontalScrollbar,
-	rulerRef,
-	rulerScrollRef,
 	tracksScrollRef,
 	timelineRef,
-	playheadRef: externalPlayheadRef,
+	playheadRef,
+	onPointerDown,
 	isSnappingToPlayhead = false,
 }: TimelinePlayheadProps) {
 	const { t } = useI18n();
 	const editor = useEditor();
 	const duration = editor.timeline.getTotalDuration();
-	const internalPlayheadRef = useRef<HTMLDivElement>(null);
-	const playheadRef = externalPlayheadRef || internalPlayheadRef;
-
-	const { handlePlayheadPointerDown } = useTimelinePlayhead({
-		zoomLevel,
-		rulerRef,
-		rulerScrollRef,
-		tracksScrollRef,
-		playheadRef,
-	});
 	const { height: timelineHeight } = useContainerSize({ containerRef: timelineRef });
 	const { height: tracksHeight } = useContainerSize({
 		containerRef: tracksScrollRef,
@@ -116,7 +103,8 @@ export function TimelinePlayhead({
 			tabIndex={0}
 			className="pointer-events-none absolute"
 			style={{
-				left: `${leftPosition}px`,
+				left: 0,
+				transform: `translateX(${leftPosition}px)`,
 				top: 0,
 				height: `${totalHeight}px`,
 				width: `${TIMELINE_INDICATOR_LINE_WIDTH_PX}px`,
@@ -130,7 +118,7 @@ export function TimelinePlayhead({
 				type="button"
 				aria-label={t("timeline.dragPlayhead")}
 				className={`pointer-events-auto absolute top-1 left-1/2 size-3 touch-none -translate-x-1/2 transform cursor-col-resize rounded-full border-2 shadow-xs ${isSnappingToPlayhead ? "bg-primary border-primary" : "bg-primary border-primary/50"}`}
-				onPointerDown={handlePlayheadPointerDown}
+				onPointerDown={onPointerDown}
 			/>
 		</div>
 	);
