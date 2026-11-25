@@ -13,11 +13,9 @@ interface ElementSpan extends Interval {
 export function computeRippleAdjustments({
 	beforeTracks,
 	afterTracks,
-	preserveDraftGapClosing = false,
 }: {
 	beforeTracks: SceneTracks;
 	afterTracks: SceneTracks;
-	preserveDraftGapClosing?: boolean;
 }): RippleAdjustment[] {
 	const beforeTrackList = [
 		...beforeTracks.overlay,
@@ -40,7 +38,6 @@ export function computeRippleAdjustments({
 			beforeElements: beforeTrack.elements,
 			afterElements: afterTracksById.get(beforeTrack.id)?.elements ?? [],
 			allAfterElementIds,
-			preserveDraftGapClosing,
 		}),
 	);
 }
@@ -50,25 +47,22 @@ function computeTrackRippleAdjustments({
 	beforeElements,
 	afterElements,
 	allAfterElementIds,
-	preserveDraftGapClosing,
 }: {
 	trackId: string;
 	beforeElements: TimelineElement[];
 	afterElements: TimelineElement[];
 	allAfterElementIds: Set<string>;
-	preserveDraftGapClosing: boolean;
 }): RippleAdjustment[] {
 	const beforeElementsById = buildElementSpanMap({ elements: beforeElements });
 	const afterElementsById = buildElementSpanMap({ elements: afterElements });
-	const { vacatedIntervals, joinedIntervals } = collectTrackIntervals({
+	const { vacatedIntervals, occupiedIntervals } = collectTrackIntervals({
 		beforeElementsById,
 		afterElementsById,
 		allAfterElementIds,
-		preserveDraftGapClosing,
 	});
 	const freedIntervals = subtractIntervalSets({
 		sourceIntervals: vacatedIntervals,
-		overlappingIntervals: joinedIntervals,
+		overlappingIntervals: occupiedIntervals,
 	});
 
 	return buildAdjustments({ trackId, intervals: freedIntervals });
@@ -95,18 +89,18 @@ function collectTrackIntervals({
 	beforeElementsById,
 	afterElementsById,
 	allAfterElementIds,
-	preserveDraftGapClosing,
 }: {
 	beforeElementsById: Map<string, ElementSpan>;
 	afterElementsById: Map<string, ElementSpan>;
 	allAfterElementIds: Set<string>;
-	preserveDraftGapClosing: boolean;
 }): {
 	vacatedIntervals: Interval[];
-	joinedIntervals: Interval[];
+	occupiedIntervals: Interval[];
 } {
 	const vacatedIntervals: Interval[] = [];
-	const joinedIntervals: Interval[] = [];
+	const occupiedIntervals: Interval[] = [];
+	let firstMovedStart = Infinity;
+	let lastMovedEnd = -Infinity;
 
 	for (const beforeElement of beforeElementsById.values()) {
 		const afterElement = afterElementsById.get(beforeElement.id);
@@ -125,29 +119,38 @@ function collectTrackIntervals({
 		if (beforeElement.endTime > afterElement.endTime) {
 			pushInterval({
 				intervals: vacatedIntervals,
-				startTime: preserveDraftGapClosing
-					? afterElement.endTime
-					: Math.max(beforeElement.startTime, afterElement.endTime),
+				startTime: afterElement.endTime,
 				endTime: beforeElement.endTime,
 			});
+			if (afterElement.startTime < beforeElement.startTime) {
+				firstMovedStart = Math.min(firstMovedStart, afterElement.startTime);
+				lastMovedEnd = Math.max(lastMovedEnd, afterElement.endTime);
+			}
 		}
 	}
 
 	for (const afterElement of afterElementsById.values()) {
-		if (beforeElementsById.has(afterElement.id)) {
+		const beforeElement = beforeElementsById.get(afterElement.id);
+		if (beforeElement && (
+			beforeElement.startTime !== afterElement.startTime ||
+			beforeElement.endTime !== afterElement.endTime
+		)) {
 			continue;
 		}
 
 		pushInterval({
-			intervals: joinedIntervals,
+			intervals: occupiedIntervals,
 			startTime: afterElement.startTime,
 			endTime: afterElement.endTime,
 		});
 	}
 
+	// Keep the group's new spacing intact while closing gaps left by the move.
+	pushInterval({ intervals: occupiedIntervals, startTime: firstMovedStart, endTime: lastMovedEnd });
+
 	return {
 		vacatedIntervals: normalizeIntervals({ intervals: vacatedIntervals }),
-		joinedIntervals: normalizeIntervals({ intervals: joinedIntervals }),
+		occupiedIntervals: normalizeIntervals({ intervals: occupiedIntervals }),
 	};
 }
 
