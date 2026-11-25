@@ -4,6 +4,7 @@ import type { ScalarAnimationKey } from "@/animation/types";
 import type { CompoundElement, TimelineElement, TScene } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { orderedTracks, toRootInterval } from "./scene-graph";
+import type { PictureFinding, PictureReport } from "./draft-check-pictures";
 
 export const draftThresholds = { position: 0.04, scale: 0.06, rotation: 10, opacity: 0.15 };
 export type DraftThresholds = typeof draftThresholds;
@@ -35,7 +36,7 @@ function hidden(element: TimelineElement) {
 		(element.params?.opacity === 0 && !element.animations?.opacity);
 }
 
-function* timelineItems(root: TScene, scenes: TScene[], signal: AbortSignal, visit: { truncated: boolean }): Generator<Item> {
+export function* timelineItems(root: TScene, scenes: TScene[], signal: AbortSignal, visit: { truncated: boolean }): Generator<Item> {
 	const byId = new Map(scenes.map((scene) => [scene.id, scene]));
 	let count = 0;
 	function* walk(scene: TScene, chain: CompoundElement[], ancestors: ReadonlySet<string>, hostLane?: string): Generator<Item> {
@@ -80,7 +81,7 @@ function add<K, V>(map: Map<K, V[]>, key: K, value: V) {
 }
 
 const clipOrder = (a: Clip, b: Clip) => a.from - b.from || a.to - b.to;
-const outputClip = ({ from, to, address }: Clip) => ({ from: seconds(from), to: seconds(to), address });
+export const outputClip = ({ from, to, address }: Clip) => ({ from: seconds(from), to: seconds(to), address });
 const clipSample = (shots: Shot[]) => ({
 	clips: shots.slice(0, samplesPerRow).map(({ clip }) => outputClip(clip)),
 	omittedClips: Math.max(0, shots.length - samplesPerRow),
@@ -256,14 +257,17 @@ export function inspectDraft({ root, scenes, media, from, to, canvas, fps, thres
 
 export type DraftReport = ReturnType<typeof inspectDraft>;
 
-export function formatDraftReport(report: DraftReport, json: boolean, all = false) {
+export function formatDraftReport(report: DraftReport, json: boolean, all = false, pictures?: PictureReport) {
 	const { sources, runs, motion, ...header } = report;
-	const omitted = { sources: 0, runs: 0, motion: 0 };
+	const omitted = { sources: 0, runs: 0, motion: 0, ...(pictures && { visual: 0 }) };
+	const { findings: visual, ...pictureCoverage } = { findings: [] as PictureFinding[], ...pictures };
 	const sceneId = header.sceneId.length > 128 ? header.sceneId.slice(0, 128) + "…" : header.sceneId;
 	const singleUseSources = sources.filter(source => source.uses === 1).length;
-	const output = { ...header, sceneId, singleUseSources, sources: [] as Source[], runs: [] as Run[], motion: [] as Motion[], omitted };
+	const output = { ...header, sceneId, singleUseSources, sources: [] as Source[], runs: [] as Run[], motion: [] as Motion[],
+		...(pictures && { pictures: { ...pictureCoverage, findings: [] as PictureFinding[] } }), omitted };
 	const title = `Draft check ${header.from}–${header.to} s in ${JSON.stringify(sceneId)}${header.incomplete ? " (partial traversal)" : ""}`;
 	const lines = [title, `Single-use sources: ${singleUseSources}`];
+	if (pictures) lines.push("Picture coverage: " + JSON.stringify(pictureCoverage));
 	// Independent budgets leave space for motion and runs even in projects with many unique files.
 	const append = <T>(key: keyof typeof omitted, input: T[], target: T[], budget: number) => {
 		for (const row of input) {
@@ -275,10 +279,11 @@ export function formatDraftReport(report: DraftReport, json: boolean, all = fals
 		}
 		omitted[key] = input.length - target.length;
 	};
-	append("sources", json || all ? sources : sources.filter(source => source.uses > 1), output.sources, 6_500);
-	append("runs", runs, output.runs, 4_000);
-	append("motion", motion, output.motion, 8_000);
+	append("sources", json || all ? sources : sources.filter(source => source.uses > 1), output.sources, pictures ? 4_500 : 6_500);
+	append("runs", runs, output.runs, pictures ? 2_500 : 4_000);
+	append("motion", motion, output.motion, pictures ? 5_000 : 8_000);
+	if (output.pictures) append("visual", visual, output.pictures.findings, 5_000);
 	if (json) return output;
-	lines.push(`Omitted rows: ${omitted.sources} sources, ${omitted.runs} runs, ${omitted.motion} motion.`);
+	lines.push(`Omitted rows: ${omitted.sources} sources, ${omitted.runs} runs, ${omitted.motion} motion${pictures ? `, ${omitted.visual} visual` : ""}.`);
 	return lines.join("\n") + "\n";
 }
