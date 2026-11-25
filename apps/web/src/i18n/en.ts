@@ -840,6 +840,7 @@ export const en = {
 	"sounds.fileUnavailable": "Sound file not available",
 	"sounds.addFailed": "Failed to add sound to timeline",
 	"media.dropFailed": "Could not add the dropped media",
+	"media.dropSceneChanged": "You opened another scene. The timeline drop was stopped.",
 	"media.pasteFailed": "Could not add the pasted link",
 	"media.dropManyFailed": "Could not add {count} of {total} dropped items",
 	"media.uploadOne": "Uploading media asset…",

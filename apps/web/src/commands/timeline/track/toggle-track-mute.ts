@@ -18,8 +18,8 @@ export class ToggleTrackMuteCommand extends Command {
 			tracks: this.savedState,
 			trackId: this.trackId,
 		});
-		if (!targetTrack) {
-			return;
+		if (!targetTrack || !canTrackHaveAudio(targetTrack)) {
+			return { changed: false };
 		}
 
 		const updatedTracks = updateTrackInSceneTracks({

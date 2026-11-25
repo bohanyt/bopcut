@@ -826,7 +826,7 @@ describe("generated ids in history", () => {
 			dragSource, zoomLevel: 1, getContainerEl: () => null, getHeaderEl: () => null,
 			getTracksScrollEl: () => ({ scrollLeft: 0, scrollTop: 0, getBoundingClientRect: () => ({ left: 0, top: 0 }) }) as HTMLDivElement,
 			getActiveProjectFps: () => editor.project.getActive().settings.fps,
-			startMediaImport: () => null, getSceneTracks: tracks, getCurrentPlayheadTime: () => t(0),
+			startMediaImport: () => null, getSceneId: () => "main", getSceneTracks: tracks, getCurrentPlayheadTime: () => t(0),
 			getMediaAssets: () => [], importMediaFile: async () => null,
 			executeCommand: (command) => editor.command.execute({ command }),
 			insertElement: (args) => editor.timeline.insertElement(args), addClipEffect: () => {},

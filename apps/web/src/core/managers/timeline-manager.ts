@@ -599,7 +599,9 @@ export class TimelineManager {
 
 	removeKeyframes({
 		keyframes,
+		clearSelection = false,
 	}: {
+		clearSelection?: boolean;
 		keyframes: Array<{
 			trackId: string;
 			elementId: string;
@@ -661,8 +663,9 @@ export class TimelineManager {
 						valueAtPlayheadMap.get(`${elementId}:${propertyPath}`) ?? null,
 				}),
 		);
+		const selection = clearSelection ? { selectedKeyframes: [], keyframeSelectionAnchor: null } : undefined;
 		const command =
-			commands.length === 1 ? commands[0] : new BatchCommand(commands);
+			commands.length === 1 && !selection ? commands[0] : new BatchCommand(commands, selection);
 		this.editor.command.execute({ command });
 	}
 
