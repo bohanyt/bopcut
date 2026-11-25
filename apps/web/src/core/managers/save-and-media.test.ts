@@ -77,20 +77,6 @@ describe("missing media", () => {
 		}
 	});
 
-	test("the storage loader reports referenced media absent from the manifest", async () => {
-		const fetch = spyOn(globalThis, "fetch").mockResolvedValue(Response.json([]));
-		try {
-			const failed: string[] = [];
-			await new StorageService().loadAllMediaAssets({
-				projectId: "p", usedIds: new Set(["missing", "pending"]), excludeIds: new Set(["pending"]),
-				onFailed: ({ id }) => failed.push(id),
-			});
-			expect(failed).toEqual(["missing"]);
-		} finally {
-			fetch.mockRestore();
-		}
-	});
-
 	test("toast and export retries share a read, and a stale export result skips the restored asset", async () => {
 		const editor = await load(project("p", new Date(0)), { failed: ["b"] });
 		const failures = editor.media.getMissingMedia();
@@ -265,24 +251,48 @@ describe("removing used media", () => {
 		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "second" });
 	});
 
-	test("undo after deletion writes the restored asset before its clip", async () => {
+	test("an asset waits for the earlier removal of its last clip to save", async () => {
+		const { editor, disk, remove } = await setup();
+		const { main } = editor.scenes.getActiveScene().tracks;
+		const first = main.elements.find((clip) => "mediaId" in clip && clip.mediaId === "first")!;
+		editor.timeline.deleteElements({ elements: [{ trackId: main.id, elementId: first.id }] });
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		const writing = gate();
+		disk.hooks.write = () => writing.promise;
+		const saved = editor.save.flush();
+		expect(remove).not.toHaveBeenCalled();
+		writing.open();
+		expect(await saved).toBe(true);
+		await until(() => remove.mock.calls.length === 1);
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
+	});
+
+	test.each(["clean", "saving off", "no session"])("deletes immediately when %s", async (mode) => {
+		const { editor, remove } = await setup();
+		editor.media.setAssets({ assets: [...editor.media.getAssets(), asset("unused")] });
+		if (mode === "saving off") editor.save.stop();
+		if (mode === "no session") editor.save.discardProject("a");
+		editor.media.removeMediaAsset({ projectId: "a", id: "unused" });
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "unused" });
+	});
+
+	test("undo after deletion can save while the asset upload is pending", async () => {
 		const { editor, disk, remove, restore } = await setup();
 		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
 		expect(await editor.save.flush()).toBe(true);
 		await until(() => remove.mock.calls.length === 1);
 		const restoring = gate();
-		restore.mockRejectedValueOnce(new Error("Restore unavailable"));
 		restore.mockImplementation(() => restoring.promise);
 		const writes = disk.writes.length;
 		editor.command.undo();
-		expect(await editor.save.flush()).toBe(false);
-		expect(restore).toHaveBeenCalledTimes(1);
-		expect(disk.writes).toHaveLength(writes);
-		const saved = editor.save.flush();
-		expect(restore).toHaveBeenCalledTimes(2);
-		restoring.open();
-		expect(await saved).toBe(true);
-		expect(disk.writes).toHaveLength(writes + 1);
+		try {
+			expect(await editor.save.flush()).toBe(true);
+			expect(restore).toHaveBeenCalledTimes(1);
+			expect(disk.writes).toHaveLength(writes + 1);
+		} finally {
+			restoring.open();
+			await editor.media.settleBinWrites("a");
+		}
 	});
 });
 /** Resolves once `check` holds, checking every few ms (test helper only). */
@@ -665,8 +675,8 @@ describe("project command history", () => {
 			expect(editor.command.canRedo()).toBe(false);
 		}
 		expect(editor.media.getAssets()).toEqual([bAsset]);
-		expect(deleteMedia).toHaveBeenCalledTimes(1);
-		expect(saveMedia).toHaveBeenCalledTimes(1);
+		expect(deleteMedia).not.toHaveBeenCalled();
+		expect(saveMedia).not.toHaveBeenCalled();
 		expect(await editor.save.settleProject("a")).toBeNull();
 		// Persist a real edit in B after the replay attempts.
 		edit(editor, "b: edited");

@@ -91,19 +91,20 @@ export class RemoveMediaAssetCommand extends Command {
 			editor.timeline.updateTracks(editor.scenes.getActiveScene().tracks);
 		}
 
-		void this.deleteFromStorage(editor, this.removedAsset, removedClips).catch((error) => {
+		void this.deleteFromStorage(editor, this.removedAsset).catch((error) => {
 			console.error("Failed to delete media item:", error);
 		});
 
 		return removedClips ? createElementSelectionResult([]) : undefined;
 	}
 
-	private async deleteFromStorage(editor: EditorCore, removedAsset: MediaAsset, removedClips: boolean): Promise<void> {
-		if (removedClips) {
+	private async deleteFromStorage(editor: EditorCore, removedAsset: MediaAsset): Promise<void> {
+		const session = editor.save.getCurrent();
+		if (editor.save.isRunning() && session?.projectId === this.projectId && session.isDirty()) {
 			const removal = new AbortController();
 			this.pendingRemoval = removal;
-			// Capture the revision just marked dirty by setScenes. It can save after this project closes.
-			const written = await editor.save.getCurrent()?.whenSaved();
+			// The saved timeline may still use the asset even when the editor has no clips left.
+			const written = await session.whenSaved();
 			if (removal.signal.aborted) return;
 			this.pendingRemoval = null;
 			if (!written || mediaIdsInScenes(written.scenes).has(this.assetId)) return;
