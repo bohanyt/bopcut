@@ -725,7 +725,7 @@ describe("generated ids in history", () => {
 		host.tracks = { ...host.tracks, main: { ...host.tracks.main, elements: [video("late-main", 2, 1)] }, overlay: [], audio: [] };
 		const editor = setup(scenes);
 		editor.command.execute({ command: new PasteCommand({ time: t(1), clipboardItems: [0, 2.5].map((start) => ({
-			trackId: "copied-track", trackType: "video", trackIndex: 0, element: video(`source-${start}`, start, 1),
+			trackId: "copied-track", trackType: "video", layer: 1, element: video(`source-${start}`, start, 1),
 		})) }) });
 		const { main, overlay } = editor.scenes.getActiveScene().tracks;
 		expect(main.elements.map(({ id }) => id)).toEqual(["late-main"]);

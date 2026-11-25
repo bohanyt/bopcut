@@ -11,6 +11,7 @@ import {
 	applyPlacement,
 	resolveTrackPlacement,
 	enforceMainTrackStart,
+	type PlacementResult,
 	type PlacementTimeSpan,
 } from "@/timeline/placement";
 import { canPlaceTimeSpansOnTrack } from "@/timeline/placement/overlap";
@@ -100,7 +101,7 @@ export class PasteCommand extends Command {
 		// Layers are placed from the bottom up, each at or above the previous one, so the pasted
 		// clips cover each other as their sources do.
 		const groups = [...itemsByTrackId].sort(
-			([, a], [, b]) => b[0].trackIndex - a[0].trackIndex,
+			([, a], [, b]) => a[0].layer - b[0].layer,
 		);
 		let maxTrackIndex = Infinity;
 
@@ -132,6 +133,7 @@ export class PasteCommand extends Command {
 				groups.length > 1
 					? resolveLayerPlacement({
 							...placement,
+							layer: items[0].layer,
 							sourceTrackIndex,
 							maxTrackIndex: trackType === "audio" ? Infinity : maxTrackIndex,
 						})
@@ -241,37 +243,60 @@ export class PasteCommand extends Command {
 	}
 }
 
-/** Place for one of several pasted layers: its own track if free, then other tracks not below `maxTrackIndex`. */
+/**
+ * Place for one of several pasted layers: its own track if free, then the lowest free track that is
+ * not below `maxTrackIndex`, then a new one on top. No track may move the clips in time.
+ */
 function resolveLayerPlacement({
+	tracks,
+	trackType,
+	timeSpans,
+	layer,
 	sourceTrackIndex,
 	maxTrackIndex,
-	...placement
 }: {
 	tracks: SceneTracks;
 	trackType: TrackType;
 	timeSpans: PlacementTimeSpan[];
+	layer: number;
 	sourceTrackIndex: number;
 	maxTrackIndex: number;
-}) {
-	const { tracks, trackType } = placement;
-	const ordered = [...tracks.overlay, tracks.main, ...tracks.audio];
+}): PlacementResult | null {
+	const { overlay, main, audio } = tracks;
+	const ordered = [...overlay, main, ...audio];
+	const overlayFromBottom = [...overlay].reverse();
 	const candidates = [
 		ordered[sourceTrackIndex],
 		ordered[sourceTrackIndex - 1],
-		...(trackType === "audio"
-			? tracks.audio
-			: [...[...tracks.overlay].reverse(), tracks.main]),
+		...(layer < 0
+			? [...audio].reverse()
+			: layer === 0
+				? [main, ...overlayFromBottom]
+				: [...overlayFromBottom, main]),
 	];
+	const start = timeSpans.reduce(
+		(earliest, span) => (span.startTime < earliest ? span.startTime : earliest),
+		timeSpans[0].startTime,
+	);
 	for (const track of candidates) {
-		if (!track || ordered.indexOf(track) > maxTrackIndex) continue;
-		const result = resolveTrackPlacement({
-			...placement,
-			strategy: { type: "explicit", trackId: track.id },
-		});
-		if (result) return result;
+		if (track?.type !== trackType) continue;
+		const trackIndex = ordered.indexOf(track);
+		if (
+			trackIndex <= maxTrackIndex &&
+			canPlaceTimeSpansOnTrack({ track, timeSpans }) &&
+			enforceMainTrackStart({
+				tracks,
+				targetTrackId: track.id,
+				requestedStartTime: start,
+			}) === start
+		) {
+			return { kind: "existingTrack", trackId: track.id, trackIndex, trackType };
+		}
 	}
 	return resolveTrackPlacement({
-		...placement,
+		tracks,
+		trackType,
+		timeSpans,
 		strategy: { type: "alwaysNew", position: "highest" },
 	});
 }

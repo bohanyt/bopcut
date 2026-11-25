@@ -18,8 +18,8 @@ import type { MediaTime } from "@/wasm";
 export interface ElementClipboardItem {
 	trackId: string;
 	trackType: TrackType;
-	/** Position of the source track at copy time, counted from the top of the timeline. */
-	trackIndex: number;
+	/** Position of the source track at copy time: 0 is the main track, above it is positive, audio is negative. */
+	layer: number;
 	element: CreateTimelineElement;
 }
 

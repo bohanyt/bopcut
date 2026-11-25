@@ -49,7 +49,7 @@ export const ElementsClipboardHandler = {
 			return {
 				trackId: track.id,
 				trackType: track.type,
-				trackIndex: trackIds.indexOf(track.id),
+				layer: overlay.length - trackIds.indexOf(track.id),
 				element: elementWithoutId,
 			};
 		});

@@ -32,7 +32,7 @@ function setup(scenes: TScene[] = fixture()) {
 function clipItem(trackId: string, trackType: TimelineTrack["type"], id: string, start: number, duration: number): ElementClipboardItem {
 	const element = trackType === "audio" ? audio(id, start, duration) : trackType === "text" ? text(id, start, duration) : trackType === "graphic" ? rect(id, start, duration) : video(id, start, duration);
 	const { id: _id, ...withoutId } = element;
-	return { trackId, trackType, trackIndex: 0, element: withoutId };
+	return { trackId, trackType, layer: 0, element: withoutId };
 }
 
 /** Names of the visual layers from the top down, without empty ones. */
@@ -178,6 +178,43 @@ describe("pasted layers", () => {
 		expect(allTracks(tracks).map((track) => track.elements.map(({ name }) => name))).toEqual(ids.map((id) => [id, id]));
 	});
 
+	test("use the main track and the audio tracks of another scene in the same order", () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		const track = <T extends "video" | "audio">(id: string, type: T, elements: never[] = []) => ({ id, name: id, type, muted: false, hidden: false, elements });
+		host.tracks = {
+			overlay: [track("V2", "video"), { id: "T1", name: "T1", type: "text", hidden: false, elements: [] }],
+			main: { ...host.tracks.main, elements: [video("intro", 0, 5)] },
+			audio: [track("A1", "audio"), track("A2", "audio")],
+		};
+		const editor = setup(scenes);
+		paste(editor, 10, [
+			{ ...clipItem("s-pip", "video", "pip", 0, 5), layer: 2 },
+			{ ...clipItem("s-title", "text", "title", 0, 5), layer: 1 },
+			{ ...clipItem("s-main", "video", "bg", 0, 5), layer: 0 },
+			{ ...clipItem("s-voice", "audio", "voice", 0, 5), layer: -1 },
+			{ ...clipItem("s-music", "audio", "music", 0, 5), layer: -2 },
+		]);
+		const { tracks } = editor.scenes.getActiveScene();
+		expect(allTracks(tracks).map(({ id, elements }) => [id, elements.map(({ name }) => name)])).toEqual([
+			["V2", ["pip"]], ["T1", ["title"]], ["t-main", ["intro", "bg"]], ["A1", ["voice"]], ["A2", ["music"]],
+		]);
+	});
+
+	test("keep their times when the main track would move its first clip to zero", () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = { overlay: [], main: { ...host.tracks.main, elements: [video("late", 2, 3)] }, audio: [] };
+		const editor = setup(scenes);
+		paste(editor, 1, [
+			{ ...clipItem("s-title", "text", "title", 0, 2), layer: 1 },
+			{ ...clipItem("s-main", "video", "clip", 0, 2), layer: 0 },
+		]);
+		const { tracks } = editor.scenes.getActiveScene();
+		expect(layers(tracks)).toEqual([["title"], ["clip"], ["late"]]);
+		expect(tracks.overlay.flatMap((row) => row.elements.map(({ startTime }) => startTime))).toEqual([t(1), t(1)]);
+	});
+
 	test("do not go below a layer they cover", () => {
 		const editor = setup();
 		copy(editor, copied.slice(0, 2));
@@ -192,8 +229,8 @@ describe("pasted layers", () => {
 	test("share one free track when they do not overlap", () => {
 		const editor = setup();
 		paste(editor, 20, [
-			{ ...clipItem("upper", "text", "a", 0, 1), trackIndex: 0 },
-			{ ...clipItem("lower", "text", "b", 2, 1), trackIndex: 1 },
+			{ ...clipItem("upper", "text", "a", 0, 1), layer: 2 },
+			{ ...clipItem("lower", "text", "b", 2, 1), layer: 1 },
 		]);
 		expect(starts(editor.scenes.getActiveScene().tracks, "t-text")).toEqual([t(2), t(20), t(22)]);
 	});
