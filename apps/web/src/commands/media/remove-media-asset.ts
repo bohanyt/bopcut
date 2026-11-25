@@ -5,6 +5,7 @@ import {
 	type CommandResult,
 } from "@/commands/base-command";
 import { EditorCore } from "@/core";
+import { mediaIdsInScenes } from "@/core/managers/media-manager";
 import type { MediaAsset } from "@/media/types";
 import { buildWaveformSourceKey } from "@/media/waveform-summary";
 import { waveformCache } from "@/services/waveform-cache/service";
@@ -23,6 +24,7 @@ export class RemoveMediaAssetCommand extends Command {
 	/** All scenes before removal: clips using the asset are removed everywhere, compound content included. */
 	private savedScenes: TScene[] | null = null;
 	private removedAsset: MediaAsset | null = null;
+	private pendingRemoval: AbortController | null = null;
 
 	constructor({
 		projectId,
@@ -89,17 +91,31 @@ export class RemoveMediaAssetCommand extends Command {
 			editor.timeline.updateTracks(editor.scenes.getActiveScene().tracks);
 		}
 
-		editor.media
-			.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: null, removedAsset: this.removedAsset })
-			.catch((error) => {
-				console.error("Failed to delete media item:", error);
-			});
+		void this.deleteFromStorage(editor, this.removedAsset, removedClips).catch((error) => {
+			console.error("Failed to delete media item:", error);
+		});
 
 		return removedClips ? createElementSelectionResult([]) : undefined;
 	}
 
+	private async deleteFromStorage(editor: EditorCore, removedAsset: MediaAsset, removedClips: boolean): Promise<void> {
+		if (removedClips) {
+			const removal = new AbortController();
+			this.pendingRemoval = removal;
+			// Capture the revision just marked dirty by setScenes. It can save after this project closes.
+			const written = await editor.save.getCurrent()?.whenSaved();
+			if (removal.signal.aborted) return;
+			this.pendingRemoval = null;
+			if (!written || mediaIdsInScenes(written.scenes).has(this.assetId)) return;
+		}
+		await editor.media.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: null, removedAsset });
+	}
+
 	undo(): void {
 		const editor = EditorCore.getInstance();
+		const pending = this.pendingRemoval;
+		pending?.abort();
+		this.pendingRemoval = null;
 
 		const assets = editor.media.getAssets();
 		if (this.removedAsset && !assets.some((asset) => asset.id === this.assetId)) {
@@ -113,11 +129,13 @@ export class RemoveMediaAssetCommand extends Command {
 			restoredBin.splice(this.removedIndex, 0, restoredAsset);
 			editor.media.setAssets({ assets: restoredBin });
 
-			editor.media
-				.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: restoredAsset })
-				.catch((error) => {
-					console.error("Failed to restore media item on undo:", error);
-				});
+			if (!pending) {
+				editor.media
+					.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: restoredAsset })
+					.catch((error) => {
+						console.error("Failed to restore media item on undo:", error);
+					});
+			}
 		}
 
 		if (this.savedScenes) {

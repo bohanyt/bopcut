@@ -313,6 +313,8 @@ export class ProjectManager {
 	 */
 	async persistProject(project: TProject): Promise<string | null> {
 		try {
+			const restores = this.editor.media.pendingMediaRestores(project.metadata.id, project.scenes);
+			if (restores) await restores;
 			await storageService.saveProject({ project });
 			const thumbnail = this.savedProjects.find(({ id }) => id === project.metadata.id)?.thumbnail;
 			this.updateSavedMetadata({ ...project.metadata, thumbnail: thumbnail ?? project.metadata.thumbnail });

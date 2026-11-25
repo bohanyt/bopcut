@@ -3,6 +3,7 @@ import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import type { ProjectNavigation } from "@/services/storage/types";
 import { ZoomController } from "@/timeline/controllers/zoom-controller";
+import { buildElementFromMedia } from "@/timeline/element-utils";
 import { roundMediaTime } from "@/wasm";
 
 // Stub the GPU modules (unused here) before EditorCore pulls them in; see scene-history.test.ts.
@@ -73,6 +74,20 @@ describe("missing media", () => {
 			expect(failed).toEqual(["b"]);
 		} finally {
 			globalThis.fetch = realFetch;
+		}
+	});
+
+	test("the storage loader reports referenced media absent from the manifest", async () => {
+		const fetch = spyOn(globalThis, "fetch").mockResolvedValue(Response.json([]));
+		try {
+			const failed: string[] = [];
+			await new StorageService().loadAllMediaAssets({
+				projectId: "p", usedIds: new Set(["missing", "pending"]), excludeIds: new Set(["pending"]),
+				onFailed: ({ id }) => failed.push(id),
+			});
+			expect(failed).toEqual(["missing"]);
+		} finally {
+			fetch.mockRestore();
 		}
 	});
 
@@ -182,6 +197,94 @@ const gate = () => {
 	});
 	return { promise, open, fail };
 };
+
+describe("removing used media", () => {
+	async function setup() {
+		const a = project("a", new Date(0));
+		const b = project("b", new Date(0));
+		const assets = ["first", "second"].map(asset);
+		const editor = await load(a, { assets });
+		const disk = memoryDisk([a, b]);
+		for (const [index, { id }] of assets.entries()) {
+			editor.timeline.insertElement({
+				element: buildElementFromMedia({
+					mediaId: id, mediaType: "image", name: id,
+					startTime: roundMediaTime({ time: 120_000 * index }),
+					duration: roundMediaTime({ time: 120_000 }),
+				}),
+				placement: { mode: "auto" },
+			});
+		}
+		expect(await editor.save.flush()).toBe(true);
+		const remove = mock(async () => {});
+		const restore = mock(async () => {});
+		stub({ deleteMediaAsset: remove, saveMediaAsset: restore });
+		return { editor, disk, remove, restore };
+	}
+
+	test("undo before the write keeps the bytes, and a second removal waits again", async () => {
+		const { editor, disk, remove, restore } = await setup();
+		const drop = () => editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		drop();
+		expect(remove).not.toHaveBeenCalled();
+		editor.command.undo();
+		expect(await editor.save.flush()).toBe(true);
+		expect(restore).not.toHaveBeenCalled();
+		expect(remove).not.toHaveBeenCalled();
+
+		editor.command.redo();
+		editor.command.undo();
+		drop();
+		const writing = gate();
+		disk.hooks.write = () => writing.promise;
+		const saved = editor.save.flush();
+		expect(remove).not.toHaveBeenCalled();
+		expect(restore).not.toHaveBeenCalled();
+		writing.open();
+		expect(await saved).toBe(true);
+		await until(() => remove.mock.calls.length === 1);
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
+	});
+
+	test("two removals survive a project switch and a failed save", async () => {
+		const { editor, disk, remove } = await setup();
+		let attempts = 0;
+		const writing = gate();
+		disk.hooks.write = async () => {
+			if (++attempts === 1) throw new Error("Disk unavailable");
+			await writing.promise;
+		};
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		editor.media.removeMediaAsset({ projectId: "a", id: "second" });
+		await editor.project.loadProject({ id: "b" });
+		await until(() => attempts === 2);
+		expect(remove).not.toHaveBeenCalled();
+		writing.open();
+		await until(() => remove.mock.calls.length === 2);
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "second" });
+	});
+
+	test("undo after deletion writes the restored asset before its clip", async () => {
+		const { editor, disk, remove, restore } = await setup();
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		expect(await editor.save.flush()).toBe(true);
+		await until(() => remove.mock.calls.length === 1);
+		const restoring = gate();
+		restore.mockRejectedValueOnce(new Error("Restore unavailable"));
+		restore.mockImplementation(() => restoring.promise);
+		const writes = disk.writes.length;
+		editor.command.undo();
+		expect(await editor.save.flush()).toBe(false);
+		expect(restore).toHaveBeenCalledTimes(1);
+		expect(disk.writes).toHaveLength(writes);
+		const saved = editor.save.flush();
+		expect(restore).toHaveBeenCalledTimes(2);
+		restoring.open();
+		expect(await saved).toBe(true);
+		expect(disk.writes).toHaveLength(writes + 1);
+	});
+});
 /** Resolves once `check` holds, checking every few ms (test helper only). */
 async function until(check: () => boolean, timeoutMs = 2000) {
 	const deadline = Date.now() + timeoutMs;

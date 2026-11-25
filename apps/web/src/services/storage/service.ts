@@ -543,7 +543,13 @@ class StorageService {
 	}): Promise<MediaAsset[]> {
 		// Staged media belong to a draft still loading (maybe in another tab): skipped unless the
 		// saved timeline already uses them (the draft committed but its promotion did not finish).
-		const list = [...(await this.fetchManifest({ projectId })).values()].filter((metadata) => !excludeIds?.has(metadata.id) && (!metadata.staged || usedIds?.has(metadata.id)));
+		const manifest = await this.fetchManifest({ projectId });
+		signal?.throwIfAborted();
+		for (const id of usedIds ?? []) {
+			if (!manifest.has(id) && !excludeIds?.has(id))
+				onFailed?.({ id, name: id, error: "Media file is unavailable" });
+		}
+		const list = [...manifest.values()].filter((metadata) => !excludeIds?.has(metadata.id) && (!metadata.staged || usedIds?.has(metadata.id)));
 		const items: (MediaAsset | null)[] = new Array(list.length).fill(null);
 		let next = 0;
 		let loaded = 0;

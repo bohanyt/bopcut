@@ -1227,11 +1227,14 @@ describe("media import lifecycle", () => {
 	test("undo restores the removed item alongside a later import", async () => {
 		const editor = setup();
 		const backend = fakeBackend();
+		const projects = projectWrites();
+		editor.save.start();
 		const deleting = gate();
 		const deletes = spyOn(storageService, "deleteMediaAsset").mockImplementation(async () => deleting.promise);
-		restore = () => { deletes.mockRestore(); backend.restore(); };
+		restore = () => { deletes.mockRestore(); backend.restore(); projects.restore(); };
 		const session = editor.media.startImport()!;
 		editor.media.removeMediaAsset({ projectId: "p", id: "m-old" });
+		expect(await editor.save.flush()).toBe(true);
 		deleting.open();
 		const later = await editor.media.importFile({ session, file: new File(["later"], "later.png") });
 		expect(later).not.toBeNull();
@@ -1241,6 +1244,7 @@ describe("media import lifecycle", () => {
 		expect(backend.state.saved).toEqual([later!.id, "m-old"]);
 
 		editor.command.redo();
+		expect(await editor.save.flush()).toBe(true);
 		editor.command.undo();
 		await editor.media.settleBinWrites("p");
 		expect(backend.state.saved).toEqual([later!.id, "m-old", "m-old"]);

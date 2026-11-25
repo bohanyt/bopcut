@@ -129,6 +129,24 @@ describe("media thumbnails", () => {
 		return handler(req, { params: Promise.resolve({ slug }) });
 	}
 
+	test("media deletion keeps bytes used by a saved compound scene", async () => {
+		const id = "referenced-media";
+		await legacyMedia(id);
+		const base = `/api/storage/projects/${id}`;
+		const project = { metadata: { id, name: id }, scenes: [{ kind: "compound", tracks: {
+			main: { elements: [] }, overlay: [{ elements: [{ mediaId: "m" }] }], audio: [],
+		} }] };
+		const initial = await call(base, "PUT", { "If-Match": "new" }, JSON.stringify(project));
+		expect(initial.status).toBe(200);
+		expect((await call(`${base}/media/m`, "DELETE")).status).toBe(409);
+		expect(await (await call(`${base}/media/m`)).text()).toBe("original");
+
+		project.scenes[0].tracks.overlay = [];
+		expect((await call(base, "PUT", { "If-Match": initial.headers.get("etag")! }, JSON.stringify(project))).status).toBe(200);
+		expect((await call(`${base}/media/m`, "DELETE")).status).toBe(200);
+		expect((await call(`${base}/media/m`)).status).toBe(404);
+	});
+
 	test("writes one matching missing thumbnail and leaves media and project bytes alone", async () => {
 		const id = "missing-thumbnail";
 		const { dir, metadata, metadataFile } = await legacyMedia(id);

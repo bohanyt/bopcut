@@ -14,6 +14,7 @@ import { parseMediaThumbnailReference } from "@/services/storage/media-thumbnail
 import { generateUUID } from "@/utils/id";
 import { waveformCache } from "@/services/waveform-cache/service";
 import { BatchCommand, RemoveMediaAssetCommand } from "@/commands";
+import type { TScene } from "@/timeline";
 
 /** Media ids used by elements anywhere in these scenes. */
 export function mediaIdsInScenes(scenes: readonly { tracks: { main: { elements: readonly unknown[] }; overlay: readonly { elements: readonly unknown[] }[]; audio: readonly { elements: readonly unknown[] }[] } }[]): Set<string> {
@@ -35,7 +36,7 @@ type MediaRetry = {
 	read: Promise<{ asset: MediaAsset } | { failure: MediaLoadFailure }>;
 };
 
-type BinWrite = { asset: MediaAsset | null; done: Promise<void>; started?: Promise<void> };
+type BinWrite = { asset: MediaAsset | null; done: Promise<void>; started?: Promise<void>; failed?: boolean };
 
 export class MediaManager {
 	private assets: MediaAsset[] = [];
@@ -161,13 +162,29 @@ export class MediaManager {
 		const write = () => reference && removedAsset
 			? storageService.captureRemovedThumbnail(removedAsset, pending?.asset?.file === removedAsset.file).then(send, send)
 			: send();
-		const done = (previous ? previous.then(write) : write()).finally(() => {
-			if (projectWrites.get(id)?.done === done) projectWrites.delete(id);
+		const entry: BinWrite = { asset, started: started?.promise, done: (previous ? previous.then(write) : write()) };
+		entry.done = entry.done.catch((error) => {
+			entry.failed = true;
+			throw error;
+		}).finally(() => {
+			// A later timeline save can retry a failed restore before it writes a media reference.
+			if (projectWrites.get(id) === entry && !(entry.failed && asset)) projectWrites.delete(id);
 			if (!projectWrites.size && this.binWrites.get(projectId) === projectWrites) this.binWrites.delete(projectId);
 		});
-		projectWrites.set(id, { asset, done, started: started?.promise });
+		projectWrites.set(id, entry);
 		if (this.loadingBinChanges?.projectId === projectId) this.loadingBinChanges.changes.set(id, asset);
-		return done;
+		return entry.done;
+	}
+
+	pendingMediaRestores(projectId: string, scenes: readonly TScene[]): Promise<void[]> | undefined {
+		const writes = this.binWrites.get(projectId);
+		if (!writes?.size) return;
+		const usedIds = mediaIdsInScenes(scenes);
+		const restores: Promise<void>[] = [];
+		for (const [id, { asset, done, failed }] of writes) {
+			if (asset && usedIds.has(id)) restores.push(failed ? this.persistBinChange({ projectId, id, asset }) : done);
+		}
+		if (restores.length) return Promise.all(restores);
 	}
 
 	async settleBinWrites(projectId: string): Promise<void> {

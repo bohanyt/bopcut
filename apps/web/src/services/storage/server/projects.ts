@@ -58,6 +58,20 @@ function legacyDuration(project: SerializedProject): number {
 	return duration;
 }
 
+/** Check the saved timeline under the same lock as project writes. */
+export async function projectUsesMedia(id: string, mediaId: string): Promise<boolean> {
+	const project: unknown = await readJson(projectFile(id));
+	if (!isRecord(project)) return false;
+	const scenes = Array.isArray(project.scenes) ? project.scenes : [project];
+	return scenes.some((scene) => {
+		if (!isRecord(scene) || !isRecord(scene.tracks)) return false;
+		return Object.values(scene.tracks).flat().some((track) =>
+			isRecord(track) && Array.isArray(track.elements) &&
+			track.elements.some((element) => isRecord(element) && element.mediaId === mediaId),
+		);
+	});
+}
+
 function stamp(stat: Stats) {
 	return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.birthtimeMs}`;
 }
