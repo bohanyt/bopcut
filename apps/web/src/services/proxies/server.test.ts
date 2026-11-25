@@ -109,17 +109,20 @@ test("a busy hardware encoder is not remembered as missing", async () => {
 
 test("a tool that failed is not tried again until a project opens", async () => {
 	const f = await fixture(["source", "other"]);
-	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async () => { throw new Error("blocked"); });
+	let cause = new Error("blocked");
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async () => { throw cause; });
 	try {
 		const first = f.tab("first", ["source"]);
-		await first.wait(event => event.state === "missing");
+		await first.wait(event => event.state === "failed");
 		expect(first.events.at(-1)?.error).toBe("blocked");
 		expect(run).toHaveBeenCalledTimes(1);
 		for (const [index, ids] of [["source", "other"], ["other"], ["source"]].entries()) updateSession("first", { ids }, index + 1, ["source"]);
 		await sleep(100);
 		expect(run).toHaveBeenCalledTimes(1);
+		cause = Object.assign(new Error("tool exited with code 127"), { code: "ENOENT" });
 		const second = f.tab("second", ["source"]);
 		await second.wait(event => event.state === "missing");
+		expect(second.events.at(-1)?.error).toBeUndefined();
 		expect(run).toHaveBeenCalledTimes(2);
 	} finally { await f.dispose(); run.mockRestore(); }
 });
@@ -265,6 +268,27 @@ test("a session that does not build uses existing proxies and starts no tool", a
 		await manual.wait(event => event.media?.id === "ready" && event.done === 2, 2);
 		expect(run).not.toHaveBeenCalled();
 		expect((await fs.readdir(f.cache)).sort()).toEqual([key + ".json", key + ".mp4"]);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
+test("a picture that is too small for the encoder has no proxy and is no failure", async () => {
+	const ids = ["a", "b", "c", "d"];
+	const f = await fixture(ids);
+	let encodes = 0;
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-show_frames")) return videoProbe(3);
+		if (args.includes("-fs")) {
+			encodes++;
+			throw Object.assign(new Error("tool exited with code 1"), { stderr: "InitializeEncoder failed: invalid param (8): Frame Dimension less than the minimum supported value." });
+		}
+		return toolResult();
+	});
+	try {
+		const tab = f.tab("small", ids);
+		await tab.wait(event => event.state === "ready" && event.done === 4);
+		expect(encodes).toBeGreaterThanOrEqual(4);
+		expect(tab.events.some(event => event.state === "failed")).toBe(false);
 	} finally { await f.dispose(); run.mockRestore(); }
 });
 
