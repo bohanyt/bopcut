@@ -1,6 +1,7 @@
 import { parseArgs as parse } from "node:util";
 import path from "node:path";
 import type { DraftThresholds } from "../src/agent/draft-check";
+import type { PictureOptions } from "../src/agent/draft-check-pictures";
 import { parseExportRequest } from "../src/agent/export";
 import { parseFrameInput } from "../src/agent/render-input";
 import { parseRangeInput } from "../src/agent/range-view";
@@ -38,6 +39,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			...(command === "draft-check" && {
 				from: { type: "string" }, to: { type: "string" }, json: { type: "boolean" }, all: { type: "boolean" },
 				position: { type: "string" }, scale: { type: "string" }, rotation: { type: "string" }, opacity: { type: "string" },
+				pictures: { type: "boolean" }, "picture-limit": { type: "string" }, "picture-distance": { type: "string" },
+				"freeze-seconds": { type: "string" }, "outlier-distance": { type: "string" },
 			}),
 			...(command === "transcript-view" && { media: { type: "string" }, timeline: { type: "boolean" } }),
 			...(command === "narration-plan" && { clip: { type: "string" }, "new-media": { type: "string" },
@@ -46,15 +49,15 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" }, note: { type: "string" }, "scene-id": { type: "string" } }),
 		},
 	});
-	const seconds = Number(values.timeout ?? (render ? 600 : command === "review" ? 180 : 30));
+	const seconds = Number(values.timeout ?? (render ? 600 : command === "review" ? 180 : command === "draft-check" && values.pictures === true ? 55 : 30));
 	if (!Number.isFinite(seconds) || seconds < 0.001 || seconds > 86400) throw new Error("Set --timeout to a positive number of seconds, up to 86400.");
 	if (render && !values.file && seconds < minRenderSeconds) throw new Error(`Set --timeout to at least ${minRenderSeconds} seconds for a render.`);
 	const projectId = values["project-id"];
 	if (projectId !== undefined && !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) throw new Error("Pass a valid project ID to --project-id.");
 	const timeoutMs = Math.round(seconds * 1000);
 	if (command === "draft-check") {
-		if (!projectId) throw new Error("Use draft-check --project-id ID [--from SECONDS] [--to SECONDS] [--json] [--all].");
-		const number = (flag: "from" | "to" | keyof DraftThresholds) => {
+		if (!projectId) throw new Error("Use draft-check --project-id ID [--from SECONDS] [--to SECONDS] [--json] [--all] [--pictures].");
+		const number = (flag: "from" | "to" | keyof DraftThresholds | "picture-limit" | "picture-distance" | "freeze-seconds" | "outlier-distance") => {
 			const value = values[flag];
 			if (value === undefined) return;
 			const parsed = Number(value);
@@ -70,7 +73,18 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			const value = number(property);
 			if (value !== undefined) thresholds[property] = value;
 		}
-		return { command: "draft-check" as const, projectId, from, to, thresholds, json: values.json === true, all: values.all === true, timeoutMs };
+		const options: Partial<PictureOptions> = {};
+		for (const [flag, key] of [["picture-limit", "limit"], ["picture-distance", "distance"],
+			["freeze-seconds", "freezeSeconds"], ["outlier-distance", "outlierDistance"]] as const) {
+			const value = number(flag);
+			if (value === undefined) continue;
+			if (values.pictures !== true) throw new Error(`--${flag} requires --pictures.`);
+			if (key === "limit" && (!Number.isInteger(value) || value > 300)) throw new Error("Set --picture-limit to an integer from 1 to 300.");
+			if ((key === "distance" || key === "outlierDistance") && value > 1) throw new Error(`Set --${flag} to a value at most 1.`);
+			options[key] = value;
+		}
+		const pictures = values.pictures === true ? options : undefined;
+		return { command: "draft-check" as const, projectId, from, to, thresholds, json: values.json === true, all: values.all === true, timeoutMs, pictures };
 	}
 	const media = typeof values.media === "string" ? values.media : undefined;
 	if (command === "transcript-view" && (!projectId || (media !== undefined && (!media.trim() || values.timeline)))) {

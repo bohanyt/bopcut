@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { DraftThresholds } from "../src/agent/draft-check";
+import type { PictureOptions } from "../src/agent/draft-check-pictures";
 import { loadEnvLocal } from "./retrieval-cli";
 
 async function loadTimeline() {
@@ -21,7 +22,9 @@ let timeline: ReturnType<typeof loadTimeline> | undefined;
 
 export async function draftCheckCommand(options: {
 	projectId: string; from: number; to?: number; json: boolean; all: boolean; thresholds: Partial<DraftThresholds>; timeoutMs: number;
+	pictures?: Partial<PictureOptions>;
 }) {
+	const started = performance.now();
 	const webDir = path.resolve(import.meta.dir, "..");
 	loadEnvLocal(path.join(webDir, ".env.local"));
 	const directory = path.resolve(webDir, process.env.BOPENCUT_DATA ?? "../../workspace", "projects", options.projectId);
@@ -45,5 +48,19 @@ export async function draftCheckCommand(options: {
 	}
 	const report = inspectDraft({ root, scenes, media, canvas: canvasSize, fps: fps.numerator / fps.denominator,
 		from: options.from, to, thresholds: { ...draftThresholds, ...options.thresholds }, signal });
-	return formatDraftReport(report, options.json, options.all);
+	if (!options.pictures) return formatDraftReport(report, options.json, options.all);
+	const interrupt = new AbortController();
+	const stop = () => interrupt.abort(new Error("Draft check interrupted."));
+	process.on("SIGINT", stop);
+	process.on("SIGTERM", stop);
+	try {
+		const { inspectDraftPictures, pictureDefaults } = await import("../src/agent/draft-check-pictures");
+		const pictures = await inspectDraftPictures({ root, scenes, media, directory, from: options.from, to,
+			options: { ...pictureDefaults, ...options.pictures }, signal: AbortSignal.any([signal, interrupt.signal]),
+			budgetMs: Math.max(1, Math.floor(options.timeoutMs - (performance.now() - started) - 1_000)) });
+		return formatDraftReport(report, options.json, options.all, pictures);
+	} finally {
+		process.removeListener("SIGINT", stop);
+		process.removeListener("SIGTERM", stop);
+	}
 }
