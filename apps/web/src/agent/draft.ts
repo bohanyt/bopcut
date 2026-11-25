@@ -224,7 +224,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 		const tracks = cloneTracks(scene.tracks);
 		const out = edit(tracks);
 		if (out === false) return out;
-		let next = ripple && !noRipple ? applyRippleAdjustments({ tracks, adjustments: computeRippleAdjustments({ beforeTracks: scene.tracks, afterTracks: tracks }) }) : tracks;
+		let next = ripple && !noRipple ? applyRippleAdjustments({ tracks, adjustments: computeRippleAdjustments({ beforeTracks: scene.tracks, afterTracks: tracks, preserveDraftGapClosing: true }) }) : tracks;
 		if (next !== tracks && activeKeep) {
 			const starts = new Map(orderedTracks(tracks).flatMap((track) => track.elements
 				.filter((element) => element.id === operation.fixedStartId || (element.agentId && element.humanFields?.includes("start")))

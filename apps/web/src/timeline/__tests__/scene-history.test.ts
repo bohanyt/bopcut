@@ -99,6 +99,35 @@ function setupSplitHistory() {
 	return { editor, tracks, main, first, second, keyAt };
 }
 
+test("a ripple move into an earlier gap closes only the old clip span", () => {
+	const scenes = fixture();
+	const host = getHost(scenes);
+	host.tracks.main.elements = [
+		video("lead", 0, 1), video("stationary", 3, 2),
+		video("moving", 5, 2), video("follower", 7, 2),
+	];
+	const editor = setup(scenes);
+	editor.command.isRippleEnabled = true;
+	const trackId = host.tracks.main.id;
+	const before = editor.scenes.getActiveScene().tracks;
+	editor.timeline.moveElements({ moves: [{
+		sourceTrackId: trackId, targetTrackId: trackId, elementId: "moving", newStartTime: t(1),
+	}] });
+	const assertPositions = () => {
+		const entries = (elements: typeof host.tracks.main.elements) =>
+			Object.fromEntries(elements.map(({ id, startTime }) => [id, startTime]));
+		const actual = entries(editor.scenes.getActiveScene().tracks.main.elements);
+		expect(actual).toEqual({ lead: t(0), stationary: t(3), moving: t(1), follower: t(5) });
+		expect(entries(getHost(editor.project.getActive().scenes).tracks.main.elements)).toEqual(actual);
+	};
+	assertPositions();
+	editor.command.undo();
+	expect(editor.scenes.getActiveScene().tracks).toEqual(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.command.redo();
+	assertPositions();
+});
+
 test.each([
 	{ edge: "right", reverse: false, clientX: 200, delta: 3, times: [4, 5] },
 	{ edge: "right", reverse: true, clientX: 200, delta: 3, times: [4, 5] },

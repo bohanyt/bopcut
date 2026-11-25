@@ -13,9 +13,11 @@ interface ElementSpan extends Interval {
 export function computeRippleAdjustments({
 	beforeTracks,
 	afterTracks,
+	preserveDraftGapClosing = false,
 }: {
 	beforeTracks: SceneTracks;
 	afterTracks: SceneTracks;
+	preserveDraftGapClosing?: boolean;
 }): RippleAdjustment[] {
 	const beforeTrackList = [
 		...beforeTracks.overlay,
@@ -38,6 +40,7 @@ export function computeRippleAdjustments({
 			beforeElements: beforeTrack.elements,
 			afterElements: afterTracksById.get(beforeTrack.id)?.elements ?? [],
 			allAfterElementIds,
+			preserveDraftGapClosing,
 		}),
 	);
 }
@@ -47,11 +50,13 @@ function computeTrackRippleAdjustments({
 	beforeElements,
 	afterElements,
 	allAfterElementIds,
+	preserveDraftGapClosing,
 }: {
 	trackId: string;
 	beforeElements: TimelineElement[];
 	afterElements: TimelineElement[];
 	allAfterElementIds: Set<string>;
+	preserveDraftGapClosing: boolean;
 }): RippleAdjustment[] {
 	const beforeElementsById = buildElementSpanMap({ elements: beforeElements });
 	const afterElementsById = buildElementSpanMap({ elements: afterElements });
@@ -59,6 +64,7 @@ function computeTrackRippleAdjustments({
 		beforeElementsById,
 		afterElementsById,
 		allAfterElementIds,
+		preserveDraftGapClosing,
 	});
 	const freedIntervals = subtractIntervalSets({
 		sourceIntervals: vacatedIntervals,
@@ -89,10 +95,12 @@ function collectTrackIntervals({
 	beforeElementsById,
 	afterElementsById,
 	allAfterElementIds,
+	preserveDraftGapClosing,
 }: {
 	beforeElementsById: Map<string, ElementSpan>;
 	afterElementsById: Map<string, ElementSpan>;
 	allAfterElementIds: Set<string>;
+	preserveDraftGapClosing: boolean;
 }): {
 	vacatedIntervals: Interval[];
 	joinedIntervals: Interval[];
@@ -117,7 +125,9 @@ function collectTrackIntervals({
 		if (beforeElement.endTime > afterElement.endTime) {
 			pushInterval({
 				intervals: vacatedIntervals,
-				startTime: afterElement.endTime,
+				startTime: preserveDraftGapClosing
+					? afterElement.endTime
+					: Math.max(beforeElement.startTime, afterElement.endTime),
 				endTime: beforeElement.endTime,
 			});
 		}
