@@ -24,6 +24,7 @@ import { getMouseTimeFromClientX } from "@/timeline/drag-utils";
 import { generateUUID } from "@/utils/id";
 import { finishFocusedField } from "@/utils/browser";
 import { beginTimelineGesture } from "@/timeline/gesture-state";
+import { listenForTimelineMouseDrag } from "./mouse-drag";
 import type { SnapPoint } from "@/timeline/snapping";
 import type {
 	DropTarget,
@@ -96,6 +97,9 @@ type Point = { readonly x: number; readonly y: number };
 
 interface MousedownSnapshot {
 	readonly origin: Point;
+	readonly scrollLeft: number;
+	readonly scrollTop: number;
+	readonly zoomLevel: number;
 	readonly elementId: string;
 	readonly trackId: string;
 	readonly startElementTime: MediaTime;
@@ -371,6 +375,7 @@ export class ElementInteractionController {
 			}
 			return;
 		}
+		if (event.button !== 0) return;
 
 		event.stopPropagation();
 		finishFocusedField(event.currentTarget);
@@ -393,17 +398,22 @@ export class ElementInteractionController {
 			? this.deps.selection.getSelected()
 			: [ref];
 
+		const scrollContainer = this.deps.viewport.getTracksScrollEl();
+		const zoomLevel = this.deps.viewport.getZoomLevel();
 		this.session = {
 			kind: "pending",
 			mousedown: {
 				origin: { x: event.clientX, y: event.clientY },
+				scrollLeft: scrollContainer?.scrollLeft ?? 0,
+				scrollTop: scrollContainer?.scrollTop ?? 0,
+				zoomLevel,
 				elementId: element.id,
 				trackId: track.id,
 				startElementTime: currentElement.startTime,
 				clickOffsetTime: pixelToClickOffsetTime({
 					clientX: event.clientX,
 					elementRect: event.currentTarget.getBoundingClientRect(),
-					zoomLevel: this.deps.viewport.getZoomLevel(),
+					zoomLevel,
 				}),
 				selectedElements,
 			},
@@ -443,13 +453,18 @@ export class ElementInteractionController {
 	};
 
 	private activate(): void {
-		document.addEventListener("mousemove", this.handleMouseMove);
-		document.addEventListener("mouseup", this.handleMouseUp);
+		this.stopListening = listenForTimelineMouseDrag({
+			onMove: this.handleMouseMove,
+			onRelease: this.handleMouseUp,
+			onCancel: () => this.gestureOwner?.cancel(),
+		});
 	}
 
+	private stopListening?: () => void;
+
 	private deactivate(): void {
-		document.removeEventListener("mousemove", this.handleMouseMove);
-		document.removeEventListener("mouseup", this.handleMouseUp);
+		this.stopListening?.();
+		this.stopListening = undefined;
 	}
 
 	private notify(): void {
@@ -708,11 +723,17 @@ export class ElementInteractionController {
 		if (this.session.kind !== "dragging") return;
 
 		const { mousedown, drag } = this.session;
-
-		// If the drag returned within the click threshold of its origin, treat
-		// this as a cancel rather than a commit — the user dragged then put the
-		// element back.
+		const scrollContainer = this.deps.viewport.getTracksScrollEl();
+		if (!scrollContainer) {
+			this.finishSession();
+			return;
+		}
+		// Returning to the starting pointer position only puts the clip back
+		// when the viewport has not moved under it.
 		if (
+			(scrollContainer.scrollLeft ?? 0) === mousedown.scrollLeft &&
+			(scrollContainer.scrollTop ?? 0) === mousedown.scrollTop &&
+			this.deps.viewport.getZoomLevel() === mousedown.zoomLevel &&
 			!movedPastDragThreshold({
 				current: { x: clientX, y: clientY },
 				origin: mousedown.origin,
@@ -723,6 +744,7 @@ export class ElementInteractionController {
 			return;
 		}
 
+		this.updateActiveDrag({ mousedown, drag, clientX, clientY, scrollContainer });
 		const { moveGroup, groupMoveResult } = drag;
 		if (!groupMoveResult) {
 			this.finishSession();

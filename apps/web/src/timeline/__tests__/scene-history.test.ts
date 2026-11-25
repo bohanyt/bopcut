@@ -141,14 +141,14 @@ test.each([
 		controller.onKeyframeMouseDown({
 			keyframes: [selectedKeyframes[0]],
 			event: {
-				clientX: 0, preventDefault() {}, stopPropagation() {}, currentTarget: { ownerDocument: doc },
+				button: 0, clientX: 0, preventDefault() {}, stopPropagation() {}, currentTarget: { ownerDocument: doc },
 			} as unknown as ReactMouseEvent,
 		});
 		const move = Object.assign(new Event("mousemove"), { clientX });
 		doc.dispatchEvent(move);
 		doc.dispatchEvent(move);
 		expect(controller.keyframeDragState.deltaTicks).toBe(t(delta));
-		doc.dispatchEvent(new Event("mouseup"));
+		doc.dispatchEvent(Object.assign(new Event("mouseup"), { button: 0 }));
 		const updated = editor.scenes.getActiveScene().tracks.main.elements[0];
 		expect(getChannel({ animations: updated.animations, propertyPath: "opacity" })?.keys)
 			.toEqual(keys.map((key, index) => ({ ...key, time: t(times[index]) })));
@@ -614,7 +614,7 @@ describe("preview gesture history boundaries", () => {
 				controller.onElementMouseDown(clip);
 				// Native blur runs after mousedown if it was not already handled.
 				if (editor.timeline.isPreviewActive()) doc.activeElement.blur();
-				doc.dispatchEvent(new Event("mouseup"));
+				doc.dispatchEvent(Object.assign(new Event("mouseup"), { button: 0 }));
 				controller.onElementClick(clip);
 				expect(main()[0].name).toBe("Pending title");
 				expect(editor.selection.getSelectedElements()).toEqual([second]);
