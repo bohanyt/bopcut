@@ -70,13 +70,16 @@ function findFirstAvailableTrackIndex({
 	tracks,
 	trackType,
 	timeSpans,
+	maxTrackIndex = Infinity,
 }: {
 	tracks: TimelineTrack[];
 	trackType: TrackType;
 	timeSpans: PlacementTimeSpan[];
+	maxTrackIndex?: number;
 }): number {
-	return tracks.findIndex((track) => {
+	return tracks.findIndex((track, index) => {
 		return (
+			index <= maxTrackIndex &&
 			track.type === trackType &&
 			canPlaceTimeSpansOnTrack({
 				track,
@@ -230,10 +233,12 @@ export function resolveTrackPlacement({
 	}
 
 	if (strategy.type === "aboveSource") {
-		const aboveTrackIndex = strategy.sourceTrackIndex - 1;
+		const { sourceTrackIndex, maxTrackIndex = Infinity } = strategy;
+		const aboveTrackIndex = sourceTrackIndex - 1;
 		const aboveTrack = orderedTracks[aboveTrackIndex];
 		if (
 			aboveTrack &&
+			aboveTrackIndex <= maxTrackIndex &&
 			aboveTrack.type === trackType &&
 			canPlaceTimeSpansOnTrack({
 				track: aboveTrack,
@@ -252,6 +257,7 @@ export function resolveTrackPlacement({
 			tracks: orderedTracks,
 			trackType,
 			timeSpans,
+			maxTrackIndex,
 		});
 		if (firstAvailableTrackIndex >= 0) {
 			return buildExistingTrackResult({

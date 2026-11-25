@@ -32,7 +32,12 @@ function setup(scenes: TScene[] = fixture()) {
 function clipItem(trackId: string, trackType: TimelineTrack["type"], id: string, start: number, duration: number): ElementClipboardItem {
 	const element = trackType === "audio" ? audio(id, start, duration) : trackType === "text" ? text(id, start, duration) : trackType === "graphic" ? rect(id, start, duration) : video(id, start, duration);
 	const { id: _id, ...withoutId } = element;
-	return { trackId, trackType, element: withoutId };
+	return { trackId, trackType, trackIndex: 0, element: withoutId };
+}
+
+/** Names of the visual layers from the top down, without empty ones. */
+function layers(tracks: SceneTracks) {
+	return [...tracks.overlay, tracks.main].map((track) => track.elements.map(({ name }) => name)).filter((names) => names.length);
 }
 
 function starts(tracks: SceneTracks, trackId: string) {
@@ -96,5 +101,75 @@ describe("paste groups", () => {
 		paste(endEd, endTime, pair);
 		tracks = endEd.scenes.getActiveScene().tracks;
 		expect(starts(tracks, "t-main")).toEqual([t(0), t(endTime), t(endTime + 2.5)]);
+	});
+});
+
+describe("pasted layers", () => {
+	const copied = [
+		{ trackId: "t-text", elementId: "title" },
+		{ trackId: "t-gfx", elementId: "box" },
+		{ trackId: "t-music", elementId: "music" },
+	];
+	const orders = [copied, [...copied].reverse()];
+
+	function copy(editor: ReturnType<typeof setup>, elements: typeof copied) {
+		editor.selection.setSelectedElements({ elements });
+		expect(editor.clipboard.copy()).toBe(true);
+	}
+
+	test.each(orders)("keep their order in a scene without the source tracks", (...elements) => {
+		const editor = setup();
+		editor.media.setAssets({ assets: [{ id: "media-music", name: "music", type: "audio", file: new File([], "music.mp3") }] });
+		copy(editor, elements);
+		const empty = fixture();
+		blankMain(empty);
+		editor.scenes.setScenes({ scenes: empty, activeSceneId: "main" });
+		expect(editor.clipboard.paste({ time: t(4) })).toBe(true);
+		const pasted = editor.scenes.getActiveScene().tracks;
+		expect(layers(pasted)).toEqual([["title"], ["box"]]);
+		expect(pasted.audio.map((track) => track.elements.map(({ startTime }) => startTime))).toEqual([[t(4.5)]]);
+		expect(editor.selection.getSelectedElements().map(({ trackId }) => allTracks(pasted).find(({ id }) => id === trackId)?.type))
+			.toEqual(elements.map(({ trackId }) => trackId === "t-text" ? "text" : trackId === "t-gfx" ? "graphic" : "audio"));
+		editor.command.undo();
+		expect(editor.scenes.getActiveScene().tracks.overlay).toEqual([]);
+		editor.command.redo();
+		expect(editor.scenes.getActiveScene().tracks).toEqual(pasted);
+	});
+
+	test.each(orders)("keep their order above an occupied place", (...elements) => {
+		const editor = setup();
+		editor.media.setAssets({ assets: [{ id: "media-music", name: "music", type: "audio", file: new File([], "music.mp3") }] });
+		copy(editor, elements);
+		expect(editor.clipboard.paste({ time: t(1) })).toBe(true);
+		const { tracks } = editor.scenes.getActiveScene();
+		expect(layers(tracks)).toEqual([["title"], ["box"], ["title"], ["box"], ["bg"]]);
+		noOverlap(tracks);
+	});
+
+	test("use their own free tracks in the same scene", () => {
+		const editor = setup();
+		copy(editor, copied.slice(0, 2));
+		expect(editor.clipboard.paste({ time: t(20) })).toBe(true);
+		expect(layers(editor.scenes.getActiveScene().tracks)).toEqual([["title", "title"], ["box", "box"], ["bg"]]);
+	});
+
+	test("do not go below a layer they cover", () => {
+		const editor = setup();
+		copy(editor, copied.slice(0, 2));
+		const flipped = fixture();
+		const host = getHost(flipped);
+		host.tracks = { ...host.tracks, overlay: [...host.tracks.overlay].reverse() };
+		editor.scenes.setScenes({ scenes: flipped, activeSceneId: "main" });
+		expect(editor.clipboard.paste({ time: t(20) })).toBe(true);
+		expect(layers(editor.scenes.getActiveScene().tracks)).toEqual([["title"], ["box", "box"], ["title"], ["bg"]]);
+	});
+
+	test("share one free track when they do not overlap", () => {
+		const editor = setup();
+		paste(editor, 20, [
+			{ ...clipItem("upper", "text", "a", 0, 1), trackIndex: 0 },
+			{ ...clipItem("lower", "text", "b", 2, 1), trackIndex: 1 },
+		]);
+		expect(starts(editor.scenes.getActiveScene().tracks, "t-text")).toEqual([t(2), t(20), t(22)]);
 	});
 });

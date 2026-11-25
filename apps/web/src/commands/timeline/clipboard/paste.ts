@@ -95,8 +95,15 @@ export class PasteCommand extends Command {
 			this.clipboardItems.map((item, index) => [item, deepCopy.elements[index]]),
 		);
 		const placed: TimelineElement[] = [];
+		const targetTrackIds = new Map<string, string>();
+		// Layers are placed from the bottom up, each at or above the previous one, so the pasted
+		// clips cover each other as their sources do.
+		const groups = [...itemsByTrackId].sort(
+			([, a], [, b]) => b[0].trackIndex - a[0].trackIndex,
+		);
+		let maxTrackIndex: number | undefined;
 
-		for (const [trackId, items] of itemsByTrackId) {
+		for (const [trackId, items] of groups) {
 			const elementsToAdd = items.flatMap((item) => {
 				const element = pastedByItem.get(item);
 				return element ? [element] : [];
@@ -119,7 +126,11 @@ export class PasteCommand extends Command {
 					startTime: element.startTime,
 					duration: element.duration,
 				})),
-				strategy: { type: "aboveSource", sourceTrackIndex },
+				strategy: {
+					type: "aboveSource",
+					sourceTrackIndex,
+					...(trackType === "audio" ? {} : { maxTrackIndex }),
+				},
 			});
 			if (!placementResult) {
 				continue;
@@ -181,12 +192,19 @@ export class PasteCommand extends Command {
 			updatedTracks = applied.updatedTracks;
 			placed.push(...elementsForPlacement);
 
-			for (const element of elementsForPlacement) {
-				this.pastedElements.push({
-					trackId: applied.targetTrackId,
-					elementId: element.id,
-				});
+			if (trackType !== "audio") {
+				maxTrackIndex = [...updatedTracks.overlay, updatedTracks.main].findIndex(
+					(track) => track.id === applied.targetTrackId,
+				);
 			}
+			for (const element of elementsForPlacement) {
+				targetTrackIds.set(element.id, applied.targetTrackId);
+			}
+		}
+		// The selection keeps the order of the copied clips.
+		for (const element of deepCopy.elements) {
+			const trackId = targetTrackIds.get(element.id);
+			if (trackId) this.pastedElements.push({ trackId, elementId: element.id });
 		}
 
 		const copiedScenes = collectCompoundScenes({
