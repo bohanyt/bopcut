@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 const { bundleProjectSettings, buildBundleScenes, checkBundleAssetKeys } = await import("./importer");
 const { buildAgentElement } = await import("./elements");
+const { TICKS_PER_SECOND } = await import("@/wasm");
 
 describe("bundle project settings", () => {
 	test("canvas size and frame rate from the bundle", () => {
@@ -40,6 +41,17 @@ describe("media trimStart", () => {
 
 	test("negative trimStart is refused", () => {
 		expect(() => buildAgentElement({ ...base, e: { ...base.e, trimStart: -3 } })).toThrow("trimStart must be 0 or more for clip");
+	});
+
+	test("a duration of zero or less is refused, also for compound clips", () => {
+		for (const duration of [-1, 0, 0.5 / TICKS_PER_SECOND]) {
+			expect(() => buildAgentElement({ ...base, e: { ...base.e, duration } })).toThrow("duration must be above 0 (clip)");
+			expect(() => buildBundleScenes({
+				bundle: { name: "t", width: 1920, height: 1080, assets: [], audio: [], overlay: [], main: [{ name: "group", start: 0, duration, compound: { main: [base.e] } }] },
+				media: new Map([["a", media]]),
+				sceneId: "main",
+			})).toThrow("duration must be above 0 (group)");
+		}
 	});
 
 	test("zero and fractional trimStart are accepted", () => {
