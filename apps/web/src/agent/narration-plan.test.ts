@@ -5,7 +5,7 @@ import path from "node:path";
 import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
 import { audio, fixture, t, text, video } from "@/timeline/__tests__/compound-fixtures";
 import type { AudioElement } from "@/timeline";
-import { alignNarration } from "./narration-alignment";
+import { alignNarration, narrationWords } from "./narration-alignment";
 import { planNarration } from "./narration-plan";
 import { handleCli } from "./cli-api";
 
@@ -166,6 +166,55 @@ function atZero() {
 
 const timed = (entries: [string, number, number][]) => entries.map(([text, start, end]) => ({ text, start, end }));
 const contiguous = timed([["hello", 0, 1], ["world", 1, 2], ["today", 2, 3]]);
+
+test("discards clipped word tails at both trim edges and keeps short words by their midpoint", () => {
+	const input = atZero();
+	const clip = input.root.tracks.audio[0].elements[0];
+	clip.trimStart = t(1);
+	clip.duration = t(3);
+	input.root.tracks.main.elements = [video("first", 0, 1)];
+	const oldWords = timed([["intro", 0, 1.01], ["hello", 1.01, 2], ["world", 2, 3], ["today", 3, 4]]);
+	const opts = { ...input, oldWords, newWords: contiguous, newDuration: 3, includeUnchanged: true };
+	const plan = planNarration(opts);
+	expect(plan.totals.unmatched).toBe(0);
+	expect(plan.spans.items[0].old.indices[0]).toBe(1);
+	expect(plan.elements.find((row) => row.address.id === "first")).toMatchObject({ kind: "unchanged", proposed: { startFrame: 0, endFrame: 30 } });
+	const tails = [...oldWords.slice(0, 3), ...timed([["today", 3, 3.9], ["ah", 3.95, 3.96], ["outro", 3.99, 5]])];
+	const trimmed = planNarration({ ...opts, oldWords: tails });
+	expect(trimmed.unmatched.items.map((item) => item.words)).toEqual([["ah"]]);
+});
+
+test("a shared pause cut moves the neighbour edge even if its other edge has no anchor", () => {
+	const input = atZero();
+	input.root.tracks.main.elements = [video("left", 0, 1), video("right", 1, 1.5)];
+	const oldWords = timed([["alpha", 0, 0.5], ["beta", 1.5, 2], ["gamma", 3, 3.5]]);
+	const newWords = timed([["alpha", 0, 0.5], ["beta", 2.5, 3], ["gamma", 4, 4.5]]);
+	const args = { ...input, oldWords, newWords, newDuration: 6 };
+	const proposals = (plan: ReturnType<typeof planNarration>) => plan.elements.filter((row) => row.address.trackId === "t-main");
+	expect(proposals(planNarration(args)).map((row) => [row.kind, row.proposed])).toEqual([
+		["needsMoreSource", { startFrame: 0, endFrame: 45 }], ["trim", { startFrame: 45, endFrame: 75 }],
+	]);
+	const tooLate = timed([["alpha", 0, 0.5], ["beta", 5, 5.5], ["gamma", 6, 6.5]]);
+	const blocked = proposals(planNarration({ ...args, newWords: tooLate, newDuration: 7 }));
+	expect(blocked.map((row) => [row.kind, row.proposed, row.sharedCut?.decision]))
+		.toEqual(Array.from({ length: 2 }, () => ["crossesUnresolvedChange", null, "Both edges need a decision."]));
+});
+
+test("a shared cut at the first narration word extends the preceding intro without a gap", () => {
+	const input = setup();
+	input.root.tracks.main.elements = [{ ...video("intro", 0, 2), sourceDuration: t(4) }, video("body", 2, 1)];
+	const next = contiguous.map((word) => ({ ...word, start: word.start + 0.5, end: word.end + 0.5 }));
+	const plan = planNarration({ ...input, oldWords: contiguous, newWords: next, newDuration: 4 });
+	expect(plan.elements.filter((row) => row.address.trackId === "t-main").map((row) => [row.kind, row.proposed])).toEqual([
+		["trim", { startFrame: 0, endFrame: 75 }], ["move", { startFrame: 75, endFrame: 105 }],
+	]);
+});
+
+test("Indonesian numbers only join across whitespace and normalize outer punctuation", () => {
+	const list = words("nomor dua. Belas kasih dua, belas “DUA BELAS!”");
+	expect(narrationWords(list).map((word) => word.text))
+		.toEqual(["nomor", "dua.", "Belas", "kasih", "dua,", "belas", "“DUA BELAS!”"]);
+});
 
 test.each([false, true])("ends at the covered word across a new gap or insertion (inserted=%s)", (inserted) => {
 	const input = atZero();

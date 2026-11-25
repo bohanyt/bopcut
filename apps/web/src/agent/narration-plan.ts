@@ -1,6 +1,6 @@
 import type { SourceWord } from "@/media/words";
-import { cutWarnings, playedSpan, sourceEnd } from "@/timeline/word-cuts";
-import type { TScene } from "@/timeline";
+import { cutWarnings, playedSpan, sourceEnd, WORD_TOLERANCE } from "@/timeline/word-cuts";
+import type { TimelineElement, TScene } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { FrameRate } from "opencut-wasm";
 import { alignNarration, MAX_NARRATION_WORDS, narrationToken, narrationWords } from "./narration-alignment";
@@ -99,7 +99,12 @@ export function planNarration({
 	if (cutWarnings(narration, oldWords).length) {
 		throw new Error("The old narration trim cuts a word. Move the cut outside the word first.");
 	}
-	const local = narrationWords(oldWords.filter((word) => word.end > original.from && word.start < original.to)
+	const local = narrationWords(oldWords.filter((word) => {
+		const midpoint = (word.start + word.end) / 2;
+		return word.end - word.start < WORD_TOLERANCE - eps
+			? midpoint >= original.from && midpoint < original.to
+			: Math.min(word.end, original.to) - Math.max(word.start, original.from) > WORD_TOLERANCE + eps;
+	})
 		.map((word) => ({ ...word, start: Math.max(word.start, original.from), end: Math.min(word.end, original.to) })));
 	newWords = narrationWords(newWords);
 	const { matches, limited } = alignNarration(local, newWords, check);
@@ -169,31 +174,72 @@ export function planNarration({
 		// Prefer the left clip's last word, giving any additional pause to the right clip.
 		if (mainStarts.has(at)) cuts.set(at, anchorAt(old, seconds(at), "end", tolerance, true));
 	}
-	let reportedRows = 0;
-	for (const { track, element } of all) {
+	const proposal = (element: TimelineElement, main: boolean): {
+		start: number; end: number; startAnchor?: Anchor; endAnchor?: Anchor; startFrame?: number | null; endFrame?: number | null;
+		followStart: boolean; caption: boolean; sharedStart: boolean; sharedEnd: boolean;
+	} => {
 		check();
-		if (element === narration) continue;
 		const start = seconds(element.startTime), duration = seconds(element.duration), endTicks = element.startTime + element.duration, end = seconds(endTicks);
 		const first = upcoming(old, start - tolerance), last = upcoming(old, end - eps);
 		const caption = element.type === "text" && element.caption && last > first && last - first <= 120 &&
 			old.slice(first, last).map((word) => narrationToken(word.text)).join(" ") ===
 				narrationWords(element.caption.words).map((word) => narrationToken(word.text)).join(" ");
-		if (element.type === "audio" && duration > 2) { if (inRange({ start, end })) totals.unanchored++; continue; }
+		if (element.type === "audio" && duration > 2) return { start, end, followStart: false, caption: false, sharedStart: false, sharedEnd: false };
 		const followStart = element.type === "audio" || element.type === "effect";
 		const endEdge = followStart ? undefined : anchorAt(old, end, "end", tolerance, false);
 		const ownStart = (followStart ? effectAnchor(old, start) : undefined) ??
 			anchorAt(old, start, "start", tolerance, !!caption || !!endEdge);
 		const ownEnd = followStart ? ownStart : endEdge ?? anchorAt(old, end, "end", tolerance, !!caption || !!ownStart);
-		const main = track.id === root.tracks.main.id;
 		const sharedStart = main && cuts.has(element.startTime), sharedEnd = main && cuts.has(endTicks);
-		const startAnchor = sharedStart ? cuts.get(element.startTime) ?? ownStart : ownStart;
-		const endAnchor = sharedEnd ? cuts.get(endTicks) ?? ownEnd : ownEnd;
-		if (!startAnchor || !endAnchor) { if (inRange({ start, end })) totals.unanchored++; continue; }
+		const cutStart = sharedStart ? cuts.get(element.startTime) : undefined;
+		const cutEnd = sharedEnd ? cuts.get(endTicks) : undefined;
+		const startAnchor = cutStart ?? ownStart, endAnchor = cutEnd ?? ownEnd;
+		const info = { start, end, startAnchor, endAnchor, followStart, caption: !!caption, sharedStart, sharedEnd };
+		if (!(startAnchor && endAnchor) && !cutStart && !cutEnd) return info;
 		const resolved = (!sharedStart || !!cuts.get(element.startTime)) && (!sharedEnd || !!cuts.get(endTicks)) &&
-			clear(startAnchor, endAnchor) && (!ownStart || !ownEnd || clear(ownStart, ownEnd));
+			(!startAnchor || !endAnchor || clear(startAnchor, endAnchor)) && (!ownStart || !ownEnd || clear(ownStart, ownEnd));
 		const oldFrames = frame(end) - frame(start);
-		const startFrame = resolved ? frame(mapped(startAnchor)) : null;
-		const endFrame = startFrame === null ? null : followStart ? startFrame + oldFrames : frame(mapped(endAnchor));
+		const map = (anchor: Anchor | undefined, fixed: number) =>
+			anchor ? clear(anchor, anchor) ? frame(mapped(anchor)) : null : frame(fixed);
+		const startFrame = resolved ? map(startAnchor, start) : null;
+		const endFrame = startFrame === null ? null : followStart ? startFrame + oldFrames : map(endAnchor, end);
+		return { ...info, startFrame, endFrame };
+	};
+	const mainPlans = root.tracks.main.elements.map((element) => ({ element, plan: proposal(element, true) }));
+	const byBoundary = new Map<number, number[]>();
+	for (const [i, { element }] of mainPlans.entries()) {
+		for (const at of [element.startTime, element.startTime + element.duration]) {
+			const anchor = cuts.get(at);
+			if (!anchor || !clear(anchor, anchor) || frame(mapped(anchor)) === frame(seconds(at))) continue;
+			const neighbours = byBoundary.get(at) ?? [];
+			neighbours.push(i);
+			byBoundary.set(at, neighbours);
+		}
+	}
+	// If either side cannot follow a moved cut, report the whole connected set as a decision.
+	const blocked = new Set<number>();
+	const queue = mainPlans.flatMap(({ plan }, i) =>
+		plan.startFrame == null || plan.endFrame == null || plan.startFrame < 0 || plan.endFrame <= plan.startFrame ? [i] : []);
+	for (let i = 0; i < queue.length; i++) {
+		const index = queue[i];
+		if (blocked.has(index)) continue;
+		blocked.add(index);
+		const { element } = mainPlans[index];
+		for (const at of [element.startTime, element.startTime + element.duration]) {
+			queue.push(...(byBoundary.get(at) ?? []));
+			byBoundary.delete(at);
+		}
+	}
+	const mainByElement = new Map<TimelineElement, ReturnType<typeof proposal>>(mainPlans.map(({ element, plan }, i) =>
+		[element, blocked.has(i) && plan.startFrame !== undefined ? { ...plan, startFrame: null, endFrame: null } : plan]));
+	let reportedRows = 0;
+	for (const { element, track } of all) {
+		check();
+		if (element === narration) continue;
+		const { start, end, startAnchor, endAnchor, followStart, caption, sharedStart, sharedEnd, startFrame, endFrame } =
+			mainByElement.get(element) ?? proposal(element, false);
+		if (startFrame === undefined || endFrame === undefined) { if (inRange({ start, end })) totals.unanchored++; continue; }
+		const oldFrames = frame(end) - frame(start);
 		const valid = startFrame !== null && endFrame !== null && startFrame >= 0 && endFrame > startFrame;
 		const unchanged = valid && startFrame === frame(start) && endFrame === frame(end);
 		const proposedDuration = valid ? (endFrame - startFrame) / rate : 0;
@@ -220,11 +266,14 @@ export function planNarration({
 		reportedRows++;
 		if (rows.length >= ROW_LIMIT) continue;
 		rows.push({ address: { sceneId: root.id, trackId: track.id, id: element.id, agentId: element.agentId ?? null, path: [] },
-			track: track.name.slice(0, 120), anchor: { start: key(startAnchor), end: followStart ? null : key(endAnchor), keepDuration: followStart },
-			evidence: caption ? "caption words and timing" : followStart ? "short audio or effect near a word" : "clip edge near a word",
+			track: track.name.slice(0, 120), anchor: { start: startAnchor ? key(startAnchor) : null,
+				end: followStart || !endAnchor ? null : key(endAnchor), keepDuration: followStart },
+			evidence: !startAnchor || !endAnchor ? "shared main-track cut" : caption ? "caption words and timing"
+				: followStart ? "short audio or effect near a word" : "clip edge near a word",
 			old: { start, end }, proposed: valid ? { startFrame, endFrame } : null, kind,
 			...((sharedStart || sharedEnd) && { sharedCut: {
-				start: sharedStart ? pauseAllocation(startAnchor) : null, end: sharedEnd ? pauseAllocation(endAnchor) : null,
+				start: sharedStart && startAnchor ? pauseAllocation(startAnchor) : null, end: sharedEnd && endAnchor ? pauseAllocation(endAnchor) : null,
+				...(!valid && { decision: "Both edges need a decision." }),
 			} }),
 			protectedChanges,
 			humanEdited: { tracked: !!element.agentId, start: fields.includes("start"), duration: fields.includes("duration"), trimStart: fields.includes("trimStart"),

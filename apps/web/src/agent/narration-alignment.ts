@@ -23,6 +23,8 @@ export function narrationWords(words: SourceWord[]): SourceWord[] {
 		const word = words[i], next = words[i + 1];
 		if (next && next.start >= word.end && next.start - word.end <= 0.5 &&
 			word.end > word.start && next.end > next.start &&
+			/[\p{L}\p{N}]\s*$/u.test(word.text.normalize("NFKC")) &&
+			/^\s*[\p{L}\p{N}]/u.test(next.text.normalize("NFKC")) &&
 			indonesianNumbers.indexOf(`${key(word.text)} ${key(next.text)}`) >= 12) {
 			result.push({ text: `${word.text} ${next.text}`, start: word.start, end: next.end });
 			i++;
