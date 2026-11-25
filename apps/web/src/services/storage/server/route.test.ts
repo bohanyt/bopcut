@@ -3,7 +3,7 @@ import { spyOn } from "bun:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { GET, PUT, POST, DELETE } from "../../../app/api/storage/[...slug]/route";
+import { GET, HEAD, PUT, POST, DELETE } from "../../../app/api/storage/[...slug]/route";
 import { MediaThumbnailCache, mediaThumbnailReference } from "./media-thumbnails";
 import { atomicWrite, repairedThumbnailFile, withProjectLock } from "./files";
 
@@ -109,6 +109,18 @@ describe("media thumbnails", () => {
 		await fs.writeFile(path.join(dir, "m.mp4"), "original");
 		return { dir, metadata, metadataFile };
 	}
+
+	test("media HEAD remains a bodyless existence check", async () => {
+		const id = "media-head";
+		const { dir } = await legacyMedia(id);
+		const media = { params: Promise.resolve({ slug: ["projects", id, "media", "m"] }) };
+		const probe = request(`${id}/media/m`, "HEAD", { range: "bytes=99-" });
+		const present = await HEAD(probe, media);
+		expect(present.status).toBe(204);
+		expect(present.body).toBeNull();
+		await fs.unlink(path.join(dir, "m.mp4"));
+		expect((await HEAD(probe, media)).status).toBe(404);
+	});
 
 	async function call(url: string, method = "GET", headers?: Record<string, string>, body?: string, signal?: AbortSignal) {
 		const req = new Request(`http://127.0.0.1:3021${url}`, { method, headers, body, signal });

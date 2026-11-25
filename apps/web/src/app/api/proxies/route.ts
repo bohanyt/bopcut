@@ -18,7 +18,7 @@ function ids(value: unknown): string[] {
 export async function GET(request: Request) {
 	if (!allowed(request)) return new Response(null, { status: 403 });
 	const file = await proxyPath(new URL(request.url).searchParams.get("key") ?? "");
-	return file ? streamMediaFile(file, "video/mp4", request.headers.get("range")) : new Response(null, { status: 404 });
+	return file ? streamMediaFile(file, "video/mp4", request.headers.get("range"), request.signal) : new Response(null, { status: 404 });
 }
 export async function POST(request: Request) {
 	if (!allowed(request)) return new Response(null, { status: 403 });
