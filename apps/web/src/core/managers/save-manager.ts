@@ -2,6 +2,7 @@ import { localizeErrorDetail } from "@/i18n/error-details";
 import { getBrowserTranslator } from "@/i18n/browser";
 import type { EditorCore } from "@/core";
 import type { TProject } from "@/project/types";
+import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { toast } from "sonner";
 
 type SaveManagerOptions = {
@@ -285,7 +286,8 @@ export class SaveSession {
 				// Not on disk: stays dirty (readiness reports it) and is retried with backoff, whether or not
 				// anything else changes.
 				this.lastError = error;
-				retryIn = this.host.retryDelaysMs()[this.failures] ?? null;
+				const delays = this.host.retryDelaysMs();
+				retryIn = delays[Math.min(this.failures, delays.length - 1)];
 				this.failures++;
 				for (const fail of [...this.failureWaiters]) fail();
 				const t = getBrowserTranslator();
@@ -293,11 +295,9 @@ export class SaveSession {
 				const detail = localizeErrorDetail(error, t);
 				toast.error(what, {
 					id: errorToastId(this.projectId),
-					description: retryIn === null
-						? t("storage.notOnDisk", { error: detail })
-						: t("storage.retryIn", { error: detail, seconds: Math.round(retryIn / 1000) }),
-					duration: retryIn === null ? Number.POSITIVE_INFINITY : retryIn + 1000,
-					...(retryIn === null ? { action: { label: t("common.retry"), onClick: () => this.retry() } } : {}),
+					description: t("storage.retryIn", { error: detail, seconds: Math.round(retryIn / 1000) }),
+					duration: Number.POSITIVE_INFINITY,
+					action: { label: t("common.retry"), onClick: () => this.retry() },
 				});
 			}
 			if (this.closed && !this.isDirty()) {
@@ -338,7 +338,7 @@ export class SaveManager {
 	private projects = new Map<string, { savedAt: Date | null; error: string | null }>();
 	/** Edits counted per project, across its sessions (only grows). */
 	private edits = new Map<string, number>();
-	/** Registered while anything is unsaved: the browser asks before the page is left. */
+	/** Registered while anything is unsaved or being edited: the browser asks before the page is left. */
 	private unloadGuard: ((event: BeforeUnloadEvent) => void) | null = null;
 	private listeners = new Set<() => void>();
 	private host: SaveHost;
@@ -346,7 +346,7 @@ export class SaveManager {
 	constructor({
 		editor,
 		debounceMs = 800,
-		retryDelaysMs = [1000, 2000, 4000, 8000, 16000],
+		retryDelaysMs = [1000, 2000, 4000, 8000, 16000, 30000],
 	}: {
 		editor: EditorCore;
 	} & SaveManagerOptions) {
@@ -394,6 +394,8 @@ export class SaveManager {
 				scenes = next;
 				this.markDirty();
 			}),
+			this.editor.timeline.subscribe(() => this.updateUnloadGuard()),
+			subscribeTimelineGestures(() => this.updateUnloadGuard()),
 		];
 		this.current?.resume();
 		for (const session of this.closing) session.resume();
@@ -577,7 +579,9 @@ export class SaveManager {
 	/** Also covers a project closed a moment ago, after the editor page itself is gone. */
 	private updateUnloadGuard(): void {
 		if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
-		const needed = this.running && this.hasUnsavedChanges();
+		const needed = this.running && (
+			this.hasUnsavedChanges() || this.editor.timeline.isPreviewActive() || isTimelineGestureActive()
+		);
 		if (needed && !this.unloadGuard) {
 			this.unloadGuard = (event) => {
 				event.preventDefault();

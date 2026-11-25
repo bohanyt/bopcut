@@ -808,7 +808,6 @@ export const id = {
 	"projects.manyNotFound": "{count} proyek tidak ditemukan",
 	"storage.saveNamedFailed": "“{name}” gagal disimpan",
 	"storage.saveFailed": "Proyek gagal disimpan",
-	"storage.notOnDisk": "{error} · perubahan belum tersimpan ke disk",
 	"storage.retryIn": "{error} · mencoba lagi dalam {seconds} dtk",
 	"migration.updatingOne": "Memperbarui proyek",
 	"migration.updatingMany": "Memperbarui proyek",

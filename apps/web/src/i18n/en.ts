@@ -806,7 +806,6 @@ export const en = {
 	"projects.manyNotFound": "{count} projects not found",
 	"storage.saveNamedFailed": "Failed to save “{name}”",
 	"storage.saveFailed": "Failed to save project",
-	"storage.notOnDisk": "{error} · changes are not on disk",
 	"storage.retryIn": "{error} · retrying in {seconds} s",
 	"migration.updatingOne": "Updating project",
 	"migration.updatingMany": "Updating projects",

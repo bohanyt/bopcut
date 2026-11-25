@@ -13,6 +13,7 @@ const { agentReadiness } = await import("@/agent/bridge");
 const { StorageService, storageService } = await import("@/services/storage/service");
 const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
 const { rememberPlayhead } = await import("@/project/playhead-memory");
+const { beginTimelineGesture } = await import("@/timeline/gesture-state");
 
 const asset = (id: string) => ({ id, name: id, type: "image", file: new File([id], `${id}.png`) }) as MediaAsset;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -215,17 +216,21 @@ describe("failed saves", () => {
 		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
 	});
 
-	test("stop retrying after the backoff, then a manual retry saves", async () => {
-		const { editor, calls } = await dirty(3);
-		await wait(80);
-		expect(calls()).toBe(3);
-		await wait(40);
-		expect(calls()).toBe(3);
+	test("are retried at the last delay until they succeed", async () => {
+		const { editor, calls } = await dirty(6);
+		await until(() => calls() === 4);
 		expect(agentReadiness().ready).toBe(false);
+		await until(() => !editor.save.getIsDirty());
+		expect(calls()).toBe(7);
+		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
+	});
+
+	test("a manual retry saves at once", async () => {
+		const { editor, calls } = await dirty(1);
+		(editor.save as any).retryDelaysMs = [60_000];
 		editor.save.retry();
 		expect(await editor.save.settle()).toBe(true);
-		expect(calls()).toBe(4);
-		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
+		expect(calls()).toBe(2);
 	});
 
 	test("settle gives up at its deadline even while a save hangs", async () => {
@@ -1085,6 +1090,23 @@ describe("save sessions: reads, renames, deletes and the page guard", () => {
 			expect(prevented).toBe(true);
 			write.open();
 			expect(await editor.save.settleProject("a")).toBeNull();
+			expect(listeners.size).toBe(0);
+
+			// Also in the middle of an edit: typing, a slider, a drag.
+			await editor.project.loadProject({ id: "a" });
+			editor.timeline.addTrack({ type: "text", index: 0 });
+			const [track] = editor.scenes.getActiveScene().tracks.overlay;
+			const element = { id: "title", type: "text", name: "title", startTime: 0, duration: 120000, trimStart: 0, trimEnd: 0, params: {} };
+			editor.timeline.updateTracks({ ...editor.scenes.getActiveScene().tracks, overlay: [{ ...track, elements: [element] } as never] });
+			expect(await editor.save.flush()).toBe(true);
+			expect(listeners.size).toBe(0);
+			editor.timeline.previewElements({ updates: [{ trackId: track.id, elementId: "title", updates: { name: "typed" } }] });
+			expect(listeners.size).toBe(1);
+			editor.timeline.discardPreview();
+			expect(listeners.size).toBe(0);
+			const release = beginTimelineGesture();
+			expect(listeners.size).toBe(1);
+			release();
 			expect(listeners.size).toBe(0);
 		} finally {
 			EditorCore.reset();
