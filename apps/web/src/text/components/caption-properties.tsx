@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import type { TextElement } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
-import { makeCaption } from "../caption";
+import { distributeWordTimings } from "../caption";
 import {
 	applyTextPreset,
 	createTextPreset,
@@ -163,9 +163,10 @@ export function CaptionProperties({
 							checked={false}
 							onCheckedChange={() =>
 								patch({
-									caption: makeCaption(
+									caption: distributeWordTimings(
 										String(element.params.content ?? ""),
 										element.duration / TICKS_PER_SECOND,
+										element.trimStart / TICKS_PER_SECOND,
 									),
 									params: {
 										...element.params,
