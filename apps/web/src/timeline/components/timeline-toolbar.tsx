@@ -142,18 +142,20 @@ function ToolbarLeftSection() {
 				<ToolbarButton
 					icon={<HugeiconsIcon icon={ScissorIcon} />}
 					tooltip={t("timeline.splitElement")}
-					onClick={({ event }) => handleAction({ action: "split", event })}
+					onClick={({ event }) => handleAction({ action: selectedElements.length > 0 ? "split-selected" : "split", event })}
 				/>
 
 				<ToolbarButton
 					icon={<HugeiconsIcon icon={AlignLeftIcon} />}
 					tooltip={t("timeline.splitLeft")}
+					disabled={selectedElements.length === 0}
 					onClick={({ event }) => handleAction({ action: "split-left", event })}
 				/>
 
 				<ToolbarButton
 					icon={<HugeiconsIcon icon={AlignRightIcon} />}
 					tooltip={t("timeline.splitRight")}
+					disabled={selectedElements.length === 0}
 					onClick={({ event }) =>
 						handleAction({ action: "split-right", event })
 					}

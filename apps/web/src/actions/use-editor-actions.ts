@@ -235,20 +235,29 @@ export function useEditorActions() {
 		"split",
 		() => {
 			const currentTime = editor.playback.getCurrentTime();
-			const tracks = editor.scenes.getActiveScene().tracks;
-			const elementsToSplit =
-				selectedElements.length > 0
-					? selectedElements
-					: getElementsAtTime({
-							tracks,
-							time: currentTime,
-						});
-
-			if (elementsToSplit.length === 0) return;
+			const elements = getElementsAtTime({
+				tracks: editor.scenes.getActiveScene().tracks,
+				time: currentTime,
+			});
+			if (elements.length === 0) return;
 
 			editor.timeline.splitElements({
-				elements: elementsToSplit,
+				elements,
 				splitTime: currentTime,
+				selected: selectedElements,
+			});
+		},
+		undefined,
+	);
+
+	useActionHandler(
+		"split-selected",
+		() => {
+			if (selectedElements.length === 0) return;
+
+			editor.timeline.splitElements({
+				elements: selectedElements,
+				splitTime: editor.playback.getCurrentTime(),
 			});
 		},
 		undefined,
@@ -257,21 +266,11 @@ export function useEditorActions() {
 	useActionHandler(
 		"split-left",
 		() => {
-			const currentTime = editor.playback.getCurrentTime();
-			const tracks = editor.scenes.getActiveScene().tracks;
-			const elementsToSplit =
-				selectedElements.length > 0
-					? selectedElements
-					: getElementsAtTime({
-							tracks,
-							time: currentTime,
-						});
-
-			if (elementsToSplit.length === 0) return;
+			if (selectedElements.length === 0) return;
 
 			const rightSideElements = editor.timeline.splitElements({
-				elements: elementsToSplit,
-				splitTime: currentTime,
+				elements: selectedElements,
+				splitTime: editor.playback.getCurrentTime(),
 				retainSide: "right",
 			});
 
@@ -290,21 +289,11 @@ export function useEditorActions() {
 	useActionHandler(
 		"split-right",
 		() => {
-			const currentTime = editor.playback.getCurrentTime();
-			const tracks = editor.scenes.getActiveScene().tracks;
-			const elementsToSplit =
-				selectedElements.length > 0
-					? selectedElements
-					: getElementsAtTime({
-							tracks,
-							time: currentTime,
-						});
-
-			if (elementsToSplit.length === 0) return;
+			if (selectedElements.length === 0) return;
 
 			editor.timeline.splitElements({
-				elements: elementsToSplit,
-				splitTime: currentTime,
+				elements: selectedElements,
+				splitTime: editor.playback.getCurrentTime(),
 				retainSide: "left",
 			});
 		},

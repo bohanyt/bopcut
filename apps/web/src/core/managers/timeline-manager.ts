@@ -232,15 +232,19 @@ export class TimelineManager {
 		elements,
 		splitTime,
 		retainSide = "both",
+		selected,
 	}: {
 		elements: { trackId: string; elementId: string }[];
 		splitTime: MediaTime;
 		retainSide?: "both" | "left" | "right";
+		/** Stays selected, as the right part where it was split. By default all right parts are selected. */
+		selected?: ElementRef[];
 	}): { trackId: string; elementId: string }[] {
 		const command = new SplitElementsCommand({
 			elements,
 			splitTime,
 			retainSide,
+			selected,
 		});
 		this.editor.command.execute({ command });
 		return command.getRightSideElements();

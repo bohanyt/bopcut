@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { getDefaultShortcuts } from "@/actions";
 import {
 	decodePersistedKeybindingsState,
 	migratePersistedKeybindingsState,
@@ -195,4 +196,30 @@ test("an older custom esc shortcut survives the migrations", () => {
 		});
 		expect(decodePersistedKeybindingsState({ state })?.keybindings.get("escape")).toBe("undo");
 	}
+});
+
+describe("the split keys of version 10", () => {
+	const migrate = (keybindings: Record<string, string>) => Object.fromEntries(
+		decodePersistedKeybindingsState({
+			state: migratePersistedKeybindingsState({ state: { keybindings, isCustomized: true }, fromVersion: 9 }),
+		})?.keybindings ?? [],
+	);
+
+	test("stored defaults become the new defaults", () => {
+		const defaults = Object.fromEntries(getDefaultShortcuts());
+		const { e: _, ...rest } = defaults;
+		expect(migrate({ ...rest, w: "split-right" })).toEqual(defaults);
+	});
+
+	test("keys the user changed keep their action", () => {
+		for (const changed of [
+			{ w: "split-right", e: "undo" },
+			{ w: "toggle-play" },
+			{ e: "split-right" },
+			{ s: "split-left", q: "split" },
+			{},
+		]) {
+			expect(migrate(changed)).toEqual(changed);
+		}
+	});
 });
