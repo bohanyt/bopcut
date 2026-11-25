@@ -12,9 +12,11 @@ export function rememberPlayhead(editor: EditorCore): () => void {
 	const remember = () => {
 		const projectId = editor.project.getActiveOrNull()?.metadata.id;
 		if (!projectId || editor.project.getSession() !== session) return;
+		// A failed save keeps its own retries.
+		if (editor.save.getLastError(projectId)) return;
 		editor.project.storePlayhead();
-		// The page may be closing: the debounced write would come too late. A failed save keeps its own retries.
-		if (editor.save.getIsDirty() && !editor.save.getLastError(projectId)) void editor.save.settleProject(projectId);
+		// The page may be closing: the debounced write would come too late.
+		if (editor.save.getIsDirty()) void editor.save.settleProject(projectId);
 	};
 	const onVisibility = () => {
 		if (document.hidden) remember();

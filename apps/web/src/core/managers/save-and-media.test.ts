@@ -393,12 +393,11 @@ describe("navigation and thumbnails", () => {
 			disk.hooks.write = () => { writes++; throw new Error("disk full"); };
 			edit(editor, "edited");
 			expect(await editor.save.settle()).toBe(false);
-			hide(true);
+			(editor.save as any).debounceMs = 5;
 			editor.playback.seek({ time: seconds(9) });
 			hide(true);
-			await wait(5);
+			await wait(40);
 			expect(writes).toBe(1);
-			expect(editor.project.getTimelineViewState().playheadTime).toBe(seconds(9));
 		});
 
 		test("belongs to the project that was left", async () => {
