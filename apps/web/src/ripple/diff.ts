@@ -55,14 +55,14 @@ function computeTrackRippleAdjustments({
 }): RippleAdjustment[] {
 	const beforeElementsById = buildElementSpanMap({ elements: beforeElements });
 	const afterElementsById = buildElementSpanMap({ elements: afterElements });
-	const { vacatedIntervals, joinedIntervals } = collectTrackIntervals({
+	const { vacatedIntervals, occupiedIntervals } = collectTrackIntervals({
 		beforeElementsById,
 		afterElementsById,
 		allAfterElementIds,
 	});
 	const freedIntervals = subtractIntervalSets({
 		sourceIntervals: vacatedIntervals,
-		overlappingIntervals: joinedIntervals,
+		overlappingIntervals: occupiedIntervals,
 	});
 
 	return buildAdjustments({ trackId, intervals: freedIntervals });
@@ -95,10 +95,12 @@ function collectTrackIntervals({
 	allAfterElementIds: Set<string>;
 }): {
 	vacatedIntervals: Interval[];
-	joinedIntervals: Interval[];
+	occupiedIntervals: Interval[];
 } {
 	const vacatedIntervals: Interval[] = [];
-	const joinedIntervals: Interval[] = [];
+	const occupiedIntervals: Interval[] = [];
+	let firstMovedStart = Infinity;
+	let lastMovedEnd = -Infinity;
 
 	for (const beforeElement of beforeElementsById.values()) {
 		const afterElement = afterElementsById.get(beforeElement.id);
@@ -120,24 +122,35 @@ function collectTrackIntervals({
 				startTime: afterElement.endTime,
 				endTime: beforeElement.endTime,
 			});
+			if (afterElement.startTime < beforeElement.startTime) {
+				firstMovedStart = Math.min(firstMovedStart, afterElement.startTime);
+				lastMovedEnd = Math.max(lastMovedEnd, afterElement.endTime);
+			}
 		}
 	}
 
 	for (const afterElement of afterElementsById.values()) {
-		if (beforeElementsById.has(afterElement.id)) {
+		const beforeElement = beforeElementsById.get(afterElement.id);
+		if (beforeElement && (
+			beforeElement.startTime !== afterElement.startTime ||
+			beforeElement.endTime !== afterElement.endTime
+		)) {
 			continue;
 		}
 
 		pushInterval({
-			intervals: joinedIntervals,
+			intervals: occupiedIntervals,
 			startTime: afterElement.startTime,
 			endTime: afterElement.endTime,
 		});
 	}
 
+	// Keep the group's new spacing intact while closing gaps left by the move.
+	pushInterval({ intervals: occupiedIntervals, startTime: firstMovedStart, endTime: lastMovedEnd });
+
 	return {
 		vacatedIntervals: normalizeIntervals({ intervals: vacatedIntervals }),
-		joinedIntervals: normalizeIntervals({ intervals: joinedIntervals }),
+		occupiedIntervals: normalizeIntervals({ intervals: occupiedIntervals }),
 	};
 }
 
