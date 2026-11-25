@@ -59,7 +59,7 @@ function harness(initial: SceneTracks, selected: ElementRef[]) {
 	const dragAndUp = (beforeUp?: (h: { setTracks: (n: SceneTracks) => void }) => void) => {
 		page.dispatchEvent(Object.assign(new Event("mousemove"), { clientX: 100 + DRAG, clientY: 100 }));
 		beforeUp?.({ setTracks: (n) => { tracks = n; } });
-		page.dispatchEvent(Object.assign(new Event("mouseup"), { clientX: 100 + DRAG * 2, clientY: 100 }));
+		page.dispatchEvent(Object.assign(new Event("mouseup"), { button: 0, clientX: 100 + DRAG * 2, clientY: 100 }));
 	};
 	return { commits, mouseDown, dragAndUp, idle: () => controller.view.kind === "idle" };
 }
