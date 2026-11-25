@@ -808,6 +808,7 @@ export const en = {
 	"storage.saveFailed": "Failed to save project",
 	"storage.notOnDisk": "{error} · changes are not on disk",
 	"storage.retryIn": "{error} · retrying in {seconds} s",
+	"storage.serverAway": "The editor's server does not answer",
 	"migration.updatingOne": "Updating project",
 	"migration.updatingMany": "Updating projects",
 	"migration.upgrading": "Upgrading \"{name}\" from v{from} to v{to}",

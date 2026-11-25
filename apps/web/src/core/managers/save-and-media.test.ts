@@ -12,7 +12,9 @@ const { EditorCore } = await import("@/core");
 const { agentReadiness } = await import("@/agent/bridge");
 const { StorageService, storageService } = await import("@/services/storage/service");
 const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
+const { SERVER_AWAY } = await import("@/services/storage/disk-adapter");
 const { rememberPlayhead } = await import("@/project/playhead-memory");
+const { beginTimelineGesture } = await import("@/timeline/gesture-state");
 
 const asset = (id: string) => ({ id, name: id, type: "image", file: new File([id], `${id}.png`) }) as MediaAsset;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -192,14 +194,15 @@ async function until(check: () => boolean, timeoutMs = 2000) {
 }
 
 describe("failed saves", () => {
-	const dirty = async (failures: number) => {
+	const dirty = async (failures: number, error = "EPERM: operation not permitted") => {
 		const editor = await load(project("p", new Date(0)));
 		(editor.save as any).retryDelaysMs = [5, 10];
+		(editor.save as any).outageDelayMs = 20;
 		const disk = memoryDisk([project("p", new Date(0))]);
 		let calls = 0;
 		disk.hooks.write = () => {
 			calls++;
-			if (calls <= failures) throw new Error("EPERM: operation not permitted");
+			if (calls <= failures) throw new Error(error);
 		};
 		edit(editor, "edited");
 		expect(await editor.save.flush()).toBe(false);
@@ -226,6 +229,21 @@ describe("failed saves", () => {
 		expect(await editor.save.settle()).toBe(true);
 		expect(calls()).toBe(4);
 		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
+	});
+
+	test("are retried while the server does not answer, until it does", async () => {
+		const { editor, calls } = await dirty(6, SERVER_AWAY);
+		await until(() => !editor.save.getIsDirty());
+		expect(calls()).toBe(7);
+		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
+	});
+
+	test("of a closed project stop after the backoff, also while the server does not answer", async () => {
+		const { editor, calls } = await dirty(6, SERVER_AWAY);
+		editor.project.closeProject();
+		await wait(80);
+		expect(calls()).toBeLessThan(5);
+		expect(editor.save.hasUnsavedChanges()).toBe(true);
 	});
 
 	test("settle gives up at its deadline even while a save hangs", async () => {
@@ -1085,6 +1103,21 @@ describe("save sessions: reads, renames, deletes and the page guard", () => {
 			expect(prevented).toBe(true);
 			write.open();
 			expect(await editor.save.settleProject("a")).toBeNull();
+			expect(listeners.size).toBe(0);
+
+			// Also in the middle of an edit: typing, a slider, a drag.
+			await editor.project.loadProject({ id: "a" });
+			const element = { id: "title", type: "text", name: "title", startTime: 0, duration: 120000, trimStart: 0, trimEnd: 0, params: {} };
+			editor.timeline.updateTracks({ ...editor.scenes.getActiveScene().tracks, overlay: [{ id: "text", name: "Text", type: "text", hidden: false, elements: [element] } as never] });
+			expect(await editor.save.flush()).toBe(true);
+			expect(listeners.size).toBe(0);
+			editor.timeline.previewElements({ updates: [{ trackId: "text", elementId: "title", updates: { name: "typed" } }] });
+			expect(listeners.size).toBe(1);
+			editor.timeline.discardPreview();
+			expect(listeners.size).toBe(0);
+			const release = beginTimelineGesture();
+			expect(listeners.size).toBe(1);
+			release();
 			expect(listeners.size).toBe(0);
 		} finally {
 			EditorCore.reset();

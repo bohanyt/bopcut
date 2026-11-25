@@ -810,6 +810,7 @@ export const id = {
 	"storage.saveFailed": "Proyek gagal disimpan",
 	"storage.notOnDisk": "{error} · perubahan belum tersimpan ke disk",
 	"storage.retryIn": "{error} · mencoba lagi dalam {seconds} dtk",
+	"storage.serverAway": "Server editor tidak menjawab",
 	"migration.updatingOne": "Memperbarui proyek",
 	"migration.updatingMany": "Memperbarui proyek",
 	"migration.upgrading": "Memperbarui \"{name}\" dari v{from} ke v{to}",

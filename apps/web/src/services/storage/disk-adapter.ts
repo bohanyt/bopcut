@@ -13,6 +13,12 @@ async function checked(response: Response): Promise<Response> {
 	return response;
 }
 
+/** Error of a project read or write that got no answer at all. */
+export const SERVER_AWAY = "The editor's server does not answer";
+const serverAway = () => {
+	throw new Error(SERVER_AWAY);
+};
+
 export class DiskAdapter {
 	private revisions = new Map<string, string>();
 	private writes = new Map<string, Promise<void>>();
@@ -26,7 +32,7 @@ export class DiskAdapter {
 	}
 	/** Reads a project with the revision of that copy (the shared cache can move on meanwhile). */
 	private async read(id: string): Promise<{ value: SerializedProject; revision: string } | null> {
-		const response = await fetch(projectUrl(id), { cache: "no-store" });
+		const response = await fetch(projectUrl(id), { cache: "no-store" }).catch(serverAway);
 		if (response.status === 404) {
 			if (this.revisions.has(id)) this.gone.add(id);
 			this.revisions.delete(id);
@@ -51,7 +57,7 @@ export class DiskAdapter {
 				keepalive: true,
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(value),
-			}));
+			}).catch(serverAway));
 		});
 	}
 	async saveThumbnail(id: string, thumbnail: Blob): Promise<string> {
@@ -133,7 +139,7 @@ export class DiskAdapter {
 				method: "PUT",
 				headers: { "Content-Type": "application/json", "If-Match": version },
 				body: JSON.stringify(value),
-			});
+			}).catch(serverAway);
 		let response = await write(expected);
 		if (response.status === 409) {
 			toast.warning(
