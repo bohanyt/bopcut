@@ -153,6 +153,31 @@ describe("pasted layers", () => {
 		expect(layers(editor.scenes.getActiveScene().tracks)).toEqual([["title", "title"], ["box", "box"], ["bg"]]);
 	});
 
+	test.each([false, true])("stay on their own free tracks of the same type (reversed: %p)", (reversed) => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = {
+			overlay: [
+				{ id: "upper", name: "Upper", type: "text", hidden: false, elements: [text("upper", 0, 3)] },
+				{ id: "box", name: "Box", type: "graphic", hidden: false, elements: [rect("box", 0, 3)] },
+				{ id: "lower", name: "Lower", type: "text", hidden: false, elements: [text("lower", 0, 3)] },
+				{ id: "pip", name: "Pip", type: "video", muted: false, hidden: false, elements: [video("pip", 0, 3)] },
+			],
+			main: { ...host.tracks.main, elements: [video("bg", 0, 5)] },
+			audio: ["voice", "music"].map((id) => ({ id, name: id, type: "audio" as const, muted: false, elements: [audio(id, 0, 5)] })),
+		};
+		const editor = setup(scenes);
+		editor.media.setAssets({ assets: ["bg", "pip", "voice", "music"].map((id) => ({
+			id: `media-${id}`, name: id, type: id === "voice" || id === "music" ? "audio" : "video", file: new File([], id),
+		})) });
+		const ids = ["upper", "box", "lower", "pip", "bg", "voice", "music"];
+		const elements = ids.map((id) => ({ trackId: id === "bg" ? host.tracks.main.id : id, elementId: id }));
+		copy(editor, reversed ? elements.reverse() : elements);
+		expect(editor.clipboard.paste({ time: t(6) })).toBe(true);
+		const { tracks } = editor.scenes.getActiveScene();
+		expect(allTracks(tracks).map((track) => track.elements.map(({ name }) => name))).toEqual(ids.map((id) => [id, id]));
+	});
+
 	test("do not go below a layer they cover", () => {
 		const editor = setup();
 		copy(editor, copied.slice(0, 2));

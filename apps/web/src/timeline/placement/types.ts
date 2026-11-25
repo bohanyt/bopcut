@@ -22,8 +22,7 @@ export type PlacementStrategy =
 			verticalDragDirection?: "up" | "down" | null;
 			createNewTrackOnly?: boolean;
 	  }
-	/** `maxTrackIndex` keeps the result at or above that track. */
-	| { type: "aboveSource"; sourceTrackIndex: number; maxTrackIndex?: number }
+	| { type: "aboveSource"; sourceTrackIndex: number }
 	| { type: "alwaysNew"; position: "highest" | "default" };
 
 export type PlacementResult =
