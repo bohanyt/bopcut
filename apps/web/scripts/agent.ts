@@ -10,7 +10,7 @@ import { isHttpUrl, parseTime } from "../src/retrieval/time";
 import { runRender } from "./agent-render";
 import { loadEnvLocal } from "./retrieval-cli";
 
-const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "view", "review", "draft-check"] as const;
+const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check"] as const;
 type Command = typeof commands[number];
 const usage = `Use: bun run agent <${commands.join("|")}> [--project-id ID] [--timeout SECONDS]`;
 const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
@@ -40,6 +40,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 				position: { type: "string" }, scale: { type: "string" }, rotation: { type: "string" }, opacity: { type: "string" },
 			}),
 			...(command === "transcript-view" && { media: { type: "string" }, timeline: { type: "boolean" } }),
+			...(command === "narration-plan" && { clip: { type: "string" }, "new-media": { type: "string" },
+				json: { type: "boolean" }, from: { type: "string" }, to: { type: "string" }, all: { type: "boolean" } }),
 			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
 			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" }, note: { type: "string" }, "scene-id": { type: "string" } }),
 		},
@@ -108,6 +110,12 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
 		throw new Error("Set --url to the local editor origin, for example http://127.0.0.1:3000.");
 	}
+	const narration = command === "narration-plan" ? { clip: values.clip, newMedia: values["new-media"],
+		json: values.json === true, from: values.from, to: values.to, all: values.all === true } : undefined;
+	if (narration && (!projectId || typeof narration.clip !== "string" || !/^[\w-]{1,128}$/.test(narration.clip) ||
+		typeof narration.newMedia !== "string" || !/^[\w-]{1,128}$/.test(narration.newMedia))) {
+		throw new Error("Use narration-plan --project-id ID --clip CLIP_ID --new-media MEDIA_ID [--json].");
+	}
 	if (command === "review") {
 		if (!projectId || !file?.trim() || (values.pictures !== undefined && values.pictures !== "none")) {
 			throw new Error("Use review --project-id ID --file PATH [--pictures none].");
@@ -131,7 +139,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		request = parseFrameInput({ times, elements, noteId: values.note, sceneId: values["scene-id"], width: values.width === undefined ? undefined : Number(values.width), allowMissing });
 	}
 	return { command: command as Exclude<Command, "transcript" | "review" | "draft-check">, projectId, timeoutMs, origin: url.origin,
-		...(media !== undefined && { media }), ...(request && { request }) };
+		...(media !== undefined && { media }), ...(request && { request }), ...(narration && { narration }) };
 }
 
 async function transcriptCommand(request: TranscriptRequest, timeoutMs: number) {
@@ -216,6 +224,15 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 	const target = new URL(`/api/agent/cli/${request ? "render" : command}`, origin);
 	if (projectId) target.searchParams.set("projectId", projectId);
 	if (options.media !== undefined) target.searchParams.set("media", options.media);
+	if (options.narration) {
+		target.searchParams.set("clip", String(options.narration.clip));
+		target.searchParams.set("newMedia", String(options.narration.newMedia));
+		target.searchParams.set("format", options.narration.json ? "json" : "text");
+		target.searchParams.set("timeoutMs", String(timeoutMs));
+		if (options.narration.from !== undefined) target.searchParams.set("from", String(options.narration.from));
+		if (options.narration.to !== undefined) target.searchParams.set("to", String(options.narration.to));
+		if (options.narration.all) target.searchParams.set("all", "1");
+	}
 	const interrupt = new AbortController();
 	const stop = () => interrupt.abort(new Error("Interrupted by Ctrl+C."));
 	if (request) process.on("SIGINT", stop);
@@ -234,7 +251,7 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 			clearTimeout(deadline);
 			return await runRender(response, { signal: interrupt.signal, timeoutMs });
 		}
-		if (response.ok && command === "transcript-view") return await response.text();
+		if (response.ok && (command === "transcript-view" || (options.narration && !options.narration.json))) return await response.text();
 		const body = await response.json().catch(() => null);
 		signal.throwIfAborted();
 		if (!response.ok || !body) throw new Error(body?.error ?? "The server did not answer the agent CLI. Start this version of the editor and retry.");
