@@ -37,7 +37,7 @@ describe("animated params", () => {
 			splitTime: mediaTime({ ticks: 6000 }),
 			boundaryIdPrefix: "split",
 		});
-		const keys = (channel: unknown) => (channel as ScalarAnimationChannel).keys.map(({ id, time }) => [id, time]);
+		const keys = (channel: unknown) => (channel as ScalarAnimationChannel).keys.map(({ id, time }): [string, number] => [id, time]);
 		expect(keys(leftAnimations?.opacity).slice(0, 2)).toEqual([["a", 0], ["b", 4000]]);
 		expect(keys(leftAnimations?.opacity)).toHaveLength(3);
 		expect(keys(rightAnimations?.opacity).at(-1)).toEqual(["c", 2000]);
