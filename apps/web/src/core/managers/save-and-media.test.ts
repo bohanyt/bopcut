@@ -378,6 +378,29 @@ describe("navigation and thumbnails", () => {
 			expect(saved()).toHaveLength(1);
 		});
 
+		test("is written at once when the editor is left without Exit", async () => {
+			const { editor, leave, saved } = await open(withText("a", 2));
+			editor.playback.seek({ time: seconds(9) });
+			leave();
+			await wait(5);
+			expect(saved()).toEqual([["a", seconds(9)]]);
+			expect(editor.save.hasUnsavedChanges()).toBe(false);
+		});
+
+		test("does not retry a failed save early", async () => {
+			const { editor, disk } = await open(withText("a", 2));
+			let writes = 0;
+			disk.hooks.write = () => { writes++; throw new Error("disk full"); };
+			edit(editor, "edited");
+			expect(await editor.save.settle()).toBe(false);
+			hide(true);
+			editor.playback.seek({ time: seconds(9) });
+			hide(true);
+			await wait(5);
+			expect(writes).toBe(1);
+			expect(editor.project.getTimelineViewState().playheadTime).toBe(seconds(9));
+		});
+
 		test("belongs to the project that was left", async () => {
 			const { editor, leave, saved } = await open(withText("a", 2), [withText("b", 30)]);
 			editor.playback.seek({ time: seconds(9) });
