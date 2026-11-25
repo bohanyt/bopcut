@@ -18,8 +18,8 @@ export class ToggleTrackVisibilityCommand extends Command {
 			tracks: this.savedState,
 			trackId: this.trackId,
 		});
-		if (!targetTrack) {
-			return;
+		if (!targetTrack || !canTrackBeHidden(targetTrack)) {
+			return { changed: false };
 		}
 
 		const updatedTracks = updateTrackInSceneTracks({

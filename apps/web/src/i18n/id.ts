@@ -842,6 +842,7 @@ export const id = {
 	"sounds.fileUnavailable": "File suara tidak tersedia",
 	"sounds.addFailed": "Suara gagal ditambahkan ke timeline",
 	"media.dropFailed": "Media yang diseret gagal ditambahkan",
+	"media.dropSceneChanged": "Anda membuka adegan lain. File tidak ditambahkan ke linimasa.",
 	"media.pasteFailed": "Tautan yang ditempel gagal ditambahkan",
 	"media.dropManyFailed": "{count} dari {total} item yang diseret gagal ditambahkan",
 	"media.uploadOne": "Mengunggah aset media…",

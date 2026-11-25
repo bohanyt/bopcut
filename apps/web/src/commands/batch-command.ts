@@ -1,12 +1,18 @@
 import { Command, type CommandContext, type CommandResult } from "./base-command";
 import { EditorCore } from "@/core";
+import type { EditorSelectionPatch } from "@/selection/editor-selection";
 
 export class BatchCommand extends Command {
 	// Ripple is applied per child below, so children that opt out (compound create/ungroup)
 	// stay exempt, also inside nested batches.
 	override readonly ripples = false;
 
-	constructor(private commands: Command[]) {
+	private completed: Command[] = [];
+
+	constructor(
+		private commands: (Command | (() => Command | null) | null)[],
+		private selection?: EditorSelectionPatch,
+	) {
 		super();
 	}
 
@@ -15,7 +21,7 @@ export class BatchCommand extends Command {
 	}
 
 	undo(): void {
-		for (const command of [...this.commands].reverse()) {
+		for (const command of [...this.completed].reverse()) {
 			command.undo();
 		}
 	}
@@ -38,7 +44,12 @@ export class BatchCommand extends Command {
 
 		const editor = EditorCore.getInstance();
 		try {
-			for (const command of this.commands) {
+			for (const [index, entry] of this.commands.entries()) {
+				// Placement may depend on the result of an earlier command in the batch.
+				// Retain the resolved command so redo restores the same ids.
+				const command = typeof entry === "function" ? entry() : entry;
+				this.commands[index] = command;
+				if (!command) continue;
 				const beforeTracks =
 					context.rippleEnabled && command.ripples
 						? (editor.scenes.getActiveSceneOrNull()?.tracks ?? null)
@@ -58,6 +69,8 @@ export class BatchCommand extends Command {
 			throw error;
 		}
 
-		return done.length > 0 ? latestSelectionResult : { changed: false };
+		this.completed = done;
+		if (done.length === 0) return { changed: false };
+		return this.selection ? { selection: this.selection } : latestSelectionResult;
 	}
 }
