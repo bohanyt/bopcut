@@ -16,7 +16,8 @@ const reserve = () => byteSetting(process.env.BOPENCUT_PROXY_FREE_BYTES, 5_000_0
 const limit = () => byteSetting(process.env.BOPENCUT_PROXY_LIMIT_BYTES, 8_000_000_000);
 class LowDisk extends Error {}
 class EncoderBusy extends Error {}
-type CudaSupport = { disabled: boolean; unsupported: Set<string> };
+/** `failed` counts sources in a row: builds and drivers fail in more ways than the messages below. */
+type CudaSupport = { disabled: boolean; unsupported: Set<string>; failed: number };
 type EncoderCapabilities = { encoders: string[] | null; expiresAt: number; error?: string; busy?: boolean; cuda?: CudaSupport };
 const isBusy = (error: unknown) => /temporarily unavailable|encoder is busy|too many (sessions|concurrent)|out of memory|no free (session|encoder)/i
 	.test((error as { stderr?: string })?.stderr ?? "");
@@ -27,6 +28,7 @@ function rememberCudaFailure(cuda: CudaSupport, codec: string, error: unknown) {
 	else if (/hardware is lacking required capabilities|(?:codec|pixel format).*not supported|(?:does not support|unsupported).*?(?:codec|pixel format)|no device available for decoder/i.test(stderr)) {
 		cuda.unsupported.add(codec);
 	}
+	if (++cuda.failed >= 2) cuda.disabled = true;
 }
 export async function fingerprint(file: string) {
 	const input = await fs.open(file, "r");
@@ -300,6 +302,7 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 				}
 				if (!result && fullCuda) continue;
 				if (!result) return;
+				if (fullCuda && cuda) cuda.failed = 0;
 				encoding = encoder + (fullCuda ? ":scale_cuda" : decode[1] ? ":" + decode[1] : "");
 				break attempts;
 			}
@@ -498,7 +501,7 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 	if (available?.includes("h264_nvenc") && !checkTime.aborted) {
 		try {
 			const { stdout } = await run(dir, ["-hide_banner", "-filters"], AbortSignal.any([signal, checkTime]));
-			if (/^\s*\S+\s+scale_cuda\s+V->V\b/m.test(stdout)) cuda = { disabled: false, unsupported: new Set() };
+			if (/^\s*\S+\s+scale_cuda\s+V->V\b/m.test(stdout)) cuda = { disabled: false, unsupported: new Set(), failed: 0 };
 		} catch { signal.throwIfAborted(); }
 	}
 	capabilities = { encoders: available, expiresAt: available?.length ? Date.now() + 300_000 : Infinity, error, cuda };
