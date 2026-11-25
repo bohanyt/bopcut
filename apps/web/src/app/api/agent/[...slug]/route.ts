@@ -138,9 +138,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	}
 	if (slug[0] === "applied") {
 		const result = await req.json();
-		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(result, null, 1));
 		// A draft is applied once: move it aside so a project opened later does not apply it again.
 		await consumeAppliedDraft(WORKSPACE, result?.rev);
+		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(result, null, 1));
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "music") {

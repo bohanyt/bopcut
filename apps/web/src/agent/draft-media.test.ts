@@ -622,6 +622,50 @@ describe("the draft poller", () => {
 		}
 		expect(backend.state.results.map(({ rev }) => rev)).toEqual(["r1", "r2"]);
 	});
+
+	test("a result the server did not take is posted again, and its draft is not applied to the next project", async () => {
+		const editor = setup();
+		const store = new Map<string, string>();
+		const previousStorage = (globalThis as any).localStorage;
+		(globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
+		const backend = fakeBackend();
+		const realFetch = globalThis.fetch;
+		const project = editor.project.getActive();
+		const sent = draft([{ op: "delete", match: { agentId: "box" } }], { rev: "once" });
+		let down = true;
+		const reads: string[] = [];
+		globalThis.fetch = (async (url: string, init?: unknown) => {
+			if (String(url) === "/api/agent/draft") {
+				reads.push(down ? "down" : "up");
+				return new Response(JSON.stringify(sent));
+			}
+			if (down && String(url) === "/api/agent/applied") throw new TypeError("server is restarting");
+			return realFetch(url as never, init as never);
+		}) as typeof fetch;
+		const ready = () => {
+			(editor.project as any).isLoading = false;
+			(editor.media as any).loadedProjectId = editor.project.getActive().metadata.id;
+			(editor.media as any).isLoading = false;
+		};
+		try {
+			ready();
+			await pollDraft();
+			expect(elements(editor).some((e) => e.agentId === "box")).toBe(false);
+			await pollDraft(); // still down: nothing is read
+			expect(reads).toEqual(["down"]);
+			editor.project.setActiveProject({ project: { ...project, metadata: { ...project.metadata, id: "q" } } });
+			editor.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+			ready();
+			down = false;
+			await pollDraft();
+		} finally {
+			globalThis.fetch = realFetch;
+			backend.restore();
+			(globalThis as any).localStorage = previousStorage;
+		}
+		expect(backend.state.results).toMatchObject([{ rev: "once", projectId: "p", applied: true }]);
+		expect(elements(editor).some((e) => e.agentId === "box")).toBe(true);
+	});
 });
 
 describe("basedOn is checked before anything is imported", () => {

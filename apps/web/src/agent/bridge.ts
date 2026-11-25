@@ -522,12 +522,36 @@ export async function pollChanges() {
 
 // An agent draft is a list of per-item operations, protecting human edits (see AGENT.md and draft.ts).
 // Times are in seconds; inside a compound clip they are relative to its content. The whole draft is one Undo step.
+/** Draft results the server did not take (it was restarting): posted again before the next draft is read. */
+const unpostedDrafts: Record<string, unknown>[] = [];
+
+async function postDraftResult(body: Record<string, unknown>): Promise<boolean> {
+	const response = await fetch("/api/agent/applied", {
+		method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+	}).catch(() => null);
+	return response?.ok === true;
+}
+
 let applying = false;
+async function reportDraft(body: Record<string, unknown>): Promise<void> {
+	if (!(await postDraftResult(body)) && applying) unpostedDrafts.push(body);
+}
+
 /** Picks up draft.json for the open project (every 2 s; exported for tests). */
 export async function pollDraft() {
+	if (applying) return;
+	if (unpostedDrafts.length) {
+		applying = true;
+		try {
+			while (unpostedDrafts.length && (await postDraftResult(unpostedDrafts[0]))) unpostedDrafts.shift();
+		} finally {
+			applying = false;
+		}
+		if (unpostedDrafts.length) return;
+	}
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
-	if (!project || applying) return;
+	if (!project) return;
 	if (timelineBusy()) return; // a human is dragging: wait until release
 	if (!agentReadiness().ready) return; // media still loading or a save pending: the draft waits
 	// The session is taken before the fetch: a project opened while draft.json is read is not the
@@ -544,9 +568,9 @@ export async function pollDraft() {
 	if (draftSessionError({ draft, queued: session, now: currentSession() })) return;
 	// A root switch can also make the editor unready. Refuse this draft before a later poll can retarget it.
 	if (rootSceneId === (agentRootScene()?.id ?? null) && !agentReadiness().ready) return;
-	const key = `agent-draft-${project.metadata.id}`;
-	if (wasAnswered(key, draft.rev)) return;
-	markAnswered(key, draft.rev);
+	// One list for all projects: a draft without a project id must not be applied again to the next one opened.
+	if (applying || wasAnswered("agent-drafts", draft.rev) || wasAnswered(`agent-draft-${project.metadata.id}`, draft.rev)) return;
+	markAnswered("agent-drafts", draft.rev);
 	applying = true;
 	try {
 		await applyDraft(draft, { session, rootSceneId });
@@ -615,11 +639,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), {
 			description: localizeErrorDetail(refused, getBrowserTranslator()),
 		});
-		await fetch("/api/agent/applied", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ok: false, applied: false, error: refused, results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) }),
-		}).catch(() => {});
+		await reportDraft({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ok: false, applied: false, error: refused, results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
 	}
 	const rootBefore = agentRootScene()?.id;
@@ -628,11 +648,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	const importSession = { projectId, signal: editor.project.getSessionSignal() };
 	const ops: DraftOp[] = Array.isArray(draft?.ops) ? structuredClone(draft.ops) : [];
 	const report = (body: Record<string, unknown>) =>
-		fetch("/api/agent/applied", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ...body }),
-		}).catch(() => {});
+		reportDraft({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ...body });
 
 	// A draft's base must describe the target timeline before anything is imported.
 	const snapshot = typeof draft.basedOn === "string" ? snapshotHistory.state(draft.basedOn) : null;
