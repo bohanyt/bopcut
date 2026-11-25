@@ -14,7 +14,7 @@ COPY bun.lock bun.lock
 COPY turbo.json turbo.json
 
 COPY apps/web/package.json apps/web/package.json
-COPY rust/wasm/opencut-wasm-0.2.10-bopencut.6.tgz rust/wasm/opencut-wasm-0.2.10-bopencut.6.tgz
+COPY rust/wasm/opencut-wasm-0.2.10-bopencut.7.tgz rust/wasm/opencut-wasm-0.2.10-bopencut.7.tgz
 COPY patches/ patches/
 RUN bun install
 
