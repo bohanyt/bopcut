@@ -199,7 +199,7 @@ test("an older custom esc shortcut survives the migrations", () => {
 });
 
 describe("the split keys of version 10", () => {
-	const migrate = (keybindings: Record<string, string>) => Object.fromEntries(
+	const migrate = (keybindings: Record<string, string>): Record<string, string> => Object.fromEntries(
 		decodePersistedKeybindingsState({
 			state: migratePersistedKeybindingsState({ state: { keybindings, isCustomized: true }, fromVersion: 9 }),
 		})?.keybindings ?? [],
@@ -212,14 +212,13 @@ describe("the split keys of version 10", () => {
 	});
 
 	test("keys the user changed keep their action", () => {
-		for (const changed of [
+		const cases: Record<string, string>[] = [
 			{ w: "split-right", e: "undo" },
 			{ w: "toggle-play" },
 			{ e: "split-right" },
 			{ s: "split-left", q: "split" },
 			{},
-		]) {
-			expect(migrate(changed)).toEqual(changed);
-		}
+		];
+		for (const changed of cases) expect(migrate(changed)).toEqual(changed);
 	});
 });

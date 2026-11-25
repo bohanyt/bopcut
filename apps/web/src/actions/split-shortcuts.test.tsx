@@ -154,7 +154,8 @@ describe("split shortcuts", () => {
 
 	test("typing in a field splits nothing", async () => {
 		await select(title);
-		const field = dom.document.body.appendChild(dom.document.createElement("input"));
+		const field = dom.document.createElement("input");
+		dom.document.body.append(field);
 		field.focus();
 		for (const key of ["q", "w", "e", "s"]) await press(key, field);
 		expect(clips()).toEqual(whole);
