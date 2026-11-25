@@ -61,7 +61,7 @@ function getDisplayHue(hue: number, saturation: number, internalHue: number): nu
 }
 
 function blurOnEnter(event: React.KeyboardEvent<HTMLInputElement>) {
-	if (event.key !== "Enter") return;
+	if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
 	event.preventDefault();
 	event.currentTarget.blur();
 }

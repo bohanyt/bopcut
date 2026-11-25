@@ -7,18 +7,24 @@ import { toast } from "sonner";
 import { AnimationTab } from "@/animation/components/animation-tab";
 import { applyAnimationPresets, readPresetSettings } from "@/animation/presets";
 import { PreviewFramingProvider, usePreviewViewportState } from "@/preview/components/preview-viewport";
-import { fixture, t, video } from "@/timeline/__tests__/compound-fixtures";
+import { fixture, scene, t, video } from "@/timeline/__tests__/compound-fixtures";
 import { SpeedTab } from "@/speed/components/speed-tab";
 import { useKeybindingsListener } from "@/actions/use-keybindings";
 import { EditableTimecode } from "@/components/editable-timecode";
 import { EditableProjectName } from "@/components/editor/editor-header";
 import { useBackgroundColorPreview } from "@/components/editor/panels/assets/views/settings/background";
 import { ColorPicker } from "@/components/ui/color-picker";
-import { Dialog } from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { PopoverContent } from "@/components/ui/popover";
+import { CompoundTab } from "@/components/editor/panels/properties/components/compound-tab";
+import { ElementParamsTab } from "@/components/editor/panels/properties/components/element-params-tab";
+import { SettingsView } from "@/components/editor/panels/assets/views/settings";
+import { TimelineBookmarksRow } from "@/timeline/bookmarks/components/bookmarks";
 import { EditorCore } from "@/core";
 import { DEFAULT_BACKGROUND_COLOR } from "@/background/color";
 import { mediaTime, type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import { DeleteProjectConfirmation } from "./delete-project-dialog";
+import { RenameProjectDialog } from "./rename-project-dialog";
 
 let dom: Window;
 let root: Root;
@@ -30,6 +36,7 @@ beforeEach(async () => {
 		window: dom,
 		document: dom.document,
 		Node: dom.Node,
+		Element: dom.Element,
 		HTMLElement: dom.HTMLElement,
 		HTMLInputElement: dom.HTMLInputElement,
 		getComputedStyle: dom.getComputedStyle.bind(dom),
@@ -72,13 +79,14 @@ function render(children: ReactNode) {
 	act(() => root.render(children));
 }
 
-function pressKey(element: HTMLElement, key: string) {
+function pressKey(element: HTMLElement, key: string, isComposing = false) {
 	act(() => {
 		element.dispatchEvent(
 			new window.KeyboardEvent("keydown", {
 				key,
 				bubbles: true,
 				cancelable: true,
+				isComposing,
 			}),
 		);
 	});
@@ -147,6 +155,7 @@ function EditorShortcuts({ children }: { children: ReactNode }) {
 test.each([
 	{ mode: "editing", finish: "Escape", expected: false },
 	{ mode: "editing", finish: "Enter", expected: true },
+	{ mode: "editing", finish: "IME Enter", expected: true },
 	{ mode: "editing", finish: "click away", expected: true },
 	{ mode: "read-only", finish: "Escape", expected: false },
 ])("$finish on the $mode title", ({ mode, finish, expected }) => {
@@ -186,6 +195,12 @@ test.each([
 
 		if (finish === "click away") {
 			act(() => document.querySelector("button")!.focus());
+		} else if (finish === "IME Enter") {
+			pressKey(input, "Enter", true);
+			expect(rename).not.toHaveBeenCalled();
+			expect(input.readOnly).toBe(false);
+			expect(document.activeElement).toBe(input);
+			pressKey(input, "Enter");
 		} else {
 			pressKey(input, finish);
 		}
@@ -203,6 +218,41 @@ test.each([
 	} finally {
 		getActive.mockRestore();
 		rename.mockRestore();
+	}
+});
+
+test("confirming an IME composition leaves the timecode open", () => {
+	const seek = mock(() => {});
+	render(<EditableTimecode time={t(0)} duration={t(10)}
+		fps={{ numerator: 30, denominator: 1 }} onTimeChange={seek} />);
+	act(() => document.querySelector("button")!.click());
+	const input = document.querySelector("input")!;
+	typeValue(input, "00:00:02:00");
+	pressKey(input, "Enter", true);
+	expect(seek).not.toHaveBeenCalled();
+	expect(document.activeElement).toBe(input);
+	pressKey(input, "Enter");
+	expect(seek).toHaveBeenCalledTimes(1);
+});
+
+test("confirming an IME composition keeps the rename dialog draft", () => {
+	const inlineDialog = spyOn(DialogContent as unknown as {
+		render: (props: React.ComponentProps<typeof DialogContent>) => ReactNode;
+	}, "render").mockImplementation(({ children }) => <div>{children}</div>);
+	const confirm = mock<(name: string) => void>(() => {});
+	try {
+		render(<RenameProjectDialog isOpen projectName="Old title" onConfirm={confirm} onOpenChange={() => {}} />);
+		const input = document.querySelector("input")!;
+		act(() => input.focus());
+		typeValue(input, "New title");
+		pressKey(input, "Enter", true);
+		expect(confirm).not.toHaveBeenCalled();
+		expect(input.value).toBe("New title");
+		pressKey(input, "Enter");
+		expect(confirm.mock.calls).toEqual([["New title"]]);
+	} finally {
+		render(null);
+		inlineDialog.mockRestore();
 	}
 });
 
@@ -328,7 +378,7 @@ test("Enter commits an inline color once", () => {
 	expect(onChangeEnd.mock.calls).toEqual([["abcdef"]]);
 });
 
-function setupEditingProject() {
+function setupEditingProject({ customCanvas = false } = {}) {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
 	const scenes = fixture();
@@ -339,6 +389,7 @@ function setupEditingProject() {
 		settings: {
 			fps: { numerator: 30, denominator: 1 },
 			canvasSize: { width: 1920, height: 1080 },
+			canvasSizeMode: customCanvas ? "custom" : "preset",
 			background: { type: "color", color: "#000000" },
 		},
 		currentSceneId: "main",
@@ -348,6 +399,153 @@ function setupEditingProject() {
 	} });
 	return editor;
 }
+
+test.each([
+	{ first: "2", final: "", expected: 1 },
+	{ first: "2xjunk", final: "2xjunk", expected: 1 },
+	{ first: "1,5", final: "1,5", expected: 1.5 },
+	{ first: "2x", final: "2x", expected: 2 },
+])("Speed commits $expected after editing $first", ({ first, final, expected }) => {
+	const editor = setupEditingProject();
+	editor.save.stop();
+	const { tracks } = editor.scenes.getActiveScene();
+	const element = tracks.main.elements[0];
+	if (element.type !== "video") throw new Error("Expected a video");
+	try {
+		render(<SpeedTab element={element} trackId={tracks.main.id} />);
+		const input = document.querySelector<HTMLInputElement>('input[inputmode="decimal"]')!;
+		act(() => input.focus());
+		typeValue(input, first);
+		if (final !== first) typeValue(input, final);
+		pressKey(input, "Enter");
+		const updated = editor.scenes.getActiveScene().tracks.main.elements[0];
+		if (updated.type !== "video") throw new Error("Expected a video");
+		expect(updated.retime?.rate ?? 1).toBe(expected);
+		expect(editor.timeline.isPreviewActive()).toBe(false);
+		expect(editor.command.canUndo()).toBe(expected !== 1);
+		if (expected !== 1) {
+			act(() => editor.command.undo());
+			expect(editor.command.canUndo()).toBe(false);
+		}
+	} finally {
+		render(null);
+		EditorCore.reset();
+	}
+});
+
+test("an invalid numeric property clears its earlier preview without saving it", () => {
+	const editor = setupEditingProject();
+	editor.save.stop();
+	const { tracks } = editor.scenes.getActiveScene();
+	const property = "transform.positionX";
+	try {
+		render(<ElementParamsTab element={tracks.main.elements[0]} trackId={tracks.main.id}
+			sectionKey="position" paramKeys={[property]} />);
+		const input = document.querySelector<HTMLInputElement>('input[inputmode="decimal"]')!;
+		act(() => input.focus());
+		typeValue(input, "24");
+		expect(editor.timeline.isPreviewActive()).toBe(true);
+		typeValue(input, "24oops");
+		pressKey(input, "Enter");
+		expect(input.value).toBe("0");
+		expect(editor.timeline.isPreviewActive()).toBe(false);
+		expect(editor.command.canUndo()).toBe(false);
+	} finally {
+		render(null);
+		EditorCore.reset();
+	}
+});
+
+test("a custom canvas width expression commits its final evaluated value", () => {
+	const editor = setupEditingProject({ customCanvas: true });
+	editor.save.stop();
+	try {
+		render(<SettingsView />);
+		const input = document.querySelector<HTMLInputElement>('input[aria-label="Canvas width"]')!;
+		act(() => input.focus());
+		typeValue(input, "1280+160");
+		pressKey(input, "Enter");
+		expect(editor.project.getActive().settings.canvasSize.width).toBe(1440);
+		act(() => editor.command.undo());
+		expect(editor.project.getActive().settings.canvasSize.width).toBe(1920);
+		expect(editor.command.canUndo()).toBe(false);
+	} finally {
+		render(null);
+		EditorCore.reset();
+	}
+});
+
+test.each([
+	{ input: "00FF0040", expected: "00FF0040" },
+	{ input: "0F0F", expected: "00FF00FF" },
+	{ input: "0F0", expected: "00FF0080" },
+])("inline color commits $input without changing its intended alpha", ({ input, expected }) => {
+	const commit = mock<(color: string) => void>(() => {});
+	render(<ColorPicker value="FF000080" onChangeEnd={commit} />);
+	const field = document.querySelector("input")!;
+	act(() => field.focus());
+	typeValue(field, input);
+	pressKey(field, "Enter");
+	expect(commit.mock.calls).toEqual([[expected]]);
+});
+
+test("a legacy bookmark note stays open while typing and saves in one step", () => {
+	const editor = setupEditingProject();
+	editor.save.stop();
+	const inlinePopover = spyOn(PopoverContent as unknown as {
+		render: (props: React.ComponentProps<typeof PopoverContent>) => ReactNode;
+	}, "render").mockImplementation(({ children }) => <div>{children}</div>);
+	try {
+		const origin = editor.scenes.getActiveScene();
+		editor.scenes.setScenes({ scenes: [{ ...origin, bookmarks: [{ time: t(1) }] }] });
+		const noop = () => {};
+		render(<TimelineBookmarksRow zoomLevel={1} dynamicTimelineWidth={1000}
+			dragState={{ isDragging: false, bookmark: null, currentTime: ZERO_MEDIA_TIME }} onBookmarkMouseDown={noop}
+			handleWheel={noop} handleTimelineContentClick={noop}
+			handleRulerTrackingPointerDown={noop} handleRulerPointerDown={noop} />);
+		const marker = document.querySelector('button[aria-label^="Bookmark at"]')!;
+		act(() => marker.dispatchEvent(new window.MouseEvent("click", { detail: 2, bubbles: true })));
+		const selector = 'input[placeholder="Add a note..."]';
+		const note = document.querySelector<HTMLInputElement>(selector)!;
+		act(() => note.focus());
+		typeValue(note, "H");
+		expect(document.activeElement).toBe(note);
+		typeValue(note, "Hi");
+		act(() => note.blur());
+		expect(document.querySelector(selector)).toBe(note);
+		expect(editor.scenes.getActiveScene().bookmarks[0].note).toBe("Hi");
+		act(() => editor.command.undo());
+		expect(editor.scenes.getActiveScene().bookmarks[0].note).toBeUndefined();
+		expect(editor.command.canUndo()).toBe(false);
+	} finally {
+		render(null);
+		inlinePopover.mockRestore();
+		EditorCore.reset();
+	}
+});
+
+test("confirming an IME composition keeps a compound name in its field", () => {
+	const editor = setupEditingProject();
+	editor.save.stop();
+	const host = editor.scenes.getActiveScene();
+	const nested = scene("compound", fixture()[0].tracks, { kind: "compound" });
+	const element = { ...video("clip", 0, 10), type: "compound" as const, sceneId: nested.id, name: nested.name };
+	editor.scenes.setScenes({ scenes: [host, nested] });
+	try {
+		render(<CompoundTab element={element} trackId={host.tracks.main.id} />);
+		const input = document.querySelector("input")!;
+		act(() => input.focus());
+		typeValue(input, "New compound");
+		pressKey(input, "Enter", true);
+		expect(document.activeElement).toBe(input);
+		expect(editor.scenes.getScenes()[1].name).toBe("compound");
+		pressKey(input, "Enter");
+		expect(editor.scenes.getScenes()[1].name).toBe("New compound");
+	} finally {
+		render(null);
+		EditorCore.reset();
+	}
+});
 
 test("animation preset length accepts a decimal comma and restores the value after invalid input", () => {
 	const editor = setupEditingProject();

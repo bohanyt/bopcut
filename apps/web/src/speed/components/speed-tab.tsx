@@ -1,5 +1,4 @@
 import { useI18n } from "@/i18n/provider";
-import { useRef } from "react";
 import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
 import { NumberField } from "@/components/ui/number-field";
@@ -27,6 +26,7 @@ import { usePropertyDraft } from "@/components/editor/panels/properties/hooks/us
 import {
 	formatNumberForDisplay,
 	getFractionDigitsForStep,
+	parseDecimalInput,
 	snapToStep,
 } from "@/utils/math";
 
@@ -41,8 +41,8 @@ function rateToDisplay({ rate }: { rate: number }): string {
 }
 
 function parseSpeedInput({ input }: { input: string }): number | null {
-	const parsed = parseFloat(input);
-	if (Number.isNaN(parsed)) return null;
+	const parsed = parseDecimalInput({ input: input.replace(/[x×]\s*$/i, "") });
+	if (parsed === null) return null;
 	return clampRetimeRate({
 		rate: snapToStep({ value: parsed, step: SPEED_STEP }),
 	});
@@ -73,7 +73,6 @@ export function SpeedTab({
 	});
 	const isPitchPreserveAvailable = canMaintainPitch({ rate });
 	const maintainPitch = element.retime?.maintainPitch ?? false;
-	const pendingRateRef = useRef<number | null>(null);
 
 	const commitRetime = ({
 		rate: nextRate,
@@ -94,20 +93,14 @@ export function SpeedTab({
 		displayValue: rateToDisplay({ rate }),
 		parse: (input) => parseSpeedInput({ input }),
 		onPreview: (nextRate) => {
-			pendingRateRef.current = nextRate;
 			editor.timeline.previewElementRetime({
 				trackId,
 				elementId: element.id,
 				retime: buildRetime({ rate: nextRate, maintainPitch }),
 			});
 		},
-		onCommit: () => {
-			const pendingRate = pendingRateRef.current;
-			pendingRateRef.current = null;
-			if (pendingRate !== null) {
-				commitRetime({ rate: pendingRate, maintainPitch });
-			}
-		},
+		onCommit: (nextRate) => commitRetime({ rate: nextRate, maintainPitch }),
+		onInvalid: () => editor.timeline.discardPreview(),
 	});
 
 	return (
@@ -127,17 +120,12 @@ export function SpeedTab({
 								{ from: 1, to: 5, pixelsPerUnit: 48 },
 							]}
 							scrubClamp={{ min: MIN_RETIME_RATE, max: MAX_RETIME_RATE }}
-							onFocus={() => {
-								pendingRateRef.current = null;
-								speedDraft.onFocus();
-							}}
+							onFocus={speedDraft.onFocus}
 							onChange={speedDraft.onChange}
 							onBlur={speedDraft.onBlur}
 							onScrub={speedDraft.scrubTo}
 							onScrubEnd={speedDraft.commitScrub}
-							onScrubCancel={() => {
-								pendingRateRef.current = null;
-							}}
+							onScrubCancel={speedDraft.cancelScrub}
 							beginScrubGesture={editor.timeline.beginPreviewGesture}
 							onReset={() =>
 								commitRetime({ rate: DEFAULT_RETIME_RATE, maintainPitch })

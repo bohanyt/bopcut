@@ -10,6 +10,7 @@ import type {
 import {
 	formatNumberForDisplay,
 	getFractionDigitsForStep,
+	parseDecimalInput,
 	snapToStep,
 } from "@/utils/math";
 import { SectionField } from "@/components/section";
@@ -234,12 +235,13 @@ function NumberParamField({
 			maxFractionDigits,
 		}),
 		parse: (input) => {
-			const parsed = parseFloat(input);
-			if (Number.isNaN(parsed)) return null;
+			const parsed = parseDecimalInput({ input });
+			if (parsed === null) return null;
 			return clampDisplayValue(snapToStep({ value: parsed, step }));
 		},
 		onPreview: previewFromDisplay,
 		onCommit,
+		onInvalid: () => timeline.discardPreview(),
 	});
 
 	const handleReset = () => {
