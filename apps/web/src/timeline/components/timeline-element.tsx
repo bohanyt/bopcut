@@ -594,7 +594,7 @@ function TimelineElementMenu({
 				</>
 			)}
 			<ActionMenuItem
-				action="split"
+				action="split-selected"
 				icon={<HugeiconsIcon icon={ScissorIcon} />}
 			>
 				{t("timeline.split")}

@@ -17,20 +17,25 @@ export class SplitElementsCommand extends Command {
 	private readonly elements: ElementRef[];
 	private readonly splitTime: MediaTime;
 	private readonly retainSide: "both" | "left" | "right";
+	private readonly selected?: ElementRef[];
 
 	constructor({
 		elements,
 		splitTime,
 		retainSide = "both",
+		selected,
 	}: {
 		elements: ElementRef[];
 		splitTime: MediaTime;
 		retainSide?: "both" | "left" | "right";
+		/** Stays selected, as the right part where it was split. By default all right parts are selected. */
+		selected?: ElementRef[];
 	}) {
 		super();
 		this.elements = elements;
 		this.splitTime = splitTime;
 		this.retainSide = retainSide;
+		this.selected = selected;
 	}
 
 	getRightSideElements(): ElementRef[] {
@@ -114,6 +119,13 @@ export class SplitElementsCommand extends Command {
 		this.savedState = before;
 		editor.timeline.updateTracks(updatedTracks);
 
+		if (this.selected) {
+			return createElementSelectionResult(this.selected.map((ref) => {
+				const target = this.elements.find(({ trackId, elementId }) => trackId === ref.trackId && elementId === ref.elementId);
+				const rightId = target && this.splitIds.get(target);
+				return this.rightSideElements.find(({ elementId }) => elementId === rightId) ?? ref;
+			}));
+		}
 		if (this.rightSideElements.length > 0) {
 			return createElementSelectionResult(this.rightSideElements);
 		}

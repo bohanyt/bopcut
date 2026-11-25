@@ -75,6 +75,10 @@ export const ACTIONS = {
 		description: en["shortcuts.action.split"],
 		category: "editing",
 	},
+	"split-selected": {
+		description: en["shortcuts.action.split-selected"],
+		category: "editing",
+	},
 	"split-left": {
 		description: en["shortcuts.action.split-left"],
 		category: "editing",
@@ -195,8 +199,9 @@ const ACTION_DEFAULT_SHORTCUTS = [
 	["goto-start", ["home", "enter"]],
 	["goto-end", ["end"]],
 	["split", ["s"]],
+	["split-selected", ["w"]],
 	["split-left", ["q"]],
-	["split-right", ["w"]],
+	["split-right", ["e"]],
 	["delete-selected", ["backspace", "delete"]],
 	["copy-selected", ["ctrl+c"]],
 	["paste-copied", ["ctrl+v"]],
