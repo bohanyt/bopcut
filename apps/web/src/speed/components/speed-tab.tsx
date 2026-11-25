@@ -41,7 +41,7 @@ function rateToDisplay({ rate }: { rate: number }): string {
 }
 
 function parseSpeedInput({ input }: { input: string }): number | null {
-	const parsed = parseDecimalInput({ input: input.replace(/[x×]\s*$/i, "") });
+	const parsed = parseDecimalInput({ input });
 	if (parsed === null) return null;
 	return clampRetimeRate({
 		rate: snapToStep({ value: parsed, step: SPEED_STEP }),

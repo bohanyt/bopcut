@@ -99,9 +99,9 @@ export function formatNumberForDisplay({
 }
 
 export function parseDecimalInput({ input }: { input: string }): number | null {
-	const trimmed = input.trim();
-	if (!/^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:e[+-]?\d+)?$/i.test(trimmed)) return null;
-	const value = Number(trimmed.replace(",", "."));
+	const match = /^([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:e[+-]?\d+)?)(?:\s*(?:[%°×]|\p{L}+))?$/iu.exec(input.trim());
+	if (!match) return null;
+	const value = Number(match[1].replace(",", "."));
 	return Number.isFinite(value) ? value : null;
 }
 

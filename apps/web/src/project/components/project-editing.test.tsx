@@ -402,9 +402,10 @@ function setupEditingProject({ customCanvas = false } = {}) {
 
 test.each([
 	{ first: "2", final: "", expected: 1 },
-	{ first: "2xjunk", final: "2xjunk", expected: 1 },
+	{ first: "2x", final: "2x+", expected: 1 },
 	{ first: "1,5", final: "1,5", expected: 1.5 },
 	{ first: "2x", final: "2x", expected: 2 },
+	{ first: "1,5×", final: "1,5×", expected: 1.5 },
 ])("Speed commits $expected after editing $first", ({ first, final, expected }) => {
 	const editor = setupEditingProject();
 	editor.save.stop();
@@ -445,7 +446,7 @@ test("an invalid numeric property clears its earlier preview without saving it",
 		act(() => input.focus());
 		typeValue(input, "24");
 		expect(editor.timeline.isPreviewActive()).toBe(true);
-		typeValue(input, "24oops");
+		typeValue(input, "24+");
 		pressKey(input, "Enter");
 		expect(input.value).toBe("0");
 		expect(editor.timeline.isPreviewActive()).toBe(false);
@@ -489,7 +490,7 @@ test.each([
 	expect(commit.mock.calls).toEqual([[expected]]);
 });
 
-test("a legacy bookmark note stays open while typing and saves in one step", () => {
+test("a legacy bookmark saves each keystroke without moving focus", () => {
 	const editor = setupEditingProject();
 	editor.save.stop();
 	const inlinePopover = spyOn(PopoverContent as unknown as {
@@ -497,7 +498,7 @@ test("a legacy bookmark note stays open while typing and saves in one step", () 
 	}, "render").mockImplementation(({ children }) => <div>{children}</div>);
 	try {
 		const origin = editor.scenes.getActiveScene();
-		editor.scenes.setScenes({ scenes: [{ ...origin, bookmarks: [{ time: t(1) }] }] });
+		editor.scenes.setScenes({ scenes: [{ ...origin, bookmarks: [{ time: t(1) }, { time: t(1) }] }] });
 		const noop = () => {};
 		render(<TimelineBookmarksRow zoomLevel={1} dynamicTimelineWidth={1000}
 			dragState={{ isDragging: false, bookmark: null, currentTime: ZERO_MEDIA_TIME }} onBookmarkMouseDown={noop}
@@ -509,11 +510,29 @@ test("a legacy bookmark note stays open while typing and saves in one step", () 
 		const note = document.querySelector<HTMLInputElement>(selector)!;
 		act(() => note.focus());
 		typeValue(note, "H");
+		expect(editor.scenes.getActiveScene().bookmarks[0].note).toBe("H");
+		expect(editor.scenes.getActiveScene().bookmarks[0].id).toBeDefined();
 		expect(document.activeElement).toBe(note);
 		typeValue(note, "Hi");
-		act(() => note.blur());
-		expect(document.querySelector(selector)).toBe(note);
+		expect(document.querySelector(selector) === note).toBe(true);
 		expect(editor.scenes.getActiveScene().bookmarks[0].note).toBe("Hi");
+		const promoted = editor.scenes.getActiveScene().bookmarks[0];
+		const errors = spyOn(console, "error");
+		try {
+			act(() => {
+				void editor.scenes.moveBookmark({ bookmark: promoted, fromTime: t(1), toTime: t(3) });
+			});
+			expect(editor.scenes.getActiveScene().bookmarks.map(({ time }) => time)).toEqual([t(1), t(3)]);
+			expect(errors.mock.calls.some(([message]) =>
+				typeof message === "string" && message.includes("with the same key"),
+			)).toBe(false);
+		} finally {
+			errors.mockRestore();
+		}
+		act(() => editor.command.undo());
+		expect(editor.scenes.getActiveScene().bookmarks[0].note).toBe("Hi");
+		act(() => editor.command.undo());
+		expect(editor.scenes.getActiveScene().bookmarks[0].note).toBe("H");
 		act(() => editor.command.undo());
 		expect(editor.scenes.getActiveScene().bookmarks[0].note).toBeUndefined();
 		expect(editor.command.canUndo()).toBe(false);

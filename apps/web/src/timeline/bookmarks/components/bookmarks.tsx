@@ -2,7 +2,6 @@
 
 import { useI18n } from "@/i18n/provider";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useCommittedRef } from "@/hooks/use-committed-ref";
 import type { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
 import type { BookmarkDragState } from "../hooks/use-bookmark-drag";
@@ -86,6 +85,9 @@ export function TimelineBookmarksRow({
 	const { t } = useI18n();
 	const scene = useEditor((e) => e.scenes.getActiveScene());
 	const promotedKeys = useRef(new Map<string, string>());
+	const assignedKeys = new Set(scene.bookmarks.flatMap(({ id }) =>
+		id ? [promotedKeys.current.get(id) ?? id] : [],
+	));
 
 	return (
 		<div
@@ -112,9 +114,13 @@ export function TimelineBookmarksRow({
 				}}
 			>
 				{scene.bookmarks.map((bookmark, index) => {
-					const key = bookmark.id
+					let key = bookmark.id
 						? promotedKeys.current.get(bookmark.id) ?? bookmark.id
 						: `bookmark-${bookmark.time}-${index}`;
+					// A promoted bookmark may have moved away from this legacy slot.
+					if (!bookmark.id) {
+						while (assignedKeys.has(key)) key += ":legacy";
+					}
 					return (
 						<TimelineBookmark
 							key={`${scene.id}:${key}`}
@@ -337,10 +343,6 @@ function BookmarkPopoverContent({
 }) {
 	const { t } = useI18n();
 	const editor = useEditor();
-	const sceneId = editor.scenes.getActiveScene().id;
-	const session = editor.project.getSession();
-	const [draftNote, setDraftNote] = useState<string | null>(null);
-	const pendingNote = useRef<string | null>(null);
 	useSyncExternalStore(editor.voiceOver.subscribe, editor.voiceOver.getSnapshot, editor.voiceOver.getServerSnapshot);
 	const committedColor = (bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR)
 		.replace("#", "")
@@ -386,15 +388,6 @@ function BookmarkPopoverContent({
 		if (Object.keys(updates).length === 0) return;
 		editor.scenes.updateBookmark({ time, bookmark, updates });
 	};
-	const commitNote = useCommittedRef(() => {
-		const note = pendingNote.current;
-		pendingNote.current = null;
-		if (note !== null && editor.project.getSession() === session &&
-			editor.scenes.getActiveSceneOrNull()?.id === sceneId) {
-			handleUpdate({ note });
-		}
-	});
-	useEffect(() => () => commitNote.current(), [commitNote]);
 	const maxDuration = mediaTimeToSeconds({
 		time:
 			timelineDuration > time
@@ -411,15 +404,8 @@ function BookmarkPopoverContent({
 				<Label className="text-xs">{t("bookmark.note")}</Label>
 				<Input
 					placeholder={t("bookmark.addNote")}
-					value={draftNote ?? bookmark.note ?? ""}
-					onChange={(event) => {
-						pendingNote.current = event.currentTarget.value;
-						setDraftNote(pendingNote.current);
-					}}
-					onBlur={() => {
-						commitNote.current();
-						setDraftNote(null);
-					}}
+					value={bookmark.note ?? ""}
+					onChange={(event) => handleUpdate({ note: event.currentTarget.value })}
 					className="h-8 text-sm"
 				/>
 			</div>

@@ -1,5 +1,18 @@
 import { describe, expect, it } from "bun:test";
-import { evaluateMathExpression } from "../math";
+import { evaluateMathExpression, parseDecimalInput } from "../math";
+
+it.each([
+	{ input: "50%", expected: 50 },
+	{ input: "45°", expected: 45 },
+	{ input: "120px", expected: 120 },
+	{ input: "1.5x", expected: 1.5 },
+	{ input: "1,5 ×", expected: 1.5 },
+	{ input: "1e-2s", expected: 0.01 },
+	{ input: "50+", expected: null },
+	{ input: "50px+", expected: null },
+])("parses $input with an optional unit", ({ input, expected }) => {
+	expect(parseDecimalInput({ input })).toBe(expected);
+});
 
 describe("evaluateMathExpression", () => {
 	describe("basic arithmetic", () => {
