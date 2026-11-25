@@ -99,7 +99,7 @@ test.each([false, true])("publishes atomically across volumes (sidecar: %s)", as
 });
 
 // Windows has no process group that outlives the tool: only the tree of a running tool is ended there.
-test.skipIf(process.platform === "win32").each(["inherit", "ignore"])("abort reaches a surviving child after the wrapper exits (%s pipes)", async (stdio) => {
+if (process.platform !== "win32") test.each(["inherit", "ignore"])("abort reaches a surviving child after the wrapper exits (%s pipes)", async (stdio) => {
 	const controller = new AbortController();
 	const heartbeat = path.join(root, "heartbeat");
 	const grandchild = `
