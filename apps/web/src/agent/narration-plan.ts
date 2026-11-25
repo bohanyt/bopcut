@@ -1,9 +1,9 @@
 import type { SourceWord } from "@/media/words";
-import { playedSpan, sourceEnd } from "@/timeline/word-cuts";
+import { cutWarnings, playedSpan, sourceEnd } from "@/timeline/word-cuts";
 import type { TScene } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { FrameRate } from "opencut-wasm";
-import { alignNarration, MAX_NARRATION_WORDS, narrationToken } from "./narration-alignment";
+import { alignNarration, MAX_NARRATION_WORDS, narrationToken, narrationWords } from "./narration-alignment";
 import { orderedTracks } from "./scene-graph";
 
 const ROW_LIMIT = 1250;
@@ -39,12 +39,14 @@ function upcoming(words: SourceWord[], at: number): number {
 function anchorAt(words: SourceWord[], at: number, side: "start" | "end", tolerance: number, interior: boolean): Anchor | undefined {
 	const i = upcoming(words, at);
 	const previous = words[i - 1], next = words[i];
+	const earlier = words[i - 2];
 	const edges = [
 		...(previous ? [{ word: i - 1, edge: "start" as const, delta: at - previous.start },
 			{ word: i - 1, edge: "end" as const, delta: at - previous.end }] : []),
 		...(next ? [{ word: i, edge: "start" as const, delta: at - next.start }] : []),
-	].filter(({ delta }) => Math.abs(delta) <= tolerance).sort((a, b) => Math.abs(a.delta) - Math.abs(b.delta) ||
-		Number(b.edge === side) - Number(a.edge === side));
+		...(earlier ? [{ word: i - 2, edge: "end" as const, delta: at - earlier.end }] : []),
+	].filter(({ delta }) => Math.abs(delta) <= tolerance).sort((a, b) =>
+		Number(b.edge === side) - Number(a.edge === side) || Math.abs(a.delta) - Math.abs(b.delta));
 	if (edges.length) {
 		if (edges[1] && edges[0].edge === edges[1].edge &&
 			Math.abs(Math.abs(edges[0].delta) - Math.abs(edges[1].delta)) < 1e-9) return;
@@ -65,10 +67,10 @@ function effectAnchor(words: SourceWord[], at: number): Anchor | undefined {
 }
 
 export function planNarration({
-	root, fps, clipId, mediaId, oldWords, newWords, newDuration, check,
+	root, fps, clipId, mediaId, oldWords, newWords, newDuration, check, from = 0, to = Infinity, includeUnchanged = false,
 }: {
 	root: TScene; fps: FrameRate; clipId: string; mediaId: string; oldWords: SourceWord[]; newWords: SourceWord[];
-	newDuration: number; check: () => void;
+	newDuration: number; check: () => void; from?: number; to?: number; includeUnchanged?: boolean;
 }) {
 	const tracks = orderedTracks(root.tracks);
 	if (!/^[\w-]{1,128}$/.test(root.id)) throw new Error("The saved root scene needs a valid ID.");
@@ -94,15 +96,18 @@ export function planNarration({
 	if (!Number.isFinite(rate) || rate <= 0) throw new Error("The saved project needs a valid frame rate.");
 	const original = playedSpan(narration);
 	const eps = 1e-9;
-	if (oldWords.some((word) => [original.from, original.to].some((edge) => word.start < edge - eps && word.end > edge + eps))) {
+	if (cutWarnings(narration, oldWords).length) {
 		throw new Error("The old narration trim cuts a word. Move the cut outside the word first.");
 	}
-	const local = oldWords.filter((word) => word.start >= original.from - eps && word.end <= original.to + eps);
+	const local = narrationWords(oldWords.filter((word) => word.end > original.from && word.start < original.to)
+		.map((word) => ({ ...word, start: Math.max(word.start, original.from), end: Math.min(word.end, original.to) })));
+	newWords = narrationWords(newWords);
 	const { matches, limited } = alignNarration(local, newWords, check);
 	const origin = seconds(narration.startTime);
 	const old = local.map((word) => ({ ...word, start: origin + word.start - original.from, end: origin + word.end - original.from }));
 	const next = newWords.map((word) => ({ ...word, start: origin + word.start, end: origin + word.end }));
 	const frame = (at: number) => Math.round(at * rate);
+	const inRange = ({ start, end }: { start: number; end: number }) => start < to && (end > from || (end === start && start >= from));
 	if (frame(origin + newDuration) <= frame(origin)) throw new Error("The replacement is shorter than one project frame.");
 	const byOld = new Map(matches.map((match) => [match.old, match]));
 	const byNew = new Set(matches.map((match) => match.next));
@@ -111,17 +116,20 @@ export function planNarration({
 		start: words[start].start, end: words[end].end,
 	});
 	const spans = [];
+	const visibleMatch = (match: typeof matches[number]) => inRange(old[match.old]) || inRange(next[match.next]);
 	for (let i = 0; i < matches.length;) {
 		const first = matches[i++];
+		if (!visibleMatch(first)) continue;
 		let last = first;
-		while (i < matches.length && last.old - first.old < 11 && matches[i].old === last.old + 1 &&
+		while (i < matches.length && visibleMatch(matches[i]) && last.old - first.old < 11 && matches[i].old === last.old + 1 &&
 			matches[i].next === last.next + 1 && matches[i].reason === first.reason &&
 			old[matches[i].old].start - old[last.old].end < 0.5 && next[matches[i].next].start - next[last.next].end < 0.5) last = matches[i++];
-		spans.push({ old: wordSpan(old, first.old, last.old), next: wordSpan(next, first.next, last.next),
+		const oldSpan = wordSpan(old, first.old, last.old), nextSpan = wordSpan(next, first.next, last.next);
+		spans.push({ old: oldSpan, next: nextSpan,
 			shiftSeconds: next[first.next].start - old[first.old].start, confidence: first.confidence, reason: first.reason });
 	}
 	const missing = (words: SourceWord[], known: (i: number) => boolean) => words.flatMap((_, i) =>
-		known(i) ? [] : [wordSpan(words, i, i)]);
+		known(i) || !inRange(words[i]) ? [] : [wordSpan(words, i, i)]);
 	const unmatched = missing(old, (i) => byOld.has(i)), inserted = missing(next, (i) => byNew.has(i));
 	const wordRange = (anchor: Anchor): [number, number] => "pause" in anchor ? anchor.pause : [anchor.word, anchor.word];
 	const clearThrough = new Int32Array(old.length).fill(-1);
@@ -147,58 +155,77 @@ export function planNarration({
 	const key = (anchor: Anchor) => "pause" in anchor
 		? { pause: anchor.pause.map((i) => i + 1), fraction: anchor.fraction }
 		: { ...anchor, word: anchor.word + 1 };
+	const pauseAllocation = (anchor: Anchor) => "pause" in anchor ? "split by original fraction"
+		: "edge" in anchor ? anchor.edge === "end" ? "right clip" : "left clip" : "inside a word";
 	const rows = [];
 	const offsets = new Map<string, number | null>();
 	let humanTimingConflicts = 0;
 	const totals = { move: 0, trim: 0, unchanged: 0, needsMoreSource: 0, shorterThanProtectedContent: 0, crossesUnresolvedChange: 0, unanchored: 0 };
 	const tolerance = Math.min(0.04, 0.5 / rate);
+	const mainStarts = new Set<number>(root.tracks.main.elements.map((element) => element.startTime));
+	const cuts = new Map<number, Anchor | undefined>();
+	for (const element of root.tracks.main.elements) {
+		const at = element.startTime + element.duration;
+		// Prefer the left clip's last word, giving any additional pause to the right clip.
+		if (mainStarts.has(at)) cuts.set(at, anchorAt(old, seconds(at), "end", tolerance, true));
+	}
+	let reportedRows = 0;
 	for (const { track, element } of all) {
 		check();
 		if (element === narration) continue;
-		const start = seconds(element.startTime), duration = seconds(element.duration), end = start + duration;
+		const start = seconds(element.startTime), duration = seconds(element.duration), endTicks = element.startTime + element.duration, end = seconds(endTicks);
 		const first = upcoming(old, start - tolerance), last = upcoming(old, end - eps);
 		const caption = element.type === "text" && element.caption && last > first && last - first <= 120 &&
 			old.slice(first, last).map((word) => narrationToken(word.text)).join(" ") ===
-				element.caption.words.map((word) => narrationToken(word.text)).join(" ");
-		if (element.type === "audio" && duration > 2) { totals.unanchored++; continue; }
+				narrationWords(element.caption.words).map((word) => narrationToken(word.text)).join(" ");
+		if (element.type === "audio" && duration > 2) { if (inRange({ start, end })) totals.unanchored++; continue; }
 		const followStart = element.type === "audio" || element.type === "effect";
 		const endEdge = followStart ? undefined : anchorAt(old, end, "end", tolerance, false);
-		const startAnchor = (followStart ? effectAnchor(old, start) : undefined) ??
+		const ownStart = (followStart ? effectAnchor(old, start) : undefined) ??
 			anchorAt(old, start, "start", tolerance, !!caption || !!endEdge);
-		const endAnchor = followStart ? startAnchor : endEdge ?? anchorAt(old, end, "end", tolerance, !!caption || !!startAnchor);
-		if (!startAnchor || !endAnchor) { totals.unanchored++; continue; }
-		const resolved = clear(startAnchor, endAnchor);
+		const ownEnd = followStart ? ownStart : endEdge ?? anchorAt(old, end, "end", tolerance, !!caption || !!ownStart);
+		const main = track.id === root.tracks.main.id;
+		const sharedStart = main && cuts.has(element.startTime), sharedEnd = main && cuts.has(endTicks);
+		const startAnchor = sharedStart ? cuts.get(element.startTime) ?? ownStart : ownStart;
+		const endAnchor = sharedEnd ? cuts.get(endTicks) ?? ownEnd : ownEnd;
+		if (!startAnchor || !endAnchor) { if (inRange({ start, end })) totals.unanchored++; continue; }
+		const resolved = (!sharedStart || !!cuts.get(element.startTime)) && (!sharedEnd || !!cuts.get(endTicks)) &&
+			clear(startAnchor, endAnchor) && (!ownStart || !ownEnd || clear(ownStart, ownEnd));
+		const oldFrames = frame(end) - frame(start);
 		const startFrame = resolved ? frame(mapped(startAnchor)) : null;
-		const endFrame = resolved ? frame(followStart ? mapped(startAnchor) + duration : mapped(endAnchor)) : null;
+		const endFrame = startFrame === null ? null : followStart ? startFrame + oldFrames : frame(mapped(endAnchor));
 		const valid = startFrame !== null && endFrame !== null && startFrame >= 0 && endFrame > startFrame;
-		if (valid && startFrame === frame(start) && endFrame === frame(end)) {
-			offsets.set(element.id, 0);
-			totals.unchanged++;
-			continue;
-		}
+		const unchanged = valid && startFrame === frame(start) && endFrame === frame(end);
 		const proposedDuration = valid ? (endFrame - startFrame) / rate : 0;
 		const fields = element.humanFields ?? [];
-		const oldFrames = frame(end) - frame(start);
 		const shorter = valid && endFrame - startFrame < oldFrames;
 		const protectedTiming = shorter && fields.some((field) =>
 			field === "duration" || field === "trimStart" || field === "retime" || field.startsWith("keyframes.") ||
 			field === "caption" || field === "params.content");
 		const media = element.type === "video" || element.type === "audio" || element.type === "compound";
 		const speed = "retime" in element ? element.retime?.rate ?? 1 : 1;
-		const kind = !valid ? "crossesUnresolvedChange" : protectedTiming ? "shorterThanProtectedContent"
-			: media && proposedDuration * speed + seconds(element.trimStart) > sourceEnd(element) + 1e-9 ? "needsMoreSource"
+		const kind = unchanged ? "unchanged" : !valid ? "crossesUnresolvedChange" : protectedTiming ? "shorterThanProtectedContent"
+			: !followStart && media && proposedDuration * speed + seconds(element.trimStart) > sourceEnd(element) + 1e-9 ? "needsMoreSource"
 			: endFrame - startFrame === oldFrames ? "move" : "trim";
-		totals[kind]++;
+		const shown = inRange({ start, end }) || (valid && inRange({ start: startFrame / rate, end: endFrame / rate }));
 		const protectedChanges = !valid ? [] : fields.filter((field) =>
 			(field === "start" && startFrame !== frame(start)) ||
 			(field === "duration" && endFrame - startFrame !== oldFrames));
+		offsets.set(element.id, kind === "unchanged" ? 0
+			: valid && !protectedChanges.length && (kind === "move" || kind === "trim") ? startFrame - frame(start) : null);
+		if (!shown) continue;
+		totals[kind]++;
 		if (protectedChanges.length) humanTimingConflicts++;
-		offsets.set(element.id, !protectedChanges.length && (kind === "move" || kind === "trim") ? startFrame! - frame(start) : null);
+		if (unchanged && !includeUnchanged) continue;
+		reportedRows++;
 		if (rows.length >= ROW_LIMIT) continue;
 		rows.push({ address: { sceneId: root.id, trackId: track.id, id: element.id, agentId: element.agentId ?? null, path: [] },
 			track: track.name.slice(0, 120), anchor: { start: key(startAnchor), end: followStart ? null : key(endAnchor), keepDuration: followStart },
 			evidence: caption ? "caption words and timing" : followStart ? "short audio or effect near a word" : "clip edge near a word",
 			old: { start, end }, proposed: valid ? { startFrame, endFrame } : null, kind,
+			...((sharedStart || sharedEnd) && { sharedCut: {
+				start: sharedStart ? pauseAllocation(startAnchor) : null, end: sharedEnd ? pauseAllocation(endAnchor) : null,
+			} }),
 			protectedChanges,
 			humanEdited: { tracked: !!element.agentId, start: fields.includes("start"), duration: fields.includes("duration"), trimStart: fields.includes("trimStart"),
 				retime: fields.includes("retime"), caption: fields.includes("caption") || fields.includes("params.content"),
@@ -208,22 +235,25 @@ export function planNarration({
 	let unanchoredNotes = 0;
 	for (const note of root.bookmarks) {
 		check();
-		if (!note.elementIds?.some((id) => offsets.has(id))) { unanchoredNotes++; continue; }
+		const start = seconds(note.time), end = seconds(note.time + (note.duration ?? 0));
+		if (!note.elementIds?.some((id) => offsets.has(id))) { if (inRange({ start, end })) unanchoredNotes++; continue; }
 		const shifts = note.elementIds.map((id) => offsets.get(id));
 		const shift = shifts[0];
 		const from = frame(seconds(note.time)), to = frame(seconds(note.time + (note.duration ?? 0)));
 		const resolved = shift != null && shifts.every((value) => value === shift) && from + shift >= 0;
 		if (resolved && shift === 0) continue;
-		notes.push({ id: note.id ?? `legacy-${note.time}`, old: { start: seconds(note.time), end: seconds(note.time + (note.duration ?? 0)) },
+		if (!inRange({ start, end }) && !(resolved && inRange({ start: (from + shift) / rate, end: (to + shift) / rate }))) continue;
+		notes.push({ id: note.id ?? `legacy-${note.time}`, old: { start, end },
 			proposed: resolved ? { startFrame: from + shift, endFrame: to + shift } : null,
 			reason: resolved ? "linked elements move together" : "linked elements have different or unresolved moves" });
 	}
 	const boundedRows = cap(rows, ROW_LIMIT, 1024 * 1024);
 	return { sceneId: root.id, clipId, oldMediaId: narration.mediaId, newMediaId: mediaId, fps, limited,
+		...(from > 0 || to < Infinity ? { range: { from, to: to < Infinity ? to : null } } : {}),
 		narration: { oldStart: origin, oldEnd: origin + seconds(narration.duration), startFrame: frame(origin), endFrame: frame(origin + newDuration) },
 		totals: { ...totals, spans: spans.length, unmatched: unmatched.length, inserted: inserted.length, notes: notes.length,
 			unanchoredNotes, humanTimingConflicts, frozen: 0 },
 		spans: cap(spans, SPAN_LIMIT, 384 * 1024), unmatched: cap(unmatched, SPAN_LIMIT, 64 * 1024),
 		inserted: cap(inserted, SPAN_LIMIT, 64 * 1024), notes: cap(notes, SPAN_LIMIT, 64 * 1024), elements: boundedRows.items,
-		omittedElements: all.length - 1 - totals.unanchored - totals.unchanged - boundedRows.items.length };
+		omittedElements: reportedRows - boundedRows.items.length };
 }

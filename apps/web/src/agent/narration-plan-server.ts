@@ -4,8 +4,9 @@ import { planNarration } from "./narration-plan";
 import { orderedTracks } from "./scene-graph";
 import { readReviewableProject } from "./transcript-view-server";
 
-export async function readNarrationPlan({ projectId, clipId, mediaId, timeoutMs, signal }: {
+export async function readNarrationPlan({ projectId, clipId, mediaId, timeoutMs, signal, from, to, includeUnchanged }: {
 	projectId: string; clipId: string; mediaId: string; timeoutMs: number; signal: AbortSignal;
+	from?: number; to?: number; includeUnchanged?: boolean;
 }) {
 	const deadline = performance.now() + timeoutMs;
 	const check = () => {
@@ -36,7 +37,7 @@ export async function readNarrationPlan({ projectId, clipId, mediaId, timeoutMs,
 	const oldWords = parseSourceWords(previous.words), newWords = parseSourceWords(replacement.words);
 	if (!oldWords || !newWords) throw new Error("Both recordings need valid saved word timings.");
 	const plan = planNarration({ root, fps: project.settings.fps, clipId, mediaId, oldWords, newWords,
-		newDuration: replacement.duration ?? NaN, check });
+		newDuration: replacement.duration ?? NaN, check, from, to, includeUnchanged });
 	return { projectId, ...plan };
 }
 

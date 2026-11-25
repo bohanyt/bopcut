@@ -35,7 +35,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			...(command === "view" && { from: { type: "string" }, to: { type: "string" }, rows: { type: "string" }, file: { type: "string" } }),
 			...(command === "review" && { file: { type: "string" }, pictures: { type: "string" } }),
 			...(command === "transcript-view" && { media: { type: "string" }, timeline: { type: "boolean" } }),
-			...(command === "narration-plan" && { clip: { type: "string" }, "new-media": { type: "string" }, json: { type: "boolean" } }),
+			...(command === "narration-plan" && { clip: { type: "string" }, "new-media": { type: "string" },
+				json: { type: "boolean" }, from: { type: "string" }, to: { type: "string" }, all: { type: "boolean" } }),
 			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
 			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" }, note: { type: "string" }, "scene-id": { type: "string" } }),
 		},
@@ -84,7 +85,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
 		throw new Error("Set --url to the local editor origin, for example http://127.0.0.1:3000.");
 	}
-	const narration = command === "narration-plan" ? { clip: values.clip, newMedia: values["new-media"], json: values.json === true } : undefined;
+	const narration = command === "narration-plan" ? { clip: values.clip, newMedia: values["new-media"],
+		json: values.json === true, from: values.from, to: values.to, all: values.all === true } : undefined;
 	if (narration && (!projectId || typeof narration.clip !== "string" || !/^[\w-]{1,128}$/.test(narration.clip) ||
 		typeof narration.newMedia !== "string" || !/^[\w-]{1,128}$/.test(narration.newMedia))) {
 		throw new Error("Use narration-plan --project-id ID --clip CLIP_ID --new-media MEDIA_ID [--json].");
@@ -198,6 +200,9 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 		target.searchParams.set("newMedia", String(options.narration.newMedia));
 		target.searchParams.set("format", options.narration.json ? "json" : "text");
 		target.searchParams.set("timeoutMs", String(timeoutMs));
+		if (options.narration.from !== undefined) target.searchParams.set("from", String(options.narration.from));
+		if (options.narration.to !== undefined) target.searchParams.set("to", String(options.narration.to));
+		if (options.narration.all) target.searchParams.set("all", "1");
 	}
 	const interrupt = new AbortController();
 	const stop = () => interrupt.abort(new Error("Interrupted by Ctrl+C."));
