@@ -548,7 +548,10 @@ async function pump() {
 				if (job.controller.signal.aborted || !usesJob(session, job)) continue;
 				const key = job.source?.key;
 				if (error instanceof EncoderBusy) {
-					capabilities = { encoders: [], expiresAt: Date.now() + 30_000, busy: true };
+					// A remembered result keeps its time, which the timer is set for.
+					if (!capabilities?.busy || capabilities.expiresAt <= Date.now()) {
+						capabilities = { encoders: [], expiresAt: Date.now() + 30_000, busy: true };
+					}
 					blocked.add(session);
 					retryLater();
 					continue;

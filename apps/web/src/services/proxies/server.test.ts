@@ -89,9 +89,15 @@ test("a busy hardware encoder is not remembered as missing", async () => {
 		updateSession("busy", { ids: ["source"] }, 1, ["source"]);
 		await sleep(50);
 		expect(run.mock.calls).toHaveLength(calls);
-		const later = Date.now() + 31_000;
-		clock = spyOn(Date, "now").mockImplementation(() => later);
+		const started = Date.now();
+		let now = started + 20_000;
+		clock = spyOn(Date, "now").mockImplementation(() => now);
 		updateSession("busy", { ids: ["source"] }, 2, ["source"]);
+		await sleep(50);
+		expect(run.mock.calls).toHaveLength(calls);
+		// The update in between does not move the retry.
+		now = started + 31_000;
+		updateSession("busy", { ids: ["source"] }, 3, ["source"]);
 		for (let i = 0; i < 50 && run.mock.calls.length === calls; i++) await sleep(10);
 		expect(run.mock.calls.length).toBeGreaterThan(calls);
 	} finally {
