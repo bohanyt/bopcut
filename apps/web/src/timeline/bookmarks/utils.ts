@@ -21,7 +21,13 @@ export function findBookmarkIndex({
 	frameTime: MediaTime;
 	bookmark?: Bookmark;
 }): number {
-	if (bookmark) return bookmarks.indexOf(bookmark);
+	if (bookmark) {
+		const index = bookmarks.indexOf(bookmark);
+		// An agent may have answered or resolved the note since it was read.
+		if (index >= 0 || !bookmark.id) return index;
+		const sameId = bookmarks.filter(({ id }) => id === bookmark.id);
+		return sameId.length === 1 ? bookmarks.indexOf(sameId[0]) : -1;
+	}
 	return bookmarks.findIndex((bookmark) =>
 		bookmarkTimeEqual({ bookmarkTime: bookmark.time, frameTime }),
 	);

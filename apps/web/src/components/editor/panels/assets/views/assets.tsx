@@ -67,6 +67,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
+const nameOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 export function MediaView() {
 	const { t } = useI18n();
 	const editor = useEditor();
@@ -162,8 +164,8 @@ export function MediaView() {
 
 			switch (mediaSortBy) {
 				case "name":
-					valueA = a.name.toLowerCase();
-					valueB = b.name.toLowerCase();
+					valueA = nameOrder.compare(a.name, b.name);
+					valueB = 0;
 					break;
 				case "type":
 					valueA = a.type;

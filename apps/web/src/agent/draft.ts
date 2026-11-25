@@ -18,7 +18,7 @@ import { applyRippleAdjustments, computeRippleAdjustments } from "@/ripple";
 import type { FrameRate } from "opencut-wasm";
 import { generateUUID } from "@/utils/id";
 import { noteId, validNote } from "./notes";
-import { type AgentElement, type AgentKeyframe, type AgentTrackRef, type LoadedMedia, createAgentTrack, secs } from "./elements";
+import { type AgentElement, type AgentKeyframe, type AgentTrackRef, type LoadedMedia, checkAgentDuration, createAgentTrack, secs } from "./elements";
 import { type BuildContext, applyAgentKeyframes, cloneTracks, placeAgentElement, upsertAgentKeyframe } from "./compound-content";
 import { type AgentMatch, type ElementHit, addressOf, getReachableScenes, getScenePaths, orderedTracks, resolveCompoundTarget, resolveMatch } from "./scene-graph";
 import { updateAgentCaption, type AgentCaption } from "./captions";
@@ -270,6 +270,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	const add = (track: DraftTrackRef | undefined, element: AgentElement, result: any) => {
 		if (!track || typeof track.name !== "string") throw new Error("add needs track:{name}");
 		if (!element || typeof element !== "object") throw new Error("add needs an element");
+		checkAgentDuration(element);
 		let sceneId = rootSceneId;
 		if (track.compound !== undefined) {
 			const target = resolveCompoundTarget(list, rootSceneId, track.compound);
@@ -361,6 +362,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				return;
 			case "compound": {
 				const { op: _op, track, agent_id, name, start, duration, trimStart, params, keyframes, group, main, overlay, audio, elements } = op;
+				checkAgentDuration({ agent_id, name, duration });
 				result.agentId = agent_id;
 				add(track ?? { name: "Compound clips" }, { agent_id, name, start, duration: duration as number, trimStart, params, keyframes, group, compound: { main, overlay, audio, elements } }, result);
 				finish.push(() => { result.compound = result.element; });
@@ -375,6 +377,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				let setWords: SourceWord[] | undefined;
 				const atWords = op.startAtWord !== undefined || op.endAfterWord !== undefined;
 				if (atWords && (op.trimStart !== undefined || op.duration !== undefined || cutWords)) throw new Error(`startAtWord/endAfterWord replace trimStart, duration and cut (${hit.element.agentId ?? hit.element.name})`);
+				checkAgentDuration({ agent_id: hit.element.agentId, name: hit.element.name, duration: op.duration });
 				const stale = staleFor(hit);
 				const protectedFields = protection(hit, stale);
 				if (cutWords || atWords) {
@@ -682,6 +685,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				if (!keepReplacement) assertNotStale({ base, now, sceneId: hit.sceneId, element: old, fields: "all", scenes: list });
 				if (keepReplacement) operation.hit = hit;
 				if (!given || typeof given !== "object") throw new Error("replace needs an element");
+				checkAgentDuration({ agent_id: given.agent_id ?? old.agentId, name: given.name ?? old.name, duration: given.duration });
 				refuseNestedCut([given]);
 				if (op.track !== undefined && (typeof op.track?.name !== "string" || "compound" in op.track)) throw new Error("replace: track needs {name} and stays in the element's scene");
 				if (keepReplacement && isCompoundElement(old) && getReachableScenes(list, old.sceneId).some(
