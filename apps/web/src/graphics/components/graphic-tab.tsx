@@ -60,7 +60,7 @@ export function GraphicTab({
 					<SectionFields>
 						{shapeParams.map((param) => (
 							<AnimatedGraphicParamField
-								key={param.key}
+								key={`${element.id}:${param.key}`}
 								param={param}
 								trackId={trackId}
 								element={liveElement}
@@ -158,7 +158,7 @@ function StrokeSection({
 				<SectionFields>
 					{strokeParams.map((param) => (
 						<AnimatedGraphicParamField
-							key={param.key}
+							key={`${element.id}:${param.key}`}
 							param={param}
 							trackId={trackId}
 							element={liveElement}

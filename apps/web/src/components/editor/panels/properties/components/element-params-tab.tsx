@@ -38,7 +38,7 @@ export function ElementParamsTab({
 						.filter((param) => isVisible({ param, values: baseValues }))
 						.map((param) => (
 							<ElementParamField
-								key={param.key}
+								key={`${element.id}:${param.key}`}
 								element={element}
 								trackId={trackId}
 								param={param}
