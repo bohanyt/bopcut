@@ -337,6 +337,16 @@ describe("round 2 regressions", () => {
 		expect(editor.scenes.getActiveScene().id).toBe("s1");
 	});
 
+	test("deleting the open compound opens the root, and Undo opens the compound again", async () => {
+		const editor = setup();
+		await editor.scenes.switchToScene({ sceneId: "s1" });
+		await applyDraft(draft([{ op: "delete", match: { id: "c1" } }]));
+		expect(elementsOf(sceneOf(editor, "main")).some((e) => e.id === "c1")).toBe(false);
+		expect(editor.scenes.getActiveScene().id).toBe("main");
+		editor.command.undo();
+		expect(editor.scenes.getActiveScene().id).toBe("s1");
+	});
+
 	test("grouping and ungrouping at non-zero times log only the scene change, not remapped times or tracks", async () => {
 		const editor = setup();
 		const sent: { field: string; elementId: string; from: unknown; to: unknown }[] = [];

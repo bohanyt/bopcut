@@ -1,7 +1,7 @@
 /**
- * Timeline gestures that commit only on release, such as moving clips: their state lives in the
- * component that runs them, not in the timeline. While one runs, agent drafts wait, so a draft never
- * changes the timeline under the user's hand.
+ * Edits that commit only on release, such as moving clips or dragging a keyframe, a handle or a color:
+ * their state lives in the component that runs them, not in the timeline. While one runs, agent drafts
+ * wait, so a draft never changes the timeline under the user's hand.
  */
 let active = 0;
 const listeners = new Set<() => void>();

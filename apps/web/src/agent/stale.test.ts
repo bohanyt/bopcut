@@ -6,6 +6,7 @@ mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompo
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { computeAgentDraft } = await import("./draft");
 const { snapshotNotes } = await import("./notes");
+const { buildCompoundFromElements } = await import("@/timeline/compound");
 const { SnapshotHistory, fieldsMapOf, fieldsOf: fieldOf, stableJson } = await import("./stale");
 
 const T = (seconds: number) => Math.round(seconds * TICKS_PER_SECOND) as MediaTime;
@@ -183,6 +184,16 @@ describe("editing on top of the user's edits (basedOn)", () => {
 		], fieldsMapOf(snapshot));
 		expect(out.results[0]).toMatchObject({ ok: true });
 		expect(out.results[1]).toMatchObject({ ok: false, stale: true, fields: ["params.content"] });
+	});
+
+	test("a clip the user grouped since the snapshot keeps its time and place, but not its style", () => {
+		const snapshot = scenesWith([text("c1", "cap-1", { color: "#ffffff" })]);
+		const { scenes } = buildCompoundFromElements({ scenes: snapshot, hostSceneId: "main", name: "Group", elements: [{ trackId: "t-text", elementId: "c1" }] });
+		const base = fieldsMapOf(snapshot);
+		const set = (change: Record<string, unknown>) => run(scenes, [{ op: "set", match: { agentId: "cap-1" }, ...change }], base).results[0];
+		expect(set({ start: 5 })).toMatchObject({ ok: false, stale: true, fields: ["start"] });
+		expect(set({ params: { color: "#00ff00" } })).toMatchObject({ ok: true });
+		expect(run(scenes, [{ op: "delete", match: { agentId: "cap-1" } }], base).results[0]).toMatchObject({ ok: false, stale: true });
 	});
 
 	test("a note the user added inside a compound clip makes its delete stale", () => {

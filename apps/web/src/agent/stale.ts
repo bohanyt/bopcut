@@ -14,10 +14,10 @@ import { orderedTracks } from "./scene-graph";
 export type ElementFields = { start: number; duration: number; trimStart: number; params: Record<string, string>; animations: string; caption: string; retime?: string; unmanaged?: string; whole: string };
 
 /**
- * One element in a snapshot: its fields, the track it is on and that track's own settings (name, mute,
- * hidden), and (compound clips) a digest of their content. Notes are kept the same way (`note:<id>`).
+ * One element in a snapshot: its fields, the scene and track it is on and that track's own settings (name,
+ * mute, hidden), and (compound clips) a digest of their content. Notes are kept the same way (`note:<id>`).
  */
-export type ElementRecord = { fields: ElementFields; trackId: string; trackState: string; content: string | null };
+export type ElementRecord = { fields: ElementFields; sceneId: string; trackId: string; trackState: string; content: string | null };
 
 const sec = (t: number) => Math.round((t / TICKS_PER_SECOND) * 1e6) / 1e6;
 
@@ -139,14 +139,14 @@ export function fieldsMapOf(scenes: TScene[]): Map<string, ElementRecord> {
 	for (const scene of scenes) {
 		for (const bookmark of scene.bookmarks ?? []) {
 			const id = bookmark.id ?? `legacy-${bookmark.time}`;
-			map.set(`note:${scene.id}:${id}`, { fields: { ...NO_FIELDS, whole: digest(stableJson(bookmark)) }, trackId: "", trackState: "", content: null });
+			map.set(`note:${scene.id}:${id}`, { fields: { ...NO_FIELDS, whole: digest(stableJson(bookmark)) }, sceneId: scene.id, trackId: "", trackState: "", content: null });
 		}
 		for (const track of orderedTracks(scene.tracks)) {
 			const trackState = digest(stableJson({ ...track, elements: undefined }));
 			for (const element of track.elements) {
 				const nested = (element as { sceneId?: unknown }).sceneId;
 				const content = element.type === "compound" && typeof nested === "string" ? contentOf(nested, byId) : null;
-				const record = { fields: fieldsOf(element), trackId: track.id, trackState, content };
+				const record = { fields: fieldsOf(element), sceneId: scene.id, trackId: track.id, trackState, content };
 				map.set(`${scene.id}:${element.id}`, record);
 				seen.set(element.id, (seen.get(element.id) ?? 0) + 1);
 				map.set(`#${element.id}`, record);
@@ -219,12 +219,15 @@ function differs(field: string, then: ElementRecord, now: ElementRecord): boolea
 	if (field === "keyframes") return then.fields.animations !== now.fields.animations;
 	if (field === "caption") return then.fields.caption !== now.fields.caption;
 	if (field === "retime" || field === "unmanaged") return then.fields[field] !== now.fields[field];
-	if (field === "element") return then.fields.whole !== now.fields.whole;
-	if (field === "track") return then.trackId !== now.trackId || then.trackState !== now.trackState;
+	// Grouped or ungrouped since the snapshot: the same start is another time on the timeline.
+	const moved = then.sceneId !== now.sceneId;
+	if (field === "start") return moved || then.fields.start !== now.fields.start;
+	if (field === "element") return moved || then.fields.whole !== now.fields.whole;
+	if (field === "track") return moved || then.trackId !== now.trackId || then.trackState !== now.trackState;
 	if (field === "trackSettings") return then.trackId === now.trackId && then.trackState !== now.trackState;
 	if (field === "content") return then.content !== now.content;
 	if (field.startsWith("params.")) return then.fields.params[field.slice(7)] !== now.fields.params[field.slice(7)];
-	return then.fields[field as "start" | "duration" | "trimStart"] !== now.fields[field as "start" | "duration" | "trimStart"];
+	return then.fields[field as "duration" | "trimStart"] !== now.fields[field as "duration" | "trimStart"];
 }
 
 function currentValues(fields: string[], element: TimelineElement, record: ElementRecord): Record<string, unknown> {
@@ -291,7 +294,7 @@ export function humanFieldsSince(
 	const then = recordOf(base, sceneId, element.id);
 	if (!then) throw new StaleError(["the element (added after basedOn)"], { id: element.id });
 	const fields = ["start", "duration", "trimStart", "caption", "retime"].filter((field) => differs(field, then, current));
-	if (then.trackId !== current.trackId) fields.push("track");
+	if (then.sceneId !== current.sceneId || then.trackId !== current.trackId) fields.push("track");
 	for (const key of new Set([...Object.keys(then.fields.params), ...Object.keys(current.fields.params)])) {
 		if (!differs(`params.${key}`, then, current)) continue;
 		const field = key === "content" && element.type === "text" && element.caption ? "caption" : `params.${key}`;
@@ -334,7 +337,7 @@ export function assertRippleNotStale({ base, now, sceneId, before, after, startR
 			const then = recordOf(base, sceneId, element.id);
 			const current = recordOf(now, sceneId, element.id);
 			if (!current) continue;
-			if (!then || then.fields.start !== current.fields.start) {
+			if (!then || differs("start", then, current)) {
 				throw new StaleError([`start of ${element.name || element.id} (moved by ripple)`], { id: element.id, start: current.fields.start });
 			}
 		}

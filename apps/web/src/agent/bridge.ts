@@ -25,7 +25,7 @@ import { type AgentElement, type LoadedMedia, assetKey, existingAgentMedia, load
 import { walkAgentElements } from "./compound-content";
 import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
-import { getRootScene, selectionInScene } from "./scene-graph";
+import { getReachableScenes, getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildAllEditItems, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { NO_SELECTION } from "./selection-payload";
 import { mediaIdsInScenes } from "@/core/managers/media-manager";
@@ -545,8 +545,8 @@ export async function pollDraft() {
 	// A root switch can also make the editor unready. Refuse this draft before a later poll can retarget it.
 	if (rootSceneId === (agentRootScene()?.id ?? null) && !agentReadiness().ready) return;
 	const key = `agent-draft-${project.metadata.id}`;
-	if (localStorage.getItem(key) === draft.rev) return;
-	localStorage.setItem(key, draft.rev);
+	if (wasAnswered(key, draft.rev)) return;
+	markAnswered(key, draft.rev);
 	applying = true;
 	try {
 		await applyDraft(draft, { session, rootSceneId });
@@ -700,6 +700,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		return failed;
 	};
 	for (const [i, op] of ops.entries()) {
+		// The media of another project is not what the next ops are about (the draft is refused below).
+		if (draftSessionError({ draft, queued: session, now: currentSession() })) break;
 		const errors: string[] = [];
 		const walked = opElements[i];
 		if (walked instanceof Error) {
@@ -819,8 +821,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		// Also the words of media this draft imports (a later set can cut by them).
 		wordsOf: ((project) => (id: string) => loadedWords.get(id) ?? project(id))(mediaWords()),
 	});
-	// The open scene stays open unless the draft removed it (ungrouping the compound being edited): then the root opens.
-	const openAfter = outcome.scenes.some((scene) => scene.id === openScene.id) ? openScene.id : root.id;
+	// The open scene stays open unless the draft removed the compound being edited: then the root opens.
+	const openAfter = getReachableScenes(outcome.scenes, root.id).some((scene) => scene.id === openScene.id) ? openScene.id : root.id;
 	// Select changed or added items so they are visible on the timeline (inside history, so redo selects them again).
 	const selection = selectionInScene(outcome.scenes, openAfter, outcome.touched);
 	let error: string | null = outcome.applied ? null : "an op of this atomic draft failed; nothing was applied";
@@ -872,9 +874,9 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		await report({ sceneId: root.id, ok: false, applied: false, ...(stale ? { stale: true } : {}), error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
 		return;
 	}
-	const cleanup = await discard(new Set(publish));
 	// Words the draft set (already stored) are the media's words in the editor from now on.
 	for (const [mediaId, words] of outcome.words) editor.media.setMediaWords({ id: mediaId, words });
+	const cleanup = await discard(new Set(publish));
 
 	// Report where `url` and `sfx` assets were saved and their sources (for credits and reuse as `path`).
 	for (const [i, op] of ops.entries()) {

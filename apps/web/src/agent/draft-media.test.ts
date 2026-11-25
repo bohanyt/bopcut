@@ -599,6 +599,29 @@ describe("the draft poller", () => {
 		expect([...store.keys()]).toEqual([]);
 		expect(editor.project.getActive().metadata.id).toBe("q");
 	});
+
+	test("a rev that was applied before another one is not applied again", async () => {
+		const editor = setup();
+		const store = new Map<string, string>();
+		const previousStorage = (globalThis as any).localStorage;
+		(globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
+		const backend = fakeBackend();
+		const realFetch = globalThis.fetch;
+		const drafts = ["r1", "r2", "r1"].map((rev) => draft([{ op: "words", mediaId: "nope", words: [] }], { rev }));
+		globalThis.fetch = (async (url: string, init?: unknown) =>
+			String(url) === "/api/agent/draft" ? new Response(JSON.stringify(drafts.shift())) : realFetch(url as never, init as never)) as typeof fetch;
+		(editor.project as any).isLoading = false;
+		(editor.media as any).loadedProjectId = "p";
+		(editor.media as any).isLoading = false;
+		try {
+			for (let i = 0; i < 3; i++) await pollDraft();
+		} finally {
+			globalThis.fetch = realFetch;
+			backend.restore();
+			(globalThis as any).localStorage = previousStorage;
+		}
+		expect(backend.state.results.map(({ rev }) => rev)).toEqual(["r1", "r2"]);
+	});
 });
 
 describe("basedOn is checked before anything is imported", () => {
@@ -757,20 +780,22 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(elements(editor).some((e) => e.agentId === "late")).toBe(true);
 	});
 
-	test("a clip move started while the draft's assets load is not cut off: the draft waits for the release", async () => {
+	test.each(["clip", "keyframe or color"])("a %s drag that commits on release is not cut off: the draft waits", async (kind) => {
 		const editor = setup();
 		const { beginTimelineGesture } = await import("@/timeline/gesture-state");
+		let cancelled = false;
 		const slow = gate();
 		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
 		restore = backend.restore;
 		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") }]));
 		await new Promise((resolve) => setTimeout(resolve, 5));
-		const release = beginTimelineGesture(); // the user grabs a clip
+		const release = kind === "clip" ? beginTimelineGesture() : editor.timeline.beginPreviewGesture(() => { cancelled = true; }).finish;
 		slow.open();
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(backend.state.results).toEqual([]);
 		release();
 		await run;
+		expect(cancelled).toBe(false);
 		expect(backend.state.results[0]).toMatchObject({ applied: true });
 	});
 
@@ -911,6 +936,32 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(backend.state.results[0]).toMatchObject({ applied: false });
 		expect(calls).toEqual([{ id: "m-old", words }, { id: "m-old", words: undefined }]);
 		expect(editor.media.getAssets().find((a) => a.id === "m-old")?.words).toBeUndefined();
+	});
+
+	test("a project opened while assets load: the words of neither project are touched", async () => {
+		const editor = setup();
+		const slow = gate();
+		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
+		const calls: unknown[] = [];
+		(storageService as any).setMediaWords = async (call: unknown) => { calls.push(call); };
+		restore = () => {
+			backend.restore();
+			delete (storageService as any).setMediaWords;
+		};
+		const run = applyDraft(draft([
+			{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") },
+			{ op: "words", mediaId: "m-old", words: [{ text: "hi", start: 0.2, end: 0.5 }] },
+		]));
+		await Bun.sleep(5);
+		const project = editor.project.getActive();
+		editor.project.closeProject();
+		editor.project.setActiveProject({ project: { ...project, metadata: { ...project.metadata, id: "q" } } });
+		editor.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+		editor.media.setAssets({ assets: [asset("m-old")] });
+		slow.open();
+		await run;
+		expect(backend.state.results[0]).toMatchObject({ applied: false });
+		expect(calls).toEqual([]);
 	});
 
 	test("cut: words on an add with real media lookups; a later set uses the words its import brought", async () => {
