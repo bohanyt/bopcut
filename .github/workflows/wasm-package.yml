@@ -51,13 +51,6 @@ jobs:
           echo "$prefix/bin" >> "$GITHUB_PATH"
           echo "$prefix/binaryen/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry
-            target
-          key: wasm-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '.github/workflows/wasm-package.yml') }}
-
       - name: Test crates that do not require a GPU
         run: cargo test --locked -p bridge -p time
 
@@ -79,14 +72,13 @@ jobs:
           (cd "$RUNNER_TEMP/dist" && sha256sum ./*.tgz | tee SHA256SUMS)
 
       - name: Compare with the committed package
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          version=$(git show "$BASE_SHA:rust/wasm/package.template.json" | node -pe 'JSON.parse(require("fs").readFileSync(0)).version')
+          base=$(git rev-parse HEAD^1)
+          version=$(git show "$base:rust/wasm/package.template.json" | node -pe 'JSON.parse(require("fs").readFileSync(0)).version')
           mkdir "$RUNNER_TEMP/reference"
-          git show "$BASE_SHA:rust/wasm/opencut-wasm-$version.tgz" | tar -xz -C "$RUNNER_TEMP/reference" --strip-components=1
+          git show "$base:rust/wasm/opencut-wasm-$version.tgz" | tar -xz -C "$RUNNER_TEMP/reference" --strip-components=1
           for file in opencut_wasm.js opencut_wasm.d.ts; do
-            diff -u "$RUNNER_TEMP/reference/$file" "$RUNNER_TEMP/pkg/$file" || true
+            diff -u "$RUNNER_TEMP/reference/$file" "$RUNNER_TEMP/pkg/$file" || [ $? -eq 1 ]
           done
           node --input-type=module <<'JS'
           import { readFileSync } from "node:fs";
@@ -94,12 +86,12 @@ jobs:
           import { pathToFileURL } from "node:url";
 
           async function smokeTest(dir) {
-            const path = `${process.env.RUNNER_TEMP}/${dir}/opencut_wasm_bg`;
-            const module = new WebAssembly.Module(readFileSync(path + ".wasm"));
-            const glue = await import(pathToFileURL(path + ".js"));
-            const imports = WebAssembly.Module.imports(module);
-            const instance = new WebAssembly.Instance(module,
-              Object.fromEntries(imports.map(({ module }) => [module, glue])));
+            const root = pathToFileURL(`${process.env.RUNNER_TEMP}/${dir}/`);
+            const module = new WebAssembly.Module(readFileSync(new URL("opencut_wasm_bg.wasm", root)));
+            const imports = {};
+            for (const { module: name } of WebAssembly.Module.imports(module)) imports[name] = await import(new URL(name, root));
+            const instance = new WebAssembly.Instance(module, imports);
+            const glue = await import(new URL("opencut_wasm_bg.js", root));
             glue.__wbg_set_wasm(instance.exports);
             instance.exports.__wbindgen_start();
             return [
