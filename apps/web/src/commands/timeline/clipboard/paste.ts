@@ -4,7 +4,7 @@ import {
 	type CommandResult,
 } from "@/commands/base-command";
 import { EditorCore } from "@/core";
-import type { SceneTracks, TScene, TimelineElement, TrackType } from "@/timeline";
+import type { SceneTracks, TScene, TimelineElement, TimelineTrack, TrackType } from "@/timeline";
 import type { ElementClipboardItem } from "@/clipboard";
 import { generateUUID } from "@/utils/id";
 import {
@@ -121,92 +121,36 @@ export class PasteCommand extends Command {
 				updatedTracks.main,
 				...updatedTracks.audio,
 			].findIndex((track) => track.id === trackId);
-			const placement = {
+			const placementResult = resolveLayerPlacement({
 				tracks: updatedTracks,
 				trackType,
 				timeSpans: elementsToAdd.map((element) => ({
 					startTime: element.startTime,
 					duration: element.duration,
 				})),
-			};
-			let placementResult =
-				groups.length > 1
-					? resolveLayerPlacement({
-							...placement,
-							layer: items[0].layer,
-							sourceTrackIndex,
-							maxTrackIndex: trackType === "audio" ? Infinity : maxTrackIndex,
-						})
-					: resolveTrackPlacement({
-							...placement,
-							strategy: { type: "aboveSource", sourceTrackIndex },
-						});
-			if (!placementResult) {
-				continue;
-			}
-
-			let elementsForPlacement = elementsToAdd;
-			if (placementResult.kind === "existingTrack") {
-				const targetTrack =
-					placementResult.trackIndex < updatedTracks.overlay.length
-						? updatedTracks.overlay[placementResult.trackIndex]
-						: placementResult.trackIndex === updatedTracks.overlay.length
-							? updatedTracks.main
-							: updatedTracks.audio[
-									placementResult.trackIndex - updatedTracks.overlay.length - 1
-								];
-				if (targetTrack?.id === updatedTracks.main.id) {
-					const earliestElement = elementsToAdd.reduce((earliest, element) =>
-						element.startTime < earliest.startTime ? element : earliest,
-					);
-					const adjustedEarliestStartTime = enforceMainTrackStart({
-						tracks: updatedTracks,
-						targetTrackId: targetTrack.id,
-						requestedStartTime: earliestElement.startTime,
-					});
-					const delta = subMediaTime({
-						a: adjustedEarliestStartTime,
-						b: earliestElement.startTime,
-					});
-
-					if (delta !== ZERO_MEDIA_TIME) {
-						const shifted = elementsToAdd.map((element) => ({
-							...element,
-							startTime: maxMediaTime({
-								a: ZERO_MEDIA_TIME,
-								b: addMediaTime({ a: element.startTime, b: delta }),
-							}),
-						}));
-						if (canPlaceTimeSpansOnTrack({ track: targetTrack, timeSpans: shifted })) {
-							elementsForPlacement = shifted;
-						} else {
-							placementResult = resolveTrackPlacement({ tracks: updatedTracks, trackType,
-								timeSpans: elementsToAdd, strategy: { type: "alwaysNew", position: "highest" },
-							});
-						}
-					}
-				}
-			}
-
+				layer: items[0].layer,
+				sourceTrackIndex,
+				maxTrackIndex: trackType === "audio" ? Infinity : maxTrackIndex,
+			});
 			if (!placementResult) continue;
 			const applied = applyPlacement({
 				tracks: updatedTracks,
 				placementResult,
-				elements: elementsForPlacement,
+				elements: elementsToAdd,
 			});
 			if (!applied) {
 				continue;
 			}
 
 			updatedTracks = applied.updatedTracks;
-			placed.push(...elementsForPlacement);
+			placed.push(...elementsToAdd);
 
 			if (trackType !== "audio") {
 				maxTrackIndex = [...updatedTracks.overlay, updatedTracks.main].findIndex(
 					(track) => track.id === applied.targetTrackId,
 				);
 			}
-			for (const element of elementsForPlacement) {
+			for (const element of elementsToAdd) {
 				targetTrackIds.set(element.id, applied.targetTrackId);
 			}
 		}
@@ -244,8 +188,9 @@ export class PasteCommand extends Command {
 }
 
 /**
- * Place for one of several pasted layers: its own track if free, then the lowest free track that is
- * not below `maxTrackIndex`, then a new one on top. No track may move the clips in time.
+ * Place for a pasted layer: its own track if free, then the lowest free track that is not below its
+ * own one or `maxTrackIndex`, then a new one on top. No track may move the clips in time, and no
+ * other track may hide or mute them.
  */
 function resolveLayerPlacement({
 	tracks,
@@ -264,9 +209,13 @@ function resolveLayerPlacement({
 }): PlacementResult | null {
 	const { overlay, main, audio } = tracks;
 	const ordered = [...overlay, main, ...audio];
+	const source = ordered[sourceTrackIndex];
+	const lowest = trackType === "audio" || !source
+		? maxTrackIndex
+		: Math.min(maxTrackIndex, sourceTrackIndex);
 	const overlayFromBottom = [...overlay].reverse();
 	const candidates = [
-		ordered[sourceTrackIndex],
+		source,
 		ordered[sourceTrackIndex - 1],
 		...(layer < 0
 			? [...audio].reverse()
@@ -279,10 +228,10 @@ function resolveLayerPlacement({
 		timeSpans[0].startTime,
 	);
 	for (const track of candidates) {
-		if (track?.type !== trackType) continue;
+		if (track?.type !== trackType || (track !== source && isHiddenOrMuted(track))) continue;
 		const trackIndex = ordered.indexOf(track);
 		if (
-			trackIndex <= maxTrackIndex &&
+			trackIndex <= lowest &&
 			canPlaceTimeSpansOnTrack({ track, timeSpans }) &&
 			enforceMainTrackStart({
 				tracks,
@@ -299,6 +248,10 @@ function resolveLayerPlacement({
 		timeSpans,
 		strategy: { type: "alwaysNew", position: "highest" },
 	});
+}
+
+function isHiddenOrMuted(track: TimelineTrack) {
+	return ("hidden" in track && track.hidden) || ("muted" in track && track.muted);
 }
 
 function groupClipboardItemsByTrackId({

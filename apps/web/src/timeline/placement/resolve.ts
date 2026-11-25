@@ -229,51 +229,6 @@ export function resolveTrackPlacement({
 		});
 	}
 
-	if (strategy.type === "aboveSource") {
-		const aboveTrackIndex = strategy.sourceTrackIndex - 1;
-		const aboveTrack = orderedTracks[aboveTrackIndex];
-		if (
-			aboveTrack &&
-			aboveTrack.type === trackType &&
-			canPlaceTimeSpansOnTrack({
-				track: aboveTrack,
-				timeSpans,
-			})
-		) {
-			return buildExistingTrackResult({
-				track: aboveTrack,
-				trackIndex: aboveTrackIndex,
-				tracks,
-				timeSpans,
-			});
-		}
-
-		const firstAvailableTrackIndex = findFirstAvailableTrackIndex({
-			tracks: orderedTracks,
-			trackType,
-			timeSpans,
-		});
-		if (firstAvailableTrackIndex >= 0) {
-			return buildExistingTrackResult({
-				track: orderedTracks[firstAvailableTrackIndex],
-				trackIndex: firstAvailableTrackIndex,
-				tracks,
-				timeSpans,
-			});
-		}
-
-		const insertIndex = getHighestInsertIndexForTrack({
-			tracks,
-			trackType,
-		});
-
-		return buildNewTrackResult({
-			trackType,
-			insertIndex,
-			insertPosition: null,
-		});
-	}
-
 	return resolveAlwaysNewTrack({
 		tracks,
 		trackType,

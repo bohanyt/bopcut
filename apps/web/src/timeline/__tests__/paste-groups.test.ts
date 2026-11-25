@@ -239,6 +239,87 @@ describe("pasted layers", () => {
 		expect(allTracks(tracks).map((track) => track.elements.map(({ name }) => name))).toEqual(ids.map((id) => [id, id]));
 	});
 
+	test("one layer goes back to its own free track, below the layers that cover it", () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = {
+			overlay: [
+				{ id: "pip", name: "Pip", type: "video", muted: false, hidden: false, elements: [video("pip", 10, 5)] },
+				{ id: "title", name: "Title", type: "text", hidden: false, elements: [text("title", 0, 10)] },
+			],
+			main: { ...host.tracks.main, elements: [video("bg", 0, 5), video("next", 5, 5)] },
+			audio: [],
+		};
+		const editor = setup(scenes);
+		copy(editor, [{ trackId: host.tracks.main.id, elementId: "bg" }]);
+		editor.timeline.deleteElements({ elements: [{ trackId: host.tracks.main.id, elementId: "bg" }] });
+		expect(editor.clipboard.paste({ time: t(0) })).toBe(true);
+		expect(layers(editor.scenes.getActiveScene().tracks)).toEqual([["pip"], ["title"], ["next", "bg"]]);
+		expect(starts(editor.scenes.getActiveScene().tracks, host.tracks.main.id)).toEqual([t(0), t(5)]);
+	});
+
+	test("one layer does not go below its own track", () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = {
+			overlay: [
+				{ id: "upper", name: "Upper", type: "text", hidden: false, elements: [text("upper", 0, 5)] },
+				{ id: "box", name: "Box", type: "graphic", hidden: false, elements: [rect("box", 0, 10)] },
+				{ id: "lower", name: "Lower", type: "text", hidden: false, elements: [text("lower", 8, 2)] },
+			],
+			main: { ...host.tracks.main, elements: [video("bg", 0, 5)] },
+			audio: [],
+		};
+		const editor = setup(scenes);
+		copy(editor, [{ trackId: "upper", elementId: "upper" }]);
+		expect(editor.clipboard.paste({ time: t(2) })).toBe(true);
+		expect(layers(editor.scenes.getActiveScene().tracks)).toEqual([["upper"], ["upper"], ["box"], ["lower"], ["bg"]]);
+	});
+
+	test("do not share a hidden or muted track of other clips", () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = {
+			overlay: [
+				{ id: "hidden", name: "Hidden", type: "text", hidden: true, elements: [text("draft", 10, 5)] },
+				{ id: "title", name: "Title", type: "text", hidden: false, elements: [text("title", 0, 5)] },
+				{ id: "muted", name: "Muted", type: "video", muted: true, hidden: false, elements: [video("old", 10, 5)] },
+			],
+			main: { ...host.tracks.main, elements: [video("bg", 0, 5)] },
+			audio: [
+				{ id: "off", name: "Off", type: "audio", muted: true, elements: [audio("scratch", 10, 5)] },
+				{ id: "on", name: "On", type: "audio", muted: false, elements: [audio("music", 0, 5)] },
+			],
+		};
+		const editor = setup(scenes);
+		editor.media.setAssets({ assets: ["bg", "music"].map((id) => ({
+			id: `media-${id}`, name: id, type: id === "music" ? "audio" : "video", file: new File([], id),
+		})) });
+		const place = (elements: typeof copied) => {
+			copy(editor, elements);
+			expect(editor.clipboard.paste({ time: t(2) })).toBe(true);
+			const { tracks } = editor.scenes.getActiveScene();
+			const states = editor.selection.getSelectedElements().map(({ trackId }) => {
+				const track = allTracks(tracks).find(({ id }) => id === trackId);
+				return [track && "hidden" in track && track.hidden, track && "muted" in track && track.muted];
+			});
+			editor.command.undo();
+			return states.flat();
+		};
+		const refs = [{ trackId: "title", elementId: "title" }, { trackId: host.tracks.main.id, elementId: "bg" }, { trackId: "on", elementId: "music" }];
+		for (const elements of [...refs.map((ref) => [ref]), refs]) expect(place(elements)).not.toContain(true);
+	});
+
+	test("a copy of a hidden clip stays on its own track", () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = { ...host.tracks, overlay: [{ id: "hidden", name: "Hidden", type: "text", hidden: true, elements: [text("draft", 0, 2)] }], audio: [] };
+		const editor = setup(scenes);
+		copy(editor, [{ trackId: "hidden", elementId: "draft" }]);
+		expect(editor.clipboard.paste({ time: t(5) })).toBe(true);
+		expect(starts(editor.scenes.getActiveScene().tracks, "hidden")).toEqual([t(0), t(5)]);
+	});
+
 	test("use the main track and the audio tracks of another scene in the same order", () => {
 		const scenes = fixture();
 		const host = getHost(scenes);
