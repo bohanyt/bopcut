@@ -72,6 +72,8 @@ export type RenderedTextureDescriptor = {
 	contentHash: string;
 	width: number;
 	height: number;
+	/** Mask passes use the original channel values for feathering. */
+	isMask?: boolean;
 	draw: TextureCanvasDrawFn;
 };
 

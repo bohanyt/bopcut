@@ -218,6 +218,7 @@ class WasmCompositor {
 			source: canvas,
 			width: texture.width,
 			height: texture.height,
+			isMask: texture.isMask,
 		});
 		this.cache.set(texture.id, {
 			kind: "rendered",

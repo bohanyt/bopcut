@@ -140,9 +140,12 @@ pub(crate) fn import_canvas_texture(
     canvas: &wgpu::web_sys::OffscreenCanvas,
     width: u32,
     height: u32,
+    premultiplied_alpha: bool,
     label: &'static str,
 ) -> Result<wgpu::Texture, JsValue> {
-    context.import_offscreen_canvas_texture(canvas, width, height, label).map_err(gpu_error_to_js)
+    context
+        .import_offscreen_canvas_texture(canvas, width, height, premultiplied_alpha, label)
+        .map_err(gpu_error_to_js)
 }
 
 pub(crate) fn render_texture_to_canvas(

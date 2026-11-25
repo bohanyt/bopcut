@@ -644,6 +644,7 @@ impl GpuContext {
         canvas: &wgpu::web_sys::OffscreenCanvas,
         width: u32,
         height: u32,
+        premultiplied_alpha: bool,
         label: &'static str,
     ) -> Result<wgpu::Texture, GpuError> {
         self.validate_dimensions(width, height)?;
@@ -666,7 +667,7 @@ impl GpuContext {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                     color_space: wgpu::PredefinedColorSpace::Srgb,
-                    premultiplied_alpha: false,
+                    premultiplied_alpha,
                 },
                 wgpu::Extent3d {
                     width,
@@ -684,17 +685,21 @@ impl GpuContext {
             let image_data = ctx
                 .get_image_data(0.0, 0.0, width as f64, height as f64)
                 .map_err(|_| GpuError::CanvasRead)?;
-            let rgba_bytes = image_data.data();
-
-            let pixel_bytes = if self.texture_format == wgpu::TextureFormat::Bgra8Unorm {
-                let mut bytes = rgba_bytes.to_vec();
-                for pixel in bytes.chunks_exact_mut(4) {
-                    pixel.swap(0, 2);
+            let mut pixel_bytes = image_data.data().to_vec();
+            let swap_rb = self.texture_format == wgpu::TextureFormat::Bgra8Unorm;
+            if premultiplied_alpha || swap_rb {
+                for pixel in pixel_bytes.chunks_exact_mut(4) {
+                    let alpha = u16::from(pixel[3]);
+                    if premultiplied_alpha && alpha < 255 {
+                        for channel in &mut pixel[..3] {
+                            *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+                        }
+                    }
+                    if swap_rb {
+                        pixel.swap(0, 2);
+                    }
                 }
-                bytes
-            } else {
-                rgba_bytes.to_vec()
-            };
+            }
 
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
