@@ -4,6 +4,7 @@ import type { FrameRate } from "opencut-wasm";
 import type { VideoElement } from "@/timeline";
 import type { ScalarAnimationKey, SelectedKeyframeRef } from "@/animation/types";
 import { TIMELINE_DRAG_THRESHOLD_PX } from "@/timeline/components/interaction";
+import { isTimelineGestureActive } from "@/timeline/gesture-state";
 import { BASE_TIMELINE_PIXELS_PER_SECOND } from "@/timeline/scale";
 import { addMediaTime, mediaTime, roundFrameTicks, roundFrameTime, TICKS_PER_SECOND, ZERO_MEDIA_TIME } from "@/wasm";
 import { KeyframeDragController, type KeyframeDragConfig } from "./keyframe-drag-controller";
@@ -20,7 +21,7 @@ const FILM = { numerator: 24_000, denominator: 1_001 };
 const D = [17, 31, 53, 89, 127, 211, 333, 401, 503, 607, 733, 811, 919, 1003, 1111, 1203, 1309, 1417, 1501, 1619];
 
 let cleanup: (() => void) | undefined;
-afterEach(() => cleanup?.());
+afterEach(() => { cleanup?.(); cleanup = undefined; });
 
 const keyRef = (id: string): SelectedKeyframeRef => ({ trackId: "main", elementId: "c", propertyPath: "opacity", keyframeId: id });
 const clip = (start: number, keyTicks: number[], duration = 600_000): VideoElement => ({
@@ -41,7 +42,8 @@ function harness(element: VideoElement, fps: FrameRate, selected = [keyRef("k0")
 		seek: () => {}, getTotalDuration: () => mediaTime({ ticks: 1_000_000 }),
 	};
 	const c = new KeyframeDragController({ configRef: { current: cfg } });
-	cleanup = () => { c.destroy(); if (prev) Object.defineProperty(globalThis, "document", prev); };
+	const before = cleanup;
+	cleanup = () => { c.destroy(); if (prev) Object.defineProperty(globalThis, "document", prev); before?.(); };
 	const down = () => c.onKeyframeMouseDown({
 		event: { button: 0, clientX: START, clientY: 0, metaKey: false, ctrlKey: false, shiftKey: false,
 			preventDefault: () => {}, stopPropagation: () => {}, currentTarget: { ownerDocument: page } } as unknown as ReactMouseEvent,
@@ -99,6 +101,16 @@ test("two keyframes keep their spacing while dragging", () => {
 	h.down(); h.move(START + DRAG); h.move(START + 90);
 	const d = h.state().deltaTicks;
 	expect(addMediaTime({ a: t1, b: mediaTime({ ticks: d }) }) - addMediaTime({ a: t0, b: mediaTime({ ticks: d }) })).toBe(t1 - t0);
+});
+
+test("counts as a gesture from the first move to the release", () => {
+	const h = harness(clip(0, [30_000]), { numerator: 30, denominator: 1 });
+	h.down();
+	expect(isTimelineGestureActive()).toBe(false);
+	h.move(START + DRAG);
+	expect(isTimelineGestureActive()).toBe(true);
+	document.dispatchEvent(new Event("mouseup"));
+	expect(isTimelineGestureActive()).toBe(false);
 });
 
 test("clamps at both clip ends", () => {

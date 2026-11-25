@@ -25,7 +25,7 @@ import { type AgentElement, type LoadedMedia, assetKey, existingAgentMedia, load
 import { walkAgentElements } from "./compound-content";
 import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
-import { getRootScene, selectionInScene } from "./scene-graph";
+import { getReachableScenes, getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildAllEditItems, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { NO_SELECTION } from "./selection-payload";
 import { mediaIdsInScenes } from "@/core/managers/media-manager";
@@ -522,12 +522,35 @@ export async function pollChanges() {
 
 // An agent draft is a list of per-item operations, protecting human edits (see AGENT.md and draft.ts).
 // Times are in seconds; inside a compound clip they are relative to its content. The whole draft is one Undo step.
+/** Draft results that did not reach the server (it was restarting): posted again before the next draft is read. */
+const unpostedDrafts: Record<string, unknown>[] = [];
+
+async function postDraftResult(body: Record<string, unknown>): Promise<boolean> {
+	return fetch("/api/agent/applied", {
+		method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+	}).then(() => true, () => false);
+}
+
 let applying = false;
+async function reportDraft(body: Record<string, unknown>): Promise<void> {
+	if (!(await postDraftResult(body)) && applying) unpostedDrafts.push(body);
+}
+
 /** Picks up draft.json for the open project (every 2 s; exported for tests). */
 export async function pollDraft() {
+	if (applying) return;
+	if (unpostedDrafts.length) {
+		applying = true;
+		try {
+			while (unpostedDrafts.length && (await postDraftResult(unpostedDrafts[0]))) unpostedDrafts.shift();
+		} finally {
+			applying = false;
+		}
+		if (unpostedDrafts.length) return;
+	}
 	const editor = EditorCore.getInstance();
 	const project = editor.project.getActiveOrNull();
-	if (!project || applying) return;
+	if (!project) return;
 	if (timelineBusy()) return; // a human is dragging: wait until release
 	if (!agentReadiness().ready) return; // media still loading or a save pending: the draft waits
 	// The session is taken before the fetch: a project opened while draft.json is read is not the
@@ -545,8 +568,9 @@ export async function pollDraft() {
 	// A root switch can also make the editor unready. Refuse this draft before a later poll can retarget it.
 	if (rootSceneId === (agentRootScene()?.id ?? null) && !agentReadiness().ready) return;
 	const key = `agent-draft-${project.metadata.id}`;
-	if (localStorage.getItem(key) === draft.rev) return;
-	localStorage.setItem(key, draft.rev);
+	// Another poll that ran meanwhile applied a draft, or could not post its result: this one was read before that.
+	if (applying || unpostedDrafts.length || wasAnswered(key, draft.rev)) return;
+	markAnswered(key, draft.rev);
 	applying = true;
 	try {
 		await applyDraft(draft, { session, rootSceneId });
@@ -615,11 +639,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		toast.error(getBrowserTranslator()("agentToast.notApplied", { name: draft.label ?? draft.rev }), {
 			description: localizeErrorDetail(refused, getBrowserTranslator()),
 		});
-		await fetch("/api/agent/applied", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ok: false, applied: false, error: refused, results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) }),
-		}).catch(() => {});
+		await reportDraft({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ok: false, applied: false, error: refused, results: ops.map((op) => ({ op: op?.op, ...opLabel(op), ok: false, skipped: true })) });
 		return;
 	}
 	const rootBefore = agentRootScene()?.id;
@@ -628,11 +648,7 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	const importSession = { projectId, signal: editor.project.getSessionSignal() };
 	const ops: DraftOp[] = Array.isArray(draft?.ops) ? structuredClone(draft.ops) : [];
 	const report = (body: Record<string, unknown>) =>
-		fetch("/api/agent/applied", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ...body }),
-		}).catch(() => {});
+		reportDraft({ rev: draft.rev, label: draft.label, appliedAt: new Date().toISOString(), projectId, ...body });
 
 	// A draft's base must describe the target timeline before anything is imported.
 	const snapshot = typeof draft.basedOn === "string" ? snapshotHistory.state(draft.basedOn) : null;
@@ -700,6 +716,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		return failed;
 	};
 	for (const [i, op] of ops.entries()) {
+		// The media of another project is not what the next ops are about (the draft is refused below).
+		if (draftSessionError({ draft, queued: session, now: currentSession() })) break;
 		const errors: string[] = [];
 		const walked = opElements[i];
 		if (walked instanceof Error) {
@@ -819,8 +837,8 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		// Also the words of media this draft imports (a later set can cut by them).
 		wordsOf: ((project) => (id: string) => loadedWords.get(id) ?? project(id))(mediaWords()),
 	});
-	// The open scene stays open unless the draft removed it (ungrouping the compound being edited): then the root opens.
-	const openAfter = outcome.scenes.some((scene) => scene.id === openScene.id) ? openScene.id : root.id;
+	// The open scene stays open unless the draft removed the compound being edited: then the root opens.
+	const openAfter = getReachableScenes(outcome.scenes, root.id).some((scene) => scene.id === openScene.id) ? openScene.id : root.id;
 	// Select changed or added items so they are visible on the timeline (inside history, so redo selects them again).
 	const selection = selectionInScene(outcome.scenes, openAfter, outcome.touched);
 	let error: string | null = outcome.applied ? null : "an op of this atomic draft failed; nothing was applied";
@@ -872,9 +890,9 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 		await report({ sceneId: root.id, ok: false, applied: false, ...(stale ? { stale: true } : {}), error: error + cleanupNote(cleanup), rolledBack: !cleanup?.failed.length, ...(cleanup ? { cleanup } : {}), results: outcome.results });
 		return;
 	}
-	const cleanup = await discard(new Set(publish));
 	// Words the draft set (already stored) are the media's words in the editor from now on.
 	for (const [mediaId, words] of outcome.words) editor.media.setMediaWords({ id: mediaId, words });
+	const cleanup = await discard(new Set(publish));
 
 	// Report where `url` and `sfx` assets were saved and their sources (for credits and reuse as `path`).
 	for (const [i, op] of ops.entries()) {
