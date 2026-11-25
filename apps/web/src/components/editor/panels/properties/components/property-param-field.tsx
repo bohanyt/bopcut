@@ -185,7 +185,6 @@ function TextParamField({
 			onPreview(currentTarget.value);
 		},
 		onBlur: () => {
-			if (draft !== null) onPreview(draft);
 			onCommit();
 			setDraft(null);
 		},

@@ -111,6 +111,15 @@ describe("text in the properties panel", () => {
 		expect(field().value).toBe(String(before[1]));
 	});
 
+	test("whose preview was discarded is not written when the field is left", async () => {
+		await type("!");
+		await act(async () => { editor.timeline.discardPreview(); });
+		await act(async () => { field().dispatchEvent(new dom.FocusEvent("focusout", { bubbles: true })); });
+		expect(contents()[0]).toBe("one");
+		expect(field().value).toBe("one");
+		expect(editor.command.canUndo()).toBe(false);
+	});
+
 	test("without typing adds no Undo step", async () => {
 		await act(async () => { field().dispatchEvent(new dom.FocusEvent("focusout", { bubbles: true })); });
 		expect(editor.command.canUndo()).toBe(false);

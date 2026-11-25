@@ -295,7 +295,7 @@ function EffectSection({
 			>
 				<SectionFields>
 					{definition.params.map((param) => (
-						<div key={param.key} className="flex flex-col gap-3.5">
+						<div key={`${effect.id}:${param.key}`} className="flex flex-col gap-3.5">
 							<div className="px-4">
 								<PropertyParamField
 									param={param}
