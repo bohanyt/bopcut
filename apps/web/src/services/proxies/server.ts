@@ -234,6 +234,7 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 		if (!await sameSource(identity)) throw new Error("Proxy source changed before encoding");
 		let success = false;
 		let busy = false;
+		let tooSmall = false;
 		for (const encoder of [...encoders, ...(software ? ["libx264"] : [])]) {
 			const hardware = encoder === "h264_nvenc" ? [["-hwaccel", "cuda"], []] : encoder === "libx264" ? [[]] : [["-hwaccel", "auto"], []];
 			for (const decode of hardware) {
@@ -252,12 +253,14 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 					if (error instanceof ProxyWriterLost) throw error;
 					signal.throwIfAborted();
 					busy ||= isBusy(error);
+					tooSmall ||= /dimension less than the minimum/i.test((error as { stderr?: string })?.stderr ?? "");
 				}
 			}
 			if (success) break;
 		}
 		if (!success) {
 			if (busy) throw new EncoderBusy();
+			if (tooSmall) return;
 			throw new Error("No working proxy encoder");
 		}
 		if (!await sameSource(identity)) throw new Error("Proxy source changed during encoding");
@@ -322,12 +325,13 @@ let capabilities: { encoders: string[] | null; expiresAt: number; error?: string
 /** Sources in a row that the tools failed on. Preparation stops at the limit, until a project is opened or the setting is changed. */
 let failedInRow = 0;
 const failureLimit = 3;
+const checkLimit = 60_000;
 let stopped: string | undefined;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isPaused = () => pauses.size > 0 || [...sessions.values()].some(entry => entry.paused);
 function send(session: Session, state: ProxyUpdate["state"], details?: Partial<ProxyUpdate>) {
-	const error = state === "failed" ? stopped : state === "missing" ? capabilities?.error : undefined;
+	const error = state === "failed" ? stopped ?? capabilities?.error : undefined;
 	session.send({ state, bytes: session.bytes, done: session.done.size, total: session.ids.length, ...(error && { error }), ...details });
 }
 const errorText = (error: unknown) => {
@@ -427,8 +431,10 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 	let available: string[] | null;
 	let error: string | undefined;
 	let busy = false;
+	// The first start of a program can be slow.
+	const checkTime = AbortSignal.timeout(checkLimit);
 	try {
-		const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+		const probeSignal = AbortSignal.any([signal, checkTime]);
 		await runBackgroundProcess(probeCommand(), ["-version"], probeSignal, dir);
 		const { stdout } = await run(dir, ["-hide_banner", "-encoders"], probeSignal);
 		const names = process.platform === "darwin" ? ["h264_videotoolbox"] : ["h264_nvenc", "h264_qsv", "h264_amf"];
@@ -436,7 +442,8 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 		for (const encoder of names) {
 			if (!stdout.includes(encoder)) continue;
 			try {
-				await run(dir, ["-v", "error", "-f", "lavfi", "-i", "color=s=128x128", "-frames:v", "1",
+				// Some encoders refuse smaller pictures.
+				await run(dir, ["-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
 					"-c:v", encoder, "-g", encoder === "h264_nvenc" ? "0" : "1", "-bf", "0", "-f", "null", "-"],
 					AbortSignal.any([signal, AbortSignal.timeout(12_000)]));
 				available.push(encoder);
@@ -448,7 +455,9 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 	} catch (cause) {
 		signal.throwIfAborted();
 		available = null;
-		error = errorText(cause);
+		if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
+			error = checkTime.aborted ? `the FFmpeg check took longer than ${checkLimit / 1000} s` : errorText(cause);
+		}
 	}
 	if (available && !available.length && busy) throw new EncoderBusy();
 	capabilities = { encoders: available, expiresAt: available?.length ? Date.now() + 300_000 : Infinity, error };
@@ -516,7 +525,7 @@ async function pump() {
 					await requireProxyWriter(dir);
 					const encoders = await detectEncoders(dir, signal);
 					if (!encoders || (!encoders.length && !session.software)) {
-						send(session, encoders ? "software" : "missing");
+						send(session, encoders ? "software" : capabilities?.error ? "failed" : "missing");
 						blocked.add(session);
 						continue;
 					}
