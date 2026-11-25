@@ -100,6 +100,70 @@ function setupSplitHistory() {
 }
 
 test.each([
+	{ stationary: [], followerStart: 3, stationaryStart: undefined },
+	{ stationary: [video("stationary", 3, 2)], followerStart: 5, stationaryStart: 3 },
+	{ stationary: [video("stationary", 4, 1)], followerStart: 4, stationaryStart: 3 },
+])("ripple move closes $followerStart seconds to the next clip without overlap", ({
+	stationary, followerStart, stationaryStart,
+}) => {
+	const scenes = fixture();
+	const host = getHost(scenes);
+	host.tracks.main.elements = [
+		video("lead", 0, 1), ...stationary,
+		video("moving", 5, 2), video("follower", 7, 2),
+	];
+	const editor = setup(scenes);
+	editor.command.isRippleEnabled = true;
+	const trackId = host.tracks.main.id;
+	const before = editor.scenes.getActiveScene().tracks;
+	editor.timeline.moveElements({ moves: [{
+		sourceTrackId: trackId, targetTrackId: trackId, elementId: "moving", newStartTime: t(1),
+	}] });
+	const assertPositions = () => {
+		const entries = (elements: typeof host.tracks.main.elements) =>
+			Object.fromEntries(elements.map(({ id, startTime }) => [id, startTime]));
+		const actual = entries(editor.scenes.getActiveScene().tracks.main.elements);
+		expect(actual).toEqual({
+			lead: t(0), moving: t(1), follower: t(followerStart),
+			...(stationaryStart === undefined ? {} : { stationary: t(stationaryStart) }),
+		});
+		expect(entries(getHost(editor.project.getActive().scenes).tracks.main.elements)).toEqual(actual);
+	};
+	assertPositions();
+	editor.command.undo();
+	expect(editor.scenes.getActiveScene().tracks).toEqual(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.command.redo();
+	assertPositions();
+});
+
+test("a ripple move preserves the positions of both moved clips and their spacing", () => {
+	const scenes = fixture();
+	const host = getHost(scenes);
+	host.tracks.main.elements = [
+		video("lead", 0, 1), video("first", 5, 1),
+		video("second", 8, 1), video("follower", 9, 2),
+	];
+	const editor = setup(scenes);
+	editor.command.isRippleEnabled = true;
+	const trackId = host.tracks.main.id;
+	const before = editor.scenes.getActiveScene().tracks;
+	editor.timeline.moveElements({ moves: [
+		{ sourceTrackId: trackId, targetTrackId: trackId, elementId: "first", newStartTime: t(1) },
+		{ sourceTrackId: trackId, targetTrackId: trackId, elementId: "second", newStartTime: t(4) },
+	] });
+	const tracks = () => editor.scenes.getActiveScene().tracks;
+	const after = tracks();
+	expect(Object.fromEntries(after.main.elements.map(({ id, startTime }) => [id, startTime])))
+		.toEqual({ lead: t(0), first: t(1), second: t(4), follower: t(5) });
+	editor.command.undo();
+	expect(tracks()).toEqual(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.command.redo();
+	expect(tracks()).toEqual(after);
+});
+
+test.each([
 	{ edge: "right", reverse: false, clientX: 200, delta: 3, times: [4, 5] },
 	{ edge: "right", reverse: true, clientX: 200, delta: 3, times: [4, 5] },
 	{ edge: "left", reverse: false, clientX: -200, delta: -1, times: [0, 1] },
