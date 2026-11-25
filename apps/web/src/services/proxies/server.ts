@@ -297,6 +297,8 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 
 type Session = {
 	project: string; ids: string[]; software: boolean; paused: boolean; send: (update: ProxyUpdate) => void;
+	/** False: existing proxies are used and no tool is started. */
+	build: boolean;
 	done: Set<string>; revisions: Map<string, number>; disk: boolean; bytes: number; written: Map<string, string>;
 	sequence: number; readerChecked?: number; readerPending: boolean;
 };
@@ -368,6 +370,8 @@ export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" 
 export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "disk" | "bytes" | "written" | "sequence" | "readerChecked" | "readerPending">) {
 	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>(), sequence: 0, readerPending: false };
 	sessions.set(id, entry);
+	// Tools that failed are tried again when a project is opened or the setting is changed, not on their own.
+	if (entry.build && !capabilities?.encoders?.length) capabilities = undefined;
 	void keepNeededJob();
 	void pump();
 	return () => {
@@ -411,7 +415,7 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 		signal.throwIfAborted();
 		available = null;
 	}
-	capabilities = { encoders: available, expiresAt: Date.now() + (available?.length ? 300_000 : 30_000) };
+	capabilities = { encoders: available, expiresAt: available?.length ? Date.now() + 300_000 : Infinity };
 	return available;
 }
 
@@ -420,7 +424,7 @@ async function pump() {
 	if (running) { needsPump = true; return; }
 	const readerDue = (session: Session) => session.readerChecked === undefined || session.readerPending;
 	if (![...sessions.values()].some(readerDue)) {
-		for (const session of sessions.values()) send(session, "readonly");
+		for (const session of sessions.values()) send(session, session.build ? "readonly" : "off");
 		return;
 	}
 	running = true;
@@ -431,11 +435,11 @@ async function pump() {
 			for (const session of sessions.values()) {
 				session.readerChecked ??= Date.now();
 				session.readerPending = false;
-				send(session, "readonly");
+				send(session, session.build ? "readonly" : "off");
 			}
 			return;
 		}
-		let writable = await ownsProxyWriter(dir) || ([...sessions.values()].some(session => session.readerChecked === undefined) &&
+		let writable = await ownsProxyWriter(dir) || ([...sessions.values()].some(session => session.build && session.readerChecked === undefined) &&
 			await acquireProxyWriter(dir));
 		if (writable && initialized !== dir) {
 			try {
@@ -447,14 +451,17 @@ async function pump() {
 			}
 		}
 		if (writable) for (const session of sessions.values()) {
+			if (!session.build) continue;
 			if (session.readerChecked !== undefined) session.done.clear();
 			session.readerChecked = undefined;
 			session.readerPending = false;
 		}
 		const blocked = new Set<Session>();
+		const builds = (session: Session) => writable && session.build;
+		const progress = (session: Session) => !session.build ? "off" : writable ? "preparing" : "readonly";
 		while (!wiping && !isPaused()) {
 			const entry = [...sessions.entries()].find(([, session]) => !blocked.has(session) &&
-				(writable || readerDue(session)) &&
+				(builds(session) || readerDue(session)) &&
 				session.ids.some(id => !session.done.has(id)));
 			if (!entry) break;
 			const [sessionId, session] = entry;
@@ -468,14 +475,13 @@ async function pump() {
 				const source = file ? { file, ...await fingerprint(file) } : undefined;
 				job.source = source;
 				signal.throwIfAborted();
-				let info = source && await cached(dir, source, writable);
-				if (source && !info && writable) {
+				let info = source && await cached(dir, source, builds(session));
+				if (source && !info && builds(session)) {
 					await requireProxyWriter(dir);
 					const encoders = await detectEncoders(dir, signal);
 					if (!encoders || (!encoders.length && !session.software)) {
 						send(session, encoders ? "software" : "missing");
 						blocked.add(session);
-						if (encoders) retryLater();
 						continue;
 					}
 					if (!failures.has(source.key)) {
@@ -488,11 +494,11 @@ async function pump() {
 					const previous = session.written.get(id);
 					if (previous && previous !== info?.key) {
 						session.written.delete(id);
-						send(session, writable ? "preparing" : "readonly", { evicted: previous });
+						send(session, progress(session), { evicted: previous });
 					}
 					if (info) {
 						session.written.set(id, info.key);
-						send(session, writable ? "preparing" : "readonly", { media: { id, info } });
+						send(session, progress(session), { media: { id, info } });
 					}
 				}
 			} catch (error) {
@@ -527,13 +533,13 @@ async function pump() {
 		const bytes = (await files(dir)).reduce((n, file) => n + file.stat.size, 0);
 		for (const session of sessions.values()) {
 			const complete = session.ids.every(id => session.done.has(id));
-			if (!writable && readerDue(session)) {
+			if (!builds(session) && readerDue(session)) {
 				session.readerChecked ??= Date.now();
 				session.readerPending = !complete;
 			}
 			if (blocked.has(session)) continue;
 			session.bytes = bytes;
-			if (complete) send(session, !writable ? "readonly" : session.disk ? "disk" : "ready");
+			if (complete) send(session, !session.build ? "off" : !writable ? "readonly" : session.disk ? "disk" : "ready");
 		}
 	} catch (error) { console.error("Proxy preparation failed", error); }
 	finally {

@@ -67,6 +67,23 @@ test("evicts the least recently used file and preserves the cache below the disk
 	}
 });
 
+// First of the tests with tools: working encoders are remembered for five minutes.
+test("a tool that failed is not tried again until a project opens", async () => {
+	const f = await fixture(["source", "other"]);
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async () => { throw new Error("blocked"); });
+	try {
+		const first = f.tab("first", ["source"]);
+		await first.wait(event => event.state === "missing");
+		expect(run).toHaveBeenCalledTimes(1);
+		for (const [index, ids] of [["source", "other"], ["other"], ["source"]].entries()) updateSession("first", { ids }, index + 1, ["source"]);
+		await sleep(100);
+		expect(run).toHaveBeenCalledTimes(1);
+		const second = f.tab("second", ["source"]);
+		await second.wait(event => event.state === "missing");
+		expect(run).toHaveBeenCalledTimes(2);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
 test("reorders pending assets, cleans interrupted jobs and aborts when the tab closes", async () => {
 	const root = await fs.mkdtemp(path.join(tmpdir(), "proxy-queue-"));
 	const project = path.join(root, "projects", "fixture");
@@ -106,7 +123,7 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 			await fs.writeFile(path.join(dir, id + ".mp4"), id);
 			await fs.writeFile(path.join(meta, id + ".json"), JSON.stringify({ type: "video", diskFile: id + ".mp4" }));
 		}
-		close = openSession("tab", { project: "fixture", ids, paused: false, software: false, send() {} });
+		close = openSession("tab", { project: "fixture", ids, paused: false, software: false, build: true, send() {} });
 		expect(await started.promise).toBe("near.mp4");
 		expect(await fs.readdir(cache)).toEqual(["writer-1.lock"]);
 		updateSession("tab", { ids: ["near", "far", "middle"] }, 1);
@@ -151,10 +168,10 @@ async function fixture(ids: string[], budget = "8000000000") {
 	const close: (() => void)[] = [];
 	return {
 		cache, media,
-		tab(id: string, ids: string[], paused = false) {
+		tab(id: string, ids: string[], paused = false, build = true) {
 			const events: ProxyUpdate[] = [];
 			let changed = Promise.withResolvers<void>();
-			const end = openSession(id, { project: "fixture", ids, paused, software: false, send(event) {
+			const end = openSession(id, { project: "fixture", ids, paused, software: false, build, send(event) {
 				events.push(event);
 				changed.resolve();
 				changed = Promise.withResolvers<void>();
@@ -187,6 +204,25 @@ function videoProbe(duration: number, encoded = false) {
 		frames: [0, 1, 2].map(best_effort_timestamp => ({ best_effort_timestamp, key_frame: 1, pict_type: "I" })),
 	}));
 }
+
+test("a session that does not build uses existing proxies and starts no tool", async () => {
+	const f = await fixture(["ready", "new"]);
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async () => toolResult("h264_nvenc"));
+	try {
+		const { key, size } = await fingerprint(path.join(f.media, "ready.mp4"));
+		const info = { key, size, width: 960, height: 540, source: [0], proxy: [0] };
+		await fs.writeFile(path.join(f.cache, key + ".mp4"), "proxy");
+		await fs.writeFile(path.join(f.cache, key + ".json"), JSON.stringify(info));
+		const manual = f.tab("manual", ["new", "ready"], false, false);
+		await manual.wait(event => event.state === "off" && event.done === 2);
+		updateSession("manual", { ids: ["ready", "new"] }, 1, ["new"]);
+		await sleep(50);
+		expect(manual.events.every(event => event.state === "off")).toBe(true);
+		expect(manual.events.flatMap(event => event.media ?? []).map(({ id }) => id)).toEqual(["ready"]);
+		expect(run).not.toHaveBeenCalled();
+		expect((await fs.readdir(f.cache)).sort()).toEqual([key + ".json", key + ".mp4"]);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
 
 test("reversed pause and resume updates cannot override the newest sequence", async () => {
 	const f = await fixture(["source"]);
