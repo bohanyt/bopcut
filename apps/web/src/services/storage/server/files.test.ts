@@ -1,5 +1,6 @@
 ﻿import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { promises as fs } from "node:fs";
+import { spyOn } from "bun:test";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -12,6 +13,7 @@ import {
 	revision,
 	safeId,
 	saveMedia,
+	streamMediaFile,
 	withProjectLock,
 } from "./files";
 
@@ -81,6 +83,63 @@ describe("folder storage", () => {
 		expect(
 			(await mediaResponse("project-1", meta.id, "bytes=99-")).status,
 		).toBe(416);
+	});
+	test("reads a range spanning a chunk boundary through the final byte", async () => {
+		const chunk = 512 * 1024;
+		const contents = Uint8Array.from({ length: 2 * chunk + 3 }, (_, i) => i % 251);
+		const file = path.join(root, "chunk-boundaries.mp4");
+		await fs.writeFile(file, contents);
+		const response = await streamMediaFile(file, "video/mp4", `bytes=${chunk - 1}-`);
+		expect(response.status).toBe(206);
+		expect(response.headers.get("content-type")).toBe("video/mp4");
+		expect(response.headers.get("content-length")).toBe(String(chunk + 4));
+		expect(response.headers.get("content-range")).toBe(`bytes ${chunk - 1}-${contents.length - 1}/${contents.length}`);
+		expect(new Uint8Array(await response.arrayBuffer())).toEqual(contents.slice(chunk - 1));
+		const invalid = await streamMediaFile(file, "video/mp4", `bytes=${contents.length}-`);
+		expect(invalid.status).toBe(416);
+		expect(invalid.headers.get("content-range")).toBe(`bytes */${contents.length}`);
+	});
+	test.each(["abort", "cancel", "read error"])("releases the media handle on %s", async (kind) => {
+		const dir = await fs.mkdtemp(path.join(root, "media-body-"));
+		const file = path.join(dir, "partial.mp4");
+		await fs.writeFile(file, new Uint8Array(3 * 512 * 1024));
+		const handle = await fs.open(file, "r");
+		const open = spyOn(fs, "open").mockResolvedValueOnce(handle);
+		const closed = Promise.withResolvers<void>();
+		const closeFile = handle.close.bind(handle);
+		const close = spyOn(handle, "close").mockImplementation(async () => {
+			await closeFile();
+			closed.resolve();
+		});
+		const readFile = handle.read.bind(handle);
+		const read = kind === "read error"
+			? spyOn(handle, "read").mockImplementationOnce(readFile).mockRejectedValueOnce(new Error("disk read failed"))
+			: undefined;
+		const controller = new AbortController();
+		try {
+			const response = await streamMediaFile(file, "video/mp4", null, controller.signal);
+			const body = response.body!.getReader();
+			expect((await body.read()).value?.byteLength).toBe(512 * 1024);
+			if (kind === "abort") {
+				controller.abort();
+				expect(close).toHaveBeenCalledTimes(1);
+				await expect(body.read()).rejects.toThrow("abort");
+			} else if (kind === "cancel") {
+				await body.cancel();
+			} else {
+				await expect(body.read()).rejects.toThrow("disk read failed");
+			}
+			await closed.promise;
+			expect(close).toHaveBeenCalledTimes(1);
+			await fs.unlink(file);
+			await fs.rmdir(dir);
+		} finally {
+			controller.abort();
+			open.mockRestore();
+			read?.mockRestore();
+			close.mockRestore();
+			await closeFile().catch(() => {});
+		}
 	});
 	test("missing media bytes return 404 and a repeat upload preserves saved metadata", async () => {
 		const projectId = "restored-media";

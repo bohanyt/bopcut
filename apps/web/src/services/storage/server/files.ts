@@ -247,6 +247,7 @@ export async function mediaResponse(
 	id: string,
 	mediaId: string,
 	range: string | null,
+	signal?: AbortSignal,
 ): Promise<Response> {
 	const dir = path.join(projectDir(id), "media");
 	const meta = await readMetadataCached(
@@ -255,10 +256,53 @@ export async function mediaResponse(
 	if (!meta || !new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(meta.diskFile))
 		return new Response(null, { status: 404 });
 	const file = path.join(dir, meta.diskFile);
-	return streamMediaFile(file, meta.fileType, range);
+	return streamMediaFile(file, meta.fileType, range, signal);
 }
 
-export async function streamMediaFile(file: string, fileType: string | undefined, range: string | null): Promise<Response> {
+const mediaChunkBytes = 512 * 1024;
+
+function mediaBody(handle: Awaited<ReturnType<typeof fs.open>>, start: number, end: number, signal?: AbortSignal) {
+	let position = start;
+	let closing: Promise<void> | undefined;
+	let abort: (() => void) | undefined;
+	const close = () => {
+		if (abort) signal?.removeEventListener("abort", abort);
+		return closing ??= handle.close();
+	};
+
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			if (!signal) return;
+			abort = () => {
+				controller.error(signal.reason);
+				void close().catch(() => {});
+			};
+			signal.addEventListener("abort", abort, { once: true });
+			if (signal.aborted) abort();
+		},
+		async pull(controller) {
+			try {
+				const length = Math.min(mediaChunkBytes, end - position + 1);
+				const { bytesRead, buffer } = await handle.read(new Uint8Array(length), 0, length, position);
+				if (closing) return;
+				if (!bytesRead) throw new Error("Media file ended before its advertised length");
+				position += bytesRead;
+				controller.enqueue(buffer.subarray(0, bytesRead));
+				if (position > end) {
+					controller.close();
+					await close();
+				}
+			} catch (error) {
+				if (closing) return;
+				controller.error(error);
+				await close().catch(() => {});
+			}
+		},
+		cancel: close,
+	}, { highWaterMark: 1 });
+}
+
+export async function streamMediaFile(file: string, fileType: string | undefined, range: string | null, signal?: AbortSignal): Promise<Response> {
 	// Opened (with retries on transient Windows locks) before the response starts, then streamed from
 	// that handle: a lock can no longer turn into a failed body read halfway through a response.
 	const handle = await retryTransient(() => fs.open(file, "r")).catch((error: unknown) => {
@@ -305,9 +349,7 @@ export async function streamMediaFile(file: string, fileType: string | undefined
 		}
 		headers["Content-Length"] = String(stat.size ? end - start + 1 : 0);
 		if (!stat.size) return new Response(null, { status, headers });
-		const body = Readable.toWeb(
-			handle.createReadStream({ start, end, autoClose: true }),
-		) as unknown as ReadableStream;
+		const body = mediaBody(handle, start, end, signal);
 		streaming = true;
 		return new Response(body, { status, headers });
 	} finally {

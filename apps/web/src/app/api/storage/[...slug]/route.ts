@@ -241,7 +241,7 @@ async function handle(
 					return new Response(null, { status: 204 });
 				}
 				if (method === "GET")
-					return await mediaResponse(id, mediaId, req.headers.get("range"));
+					return await mediaResponse(id, mediaId, req.headers.get("range"), req.signal);
 				if (method === "PUT")
 					return await withProjectLock(id, async () => {
 						// A delayed upload or Undo write must not recreate a deleted project.
