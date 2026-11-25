@@ -2135,6 +2135,7 @@ name = "gpu"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "half",
  "thiserror 2.0.18",
  "wasm-bindgen",
  "web-sys",

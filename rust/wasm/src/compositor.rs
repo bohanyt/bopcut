@@ -126,6 +126,7 @@ pub fn upload_texture(options: JsValue) -> Result<(), JsValue> {
         source,
         width,
         height,
+        is_mask,
     } = parse_upload_texture_options(options)?;
 
     with_gpu_runtime(|gpu_runtime| {
@@ -142,6 +143,7 @@ pub fn upload_texture(options: JsValue) -> Result<(), JsValue> {
                 &source,
                 width,
                 height,
+                !is_mask,
                 "compositor-upload-texture",
             )?;
             runtime.compositor.upsert_texture(id, texture);
@@ -241,6 +243,7 @@ struct UploadTextureOptions {
     source: wgpu::web_sys::OffscreenCanvas,
     width: u32,
     height: u32,
+    is_mask: bool,
 }
 
 fn parse_upload_texture_options(value: JsValue) -> Result<UploadTextureOptions, JsValue> {
@@ -253,5 +256,6 @@ fn parse_upload_texture_options(value: JsValue) -> Result<UploadTextureOptions, 
         source: read_offscreen_canvas_property(&object, "source")?,
         width: read_u32_property(&object, "width")?,
         height: read_u32_property(&object, "height")?,
+        is_mask: read_serde_property::<Option<bool>>(&object, "isMask")?.unwrap_or(false),
     })
 }

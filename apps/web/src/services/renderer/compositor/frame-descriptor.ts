@@ -609,6 +609,7 @@ function buildMaskArtifacts({
 		kind: "rendered",
 		id: maskTextureId,
 		contentHash: maskContentHash,
+		isMask: true,
 		width: canvasWidth,
 		height: canvasHeight,
 		draw: drawMask,
