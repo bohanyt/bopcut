@@ -104,6 +104,67 @@ describe("paste groups", () => {
 	});
 });
 
+describe("duplicates", () => {
+	test("keep the order of their sources and the selection order", () => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = {
+			overlay: [
+				{ id: "title", name: "Title", type: "text", hidden: false, elements: [text("title", 0, 3)] },
+				{ id: "box", name: "Box", type: "graphic", hidden: false, elements: [rect("box", 0, 3)] },
+			],
+			main: { ...host.tracks.main, elements: [video("bg", 0, 3)] },
+			audio: ["voice", "music"].map((id) => ({ id, name: id, type: "audio" as const, muted: false, elements: [audio(id, 0, 3)] })),
+		};
+		const editor = setup(scenes);
+		const ids = ["title", "box", "bg", "voice", "music"];
+		const copies = editor.timeline.duplicateElements({
+			elements: ids.map((id) => ({ trackId: id === "bg" ? host.tracks.main.id : id, elementId: id })),
+		});
+		const { tracks } = editor.scenes.getActiveScene();
+		const named = ids.map((id) => [`${id} (copy)`]);
+		expect(layers(tracks)).toEqual([...named.slice(0, 3), ["title"], ["box"], ["bg"]]);
+		expect(tracks.audio.map((track) => track.elements.map(({ name }) => name))).toEqual([...named.slice(3), ["voice"], ["music"]]);
+		expect(copies.map(({ trackId }) => allTracks(tracks).find(({ id }) => id === trackId)?.elements.map(({ name }) => name))).toEqual(named);
+		editor.command.undo();
+		expect(editor.scenes.getActiveScene().tracks).toEqual(host.tracks);
+		editor.command.redo();
+		expect(editor.scenes.getActiveScene().tracks).toEqual(tracks);
+	});
+
+	test("of nothing keep the history", () => {
+		const editor = setup();
+		editor.timeline.updateElements({ updates: [{ trackId: "t-main", elementId: "bg", patch: { name: "renamed" } }] });
+		editor.command.undo();
+		expect(editor.timeline.duplicateElements({ elements: [] })).toEqual([]);
+		expect([editor.command.canUndo(), editor.command.canRedo()]).toEqual([false, true]);
+	});
+});
+
+describe("pasted keyframes", () => {
+	test.each([
+		[6, 1, [[1, 0.2], [2, 0.8]]],
+		[4, 1.5, [[0, 0.2], [0.5, 0.8]]],
+		[8, 1, [[3, 0.2], [4, 0.8]]],
+	])("count from the start of the clip (playhead %p)", (time, gap, expected) => {
+		const scenes = fixture();
+		const host = getHost(scenes);
+		host.tracks = { overlay: [], main: { ...host.tracks.main, elements: [video("first", 0, 5), video("second", 5, 4)] }, audio: [] };
+		const editor = setup(scenes);
+		const first = { trackId: host.tracks.main.id, elementId: "first" };
+		editor.timeline.upsertKeyframes({ keyframes: [
+			{ ...first, propertyPath: "opacity", time: t(0.5), value: 0.2 },
+			{ ...first, propertyPath: "opacity", time: t(0.5 + gap), value: 0.8 },
+		] });
+		const keysOf = (index: number) => (editor.scenes.getActiveScene().tracks.main.elements[index].animations?.opacity as { keys: { id: string; time: number; value: number }[] }).keys;
+		editor.selection.setSelectedKeyframes({ keyframes: keysOf(0).map(({ id }) => ({ ...first, propertyPath: "opacity", keyframeId: id })) });
+		expect(editor.clipboard.copy()).toBe(true);
+		editor.selection.setSelectedElements({ elements: [{ ...first, elementId: "second" }] });
+		expect(editor.clipboard.paste({ time: t(time) })).toBe(true);
+		expect(keysOf(1).map((key) => [key.time / t(1), key.value])).toEqual(expected);
+	});
+});
+
 describe("pasted layers", () => {
 	const copied = [
 		{ trackId: "t-text", elementId: "title" },

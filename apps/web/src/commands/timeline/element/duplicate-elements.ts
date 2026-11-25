@@ -36,9 +36,7 @@ export class DuplicateElementsCommand extends Command {
 		this.savedState = editor.scenes.getActiveScene().tracks;
 		if (this.result) {
 			applyCopiedScenes({ ...this.result });
-			return this.duplicatedElements.length > 0
-				? createElementSelectionResult(this.duplicatedElements)
-				: undefined;
+			return createElementSelectionResult(this.duplicatedElements);
 		}
 		this.duplicatedElements = [];
 
@@ -72,7 +70,9 @@ export class DuplicateElementsCommand extends Command {
 
 		let updatedTracks = this.savedState;
 
-		for (const track of tracks) {
+		// Each new track goes on top, so the lowest source comes first and the copies cover each
+		// other as their sources do.
+		for (const track of tracks.reverse()) {
 			const newTrackElements = track.elements.flatMap((element) => {
 				const duplicate = duplicateOf.get(element);
 				return duplicate ? [duplicate] : [];
@@ -104,13 +104,14 @@ export class DuplicateElementsCommand extends Command {
 			updatedTracks = applied.updatedTracks;
 			placed.push(...newTrackElements);
 
-			for (const element of newTrackElements) {
-				this.duplicatedElements.push({
+			this.duplicatedElements.unshift(
+				...newTrackElements.map((element) => ({
 					trackId: applied.targetTrackId,
 					elementId: element.id,
-				});
-			}
+				})),
+			);
 		}
+		if (placed.length === 0) return { changed: false };
 
 		const copiedScenes = collectCompoundScenes({
 			scenes: deepCopy.scenes,
@@ -119,10 +120,7 @@ export class DuplicateElementsCommand extends Command {
 		this.result = { tracks: updatedTracks, scenes: copiedScenes };
 		applyCopiedScenes({ ...this.result });
 
-		if (this.duplicatedElements.length > 0) {
-			return createElementSelectionResult(this.duplicatedElements);
-		}
-		return undefined;
+		return createElementSelectionResult(this.duplicatedElements);
 	}
 
 	undo(): void {
