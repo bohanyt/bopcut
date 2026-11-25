@@ -651,10 +651,16 @@ impl GpuContext {
         if width > canvas.width() || height > canvas.height() {
             return Err(GpuError::CanvasUploadSize);
         }
-        let texture = self.create_render_texture(width, height, label)?;
-        self.check_render_result("upload texture allocation")?;
+        let texture;
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
 
         if self.supports_external_texture_copies {
+            texture = self.create_render_texture(width, height, label)?;
+            self.check_render_result("upload texture allocation")?;
             self.queue.copy_external_image_to_texture(
                 &wgpu::CopyExternalImageSourceInfo {
                     source: wgpu::ExternalImageSource::OffscreenCanvas(canvas.clone()),
@@ -669,11 +675,7 @@ impl GpuContext {
                     color_space: wgpu::PredefinedColorSpace::Srgb,
                     premultiplied_alpha,
                 },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
+                size,
             );
         } else {
             let ctx: web_sys::OffscreenCanvasRenderingContext2d = canvas
@@ -686,20 +688,49 @@ impl GpuContext {
                 .get_image_data(0.0, 0.0, width as f64, height as f64)
                 .map_err(|_| GpuError::CanvasRead)?;
             let mut pixel_bytes = image_data.data().to_vec();
-            let swap_rb = self.texture_format == wgpu::TextureFormat::Bgra8Unorm;
-            if premultiplied_alpha || swap_rb {
-                for pixel in pixel_bytes.chunks_exact_mut(4) {
-                    let alpha = u16::from(pixel[3]);
-                    if premultiplied_alpha && alpha < 255 {
-                        for channel in &mut pixel[..3] {
-                            *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
-                        }
-                    }
-                    if swap_rb {
+            let precise_pixels;
+            let (bytes, stride) = if premultiplied_alpha
+                && pixel_bytes.chunks_exact(4).any(|pixel| (1..255).contains(&pixel[3]))
+            {
+                // Canvas readback is straight RGBA8. A second 8-bit rounding would
+                // lose edge colors even at exact pixels. Keep alpha on the byte
+                // scale so every original alpha value is representable in FP16.
+                precise_pixels = pixel_bytes
+                    .chunks_exact(4)
+                    .map(|pixel| {
+                        let alpha = f32::from(pixel[3]);
+                        let premultiply = |channel: u8| {
+                            half::f16::from_f32(f32::from(channel) * alpha / 255.0).to_bits()
+                        };
+                        [
+                            premultiply(pixel[0]),
+                            premultiply(pixel[1]),
+                            premultiply(pixel[2]),
+                            half::f16::from_f32(alpha).to_bits(),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                (bytemuck::cast_slice(&precise_pixels), width * 8)
+            } else {
+                texture = self.create_render_texture(width, height, label)?;
+                if self.texture_format == wgpu::TextureFormat::Bgra8Unorm {
+                    for pixel in pixel_bytes.chunks_exact_mut(4) {
                         pixel.swap(0, 2);
                     }
                 }
-            }
+                (&pixel_bytes[..], width * 4)
+            };
+            self.check_render_result("upload texture allocation")?;
 
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -708,17 +739,13 @@ impl GpuContext {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &pixel_bytes,
+                bytes,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(width * 4),
+                    bytes_per_row: Some(stride),
                     rows_per_image: Some(height),
                 },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
+                size,
             );
         }
 

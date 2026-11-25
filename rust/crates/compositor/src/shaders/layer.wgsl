@@ -11,7 +11,8 @@ struct LayerUniforms {
     opacity: f32,
     flip_x: f32,
     flip_y: f32,
-    _padding: vec2f,
+    alpha_scale: f32,
+    _padding: f32,
 }
 
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
@@ -49,5 +50,5 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
     // The sampler interpolates premultiplied color. Effects and blend modes
     // consume straight color, with layer opacity applied separately.
     let rgb = color.rgb / max(color.a, 1.0e-8);
-    return vec4f(rgb, color.a * uniforms.opacity);
+    return vec4f(rgb, color.a * uniforms.alpha_scale * uniforms.opacity);
 }
