@@ -35,6 +35,7 @@ export function useTimelineDragDrop({
 		dragSource: editor.timeline.dragSource,
 		importMediaFile: (args) => editor.media.importFile(args),
 		executeCommand: (command) => editor.command.execute({ command }),
+		insertElement: (args) => editor.timeline.insertElement(args),
 		addClipEffect: (args) => editor.timeline.addClipEffect(args),
 	};
 	const configRef = useCommittedRef(config);

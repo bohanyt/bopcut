@@ -138,7 +138,7 @@ test("Hide track on an audio track is not an Undo step", () => {
 	expect(editor.command.canUndo()).toBe(false);
 });
 
-test.each(["scene switch", "project switch", "multi-file drop"] as const)("timeline file import respects the edit boundary for %s", async (scenario) => {
+test.each(["scene switch", "project switch", "scene switch between files"] as const)("timeline file import respects the edit boundary for %s", async (scenario) => {
 	main(video("bg", 0, 10));
 	const other = scene("other", { ...fixture()[0].tracks, overlay: [], audio: [], main: { ...fixture()[0].tracks.main, elements: [video("other-bg", 0, 10)] } });
 	scenes.push(other);
@@ -158,42 +158,37 @@ test.each(["scene switch", "project switch", "multi-file drop"] as const)("timel
 		getCurrentPlayheadTime: () => editor.playback.getCurrentTime(), getMediaAssets: () => assets,
 		dragSource: editor.timeline.dragSource, importMediaFile: async ({ file }) => new Promise<MediaAsset>((resolve) => { pending.set(file.name, resolve); }),
 		executeCommand: (command) => { editor.command.execute({ command }); },
+		insertElement: (args) => editor.timeline.insertElement(args),
 		addClipEffect: (args) => editor.timeline.addClipEffect(args),
 	};
 	const controller = new DragDropController({ configRef: { current: config } });
 	cleanup.push(() => controller.destroy());
-	controller.onDrop({ preventDefault() {}, clientX: 12 * pps, clientY: 30, dataTransfer: { files: scenario === "multi-file drop" ? [file, secondFile] : [file], types: ["Files"] } } as unknown as ReactDragEvent);
+	const multiple = scenario === "scene switch between files";
+	controller.onDrop({ preventDefault() {}, clientX: 12 * pps, clientY: 30, dataTransfer: { files: multiple ? [file, secondFile] : [file], types: ["Files"] } } as unknown as ReactDragEvent);
 	await dom.happyDOM.waitUntilComplete();
 	expect(pending.get(file.name)).toBeFunction();
-	if (scenario === "scene switch") {
-		await editor.scenes.switchToScene({ sceneId: "other" });
-	} else if (scenario === "project switch") {
-		const prior = editor.project.getActive();
-		editor.project.setActiveProject({ project: { ...prior, metadata: { ...prior.metadata, id: "other-project" } } });
-		await editor.scenes.switchToScene({ sceneId: "other" });
-	}
 	const complete = async (asset: MediaAsset) => {
 		assets.push(asset);
 		await act(async () => pending.get(asset.name)!(asset));
 	};
-	const names = () => [...tracks().overlay, tracks().main, ...tracks().audio].flatMap((track) => track.elements.map((e) => e.name));
-	const before = tracks();
-	await complete(media);
-	if (scenario !== "multi-file drop") {
-		expect(tracks()).toBe(before);
-		expect(editor.command.canUndo()).toBe(false);
-	} else {
-		expect(tracks()).toBe(before);
+	if (multiple) {
+		await complete(media);
+		const { overlay, main, audio } = tracks();
+		const names = [...overlay, main, ...audio].flatMap((track) => track.elements.map(({ name }) => name));
+		expect(names).toContain(file.name);
 		expect(pending.get(secondFile.name)).toBeFunction();
-		await complete(secondMedia);
-		expect(names().filter((name) => name.endsWith(".mp4")).sort()).toEqual([file.name, secondFile.name]);
-		const after = tracks();
-		editor.command.undo();
-		expect(tracks()).toEqual(before);
-		expect(editor.command.canUndo()).toBe(false);
-		editor.command.redo();
-		expect(tracks()).toEqual(after);
 	}
+	const sourceTracks = tracks();
+	if (scenario === "project switch") {
+		const prior = editor.project.getActive();
+		editor.project.setActiveProject({ project: { ...prior, metadata: { ...prior.metadata, id: "other-project" } } });
+	}
+	await editor.scenes.switchToScene({ sceneId: "other" });
+	const destinationTracks = tracks();
+	await complete(multiple ? secondMedia : media);
+	expect(tracks()).toBe(destinationTracks);
+	expect(getHost(editor.scenes.getScenes()).tracks).toBe(sourceTracks);
+	expect(editor.command.canUndo()).toBe(multiple);
 });
 
 test("Undo of keyboard keyframe deletion restores the keyframe selection", async () => {

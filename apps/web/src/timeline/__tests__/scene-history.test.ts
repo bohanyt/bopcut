@@ -765,7 +765,7 @@ describe("generated ids in history", () => {
 			startMediaImport: () => null, getSceneId: () => "main", getSceneTracks: tracks, getCurrentPlayheadTime: () => t(0),
 			getMediaAssets: () => [], importMediaFile: async () => null,
 			executeCommand: (command) => editor.command.execute({ command }),
-			addClipEffect: () => {},
+			insertElement: (args) => editor.timeline.insertElement(args), addClipEffect: () => {},
 		};
 		const drop = new DragDropController({ configRef: { current: config } });
 		const event = { clientX: 0, clientY: 8, preventDefault() {}, dataTransfer } as React.DragEvent;

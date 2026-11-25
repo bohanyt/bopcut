@@ -7,12 +7,7 @@ export class BatchCommand extends Command {
 	// stay exempt, also inside nested batches.
 	override readonly ripples = false;
 
-	private completed: Command[] = [];
-
-	constructor(
-		private commands: (Command | (() => Command | null) | null)[],
-		private selection?: EditorSelectionPatch,
-	) {
+	constructor(private commands: Command[], private selection?: EditorSelectionPatch) {
 		super();
 	}
 
@@ -21,7 +16,7 @@ export class BatchCommand extends Command {
 	}
 
 	undo(): void {
-		for (const command of [...this.completed].reverse()) {
+		for (const command of [...this.commands].reverse()) {
 			command.undo();
 		}
 	}
@@ -44,12 +39,7 @@ export class BatchCommand extends Command {
 
 		const editor = EditorCore.getInstance();
 		try {
-			for (const [index, entry] of this.commands.entries()) {
-				// Placement may depend on the result of an earlier command in the batch.
-				// Retain the resolved command so redo restores the same ids.
-				const command = typeof entry === "function" ? entry() : entry;
-				this.commands[index] = command;
-				if (!command) continue;
+			for (const command of this.commands) {
 				const beforeTracks =
 					context.rippleEnabled && command.ripples
 						? (editor.scenes.getActiveSceneOrNull()?.tracks ?? null)
@@ -69,7 +59,6 @@ export class BatchCommand extends Command {
 			throw error;
 		}
 
-		this.completed = done;
 		if (done.length === 0) return { changed: false };
 		return this.selection ? { selection: this.selection } : latestSelectionResult;
 	}

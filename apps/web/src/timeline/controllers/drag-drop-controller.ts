@@ -53,6 +53,10 @@ export interface DragDropConfig {
 	dragSource: TimelineDragSource;
 	importMediaFile: MediaManager["importFile"];
 	executeCommand: (command: Command) => void;
+	insertElement: (args: {
+		placement: { mode: "explicit"; trackId: string };
+		element: CreateTimelineElement;
+	}) => void;
 	addClipEffect: (args: {
 		trackId: string;
 		elementId: string;
@@ -335,12 +339,7 @@ export class DragDropController {
 	}
 
 	// Shared insertion logic — new track vs existing track.
-	private insertAtTarget(args: { element: CreateTimelineElement; target: DropTarget; trackType: TrackType }): void {
-		const command = this.buildInsertCommand(args);
-		if (command) this.config.executeCommand(command);
-	}
-
-	private buildInsertCommand({
+	private insertAtTarget({
 		element,
 		target,
 		trackType,
@@ -348,25 +347,28 @@ export class DragDropController {
 		element: CreateTimelineElement;
 		target: DropTarget;
 		trackType: TrackType;
-	}): Command | null {
+	}): void {
 		if (target.isNewTrack) {
 			const addTrackCmd = new AddTrackCommand({
 				type: trackType,
 				index: target.trackIndex,
 			});
-			return new BatchCommand([
-				addTrackCmd,
-				new InsertElementCommand({
-					element,
-					placement: { mode: "explicit", trackId: addTrackCmd.getTrackId() },
-				}),
-			]);
+			this.config.executeCommand(
+				new BatchCommand([
+					addTrackCmd,
+					new InsertElementCommand({
+						element,
+						placement: { mode: "explicit", trackId: addTrackCmd.getTrackId() },
+					}),
+				]),
+			);
+			return;
 		}
 
 		const tracks = orderedTracks({ sceneTracks: this.config.getSceneTracks() });
 		const track = tracks[target.trackIndex];
-		if (!track) return null;
-		return new InsertElementCommand({
+		if (!track) return;
+		this.config.insertElement({
 			placement: { mode: "explicit", trackId: track.id },
 			element,
 		});
@@ -523,71 +525,82 @@ export class DragDropController {
 		await showMediaUploadToast({
 			filesCount: files.length,
 			promise: async () => {
-				const assets: MediaAsset[] = [];
+				const assetNames: string[] = [];
+
+				// Sequential on purpose: each iteration reads getSceneTracks()
+				// to decide placement (reuse empty main vs new track) and that
+				// decision depends on the effects of prior inserts.
 				for (const file of files) {
 					if (session.signal.aborted || this.config.getSceneId() !== sceneId) break;
 					const createdAsset = await this.config.importMediaFile({ session, file });
 					if (session.signal.aborted) break;
-					if (createdAsset) assets.push(createdAsset);
+					const imported = createdAsset && this.config.getMediaAssets().some(({ id }) => id === createdAsset.id);
+					if (imported) assetNames.push(createdAsset.name);
+					if (this.config.getSceneId() !== sceneId) break;
+					if (!imported) continue;
+
+					const duration = toElementDurationTicks({
+						seconds: createdAsset.duration,
+					});
+
+					const sceneTracks = this.config.getSceneTracks();
+					const currentTime = this.config.getCurrentPlayheadTime();
+
+					const reuseMainTrackId =
+						createdAsset.type !== "audio" &&
+						sceneTracks.overlay.length === 0 &&
+						sceneTracks.audio.length === 0 &&
+						sceneTracks.main.elements.length === 0
+							? sceneTracks.main.id
+							: null;
+
+					if (reuseMainTrackId) {
+						this.config.insertElement({
+							placement: { mode: "explicit", trackId: reuseMainTrackId },
+							element: buildElementFromMedia({
+								mediaId: createdAsset.id,
+								mediaType: createdAsset.type,
+								name: createdAsset.name,
+								duration,
+								startTime: currentTime,
+							}),
+						});
+						continue;
+					}
+
+					const dropTarget = computeDropTarget({
+						elementType: createdAsset.type,
+						mouseX,
+						mouseY,
+						tracks: sceneTracks,
+						playheadTime: currentTime,
+						isExternalDrop: true,
+						elementDuration: duration,
+						pixelsPerSecond: BASE_TIMELINE_PIXELS_PER_SECOND,
+						zoomLevel: this.config.zoomLevel,
+						frameRate: this.config.getActiveProjectFps(),
+					});
+
+					const trackType: TrackType =
+						createdAsset.type === "audio" ? "audio" : "video";
+					this.insertAtTarget({
+						element: buildElementFromMedia({
+							mediaId: createdAsset.id,
+							mediaType: createdAsset.type,
+							name: createdAsset.name,
+							duration,
+							startTime: dropTarget.xPosition,
+						}),
+						target: dropTarget,
+						trackType,
+					});
 				}
 
 				if (!session.signal.aborted && this.config.getSceneId() !== sceneId) {
 					toast.info(getBrowserTranslator()("media.dropSceneChanged"));
-				} else if (!session.signal.aborted && assets.length > 0) {
-					const liveIds = new Set(this.config.getMediaAssets().map(({ id }) => id));
-					const commands = assets.filter(({ id }) => liveIds.has(id)).map((asset) =>
-						() => this.buildFileInsertCommand({ asset, mouseX, mouseY }),
-					);
-					if (commands.length > 0) this.config.executeCommand(new BatchCommand(commands));
 				}
-				return { uploadedCount: assets.length, assetNames: assets.map(({ name }) => name) };
+				return { uploadedCount: assetNames.length, assetNames };
 			},
-		});
-	}
-
-	private buildFileInsertCommand({
-		asset,
-		mouseX,
-		mouseY,
-	}: {
-		asset: MediaAsset;
-		mouseX: number;
-		mouseY: number;
-	}): Command | null {
-		const duration = toElementDurationTicks({ seconds: asset.duration });
-		const tracks = this.config.getSceneTracks();
-		const playheadTime = this.config.getCurrentPlayheadTime();
-		if (
-			asset.type !== "audio" &&
-			tracks.overlay.length === 0 &&
-			tracks.audio.length === 0 &&
-			tracks.main.elements.length === 0
-		) {
-			return new InsertElementCommand({
-				element: buildElementFromMedia({
-					mediaId: asset.id, mediaType: asset.type, name: asset.name, duration, startTime: playheadTime,
-				}),
-				placement: { mode: "explicit", trackId: tracks.main.id },
-			});
-		}
-		const target = computeDropTarget({
-			elementType: asset.type,
-			mouseX,
-			mouseY,
-			tracks,
-			playheadTime,
-			isExternalDrop: true,
-			elementDuration: duration,
-			pixelsPerSecond: BASE_TIMELINE_PIXELS_PER_SECOND,
-			zoomLevel: this.config.zoomLevel,
-			frameRate: this.config.getActiveProjectFps(),
-		});
-		return this.buildInsertCommand({
-			element: buildElementFromMedia({
-				mediaId: asset.id, mediaType: asset.type, name: asset.name, duration, startTime: target.xPosition,
-			}),
-			target,
-			trackType: asset.type === "audio" ? "audio" : "video",
 		});
 	}
 }
