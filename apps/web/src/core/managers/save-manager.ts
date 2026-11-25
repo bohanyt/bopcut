@@ -2,6 +2,7 @@ import { localizeErrorDetail } from "@/i18n/error-details";
 import { getBrowserTranslator } from "@/i18n/browser";
 import type { EditorCore } from "@/core";
 import type { TProject } from "@/project/types";
+import { SERVER_AWAY } from "@/services/storage/disk-adapter";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { toast } from "sonner";
 
@@ -9,12 +10,15 @@ type SaveManagerOptions = {
 	debounceMs?: number;
 	/** Waits before automatic retries of a failed save; after the last one a manual retry is offered. */
 	retryDelaysMs?: number[];
+	/** Wait between further retries while the server does not answer. */
+	outageDelayMs?: number;
 };
 
 /** What a save session needs from its manager. */
 type SaveHost = {
 	debounceMs(): number;
 	retryDelaysMs(): number[];
+	outageDelayMs(): number;
 	/** False once the manager is stopped (editor reset): nothing is written. */
 	isRunning(): boolean;
 	/** False while storage migrates: writes wait. */
@@ -160,6 +164,7 @@ export class SaveSession {
 		this.loading = false;
 		this.snapshot = null;
 		this.clearTimer();
+		if (this.lastError) toast.dismiss(errorToastId(this.projectId));
 		for (const waiter of this.savedWaiters.splice(0)) waiter.resolve(null);
 		for (const fail of [...this.failureWaiters]) fail();
 	}
@@ -287,7 +292,9 @@ export class SaveSession {
 				// anything else changes.
 				this.lastError = error;
 				const delays = this.host.retryDelaysMs();
-				retryIn = delays[Math.min(this.failures, delays.length - 1)];
+				const last = this.failures >= delays.length;
+				// The editor's server is away (an update, a restart): the open project is saved when it is back.
+				retryIn = delays[this.failures] ?? (error === SERVER_AWAY && !this.closed ? this.host.outageDelayMs() : null);
 				this.failures++;
 				for (const fail of [...this.failureWaiters]) fail();
 				const t = getBrowserTranslator();
@@ -295,9 +302,11 @@ export class SaveSession {
 				const detail = localizeErrorDetail(error, t);
 				toast.error(what, {
 					id: errorToastId(this.projectId),
-					description: t("storage.retryIn", { error: detail, seconds: Math.round(retryIn / 1000) }),
-					duration: Number.POSITIVE_INFINITY,
-					action: { label: t("common.retry"), onClick: () => this.retry() },
+					description: retryIn === null
+						? t("storage.notOnDisk", { error: detail })
+						: t("storage.retryIn", { error: detail, seconds: Math.round(retryIn / 1000) }),
+					duration: last || retryIn === null ? Number.POSITIVE_INFINITY : retryIn + 1000,
+					...(last ? { action: { label: t("common.retry"), onClick: () => this.retry() } } : {}),
 				});
 			}
 			if (this.closed && !this.isDirty()) {
@@ -329,6 +338,7 @@ export class SaveSession {
 export class SaveManager {
 	private debounceMs: number;
 	private retryDelaysMs: number[];
+	private outageDelayMs: number;
 	private running = false;
 	private unsubscribeHandlers: Array<() => void> = [];
 	private current: SaveSession | null = null;
@@ -346,16 +356,19 @@ export class SaveManager {
 	constructor({
 		editor,
 		debounceMs = 800,
-		retryDelaysMs = [1000, 2000, 4000, 8000, 16000, 30000],
+		retryDelaysMs = [1000, 2000, 4000, 8000, 16000],
+		outageDelayMs = 30_000,
 	}: {
 		editor: EditorCore;
 	} & SaveManagerOptions) {
 		this.editor = editor;
 		this.debounceMs = debounceMs;
 		this.retryDelaysMs = retryDelaysMs;
+		this.outageDelayMs = outageDelayMs;
 		this.host = {
 			debounceMs: () => this.debounceMs,
 			retryDelaysMs: () => this.retryDelaysMs,
+			outageDelayMs: () => this.outageDelayMs,
 			isRunning: () => this.running,
 			canWrite: () => !this.editor.project.getMigrationState().isMigrating,
 			snapshotOf: (session, content) => {

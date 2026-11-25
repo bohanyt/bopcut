@@ -12,6 +12,7 @@ const { EditorCore } = await import("@/core");
 const { agentReadiness } = await import("@/agent/bridge");
 const { StorageService, storageService } = await import("@/services/storage/service");
 const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
+const { SERVER_AWAY } = await import("@/services/storage/disk-adapter");
 const { rememberPlayhead } = await import("@/project/playhead-memory");
 const { beginTimelineGesture } = await import("@/timeline/gesture-state");
 
@@ -193,14 +194,15 @@ async function until(check: () => boolean, timeoutMs = 2000) {
 }
 
 describe("failed saves", () => {
-	const dirty = async (failures: number) => {
+	const dirty = async (failures: number, error = "EPERM: operation not permitted") => {
 		const editor = await load(project("p", new Date(0)));
 		(editor.save as any).retryDelaysMs = [5, 10];
+		(editor.save as any).outageDelayMs = 20;
 		const disk = memoryDisk([project("p", new Date(0))]);
 		let calls = 0;
 		disk.hooks.write = () => {
 			calls++;
-			if (calls <= failures) throw new Error("EPERM: operation not permitted");
+			if (calls <= failures) throw new Error(error);
 		};
 		edit(editor, "edited");
 		expect(await editor.save.flush()).toBe(false);
@@ -216,21 +218,32 @@ describe("failed saves", () => {
 		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
 	});
 
-	test("are retried at the last delay until they succeed", async () => {
-		const { editor, calls } = await dirty(6);
-		await until(() => calls() === 4);
+	test("stop retrying after the backoff, then a manual retry saves", async () => {
+		const { editor, calls } = await dirty(3);
+		await wait(80);
+		expect(calls()).toBe(3);
+		await wait(40);
+		expect(calls()).toBe(3);
 		expect(agentReadiness().ready).toBe(false);
+		editor.save.retry();
+		expect(await editor.save.settle()).toBe(true);
+		expect(calls()).toBe(4);
+		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
+	});
+
+	test("are retried while the server does not answer, until it does", async () => {
+		const { editor, calls } = await dirty(6, SERVER_AWAY);
 		await until(() => !editor.save.getIsDirty());
 		expect(calls()).toBe(7);
 		expect(agentReadiness()).toMatchObject({ ready: true, saveError: null });
 	});
 
-	test("a manual retry saves at once", async () => {
-		const { editor, calls } = await dirty(1);
-		(editor.save as any).retryDelaysMs = [60_000];
-		editor.save.retry();
-		expect(await editor.save.settle()).toBe(true);
-		expect(calls()).toBe(2);
+	test("of a closed project stop after the backoff, also while the server does not answer", async () => {
+		const { editor, calls } = await dirty(6, SERVER_AWAY);
+		editor.project.closeProject();
+		await wait(80);
+		expect(calls()).toBeLessThan(5);
+		expect(editor.save.hasUnsavedChanges()).toBe(true);
 	});
 
 	test("settle gives up at its deadline even while a save hangs", async () => {
