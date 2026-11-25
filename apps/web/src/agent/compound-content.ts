@@ -15,7 +15,7 @@ import { findTrackByName } from "./track-names";
 import { orderedTracks } from "./scene-graph";
 import {
 	type AgentCompoundContent, type AgentElement, type AgentTrackRef, type AgentTrackType, type LoadedMedia, type PendingKeyframe,
-	buildAgentElement, createAgentTrack, inferTrackType, secs,
+	buildAgentElement, checkAgentDuration, createAgentTrack, inferTrackType, secs,
 } from "./elements";
 
 export type BuildContext = {
@@ -122,6 +122,7 @@ export function buildAgentCompound({ e, hostSceneId, ctx }: { e: AgentElement; h
 
 	const sourceDuration = calculateTotalDuration({ tracks });
 	const trimStart = secs(e.trimStart ?? 0);
+	checkAgentDuration(e);
 	const duration = (typeof e.duration === "number" ? secs(e.duration) : Math.max(0, sourceDuration - trimStart)) as MediaTime;
 	if (duration <= 0) throw new Error(`compound clip ${e.name} has no duration`);
 	const element = {

@@ -5,7 +5,7 @@ import { EditorCore } from "@/core";
 import type { MediaImportSession } from "@/core/managers/media-manager";
 import type { MediaAsset } from "@/media/types";
 import { buildElementFromMedia, buildEffectElement, buildGraphicElement, buildTextElement } from "@/timeline/element-utils";
-import { mediaTimeFromSeconds } from "@/wasm";
+import { mediaTimeFromSeconds, TICKS_PER_SECOND } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
 import type { ParamValues } from "@/params";
 import { generateUUID } from "@/utils/id";
@@ -206,9 +206,14 @@ export function checkAgentTrim(e: { agent_id?: string; name?: string; trimStart?
 	if (e.trimStart != null && !(e.trimStart >= 0 && Number.isFinite(e.trimStart))) throw new Error(`trimStart must be 0 or more for ${e.agent_id ?? e.name}`);
 }
 
+export function checkAgentDuration(e: { agent_id?: string; name?: string; duration?: number | null }): void {
+	if (e.duration != null && !(e.duration * TICKS_PER_SECOND > 0.5)) throw new Error(`duration must be above 0 (${e.agent_id ?? e.name})`);
+}
+
 function buildAgentElementOnly({ e, media, trackId, sceneId, canvas, keyframes: collected }: {
 	e: AgentElement; media?: LoadedMedia; trackId: string; sceneId?: string; canvas: { width: number; height: number }; keyframes: PendingKeyframe[];
 }): any {
+	checkAgentDuration(e);
 	const keyframes = { push: (k: PendingKeyframe) => collected.push(sceneId ? { ...k, sceneId } : k) };
 	if (e.caption) return buildAgentCaption({ e, trackId, sceneId, canvas, keyframes: collected });
 	if (e.effect) {

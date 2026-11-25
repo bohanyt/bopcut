@@ -769,6 +769,22 @@ describe("generated ids in history", () => {
 		expect(keyAt(propertyPath, 1)).toBeNull();
 	});
 
+	test("a note that an agent answered meanwhile still takes the edit that was open", async () => {
+		const scenes = fixture();
+		const note = { id: "note", time: t(1), note: "logo" };
+		const other = { id: "other", time: t(1), note: "same frame" };
+		getHost(scenes).bookmarks = [other, note];
+		const editor = setup(scenes);
+		const bookmarks = () => editor.scenes.getActiveScene().bookmarks;
+		const answered = { ...note, replies: [{ id: "reply", author: "agent" as const, text: "done", createdAt: "2026-01-01T00:00:00.000Z" }] };
+		editor.scenes.setScenes({ scenes: scenes.map((scene) => ({ ...scene, bookmarks: [other, answered] })) });
+		await editor.scenes.updateBookmark({ time: note.time, bookmark: note, updates: { note: "logo fixed" } });
+		expect(bookmarks()).toEqual([other, { ...answered, note: "logo fixed" }]);
+		await editor.scenes.removeBookmark({ time: note.time, bookmark: note });
+		expect(bookmarks()).toEqual([other]);
+		await editor.scenes.removeBookmark({ time: note.time, bookmark: note });
+		expect(bookmarks()).toEqual([other]);
+	});
 	test("moving onto an occupied frame leaves the note in place and removing a stacked note uses its identity", async () => {
 		const scenes = fixture();
 		const host = getHost(scenes);

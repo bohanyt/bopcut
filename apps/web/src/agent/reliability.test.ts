@@ -251,6 +251,33 @@ describe("set keyframes and mediaId reuse", () => {
 		expect(find(editor, "box")?.startTime).toBe(T(0));
 	});
 
+	test("set, add and replace refuse -1, 0 and 1e-9; 0.001 and missing duration behave as before", async () => {
+		const editor = setup();
+		const before = state(editor);
+		for (const duration of [-1, 0, 1e-9]) {
+			let result = await withAgentApi(() => applyDraft(draft([{ op: "set", match: { agentId: "box" }, duration }])));
+			expect(result.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("duration must be above 0") });
+			expect(state(editor)).toBe(before);
+			result = await withAgentApi(() => applyDraft(draft([{ op: "add", track: { name: "Footage" }, element: { agent_id: "bad", name: "Bad", mediaId: "clip-b", start: 20, duration } }])));
+			expect(result.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("duration must be above 0") });
+			expect(state(editor)).toBe(before);
+			result = await withAgentApi(() => applyDraft(draft([{ op: "replace", match: { agentId: "clip-2" }, element: { name: "X", mediaId: "clip-b", start: 2, duration } }])));
+			expect(result.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("duration must be above 0") });
+			expect(state(editor)).toBe(before);
+		}
+		await withAgentApi(() => applyDraft(draft([{ op: "set", match: { agentId: "box" }, duration: 0.001 }])));
+		expect(find(editor, "box")?.duration).toBe(T(0.001));
+		await withAgentApi(() => applyDraft(draft([{ op: "add", track: { name: "Footage" }, element: { agent_id: "short", name: "Short", mediaId: "clip-b", start: 20, duration: 0.001 } }])));
+		expect(find(editor, "short")?.duration).toBe(T(0.001));
+		const countBefore = all(mainScene(editor)).length;
+		await withAgentApi(() => applyDraft(draft([{ op: "add", track: { name: "Footage" }, element: { agent_id: "full", name: "Full", mediaId: "clip-b", start: 30 } as any }])));
+		expect(all(mainScene(editor)).length).toBe(countBefore + 1);
+		expect(find(editor, "full")?.duration).toBe(T(6));
+		const clip2Dur = find(editor, "clip-2")?.duration;
+		await withAgentApi(() => applyDraft(draft([{ op: "replace", match: { agentId: "clip-2" }, element: { name: "Clip 2", mediaId: "m-1", start: 2 } as any }])));
+		expect(find(editor, "clip-2")?.duration).toBe(clip2Dur);
+	});
+
 	test("add and compound elements reuse project media by mediaId (nothing imported)", async () => {
 		const editor = setup();
 		const count = editor.media.getAssets().length;
