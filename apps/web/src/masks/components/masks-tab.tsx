@@ -279,7 +279,7 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 			) : (
 				masks.map((mask, index) => (
 					<MaskItem
-						key={mask.id}
+						key={`${element.id}:${mask.id}`}
 						trackId={trackId}
 						elementId={element.id}
 						mask={renderMasks[index] ?? mask}
@@ -306,7 +306,7 @@ function MaskItem({
 	const definition = getMaskDefinition(mask.type);
 
 	return (
-		<Section sectionKey={`mask-item:${mask.id}`} showTopBorder={false}>
+		<Section sectionKey={`mask-item:${elementId}:${mask.id}`} showTopBorder={false}>
 			<SectionHeader
 				trailing={
 					<div className="flex items-center gap-1">

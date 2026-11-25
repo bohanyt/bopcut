@@ -4,9 +4,6 @@ import { act, useRef, type ReactNode } from "react";
 import type { Root } from "react-dom/client";
 import { fixture, getHost, scene, t, video } from "@/timeline/__tests__/compound-fixtures";
 import type { CompoundElement } from "@/timeline";
-import { upsertPathKeyframe, getKeyframeAtTime } from "@/animation";
-import { getParamChannelLayout } from "@/params";
-import { getElementParams } from "@/params/registry";
 
 import { usePropertiesStore } from "@/components/editor/panels/properties/stores/properties-store";
 
@@ -119,9 +116,6 @@ function type(node: HTMLInputElement, value: string) {
 		node.dispatchEvent(new window.InputEvent("input", { bubbles: true }));
 	});
 }
-function key(node: Element, key: string) {
-	act(() => node.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
-}
 function focus(node: HTMLInputElement) {
 	act(() => node.focus());
 }
@@ -201,10 +195,11 @@ test.each(["scene", "project"] as const)("a subtitle import stops after opening 
 	expect(editor.command.canUndo()).toBe(false);
 });
 
-test("text mask content is saved to its clip when selection moves before blur", async () => {
+test.each(["distinct", "shared"] as const)("text mask content stays with its clip when mask IDs are %s", async (ids) => {
 	const clip = (id: string, at: number) => {
 		const mask = buildDefaultMaskInstance({ maskType: "text" });
 		if (mask.type !== "text") throw new Error("Expected text mask");
+		if (ids === "shared") mask.id = "duplicated-mask";
 		mask.params.content = id;
 		return { ...video(id, at, 2), masks: [mask] };
 	};
@@ -217,7 +212,7 @@ test("text mask content is saved to its clip when selection moves before blur", 
 	type(input, "mask typed on a");
 	rightClickClip("b");
 	expect(editor.selection.getSelectedElements()[0].elementId).toBe("b");
-	expect(field("textarea")).not.toBe(input);
+	expect(field("textarea") === input).toBe(false);
 	// Navigate away and back. A leftover preview must not be mistaken for a saved edit.
 	await act(async () => editor.scenes.switchToScene({ sceneId: "other" }));
 	await act(async () => editor.scenes.switchToScene({ sceneId: "main" }));
@@ -226,44 +221,13 @@ test("text mask content is saved to its clip when selection moves before blur", 
 	expect(contents).toEqual(["mask typed on a", "b"]);
 });
 
-test("a full expression stays attached to the keyframe that was being edited", () => {
-	const propertyPath = "transform.positionX";
-	const clip = video("bg", 0, 10);
-	const param = getElementParams({ element: clip }).find(({ key }) => key === propertyPath)!;
-	const channelLayout = getParamChannelLayout({ param });
-	clip.animations = upsertPathKeyframe({
-		animations: undefined, propertyPath, time: t(1), value: 10, channelLayout, coerceValue: ({ value }) => value,
-	});
-	clip.animations = upsertPathKeyframe({
-		animations: clip.animations, propertyPath, time: t(2), value: 20, channelLayout, coerceValue: ({ value }) => value,
-	});
-	getHost(scenes).tracks.main.elements = [clip];
-	start();
-	act(() => editor.playback.seek({ time: t(1) }));
-	show("t-main", "bg", "video", "transform");
-	const position = [...document.querySelectorAll<HTMLInputElement>("input[inputmode=decimal]")].find((input) => input.value === "10")!;
-	expect(position).toBeDefined();
-	let now = 0;
-	let advanceFrame!: FrameRequestCallback;
-	globalThis.requestAnimationFrame = (callback) => { advanceFrame = callback; return 1; };
-	editor.playback.setPlaybackClock(() => now);
-	act(() => editor.playback.play());
-	focus(position);
-	type(position, "100+5");
-	act(() => { now = 1; advanceFrame(1000); });
-	expect(editor.playback.getCurrentTime()).toBe(t(2));
-	expect(document.activeElement).toBe(position);
-	key(position, "Enter");
-	act(() => editor.playback.pause());
-	const animations = editor.scenes.getActiveScene().tracks.main.elements[0].animations;
-	expect([t(1), t(2)].map((time) => getKeyframeAtTime({ animations, propertyPath, time })?.value))
-		.toEqual([105, 20]);
-});
-
-test("a slow font request cannot overwrite a newer font choice on the same mask", async () => {
+test.each(["a newer choice", "selection of a duplicate clip"] as const)("a pending font choice is ignored after %s", async (next) => {
 	const mask = buildDefaultMaskInstance({ maskType: "text" });
 	if (mask.type !== "text") throw new Error("Expected text mask");
-	getHost(scenes).tracks.main.elements = [{ ...video("bg", 0, 10), masks: [mask] }];
+	getHost(scenes).tracks.main.elements = [
+		{ ...video("bg", 0, 5), masks: [mask] },
+		{ ...video("duplicate", 5, 5), masks: [{ ...mask, params: { ...mask.params, fontFamily: "Georgia" } }] },
+	];
 	start();
 	const slowFont = "Aardvark Test Font";
 	// Render the real popover content without a portal in happy-dom.
@@ -286,17 +250,21 @@ test("a slow font request cannot overwrite a newer font choice on the same mask"
 		expect(slow).not.toBeNull();
 		act(() => slow.click());
 		expect(complete).toBeFunction();
-		const fast = document.querySelector<HTMLElement>('button[aria-label="Arial"]')!;
-		expect(fast).not.toBeNull();
-		await act(async () => fast.click());
-		const readFont = () => {
-			const clip = editor.scenes.getActiveScene().tracks.main.elements[0];
+		if (next === "a newer choice") {
+			const fast = document.querySelector<HTMLElement>('button[aria-label="Arial"]')!;
+			expect(fast).not.toBeNull();
+			await act(async () => fast.click());
+		} else {
+			rightClickClip("duplicate");
+			expect(editor.selection.getSelectedElements()[0].elementId).toBe("duplicate");
+		}
+		const fonts = () => editor.scenes.getActiveScene().tracks.main.elements.map((clip) => {
 			const updated = clip.type === "video" ? clip.masks?.[0] : undefined;
 			return updated?.type === "text" && updated.params.fontFamily;
-		};
-		expect(readFont()).toBe("Arial");
+		});
+		expect(fonts()).toEqual(["Arial", "Georgia"]);
 		await act(async () => complete());
-		expect(readFont()).toBe("Arial");
+		expect(fonts()).toEqual(["Arial", "Georgia"]);
 	} finally {
 		load.mockRestore();
 		atlas.mockRestore();

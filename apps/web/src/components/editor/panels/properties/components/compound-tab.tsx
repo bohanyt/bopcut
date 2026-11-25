@@ -27,12 +27,12 @@ export function CompoundTab({
 	const editor = useEditor();
 	const [draft, setDraft] = useState<string | null>(null);
 	const pending = useRef<string | null>(null);
-	const session = editor.project.getSession();
+	const session = useRef(editor.project.getSession());
 
 	const commitName = useCommittedRef(() => {
 		const name = pending.current?.trim();
 		pending.current = null;
-		if (!name || editor.project.getSession() !== session) return;
+		if (!name || editor.project.getSession() !== session.current) return;
 		const scene = editor.scenes.getScenes().find(({ id }) => id === element.sceneId);
 		if (scene?.kind === "compound" && scene.name !== name) {
 			editor.timeline.renameCompound({ sceneId: scene.id, name });
