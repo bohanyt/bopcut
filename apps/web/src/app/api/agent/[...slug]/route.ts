@@ -140,7 +140,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		const result = await req.json();
 		// A draft is applied once: move it aside so a project opened later does not apply it again.
 		await consumeAppliedDraft(WORKSPACE, result?.rev);
-		await writeAtomic(path.join(WORKSPACE, "draft-result.json"), JSON.stringify(result, null, 1));
+		// A result that was posted again after a server restart does not replace the one of a later draft.
+		const file = path.join(WORKSPACE, "draft-result.json");
+		const last = await fs.readFile(file, "utf8").then(JSON.parse).catch(() => null);
+		if (!(last?.appliedAt > result?.appliedAt)) await writeAtomic(file, JSON.stringify(result, null, 1));
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "music") {

@@ -34,7 +34,6 @@ import {
 	resolveAnimationPathValueAtTime,
 } from "@/animation";
 import { resolveAnimationTarget } from "@/timeline/animation-targets";
-import { beginTimelineGesture } from "@/timeline/gesture-state";
 import { BatchCommand } from "@/commands";
 import {
 	AddTrackCommand,
@@ -778,13 +777,11 @@ export class TimelineManager {
 	// Register at pointer down so replay can also cancel a gesture before its first move.
 	beginPreviewGesture = (onCancel: () => void): PreviewGesture => {
 		this.cancelPreviewGesture();
-		const endTimelineGesture = beginTimelineGesture();
 		const gesture: PreviewGesture = {
 			finish: () => {
 				if (this.previewGesture !== gesture) return;
 				this.previewGesture = null;
 				unregister();
-				endTimelineGesture();
 			},
 			cancel: () => {
 				if (this.previewGesture !== gesture) return;

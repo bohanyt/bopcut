@@ -522,14 +522,13 @@ export async function pollChanges() {
 
 // An agent draft is a list of per-item operations, protecting human edits (see AGENT.md and draft.ts).
 // Times are in seconds; inside a compound clip they are relative to its content. The whole draft is one Undo step.
-/** Draft results the server did not take (it was restarting): posted again before the next draft is read. */
+/** Draft results that did not reach the server (it was restarting): posted again before the next draft is read. */
 const unpostedDrafts: Record<string, unknown>[] = [];
 
 async function postDraftResult(body: Record<string, unknown>): Promise<boolean> {
-	const response = await fetch("/api/agent/applied", {
+	return fetch("/api/agent/applied", {
 		method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-	}).catch(() => null);
-	return response?.ok === true;
+	}).then(() => true, () => false);
 }
 
 let applying = false;
@@ -568,9 +567,10 @@ export async function pollDraft() {
 	if (draftSessionError({ draft, queued: session, now: currentSession() })) return;
 	// A root switch can also make the editor unready. Refuse this draft before a later poll can retarget it.
 	if (rootSceneId === (agentRootScene()?.id ?? null) && !agentReadiness().ready) return;
-	// One list for all projects: a draft without a project id must not be applied again to the next one opened.
-	if (applying || wasAnswered("agent-drafts", draft.rev) || wasAnswered(`agent-draft-${project.metadata.id}`, draft.rev)) return;
-	markAnswered("agent-drafts", draft.rev);
+	const key = `agent-draft-${project.metadata.id}`;
+	// Another poll that ran meanwhile applied a draft, or could not post its result: this one was read before that.
+	if (applying || unpostedDrafts.length || wasAnswered(key, draft.rev)) return;
+	markAnswered(key, draft.rev);
 	applying = true;
 	try {
 		await applyDraft(draft, { session, rootSceneId });

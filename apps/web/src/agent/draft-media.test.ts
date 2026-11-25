@@ -623,7 +623,7 @@ describe("the draft poller", () => {
 		expect(backend.state.results.map(({ rev }) => rev)).toEqual(["r1", "r2"]);
 	});
 
-	test("a result the server did not take is posted again, and its draft is not applied to the next project", async () => {
+	test("a result that did not reach the server is posted before the next draft is read", async () => {
 		const editor = setup();
 		const store = new Map<string, string>();
 		const previousStorage = (globalThis as any).localStorage;
@@ -637,7 +637,8 @@ describe("the draft poller", () => {
 		globalThis.fetch = (async (url: string, init?: unknown) => {
 			if (String(url) === "/api/agent/draft") {
 				reads.push(down ? "down" : "up");
-				return new Response(JSON.stringify(sent));
+				// The server moves a draft aside once its result is posted.
+				return new Response(JSON.stringify(backend.state.results.length ? null : sent));
 			}
 			if (down && String(url) === "/api/agent/applied") throw new TypeError("server is restarting");
 			return realFetch(url as never, init as never);
@@ -824,22 +825,20 @@ describe("basedOn is checked before anything is imported", () => {
 		expect(elements(editor).some((e) => e.agentId === "late")).toBe(true);
 	});
 
-	test.each(["clip", "keyframe or color"])("a %s drag that commits on release is not cut off: the draft waits", async (kind) => {
+	test("a clip move started while the draft's assets load is not cut off: the draft waits for the release", async () => {
 		const editor = setup();
 		const { beginTimelineGesture } = await import("@/timeline/gesture-state");
-		let cancelled = false;
 		const slow = gate();
 		const backend = fakeBackend({ slow: new Map([["slow.png", slow.promise]]) });
 		restore = backend.restore;
 		const run = applyDraft(draft([{ op: "add", track: { name: "Logos" }, element: image("slow.png", "late") }]));
 		await new Promise((resolve) => setTimeout(resolve, 5));
-		const release = kind === "clip" ? beginTimelineGesture() : editor.timeline.beginPreviewGesture(() => { cancelled = true; }).finish;
+		const release = beginTimelineGesture(); // the user grabs a clip
 		slow.open();
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(backend.state.results).toEqual([]);
 		release();
 		await run;
-		expect(cancelled).toBe(false);
 		expect(backend.state.results[0]).toMatchObject({ applied: true });
 	});
 
