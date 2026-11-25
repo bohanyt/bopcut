@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { checkCancelled, withScratch } from "./jobs";
-import { windowsSupervisor, windowsWorker } from "./process-windows";
+import { protectDirectory, windowsSupervisor } from "./process-windows";
 import { RetrievalError } from "./server-errors";
 import { cookiePlugin, cookiePluginFile, runWithPrivateCookies } from "./yt-dlp-cookies";
 
@@ -82,14 +82,10 @@ export function runYtDlpProcess(command: string, args: string[], signal?: AbortS
 				TMPDIR: process.env.TMPDIR ?? null, TMP: process.env.TMP ?? null, TEMP: process.env.TEMP ?? null,
 			}),
 		};
-		if (process.platform === "win32") {
-			env.BOPENCUT_TOOL_PLUGIN_FILE = cookiePluginFile;
-			env.BOPENCUT_TOOL_PLUGIN_SOURCE = cookiePlugin;
-		} else {
-			const file = path.join(temp, cookiePluginFile);
-			await fs.mkdir(path.dirname(file), { recursive: true });
-			await fs.writeFile(file, cookiePlugin, { flag: "wx" });
-		}
+		if (process.platform === "win32") await protectDirectory(temp);
+		const file = path.join(temp, cookiePluginFile);
+		await fs.mkdir(path.dirname(file), { recursive: true });
+		await fs.writeFile(file, cookiePlugin, { flag: "wx" });
 		return runWithPrivateCookies(args, temp, activeSignal,
 			(toolArgs) => supervise(command, toolArgs, activeSignal, temp, env));
 	}, workspace);
@@ -124,12 +120,8 @@ export async function withToolScratch<T>(
 async function supervise(command: string, args: string[], signal: AbortSignal, scratch: string, extraEnv?: Record<string, string>) {
 	checkCancelled(signal, "tool startup");
 	const env = { ...process.env, ...extraEnv, TMPDIR: scratch, TMP: scratch, TEMP: scratch };
-	const options = { windowsHide: true, stdio: "pipe" as const };
-	const child = process.platform === "win32"
-		? spawn(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-			["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(windowsSupervisor, "utf16le").toString("base64")],
-			{ ...options, env: { ...env, BOPENCUT_TOOL_EXECUTABLE: process.execPath, BOPENCUT_TOOL_WORKER: windowsWorker } })
-		: spawn(process.execPath, ["-e", unixSupervisor], { ...options, env, detached: true });
+	const child = spawn(process.execPath, ["-e", process.platform === "win32" ? windowsSupervisor : unixSupervisor],
+		{ windowsHide: true, stdio: "pipe", env, detached: true });
 	const stop = () => child.stdin.end();
 	signal.addEventListener("abort", stop, { once: true });
 	try {

@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { defaultRunner, fetchFrame, fetchSection, fetchWebFile, toolsFromEnv } from "./server";
 import { getMusic } from "@/sounds/music-server";
 import { getSfx } from "@/sounds/sfx-server";
@@ -97,7 +98,8 @@ test.each([false, true])("publishes atomically across volumes (sidecar: %s)", as
 	}
 });
 
-test.each(["inherit", "ignore"])("abort reaches a surviving child after the wrapper exits (%s pipes)", async (stdio) => {
+// Windows has no process group that outlives the tool: only the tree of a running tool is ended there.
+if (process.platform !== "win32") test.each(["inherit", "ignore"])("abort reaches a surviving child after the wrapper exits (%s pipes)", async (stdio) => {
 	const controller = new AbortController();
 	const heartbeat = path.join(root, "heartbeat");
 	const grandchild = `
@@ -116,10 +118,7 @@ test.each(["inherit", "ignore"])("abort reaches a surviving child after the wrap
 	`;
 	const parent = `
 		const [child, file, stdio] = process.argv.slice(1);
-		// On Windows, Bun terminates its non-detached subprocesses when it exits.
-		require("node:child_process").spawn(process.execPath, ["-e", child, String(process.pid), file], {
-			stdio, detached: process.platform === "win32",
-		}).unref();
+		require("node:child_process").spawn(process.execPath, ["-e", child, String(process.pid), file], { stdio }).unref();
 	`;
 	const contents = () => readFile(heartbeat, "utf8").catch((error: NodeJS.ErrnoException) => {
 		if (error.code !== "ENOENT") throw error;
@@ -140,6 +139,38 @@ test.each(["inherit", "ignore"])("abort reaches a surviving child after the wrap
 		await job.catch(() => {});
 	}
 }, 10_000);
+
+test("a forced stop of the owner ends the tool and the processes it started", async () => {
+	const heartbeat = path.join(root, "heartbeat");
+	const child = `
+		setInterval(() => require("node:fs").appendFileSync(process.argv[1], "."), 20);
+		setTimeout(() => process.exit(), 7500);
+	`;
+	const tool = `
+		require("node:child_process").spawn(process.execPath, ["-e", process.argv[1], process.argv[2]], { stdio: "ignore" });
+		setTimeout(() => process.exit(), 7500);
+	`;
+	const owner = spawn(process.execPath, ["-e", `
+		const { runProcess } = await import(${JSON.stringify(pathToFileURL(path.join(import.meta.dir, "process.ts")).href)});
+		await runProcess(process.execPath, ${JSON.stringify(["-e", tool, child, heartbeat])}, undefined, ${JSON.stringify(root)});
+	`], { cwd: path.join(import.meta.dir, "..", ".."), stdio: "ignore", windowsHide: true });
+	const contents = () => readFile(heartbeat, "utf8").catch(() => "");
+	const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+	try {
+		for (let i = 0; i < 300 && !(await contents()); i++) await pause(20);
+		expect(await contents()).not.toBe("");
+		owner.kill("SIGKILL");
+		let last: string;
+		let tries = 0;
+		do {
+			last = await contents();
+			await pause(300);
+		} while (await contents() !== last && ++tries < 10);
+		expect(tries).toBeLessThan(10);
+	} finally {
+		owner.kill("SIGKILL");
+	}
+}, 15_000);
 
 test("one of two waiters can cancel while the shared job continues", async () => {
 	const run = sharedJob<string>();
@@ -258,17 +289,13 @@ test("private cookie copies stay outside the files root when the temp folder is 
 
 test.skipIf(process.platform !== "win32")("the Windows cookie copy has only the current user in its ACL", async () => {
 	await verifyCookieCopy((copy) => {
-		const shell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-		const command = `
-			$ErrorActionPreference = "Stop"
-			$file = Get-Item -LiteralPath $env:RETRIEVAL_TEST_COOKIE
-			$directory = $file.Directory.GetAccessControl()
-			$user = [Security.Principal.WindowsIdentity]::GetCurrent().User
-			$rules = $file.GetAccessControl().GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
-			$directory.AreAccessRulesProtected -and $rules.Count -eq 1 -and $rules[0].IdentityReference -eq $user
-		`;
-		const options = { env: { ...process.env, RETRIEVAL_TEST_COOKIE: copy }, encoding: "utf8" as const, windowsHide: true };
-		expect(execFileSync(shell, ["-NoProfile", "-NonInteractive", "-Command", command], options).trim()).toBe("True");
+		const icacls = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe");
+		for (const [file, rights] of [[copy, "(I)(F)"], [path.dirname(copy), "(OI)(CI)(F)"]]) {
+			const listing = execFileSync(icacls, [file], { encoding: "utf8", windowsHide: true });
+			const rules = listing.split("\n").map((line) => line.replace(file, "").trim()).filter((line) => line.includes(":("));
+			expect(rules).toEqual([expect.stringMatching(new RegExp("\\\\" + userInfo().username + ":"))]);
+			expect(rules[0].endsWith(rights)).toBe(true);
+		}
 	});
 }, 10_000);
 

@@ -67,6 +67,63 @@ test("evicts the least recently used file and preserves the cache below the disk
 	}
 });
 
+// First of the tests with tools: working encoders are remembered for five minutes.
+test("a busy hardware encoder is not remembered as missing", async () => {
+	const f = await fixture(["source"]);
+	const tested = Promise.withResolvers<void>();
+	let clock: { mockRestore(): void } | undefined;
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("lavfi")) {
+			tested.resolve();
+			throw Object.assign(new Error("tool exited with code 1"), { stderr: "No free encoding sessions: too many concurrent sessions" });
+		}
+		return toolResult();
+	});
+	try {
+		const tab = f.tab("busy", ["source"]);
+		await tested.promise;
+		await sleep(50);
+		expect(tab.events.some(event => event.state === "software")).toBe(false);
+		const calls = run.mock.calls.length;
+		updateSession("busy", { ids: ["source"] }, 1, ["source"]);
+		await sleep(50);
+		expect(run.mock.calls).toHaveLength(calls);
+		const started = Date.now();
+		let now = started + 20_000;
+		clock = spyOn(Date, "now").mockImplementation(() => now);
+		updateSession("busy", { ids: ["source"] }, 2, ["source"]);
+		await sleep(50);
+		expect(run.mock.calls).toHaveLength(calls);
+		// The update in between does not move the retry.
+		now = started + 31_000;
+		updateSession("busy", { ids: ["source"] }, 3, ["source"]);
+		for (let i = 0; i < 50 && run.mock.calls.length === calls; i++) await sleep(10);
+		expect(run.mock.calls.length).toBeGreaterThan(calls);
+	} finally {
+		clock?.mockRestore();
+		await f.dispose();
+		run.mockRestore();
+	}
+});
+
+test("a tool that failed is not tried again until a project opens", async () => {
+	const f = await fixture(["source", "other"]);
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async () => { throw new Error("blocked"); });
+	try {
+		const first = f.tab("first", ["source"]);
+		await first.wait(event => event.state === "missing");
+		expect(first.events.at(-1)?.error).toBe("blocked");
+		expect(run).toHaveBeenCalledTimes(1);
+		for (const [index, ids] of [["source", "other"], ["other"], ["source"]].entries()) updateSession("first", { ids }, index + 1, ["source"]);
+		await sleep(100);
+		expect(run).toHaveBeenCalledTimes(1);
+		const second = f.tab("second", ["source"]);
+		await second.wait(event => event.state === "missing");
+		expect(run).toHaveBeenCalledTimes(2);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
 test("reorders pending assets, cleans interrupted jobs and aborts when the tab closes", async () => {
 	const root = await fs.mkdtemp(path.join(tmpdir(), "proxy-queue-"));
 	const project = path.join(root, "projects", "fixture");
@@ -106,7 +163,7 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 			await fs.writeFile(path.join(dir, id + ".mp4"), id);
 			await fs.writeFile(path.join(meta, id + ".json"), JSON.stringify({ type: "video", diskFile: id + ".mp4" }));
 		}
-		close = openSession("tab", { project: "fixture", ids, paused: false, software: false, send() {} });
+		close = openSession("tab", { project: "fixture", ids, paused: false, software: false, build: true, send() {} });
 		expect(await started.promise).toBe("near.mp4");
 		expect(await fs.readdir(cache)).toEqual(["writer-1.lock"]);
 		updateSession("tab", { ids: ["near", "far", "middle"] }, 1);
@@ -151,10 +208,10 @@ async function fixture(ids: string[], budget = "8000000000") {
 	const close: (() => void)[] = [];
 	return {
 		cache, media,
-		tab(id: string, ids: string[], paused = false) {
+		tab(id: string, ids: string[], paused = false, build = true, retry?: number) {
 			const events: ProxyUpdate[] = [];
 			let changed = Promise.withResolvers<void>();
-			const end = openSession(id, { project: "fixture", ids, paused, software: false, send(event) {
+			const end = openSession(id, { project: "fixture", ids, paused, software: false, build, retry, send(event) {
 				events.push(event);
 				changed.resolve();
 				changed = Promise.withResolvers<void>();
@@ -187,6 +244,86 @@ function videoProbe(duration: number, encoded = false) {
 		frames: [0, 1, 2].map(best_effort_timestamp => ({ best_effort_timestamp, key_frame: 1, pict_type: "I" })),
 	}));
 }
+
+test("a session that does not build uses existing proxies and starts no tool", async () => {
+	const f = await fixture(["ready", "new"]);
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async () => toolResult("h264_nvenc"));
+	try {
+		const { key, size } = await fingerprint(path.join(f.media, "ready.mp4"));
+		const info = { key, size, width: 960, height: 540, source: [0], proxy: [0] };
+		await fs.writeFile(path.join(f.cache, key + ".mp4"), "proxy");
+		await fs.writeFile(path.join(f.cache, key + ".json"), JSON.stringify(info));
+		const manual = f.tab("manual", ["new", "ready"], false, false);
+		await manual.wait(event => event.state === "off" && event.done === 2);
+		updateSession("manual", { ids: ["ready", "new"] }, 1, ["new"]);
+		await sleep(50);
+		expect(manual.events.every(event => event.state === "off")).toBe(true);
+		expect(manual.events.flatMap(event => event.media ?? []).map(({ id }) => id)).toEqual(["ready"]);
+		// A source that is added later and has a proxy is used at once.
+		updateSession("manual", { ids: ["new"] }, 2);
+		updateSession("manual", { ids: ["new", "ready"] }, 3);
+		await manual.wait(event => event.media?.id === "ready" && event.done === 2, 2);
+		expect(run).not.toHaveBeenCalled();
+		expect((await fs.readdir(f.cache)).sort()).toEqual([key + ".json", key + ".mp4"]);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
+test("preparation stops after three failed sources and says why", async () => {
+	const ids = ["a", "b", "c", "d", "e"];
+	const f = await fixture(ids);
+	const probed: string[] = [];
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (!args.includes("-show_frames")) return toolResult();
+		probed.push(path.basename(args.at(-1)!, ".mp4"));
+		throw Object.assign(new Error("tool exited with code 1"), { stderr: "banner\nAccess is denied\n" });
+	});
+	try {
+		const { key, size } = await fingerprint(path.join(f.media, "e.mp4"));
+		await fs.writeFile(path.join(f.cache, key + ".mp4"), "proxy");
+		await fs.writeFile(path.join(f.cache, key + ".json"), JSON.stringify({ key, size, width: 960, height: 540, source: [0], proxy: [0] }));
+		const tab = f.tab("failing", ids);
+		await tab.wait(event => event.state === "failed" && event.done === 5);
+		expect(tab.events.at(-1)?.error).toBe("tool exited with code 1: Access is denied");
+		expect(probed).toEqual(["a", "b", "c"]);
+		expect(tab.events.flatMap(event => event.media ?? []).map(({ id }) => id)).toEqual(["e"]);
+		updateSession("failing", { ids: [...ids].reverse() }, 1);
+		await sleep(50);
+		expect(probed).toHaveLength(3);
+		// Opening a project goes on with the sources that did not fail yet.
+		const again = f.tab("again", ids);
+		await again.wait(event => event.done === 5 && event.state !== "failed");
+		expect(probed).toEqual(["a", "b", "c", "d"]);
+		// Asking to try again also takes the failed ones, which do not stop it a second time.
+		const retried = f.tab("retried", ids, false, true, 1);
+		await retried.wait(event => event.done === 5 && event.state !== "failed");
+		expect(probed.slice(4)).toEqual(["a", "b", "c", "d"]);
+		const reopened = f.tab("reopened", ids, false, true, 1);
+		await reopened.wait(event => event.done === 5 && event.state !== "failed");
+		expect(probed).toHaveLength(8);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
+test("a reader does not keep the work of a closed tab running", async () => {
+	const f = await fixture(["source"]);
+	const started = Promise.withResolvers<void>();
+	const stopped = Promise.withResolvers<void>();
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args, signal) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (!args.includes("-show_frames")) return toolResult();
+		started.resolve();
+		await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+		stopped.resolve();
+		throw signal.reason;
+	});
+	try {
+		f.tab("reader", ["source"], false, false);
+		const builder = f.tab("builder", ["source"]);
+		await started.promise;
+		builder.end();
+		await stopped.promise;
+	} finally { await f.dispose(); run.mockRestore(); }
+});
 
 test("reversed pause and resume updates cannot override the newest sequence", async () => {
 	const f = await fixture(["source"]);
