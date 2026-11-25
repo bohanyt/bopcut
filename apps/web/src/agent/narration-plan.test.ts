@@ -82,7 +82,7 @@ test("CLI reads a large saved project without a running editor or changing its f
 		const { root } = setup();
 		const recording = words(Array.from({ length: 1400 }, (_, i) => `word-${i}`).join(" "), 0, 0.4);
 		const replacement = recording.map(({ text, start, end }) => ({ text, start: start + 0.1, end: end + 0.1 }));
-		root.tracks.audio[0].elements = [{ ...audio("narration", 0, 600), mediaId: "old" }];
+		root.tracks.audio[0].elements = [{ ...audio("narration", 0, 600), sourceType: "upload", mediaId: "old" }];
 		root.tracks.main.elements = recording.slice(0, 850).map((w, i) => video(`picture-${i}`, w.start, w.end - w.start));
 		root.tracks.overlay = [{
 			id: "captions", name: "Captions", type: "text", hidden: false,
