@@ -613,7 +613,7 @@ export class TransformHandleController {
 		const tracks = this.deps.scene.getTracks();
 		const entries = [...tracks.overlay, tracks.main, ...tracks.audio].flatMap(
 			(track) =>
-				track.elements
+				"hidden" in track && track.hidden ? [] : track.elements
 					.filter((element) =>
 						selected.some(
 							(ref) => ref.trackId === track.id && ref.elementId === element.id,
@@ -626,7 +626,7 @@ export class TransformHandleController {
 					})),
 		);
 		const members = entries
-			.filter((entry) => isVisualElement(entry.element))
+			.filter((entry) => isVisualElement(entry.element) && !entry.element.hidden)
 			.map((entry) => {
 				const element = entry.element as VisualElement;
 				const localTime = getElementLocalTime({

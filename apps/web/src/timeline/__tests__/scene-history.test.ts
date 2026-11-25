@@ -3,7 +3,7 @@ import type { TScene, TextElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import { collectAudioClips } from "@/media/audio";
-import { buildEffectParamPath, getChannel, getKeyframeAtTime } from "@/animation";
+import { buildEffectParamPath, getChannel, getElementKeyframes, getKeyframeAtTime } from "@/animation";
 import type { ScalarAnimationKey } from "@/animation/types";
 import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
@@ -98,6 +98,26 @@ function setupSplitHistory() {
 		});
 	return { editor, tracks, main, first, second, keyAt };
 }
+
+test("removing an effect removes only its channels and Undo restores them", () => {
+	const { editor, first, main } = setupSplitHistory();
+	const effectId = editor.timeline.addClipEffect({ ...first, effectType: "blur" });
+	const otherId = editor.timeline.addClipEffect({ ...first, effectType: "blur" });
+	for (const id of [effectId, otherId]) {
+		editor.timeline.upsertEffectParamKeyframe({ ...first, effectId: id, paramKey: "intensity", time: t(1), value: 30 });
+	}
+	const before = main()[0];
+	editor.command.clear();
+	editor.timeline.removeClipEffect({ ...first, effectId });
+	const after = main()[0];
+	expect(getElementKeyframes({ animations: after.animations }).map(({ propertyPath }) => propertyPath))
+		.toEqual([buildEffectParamPath({ effectId: otherId, paramKey: "intensity" })]);
+	editor.command.undo();
+	expect(main()[0]).toEqual(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.command.redo();
+	expect(main()[0]).toEqual(after);
+});
 
 test.each([
 	{ stationary: [], followerStart: 3, stationaryStart: undefined },

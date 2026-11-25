@@ -213,14 +213,15 @@ function toDragElementSnapshots({
 }: {
 	elementsWithTracks: Array<{ track: TimelineTrack; element: TimelineElement }>;
 }): DragElementSnapshot[] {
-	const isVisualTrackedElement = (value: {
+	const isVisibleVisualElement = (value: {
 		track: TimelineTrack;
 		element: TimelineElement;
 	}): value is { track: TimelineTrack; element: VisualElement } =>
-		isVisualElement(value.element);
+		isVisualElement(value.element) && !value.element.hidden &&
+		!("hidden" in value.track && value.track.hidden);
 
 	return elementsWithTracks
-		.filter(isVisualTrackedElement)
+		.filter(isVisibleVisualElement)
 		.map(({ track, element }) => ({
 			trackId: track.id,
 			elementId: element.id,
