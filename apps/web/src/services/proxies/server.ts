@@ -312,13 +312,22 @@ let needsPump = false;
 let initialized: string | undefined;
 let wiping = false;
 let idle: PromiseWithResolvers<void> | undefined;
-let capabilities: { encoders: string[] | null; expiresAt: number } | undefined;
+let capabilities: { encoders: string[] | null; expiresAt: number; error?: string } | undefined;
+/** Sources in a row that the tools failed on. Preparation stops at the limit, until a project is opened or the setting is changed. */
+let failedInRow = 0;
+const failureLimit = 3;
+let stopped: string | undefined;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isPaused = () => pauses.size > 0 || [...sessions.values()].some(entry => entry.paused);
 function send(session: Session, state: ProxyUpdate["state"], details?: Partial<ProxyUpdate>) {
-	session.send({ state, bytes: session.bytes, done: session.done.size, total: session.ids.length, ...details });
+	const error = state === "failed" ? stopped : state === "missing" ? capabilities?.error : undefined;
+	session.send({ state, bytes: session.bytes, done: session.done.size, total: session.ids.length, ...(error && { error }), ...details });
 }
+const errorText = (error: unknown) => {
+	const { message = String(error), stderr } = error as { message?: string; stderr?: string };
+	return [message, stderr?.trim().split("\n").at(-1)].filter(Boolean).join(": ").slice(0, 300);
+};
 function notifyEvicted(key: string) {
 	for (const session of sessions.values()) {
 		for (const [id, published] of session.written) {
@@ -371,7 +380,11 @@ export function openSession(id: string, session: Omit<Session, "done" | "revisio
 	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>(), sequence: 0, readerPending: false };
 	sessions.set(id, entry);
 	// Tools that failed are tried again when a project is opened or the setting is changed, not on their own.
-	if (entry.build && !capabilities?.encoders?.length) capabilities = undefined;
+	if (entry.build) {
+		if (!capabilities?.encoders?.length) capabilities = undefined;
+		failedInRow = 0;
+		stopped = undefined;
+	}
 	void keepNeededJob();
 	void pump();
 	return () => {
@@ -396,6 +409,7 @@ function retryLater() {
 async function detectEncoders(dir: string, signal: AbortSignal) {
 	if (capabilities && capabilities.expiresAt > Date.now()) return capabilities.encoders;
 	let available: string[] | null;
+	let error: string | undefined;
 	try {
 		const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
 		await runBackgroundProcess(probeCommand(), ["-version"], probeSignal, dir);
@@ -411,11 +425,12 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 				available.push(encoder);
 			} catch { signal.throwIfAborted(); }
 		}
-	} catch {
+	} catch (cause) {
 		signal.throwIfAborted();
 		available = null;
+		error = errorText(cause);
 	}
-	capabilities = { encoders: available, expiresAt: available?.length ? Date.now() + 300_000 : Infinity };
+	capabilities = { encoders: available, expiresAt: available?.length ? Date.now() + 300_000 : Infinity, error };
 	return available;
 }
 
@@ -424,7 +439,7 @@ async function pump() {
 	if (running) { needsPump = true; return; }
 	const readerDue = (session: Session) => session.readerChecked === undefined || session.readerPending;
 	if (![...sessions.values()].some(readerDue)) {
-		for (const session of sessions.values()) send(session, session.build ? "readonly" : "off");
+		for (const session of sessions.values()) send(session, !session.build ? "off" : stopped ? "failed" : "readonly");
 		return;
 	}
 	running = true;
@@ -451,14 +466,14 @@ async function pump() {
 			}
 		}
 		if (writable) for (const session of sessions.values()) {
-			if (!session.build) continue;
+			if (!session.build || stopped) continue;
 			if (session.readerChecked !== undefined) session.done.clear();
 			session.readerChecked = undefined;
 			session.readerPending = false;
 		}
 		const blocked = new Set<Session>();
-		const builds = (session: Session) => writable && session.build;
-		const progress = (session: Session) => !session.build ? "off" : writable ? "preparing" : "readonly";
+		const builds = (session: Session) => writable && session.build && !stopped;
+		const progress = (session: Session) => !session.build ? "off" : stopped ? "failed" : writable ? "preparing" : "readonly";
 		while (!wiping && !isPaused()) {
 			const entry = [...sessions.entries()].find(([, session]) => !blocked.has(session) &&
 				(builds(session) || readerDue(session)) &&
@@ -487,6 +502,7 @@ async function pump() {
 					if (!failures.has(source.key)) {
 						send(session, "preparing");
 						info = await prepare(dir, source, session.software, encoders, signal);
+						failedInRow = 0;
 					}
 				}
 				if (!signal.aborted && usesJob(session, job)) {
@@ -520,6 +536,7 @@ async function pump() {
 				else if (key) {
 					if (failures.size >= 1024) failures.delete(failures.values().next().value!);
 					failures.add(key);
+					if (++failedInRow >= failureLimit) stopped = errorText(error);
 				}
 				session.done.add(id);
 			} finally {
@@ -539,7 +556,7 @@ async function pump() {
 			}
 			if (blocked.has(session)) continue;
 			session.bytes = bytes;
-			if (complete) send(session, !session.build ? "off" : !writable ? "readonly" : session.disk ? "disk" : "ready");
+			if (complete) send(session, !session.build ? "off" : stopped ? "failed" : !writable ? "readonly" : session.disk ? "disk" : "ready");
 		}
 	} catch (error) { console.error("Proxy preparation failed", error); }
 	finally {

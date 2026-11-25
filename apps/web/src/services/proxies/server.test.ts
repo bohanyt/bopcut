@@ -74,6 +74,7 @@ test("a tool that failed is not tried again until a project opens", async () => 
 	try {
 		const first = f.tab("first", ["source"]);
 		await first.wait(event => event.state === "missing");
+		expect(first.events.at(-1)?.error).toBe("blocked");
 		expect(run).toHaveBeenCalledTimes(1);
 		for (const [index, ids] of [["source", "other"], ["other"], ["source"]].entries()) updateSession("first", { ids }, index + 1, ["source"]);
 		await sleep(100);
@@ -221,6 +222,35 @@ test("a session that does not build uses existing proxies and starts no tool", a
 		expect(manual.events.flatMap(event => event.media ?? []).map(({ id }) => id)).toEqual(["ready"]);
 		expect(run).not.toHaveBeenCalled();
 		expect((await fs.readdir(f.cache)).sort()).toEqual([key + ".json", key + ".mp4"]);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
+test("preparation stops after three failed sources and says why", async () => {
+	const ids = ["a", "b", "c", "d", "e"];
+	const f = await fixture(ids);
+	const probed: string[] = [];
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (!args.includes("-show_frames")) return toolResult();
+		probed.push(path.basename(args.at(-1)!, ".mp4"));
+		throw Object.assign(new Error("tool exited with code 1"), { stderr: "banner\nAccess is denied\n" });
+	});
+	try {
+		const { key, size } = await fingerprint(path.join(f.media, "e.mp4"));
+		await fs.writeFile(path.join(f.cache, key + ".mp4"), "proxy");
+		await fs.writeFile(path.join(f.cache, key + ".json"), JSON.stringify({ key, size, width: 960, height: 540, source: [0], proxy: [0] }));
+		const tab = f.tab("failing", ids);
+		await tab.wait(event => event.state === "failed" && event.done === 5);
+		expect(tab.events.at(-1)?.error).toBe("tool exited with code 1: Access is denied");
+		expect(probed).toEqual(["a", "b", "c"]);
+		expect(tab.events.flatMap(event => event.media ?? []).map(({ id }) => id)).toEqual(["e"]);
+		updateSession("failing", { ids: [...ids].reverse() }, 1);
+		await sleep(50);
+		expect(probed).toHaveLength(3);
+		// Trying again goes on with the sources that did not fail yet.
+		const again = f.tab("again", ids);
+		await again.wait(event => event.done === 5 && event.state !== "failed");
+		expect(probed).toEqual(["a", "b", "c", "d"]);
 	} finally { await f.dispose(); run.mockRestore(); }
 });
 
