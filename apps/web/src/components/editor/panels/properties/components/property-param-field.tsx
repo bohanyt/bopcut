@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState, type ChangeEvent } from "react";
 import { useI18n } from "@/i18n/provider";
 import type {
 	ParamDefinition,
@@ -26,6 +27,7 @@ import { usePropertyDraft } from "../hooks/use-property-draft";
 import { KeyframeToggle } from "./keyframe-toggle";
 import { Textarea } from "@/components/ui/textarea";
 import { useEditor } from "@/editor/use-editor";
+import { useCommittedRef } from "@/hooks/use-committed-ref";
 
 export function PropertyParamField({
 	param,
@@ -143,28 +145,59 @@ function ParamInput({
 		);
 	}
 
-	if (param.type === "text") {
+	if (param.type === "text" || param.type === "font") {
 		return (
-			<Textarea
+			<TextParamField
+				multiline={param.type === "text"}
 				value={String(value)}
-				onChange={(event) => onPreview(event.currentTarget.value)}
-				onBlur={onCommit}
-			/>
-		);
-	}
-
-	if (param.type === "font") {
-		return (
-			<input
-				className="border-input bg-accent h-9 w-full rounded-md border px-3 text-sm outline-none"
-				value={String(value)}
-				onChange={(event) => onPreview(event.currentTarget.value)}
-				onBlur={onCommit}
+				onPreview={onPreview}
+				onCommit={onCommit}
 			/>
 		);
 	}
 
 	return null;
+}
+
+/** `value` is the committed text: what is typed is kept here until it is committed. */
+function TextParamField({
+	multiline,
+	value,
+	onPreview,
+	onCommit,
+}: {
+	multiline: boolean;
+	value: string;
+	onPreview: (value: string) => void;
+	onCommit: () => void;
+}) {
+	const [draft, setDraft] = useState<string | null>(null);
+	const unmount = useCommittedRef(() => {
+		if (draft !== null) onCommit();
+	});
+	// Another clip was selected while typing.
+	useEffect(() => () => unmount.current(), [unmount]);
+
+	const field = {
+		value: draft ?? value,
+		onChange: ({ currentTarget }: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+			setDraft(currentTarget.value);
+			onPreview(currentTarget.value);
+		},
+		onBlur: () => {
+			if (draft !== null) onPreview(draft);
+			onCommit();
+			setDraft(null);
+		},
+	};
+	return multiline ? (
+		<Textarea {...field} />
+	) : (
+		<input
+			className="border-input bg-accent h-9 w-full rounded-md border px-3 text-sm outline-none"
+			{...field}
+		/>
+	);
 }
 
 function NumberParamField({
