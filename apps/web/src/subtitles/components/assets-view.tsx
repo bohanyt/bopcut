@@ -177,9 +177,15 @@ export function Captions() {
 	};
 
 	const handleImportFile = async ({ file }: { file: File }) => {
+		const sceneId = editor.scenes.getActiveScene().id;
+		const session = editor.project.getSessionSignal();
 		dispatch({ type: "start", step: "captions.readingFile" });
 		try {
 			const input = await file.text();
+			if (session.aborted || editor.scenes.getActiveSceneOrNull()?.id !== sceneId) {
+				dispatch({ type: "fail", error: (t) => t("captions.importTargetChanged") });
+				return;
+			}
 			const result = parseSubtitleFile({
 				fileName: file.name,
 				input,
