@@ -42,11 +42,14 @@ export const ElementsClipboardHandler = {
 		const results = editor.timeline.getElementsWithTracks({
 			elements: selectedElements,
 		});
+		const { overlay, main, audio } = editor.scenes.getActiveScene().tracks;
+		const trackIds = [...overlay, main, ...audio].map((track) => track.id);
 		const items = results.map(({ track, element }) => {
 			const { id: _elementId, ...elementWithoutId } = element;
 			return {
 				trackId: track.id,
 				trackType: track.type,
+				layer: overlay.length - trackIds.indexOf(track.id),
 				element: elementWithoutId,
 			};
 		});

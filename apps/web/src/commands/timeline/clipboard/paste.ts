@@ -4,13 +4,15 @@ import {
 	type CommandResult,
 } from "@/commands/base-command";
 import { EditorCore } from "@/core";
-import type { SceneTracks, TScene, TimelineElement } from "@/timeline";
+import type { SceneTracks, TScene, TimelineElement, TrackType } from "@/timeline";
 import type { ElementClipboardItem } from "@/clipboard";
 import { generateUUID } from "@/utils/id";
 import {
 	applyPlacement,
 	resolveTrackPlacement,
 	enforceMainTrackStart,
+	type PlacementResult,
+	type PlacementTimeSpan,
 } from "@/timeline/placement";
 import { canPlaceTimeSpansOnTrack } from "@/timeline/placement/overlap";
 import { cloneAnimations } from "@/animation";
@@ -95,8 +97,15 @@ export class PasteCommand extends Command {
 			this.clipboardItems.map((item, index) => [item, deepCopy.elements[index]]),
 		);
 		const placed: TimelineElement[] = [];
+		const targetTrackIds = new Map<string, string>();
+		// Layers are placed from the bottom up, each at or above the previous one, so the pasted
+		// clips cover each other as their sources do.
+		const groups = [...itemsByTrackId].sort(
+			([, a], [, b]) => a[0].layer - b[0].layer,
+		);
+		let maxTrackIndex = Infinity;
 
-		for (const [trackId, items] of itemsByTrackId) {
+		for (const [trackId, items] of groups) {
 			const elementsToAdd = items.flatMap((item) => {
 				const element = pastedByItem.get(item);
 				return element ? [element] : [];
@@ -112,15 +121,26 @@ export class PasteCommand extends Command {
 				updatedTracks.main,
 				...updatedTracks.audio,
 			].findIndex((track) => track.id === trackId);
-			let placementResult = resolveTrackPlacement({
+			const placement = {
 				tracks: updatedTracks,
 				trackType,
 				timeSpans: elementsToAdd.map((element) => ({
 					startTime: element.startTime,
 					duration: element.duration,
 				})),
-				strategy: { type: "aboveSource", sourceTrackIndex },
-			});
+			};
+			let placementResult =
+				groups.length > 1
+					? resolveLayerPlacement({
+							...placement,
+							layer: items[0].layer,
+							sourceTrackIndex,
+							maxTrackIndex: trackType === "audio" ? Infinity : maxTrackIndex,
+						})
+					: resolveTrackPlacement({
+							...placement,
+							strategy: { type: "aboveSource", sourceTrackIndex },
+						});
 			if (!placementResult) {
 				continue;
 			}
@@ -181,12 +201,19 @@ export class PasteCommand extends Command {
 			updatedTracks = applied.updatedTracks;
 			placed.push(...elementsForPlacement);
 
-			for (const element of elementsForPlacement) {
-				this.pastedElements.push({
-					trackId: applied.targetTrackId,
-					elementId: element.id,
-				});
+			if (trackType !== "audio") {
+				maxTrackIndex = [...updatedTracks.overlay, updatedTracks.main].findIndex(
+					(track) => track.id === applied.targetTrackId,
+				);
 			}
+			for (const element of elementsForPlacement) {
+				targetTrackIds.set(element.id, applied.targetTrackId);
+			}
+		}
+		// The selection keeps the order of the copied clips.
+		for (const element of deepCopy.elements) {
+			const trackId = targetTrackIds.get(element.id);
+			if (trackId) this.pastedElements.push({ trackId, elementId: element.id });
 		}
 
 		const copiedScenes = collectCompoundScenes({
@@ -214,6 +241,64 @@ export class PasteCommand extends Command {
 	getPastedElements(): { trackId: string; elementId: string }[] {
 		return this.pastedElements;
 	}
+}
+
+/**
+ * Place for one of several pasted layers: its own track if free, then the lowest free track that is
+ * not below `maxTrackIndex`, then a new one on top. No track may move the clips in time.
+ */
+function resolveLayerPlacement({
+	tracks,
+	trackType,
+	timeSpans,
+	layer,
+	sourceTrackIndex,
+	maxTrackIndex,
+}: {
+	tracks: SceneTracks;
+	trackType: TrackType;
+	timeSpans: PlacementTimeSpan[];
+	layer: number;
+	sourceTrackIndex: number;
+	maxTrackIndex: number;
+}): PlacementResult | null {
+	const { overlay, main, audio } = tracks;
+	const ordered = [...overlay, main, ...audio];
+	const overlayFromBottom = [...overlay].reverse();
+	const candidates = [
+		ordered[sourceTrackIndex],
+		ordered[sourceTrackIndex - 1],
+		...(layer < 0
+			? [...audio].reverse()
+			: layer === 0
+				? [main, ...overlayFromBottom]
+				: [...overlayFromBottom, main]),
+	];
+	const start = timeSpans.reduce(
+		(earliest, span) => (span.startTime < earliest ? span.startTime : earliest),
+		timeSpans[0].startTime,
+	);
+	for (const track of candidates) {
+		if (track?.type !== trackType) continue;
+		const trackIndex = ordered.indexOf(track);
+		if (
+			trackIndex <= maxTrackIndex &&
+			canPlaceTimeSpansOnTrack({ track, timeSpans }) &&
+			enforceMainTrackStart({
+				tracks,
+				targetTrackId: track.id,
+				requestedStartTime: start,
+			}) === start
+		) {
+			return { kind: "existingTrack", trackId: track.id, trackIndex, trackType };
+		}
+	}
+	return resolveTrackPlacement({
+		tracks,
+		trackType,
+		timeSpans,
+		strategy: { type: "alwaysNew", position: "highest" },
+	});
 }
 
 function groupClipboardItemsByTrackId({
