@@ -16,8 +16,20 @@ const reserve = () => byteSetting(process.env.BOPENCUT_PROXY_FREE_BYTES, 5_000_0
 const limit = () => byteSetting(process.env.BOPENCUT_PROXY_LIMIT_BYTES, 8_000_000_000);
 class LowDisk extends Error {}
 class EncoderBusy extends Error {}
+/** `failed` counts sources in a row: builds and drivers fail in more ways than the messages below. */
+type CudaSupport = { disabled: boolean; unsupported: Set<string>; failed: number };
+type EncoderCapabilities = { encoders: string[] | null; expiresAt: number; error?: string; busy?: boolean; cuda?: CudaSupport };
 const isBusy = (error: unknown) => /temporarily unavailable|encoder is busy|too many (sessions|concurrent)|out of memory|no free (session|encoder)/i
 	.test((error as { stderr?: string })?.stderr ?? "");
+
+function rememberCudaFailure(cuda: CudaSupport, codec: string, error: unknown) {
+	const stderr = (error as { stderr?: string })?.stderr ?? "";
+	if (/no such filter.*scale_cuda|cannot load (?:nv|lib)cuda|out of memory|cuda_error_out_of_memory/i.test(stderr)) cuda.disabled = true;
+	else if (/hardware is lacking required capabilities|(?:codec|pixel format).*not supported|(?:does not support|unsupported).*?(?:codec|pixel format)|no device available for decoder/i.test(stderr)) {
+		cuda.unsupported.add(codec);
+	}
+	if (++cuda.failed >= 2) cuda.disabled = true;
+}
 export async function fingerprint(file: string) {
 	const input = await fs.open(file, "r");
 	try {
@@ -52,7 +64,7 @@ async function sourcePath(project: string, media: string) {
 
 type Probe = {
 	streams: {
-		width: number; height: number; pix_fmt: string; time_base: string; duration?: string; sample_aspect_ratio?: string;
+		width: number; height: number; codec_name?: string; pix_fmt: string; time_base: string; duration?: string; sample_aspect_ratio?: string;
 		color_range?: string; color_space?: string; color_transfer?: string; color_primaries?: string;
 		tags?: { alpha_mode?: string }; side_data_list?: { rotation?: number; displaymatrix?: string }[];
 	}[];
@@ -93,7 +105,7 @@ async function encode(dir: string, args: string[], output: string, signal: Abort
 async function probe(dir: string, file: string, signal: AbortSignal): Promise<Probe> {
 	const result = await runBackgroundProcess(probeCommand(), ["-v", "error", ...safeInput, "-select_streams", "v",
 		"-show_frames", "-show_streams", "-show_entries",
-		"frame=best_effort_timestamp,key_frame,pict_type:stream=width,height,pix_fmt,time_base,duration,sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries:stream_tags=alpha_mode:stream_side_data=rotation,displaymatrix",
+		"frame=best_effort_timestamp,key_frame,pict_type:stream=width,height,codec_name,pix_fmt,time_base,duration,sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries:stream_tags=alpha_mode:stream_side_data=rotation,displaymatrix",
 		"-of", "json", file], signal, dir);
 	return JSON.parse(result.stdout);
 }
@@ -190,7 +202,7 @@ function quarterTurn(stream: Probe["streams"][number]) {
 	return a === 0 ? 90 : a < 0 ? 180 : 0;
 }
 
-async function prepare(dir: string, identity: Source, software: boolean, encoders: string[], signal: AbortSignal): Promise<ProxyInfo | undefined> {
+async function prepare(dir: string, identity: Source, software: boolean, encoders: string[], cuda: CudaSupport | undefined, signal: AbortSignal): Promise<ProxyInfo | undefined> {
 	const { file, key, size } = identity;
 	const video = path.join(dir, key + ".mp4");
 	const metadata = path.join(dir, key + ".json");
@@ -218,6 +230,8 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 	const h = Math.max(2, Math.round(height * scale / 2) * 2);
 	const known = (value?: string) => value && value !== "unknown" ? value : undefined;
 	const range = known(stream.color_range) ?? (stream.pix_fmt.startsWith("yuvj") ? "pc" : undefined);
+	// CUDA frames bypass autorotation, and the CUDA scaler does not match the full-range CPU path.
+	const cudaCodec = rotation === 0 && range !== "pc" && /^(h264|hevc)$/.test(stream.codec_name ?? "") ? stream.codec_name : undefined;
 	const colors = [
 		["-color_range", range], ["-colorspace", known(stream.color_space)],
 		["-color_trc", known(stream.color_transfer)], ["-color_primaries", known(stream.color_primaries)],
@@ -230,51 +244,77 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 	const free = await fs.statfs(dir);
 	const maxBytes = Math.floor(Math.min(limit() - used, free.bavail * free.bsize - reserve()));
 	if (maxBytes < 1024) throw new LowDisk();
+	const inspect = async (fullCuda: boolean) => {
+		const stat = await fs.stat(temp);
+		if (stat.size >= maxBytes) throw new LowDisk();
+		const output = await probe(dir, temp, signal);
+		const proxy = timestamps(output);
+		const encoded = output.streams[0];
+		// A constant offset is fine. Drift, reordering or duplicated samples invalidate the proxy.
+		if (!proxy || proxy.length !== pts.length || output.frames.some(f => !f.key_frame || (fullCuda ? f.pict_type !== "I" : f.pict_type === "B")) ||
+			encoded?.width !== w || encoded.height !== h || (range && encoded.color_range !== range) ||
+			(fullCuda && (quarterTurn(encoded) !== 0 || encoded.sample_aspect_ratio !== "1:1")) ||
+			(known(stream.color_space) && encoded.color_space !== stream.color_space) ||
+			(known(stream.color_transfer) && encoded.color_transfer !== stream.color_transfer) ||
+			(known(stream.color_primaries) && encoded.color_primaries !== stream.color_primaries) ||
+			proxy.some((t, i) => Math.abs(t - proxy[0] - (pts[i] - pts[0])) > 0.000002)) return;
+		return { stat, proxy };
+	};
 	try {
 		if (!await sameSource(identity)) throw new Error("Proxy source changed before encoding");
-		let success = false;
+		let result: Awaited<ReturnType<typeof inspect>>;
+		let encoding = "";
 		let busy = false;
-		for (const encoder of [...encoders, ...(software ? ["libx264"] : [])]) {
+		let tooSmall = false;
+		attempts: for (const encoder of [...encoders, ...(software ? ["libx264"] : [])]) {
 			const hardware = encoder === "h264_nvenc" ? [["-hwaccel", "cuda"], []] : encoder === "libx264" ? [[]] : [["-hwaccel", "auto"], []];
+			if (encoder === "h264_nvenc" && cudaCodec && cuda && !cuda.disabled && !cuda.unsupported.has(cudaCodec)) {
+				hardware.unshift(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]);
+			}
 			for (const decode of hardware) {
+				const fullCuda = decode.includes("-hwaccel_output_format");
 				const quality = encoder === "h264_nvenc" ? ["-preset", "p4", "-rc", "vbr", "-cq", "25", "-b:v", "0"]
 					: encoder === "libx264" ? ["-preset", "ultrafast", "-crf", "24"] : ["-b:v", "4800k"];
 				quality.push("-maxrate", "5200k", "-bufsize", "5200k");
 				try {
 					await encode(dir, ["-v", "error", "-y", ...decode, ...safeInput, "-i", file, "-map", "0:v:0", "-an", "-sn", "-dn",
-						"-vf", filter, "-pix_fmt", "yuv420p", "-fps_mode", "passthrough",
+						...(fullCuda ? ["-vf", `scale_cuda=${w}:${h}:interp_algo=lanczos:format=yuv420p,setsar=1`] : ["-vf", filter, "-pix_fmt", "yuv420p"]),
+						"-fps_mode", "passthrough",
 						"-enc_time_base", stream.time_base.replace("/", ":"), "-video_track_timescale", stream.time_base.split("/")[1],
 						...colors.flatMap(([flag, value]) => flag && value ? [flag, value] : []),
 						"-c:v", encoder, ...quality, "-g", encoder === "h264_nvenc" ? "0" : "1", "-bf", "0", "-fs", String(maxBytes), "-movflags", "+faststart", temp], temp, signal);
-					success = true;
-					break;
 				} catch (error) {
 					if (error instanceof ProxyWriterLost) throw error;
 					signal.throwIfAborted();
-					busy ||= isBusy(error);
+					if (fullCuda && cuda && cudaCodec) rememberCudaFailure(cuda, cudaCodec, error);
+					else {
+						busy ||= isBusy(error);
+						tooSmall ||= /dimension less than the minimum/i.test((error as { stderr?: string })?.stderr ?? "");
+					}
+					continue;
 				}
+				if (!await sameSource(identity)) throw new Error("Proxy source changed during encoding");
+				try { result = await inspect(fullCuda); }
+				catch (error) {
+					if (!fullCuda || error instanceof ProxyWriterLost) throw error;
+					signal.throwIfAborted();
+					continue;
+				}
+				if (!result && fullCuda) continue;
+				if (!result) return;
+				if (fullCuda && cuda) cuda.failed = 0;
+				encoding = encoder + (fullCuda ? ":scale_cuda" : decode[1] ? ":" + decode[1] : "");
+				break attempts;
 			}
-			if (success) break;
 		}
-		if (!success) {
+		if (!result) {
 			if (busy) throw new EncoderBusy();
+			if (tooSmall) return;
 			throw new Error("No working proxy encoder");
 		}
-		if (!await sameSource(identity)) throw new Error("Proxy source changed during encoding");
-		const stat = await fs.stat(temp);
-		if (stat.size >= maxBytes) throw new LowDisk();
-		const output = await probe(dir, temp, signal);
-		const proxy = timestamps(output);
-		// A constant timestamp offset is fine. Any drift, reordering or duplicated sample disables the proxy.
-		const encoded = output.streams[0];
-		if (!proxy || proxy.length !== pts.length || output.frames.some(f => !f.key_frame || f.pict_type === "B") ||
-			encoded?.width !== w || encoded.height !== h || (range && encoded.color_range !== range) ||
-			(known(stream.color_space) && encoded.color_space !== stream.color_space) ||
-			(known(stream.color_transfer) && encoded.color_transfer !== stream.color_transfer) ||
-			(known(stream.color_primaries) && encoded.color_primaries !== stream.color_primaries) ||
-			proxy.some((t, i) => Math.abs(t - proxy[0] - (pts[i] - pts[0])) > 0.000002) ||
-			!await sameSource(identity) || (await fingerprint(file)).key !== key) return;
-		const info = { key, width, height, source: pts, proxy, size, duration, frameCount: pts.length };
+		const { stat, proxy } = result;
+		if (!await sameSource(identity) || (await fingerprint(file)).key !== key) return;
+		const info = { key, width, height, source: pts, proxy, size, duration, frameCount: pts.length, encoding };
 		const serialized = JSON.stringify(info);
 		await ensureProxySpace(stat.size + Buffer.byteLength(serialized), stat.size, dir);
 		await requireProxyWriter(dir);
@@ -318,16 +358,17 @@ let needsPump = false;
 let initialized: string | undefined;
 let wiping = false;
 let idle: PromiseWithResolvers<void> | undefined;
-let capabilities: { encoders: string[] | null; expiresAt: number; error?: string; busy?: boolean } | undefined;
+let capabilities: EncoderCapabilities | undefined;
 /** Sources in a row that the tools failed on. Preparation stops at the limit, until a project is opened or the setting is changed. */
 let failedInRow = 0;
 const failureLimit = 3;
+const checkLimit = 60_000;
 let stopped: string | undefined;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isPaused = () => pauses.size > 0 || [...sessions.values()].some(entry => entry.paused);
 function send(session: Session, state: ProxyUpdate["state"], details?: Partial<ProxyUpdate>) {
-	const error = state === "failed" ? stopped : state === "missing" ? capabilities?.error : undefined;
+	const error = state === "failed" ? stopped ?? capabilities?.error : undefined;
 	session.send({ state, bytes: session.bytes, done: session.done.size, total: session.ids.length, ...(error && { error }), ...details });
 }
 const errorText = (error: unknown) => {
@@ -422,13 +463,15 @@ function retryLater() {
 async function detectEncoders(dir: string, signal: AbortSignal) {
 	if (capabilities && capabilities.expiresAt > Date.now()) {
 		if (capabilities.busy) throw new EncoderBusy();
-		return capabilities.encoders;
+		return capabilities;
 	}
 	let available: string[] | null;
 	let error: string | undefined;
 	let busy = false;
+	// The first start of a program can be slow.
+	const checkTime = AbortSignal.timeout(checkLimit);
 	try {
-		const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+		const probeSignal = AbortSignal.any([signal, checkTime]);
 		await runBackgroundProcess(probeCommand(), ["-version"], probeSignal, dir);
 		const { stdout } = await run(dir, ["-hide_banner", "-encoders"], probeSignal);
 		const names = process.platform === "darwin" ? ["h264_videotoolbox"] : ["h264_nvenc", "h264_qsv", "h264_amf"];
@@ -436,7 +479,8 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 		for (const encoder of names) {
 			if (!stdout.includes(encoder)) continue;
 			try {
-				await run(dir, ["-v", "error", "-f", "lavfi", "-i", "color=s=128x128", "-frames:v", "1",
+				// Some encoders refuse smaller pictures.
+				await run(dir, ["-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
 					"-c:v", encoder, "-g", encoder === "h264_nvenc" ? "0" : "1", "-bf", "0", "-f", "null", "-"],
 					AbortSignal.any([signal, AbortSignal.timeout(12_000)]));
 				available.push(encoder);
@@ -448,11 +492,20 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 	} catch (cause) {
 		signal.throwIfAborted();
 		available = null;
-		error = errorText(cause);
+		if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
+			error = checkTime.aborted ? `the FFmpeg check took longer than ${checkLimit / 1000} s` : errorText(cause);
+		}
 	}
 	if (available && !available.length && busy) throw new EncoderBusy();
-	capabilities = { encoders: available, expiresAt: available?.length ? Date.now() + 300_000 : Infinity, error };
-	return available;
+	let cuda: CudaSupport | undefined;
+	if (available?.includes("h264_nvenc") && !checkTime.aborted) {
+		try {
+			const { stdout } = await run(dir, ["-hide_banner", "-filters"], AbortSignal.any([signal, checkTime]));
+			if (/^\s*\S+\s+scale_cuda\s+V->V\b/m.test(stdout)) cuda = { disabled: false, unsupported: new Set(), failed: 0 };
+		} catch { signal.throwIfAborted(); }
+	}
+	capabilities = { encoders: available, expiresAt: available?.length ? Date.now() + 300_000 : Infinity, error, cuda };
+	return capabilities;
 }
 
 async function pump() {
@@ -514,15 +567,15 @@ async function pump() {
 				let info = source && await cached(dir, source, builds(session));
 				if (source && !info && builds(session)) {
 					await requireProxyWriter(dir);
-					const encoders = await detectEncoders(dir, signal);
+					const { encoders, cuda } = await detectEncoders(dir, signal);
 					if (!encoders || (!encoders.length && !session.software)) {
-						send(session, encoders ? "software" : "missing");
+						send(session, encoders ? "software" : capabilities?.error ? "failed" : "missing");
 						blocked.add(session);
 						continue;
 					}
 					if (!failures.has(source.key)) {
 						send(session, "preparing");
-						info = await prepare(dir, source, session.software, encoders, signal);
+						info = await prepare(dir, source, session.software, encoders, cuda, signal);
 						failedInRow = 0;
 					}
 				}

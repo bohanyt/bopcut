@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { SceneTracks, TScene, TimelineElement } from "@/timeline";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
+import { inspectDraft } from "./draft-check";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
@@ -23,6 +24,17 @@ const pair = () => scenesWith([video("A", 0, 2), video("B", 2, 2)]);
 
 describe("transitions", () => {
 	for (const type of ["flash", "dip", "crossfade", "slide-left"] as const) {
+		test(`draft check omits generated ${type} clips and transition motion`, () => {
+			const scenes = scenesWith([video("A", 0, 2), video("B", 2, 2), video("A-again", 4, 1, { mediaId: "m-A" })]);
+			const out = run(scenes, [{ op: "transition", match: { agentId: "B" }, type }]);
+			expect(out.results[0].ok).toBe(true);
+			const report = inspectDraft({ root: out.scenes[0], scenes: out.scenes, media: [], from: 0, to: 5, fps: 30,
+				canvas: { width: 1080, height: 1920 }, signal: new AbortController().signal });
+			expect(report.sources[0]).toMatchObject({ mediaId: "m-A", uses: 2, seconds: 3, shortestGap: 2 });
+			expect(report.motion).toEqual([]);
+			expect(report.runs).toEqual([]);
+		});
+
 		test(`${type} refuses a hidden source track without changing it`, () => {
 			const scenes = scenesWith([], [{
 				id: "hidden", name: "Hidden footage", type: "video", hidden: true,

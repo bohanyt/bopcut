@@ -1,5 +1,6 @@
 import { parseArgs as parse } from "node:util";
 import path from "node:path";
+import type { DraftThresholds } from "../src/agent/draft-check";
 import { parseExportRequest } from "../src/agent/export";
 import { parseFrameInput } from "../src/agent/render-input";
 import { parseRangeInput } from "../src/agent/range-view";
@@ -9,7 +10,7 @@ import { isHttpUrl, parseTime } from "../src/retrieval/time";
 import { runRender } from "./agent-render";
 import { loadEnvLocal } from "./retrieval-cli";
 
-const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review"] as const;
+const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check"] as const;
 type Command = typeof commands[number];
 const usage = `Use: bun run agent <${commands.join("|")}> [--project-id ID] [--timeout SECONDS]`;
 const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
@@ -30,10 +31,14 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		options: {
 			"project-id": { type: "string" }, timeout: { type: "string" },
 			...(transcript && { lang: { type: "string" }, range: { type: "string" } }),
-			...(!transcript && { url: { type: "string" } }),
+			...(!transcript && command !== "draft-check" && { url: { type: "string" } }),
 			...(render && command !== "view" && { "allow-missing": { type: "boolean" } }),
 			...(command === "view" && { from: { type: "string" }, to: { type: "string" }, rows: { type: "string" }, file: { type: "string" } }),
 			...(command === "review" && { file: { type: "string" }, pictures: { type: "string" } }),
+			...(command === "draft-check" && {
+				from: { type: "string" }, to: { type: "string" }, json: { type: "boolean" }, all: { type: "boolean" },
+				position: { type: "string" }, scale: { type: "string" }, rotation: { type: "string" }, opacity: { type: "string" },
+			}),
 			...(command === "transcript-view" && { media: { type: "string" }, timeline: { type: "boolean" } }),
 			...(command === "narration-plan" && { clip: { type: "string" }, "new-media": { type: "string" },
 				json: { type: "boolean" }, from: { type: "string" }, to: { type: "string" }, all: { type: "boolean" } }),
@@ -47,6 +52,26 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 	const projectId = values["project-id"];
 	if (projectId !== undefined && !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) throw new Error("Pass a valid project ID to --project-id.");
 	const timeoutMs = Math.round(seconds * 1000);
+	if (command === "draft-check") {
+		if (!projectId) throw new Error("Use draft-check --project-id ID [--from SECONDS] [--to SECONDS] [--json] [--all].");
+		const number = (flag: "from" | "to" | keyof DraftThresholds) => {
+			const value = values[flag];
+			if (value === undefined) return;
+			const parsed = Number(value);
+			if (!String(value).trim() || !Number.isFinite(parsed) || parsed < 0 || (parsed === 0 && flag !== "from")) {
+				throw new Error(`Set --${flag} to ${flag === "from" ? "a nonnegative" : "a positive"} number.`);
+			}
+			return parsed;
+		};
+		const from = number("from") ?? 0, to = number("to");
+		if (to !== undefined && to <= from) throw new Error("--to must be later than --from.");
+		const thresholds: Partial<DraftThresholds> = {};
+		for (const property of ["position", "scale", "rotation", "opacity"] as const) {
+			const value = number(property);
+			if (value !== undefined) thresholds[property] = value;
+		}
+		return { command: "draft-check" as const, projectId, from, to, thresholds, json: values.json === true, all: values.all === true, timeoutMs };
+	}
 	const media = typeof values.media === "string" ? values.media : undefined;
 	if (command === "transcript-view" && (!projectId || (media !== undefined && (!media.trim() || values.timeline)))) {
 		throw new Error("Use transcript-view --project-id ID [--media NAME | --timeline].");
@@ -113,7 +138,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			? [...(Array.isArray(values.element) ? values.element : []), ...(typeof values.elements === "string" ? values.elements.split(",") : [])] : undefined;
 		request = parseFrameInput({ times, elements, noteId: values.note, sceneId: values["scene-id"], width: values.width === undefined ? undefined : Number(values.width), allowMissing });
 	}
-	return { command: command as Exclude<Command, "transcript" | "review">, projectId, timeoutMs, origin: url.origin,
+	return { command: command as Exclude<Command, "transcript" | "review" | "draft-check">, projectId, timeoutMs, origin: url.origin,
 		...(media !== undefined && { media }), ...(request && { request }), ...(narration && { narration }) };
 }
 
@@ -146,6 +171,10 @@ async function transcriptCommand(request: TranscriptRequest, timeoutMs: number) 
 export async function main(args: string[], minRenderSeconds = minRenderTimeout) {
 	const options = parseArgs(args, minRenderSeconds);
 	if (options.command === "transcript") return transcriptCommand(options.request, options.timeoutMs);
+	if (options.command === "draft-check") {
+		const { draftCheckCommand } = await import("./agent-draft-check");
+		return draftCheckCommand(options);
+	}
 	if (options.command === "review") {
 		const target = new URL("/api/agent/cli/review", options.origin);
 		target.searchParams.set("projectId", options.projectId);
