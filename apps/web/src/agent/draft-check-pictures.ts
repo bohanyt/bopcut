@@ -9,7 +9,7 @@ import { proxyFingerprintRegions } from "@/services/proxies/identity";
 import type { TScene } from "@/timeline";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { outputClip, timelineItems } from "./draft-check";
-import { pictureBytes, pictureEvents, pictureFeature, pictureHeight, pictureMatch, pictureWidth, sampleFractions,
+import { activePictureFrame, pictureBytes, pictureEvents, pictureFeature, pictureHeight, pictureMatch, pictureWidth, sampleFractions,
 	type PictureEvent, type PictureFrame } from "./draft-picture-metrics";
 import { fileInside } from "./inside";
 
@@ -20,8 +20,8 @@ type Shot = { clip: AddressedClip; lane: string; from: number; to: number; rate:
 type Scan = { samples: Uint8Array[]; events: PictureEvent[]; omittedEvents: number; incomplete: boolean };
 type SampledShot = { shot: Shot; scan: Scan; features: ReturnType<typeof pictureFeature>[] };
 export type PictureFinding = {
-	kind: "look-alike-shots" | "look-alike-run" | PictureEvent["kind"]; from: number; to: number;
-	clips: AddressedClip[]; picture?: string; omittedClips?: number; rms: number; matchingSamples?: number;
+	kind: "look-alike-shots" | "look-alike-run" | "missing-picture-media" | PictureEvent["kind"]; from: number; to: number;
+	clips: AddressedClip[]; picture?: string; omittedClips?: number; rms?: number; matchingSamples?: number;
 	frames?: number; seconds?: number; uses?: number;
 };
 type Finding = { finding: PictureFinding; images: Uint8Array[] };
@@ -37,6 +37,8 @@ const maxEvidence = 12;
 const maxEventsPerShot = 4;
 const allowedFormats = "mov,matroska,webm,avi,mpegts,mpeg,m4v,ogg,image2,png_pipe,jpeg_pipe,webp_pipe";
 const rounded = (value: number) => Number(value.toFixed(6));
+const isMissing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
+class MissingFfmpeg extends Error {}
 
 async function mediaFile(directory: string, asset: Media) {
 	const name = asset.diskFile;
@@ -74,17 +76,25 @@ async function decodeWindow(file: string, start: number, length: number, temp: s
 		args.push("-map", `[${label}]`, "-fps_mode", "passthrough", "-enc_time_base", "1:1000000",
 			"-c:v", "rawvideo", "-threads", "1", "-frames:v", String(still ? 1 : maxFrames), "-f", format, output);
 	}
-	const { stdout } = await runBackgroundProcess(exe, args, AbortSignal.any([signal, AbortSignal.timeout(5_000)]), root);
+	let stdout: string;
+	try {
+		({ stdout } = await runBackgroundProcess(exe, args, AbortSignal.any([signal, AbortSignal.timeout(5_000)]), root));
+	} catch (error) {
+		if (isMissing(error) && (error as Error).message === "tool exited with code 127") throw new MissingFfmpeg();
+		throw error;
+	}
 	const rows = stdout.split(/\r?\n/);
 	const timeBase = rows.find(row => row.startsWith("#tb 0:"))?.match(/(\d+)\/(\d+)/);
 	const unit = timeBase ? Number(timeBase[1]) / Number(timeBase[2]) : 0;
 	const bytes = await fs.readFile(raw);
 	const stamps = rows.filter(row => /^0,/.test(row)).map(row => row.split(","));
-	if (!unit || bytes.length !== stamps.length * pictureBytes) return [];
-	return stamps.map(([, , pts, duration], index): PictureFrame => ({
-		at: start + Number(pts) * unit, duration: Number(duration) * unit,
+	if (!unit || bytes.length !== stamps.length * pictureBytes) return { frames: [], capped: false };
+	const frames = stamps.map(([, , pts], index): PictureFrame => ({
+		at: start + Number(pts) * unit,
 		rgb: bytes.subarray(index * pictureBytes, (index + 1) * pictureBytes),
-	})).filter(({ at, duration }) => Number.isFinite(at) && Number.isFinite(duration));
+	})).filter(({ at }) => Number.isFinite(at));
+	if (frames.some((frame, i) => i > 0 && frame.at <= frames[i - 1].at)) return { frames: [], capped: false };
+	return { frames, capped: stamps.length === maxFrames };
 }
 
 async function scanShot(shot: Shot, file: string, temp: string, directory: string, options: PictureOptions, signal: AbortSignal): Promise<Scan> {
@@ -98,14 +108,24 @@ async function scanShot(shot: Shot, file: string, temp: string, directory: strin
 	let omittedEvents = 0, incomplete = false;
 	for (const window of windows) {
 		signal.throwIfAborted();
-		const frames = await decodeWindow(file, window.from, window.to - window.from, temp, directory, signal, shot.still);
-		if (frames.length === maxFrames) incomplete = true;
+		const read = (preroll: number) => {
+			const start = Math.max(0, window.from - preroll);
+			return decodeWindow(file, start, window.to - start, temp, directory, signal, shot.still);
+		};
+		let { frames, capped } = await read(0.25);
+		if (!shot.still && window.from > 0.25 && (!frames.length || frames[0].at > window.from + 0.000001)) {
+			({ frames, capped } = await read(2));
+		}
+		if (capped) incomplete = true;
 		for (const at of window.anchors) {
-			const frame = shot.still ? frames[0] : frames.findLast(value => value.at <= at + 0.000001);
-			if (frame && (shot.still || at <= frame.at + frame.duration + 0.002)) samples.push(frame.rgb.slice());
+			const frame = shot.still ? frames[0] : activePictureFrame(frames, at, window.to, capped);
+			if (frame) samples.push(frame.rgb.slice());
 		}
 		if (shot.still) continue;
-		const found = pictureEvents(frames, options.freezeSeconds * shot.rate, options.outlierDistance);
+		const inside = frames.filter(frame => frame.at >= window.from && frame.at < window.to);
+		const carried = activePictureFrame(frames, window.from, window.to, capped);
+		if (carried && carried.at < window.from) inside.unshift({ ...carried, at: window.from });
+		const found = pictureEvents(inside, options.freezeSeconds * shot.rate, options.outlierDistance);
 		for (const event of found) {
 			if (events.length >= maxEventsPerShot) { omittedEvents++; continue; }
 			events.push({ ...event, frame: { ...event.frame, rgb: event.frame.rgb.slice() } });
@@ -222,28 +242,28 @@ export async function inspectDraftPictures({ root, scenes, media, directory, fro
 	const assets = new Map(media.map(asset => [asset.id, asset]));
 	const findings: Finding[] = [];
 	const sampled: SampledShot[] = [];
+	const missing = (shot: Shot) => findings.push({ finding: { kind: "missing-picture-media", from: shot.clip.from,
+		to: shot.clip.to, clips: [shot.clip] }, images: [] });
 	const files = new Map<string, { file: string; key: string; size: number; mtimeMs: number } | undefined>();
 	const cache = new Map<string, Scan>();
 	await withToolScratch(signal, path.dirname(directory), async (temp) => {
 		for (const shot of shots.slice(0, options.limit)) {
 			if (scanSignal.aborted) break;
+			const id = shot.clip.mediaId;
+			let input = files.get(id)?.file;
 			try {
-				const id = shot.clip.mediaId;
 				if (!files.has(id)) {
 					const asset = assets.get(id);
-					const file = asset && await mediaFile(directory, asset);
-					files.set(id, file ? { file, ...await mediaFingerprint(file, scanSignal) } : undefined);
+					input = (asset && await mediaFile(directory, asset)) ?? undefined;
+					files.set(id, input ? { file: input, ...await mediaFingerprint(input, scanSignal) } : undefined);
 				}
 				const source = files.get(id);
-				if (!source) continue;
+				if (!source) { missing(shot); continue; }
 				const key = JSON.stringify([source.key, shot.still, shot.still ? 0 : shot.from, shot.still ? 0 : shot.to, shot.rate]);
-				let scan = cache.get(key);
-				if (!scan) {
-					scan = await scanShot(shot, source.file, temp, path.dirname(directory), options, scanSignal);
-					const after = await fs.stat(source.file);
-					if (after.size !== source.size || after.mtimeMs !== source.mtimeMs) continue;
-					cache.set(key, scan);
-				}
+				const scan = cache.get(key) ?? await scanShot(shot, source.file, temp, path.dirname(directory), options, scanSignal);
+				const after = await fs.stat(source.file);
+				if (after.size !== source.size || after.mtimeMs !== source.mtimeMs) continue;
+				cache.set(key, scan);
 				if (scan.incomplete) report.incompleteWindows++;
 				report.omittedEvents += scan.omittedEvents;
 				if (scan.samples.length === sampleFractions.length) {
@@ -257,9 +277,13 @@ export async function inspectDraftPictures({ root, scenes, media, directory, fro
 				}
 			} catch (error) {
 				if (scanSignal.aborted) break;
-				if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+				if (error instanceof MissingFfmpeg) {
 					report.missingFfmpeg = true;
 					break;
+				}
+				if (input && await fs.stat(input).then(() => false, isMissing)) {
+					files.set(id, undefined);
+					missing(shot);
 				}
 			}
 		}
@@ -270,7 +294,7 @@ export async function inspectDraftPictures({ root, scenes, media, directory, fro
 	report.skipped = Math.min(shots.length, options.limit) - report.sampled;
 	findings.push(...await groupsAndRuns(sampled, shots, options.distance, signal));
 	findings.sort((a, b) => a.finding.from - b.finding.from || a.finding.to - b.finding.to);
-	report.evidenceOmitted = await writeEvidence(findings, directory, signal);
+	report.evidenceOmitted = await writeEvidence(findings.filter(row => row.images.length), directory, signal);
 	report.findings = findings.map(({ finding }) => finding);
 	return report;
 }
