@@ -24,7 +24,7 @@ const isBusy = (error: unknown) => /temporarily unavailable|encoder is busy|too 
 function rememberCudaFailure(cuda: CudaSupport, codec: string, error: unknown) {
 	const stderr = (error as { stderr?: string })?.stderr ?? "";
 	if (/no such filter.*scale_cuda|cannot load (?:nv|lib)cuda|out of memory|cuda_error_out_of_memory/i.test(stderr)) cuda.disabled = true;
-	else if (/hardware is lacking required capabilities|(?:codec|pixel format).*not supported|no device available for decoder/i.test(stderr)) {
+	else if (/hardware is lacking required capabilities|(?:codec|pixel format).*not supported|(?:does not support|unsupported).*?(?:codec|pixel format)|no device available for decoder/i.test(stderr)) {
 		cuda.unsupported.add(codec);
 	}
 }

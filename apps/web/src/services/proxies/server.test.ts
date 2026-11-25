@@ -622,7 +622,7 @@ test("full CUDA is verified before publishing and failures fall back to the curr
 			attempted.push(id + (cuda ? ":cuda" : ":current"));
 			if (cuda && (id === "unsupported" || id === "oom")) {
 				throw Object.assign(new Error("encode failed"), {
-					stderr: id === "oom" ? "CUDA_ERROR_OUT_OF_MEMORY" : "Hardware is lacking required capabilities",
+					stderr: id === "oom" ? "CUDA_ERROR_OUT_OF_MEMORY" : "Device does not support the hevc codec",
 				});
 			}
 			await fs.writeFile(args.at(-1)!, cuda && id === "oversized" ? Buffer.alloc(Number(args[args.indexOf("-fs") + 1])) : "proxy");
