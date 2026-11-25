@@ -824,7 +824,10 @@ export class TimelineManager {
 
 	previewElements({
 		updates,
+		replace = false,
 	}: {
+		/** Replace this element's overlay when the gesture computes each update from its starting state. */
+		replace?: boolean;
 		updates: readonly {
 			trackId: string;
 			elementId: string;
@@ -837,6 +840,11 @@ export class TimelineManager {
 		let changedOverlayCount = 0;
 		for (const { elementId, updates: elementUpdates } of updates) {
 			const existingOverlay = this.previewOverlay.get(elementId);
+			if (replace) {
+				this.previewOverlay.set(elementId, elementUpdates);
+				changedOverlayCount += 1;
+				continue;
+			}
 			const changed = Object.entries(elementUpdates).some(([key, value]) => {
 				return !Object.is(
 					existingOverlay?.[key as keyof TimelineElement],

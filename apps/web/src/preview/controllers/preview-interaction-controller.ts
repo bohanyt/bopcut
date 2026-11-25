@@ -21,8 +21,11 @@ import {
 	type SnapLine,
 } from "@/preview/preview-snap";
 import type { TCanvasSize } from "@/project/types";
-import type { ParamValues } from "@/params";
-import { buildTransformFromParams, type Transform } from "@/rendering";
+import {
+	buildTransformGesturePatch,
+	captureTransformGestureTarget,
+	type TransformGestureTarget,
+} from "@/preview/transform-gesture";
 import { isVisualElement } from "@/timeline/element-utils";
 import type {
 	ElementRef,
@@ -46,6 +49,7 @@ interface CapturedPointerState {
 interface PendingGesture extends CapturedPointerState {
 	readonly kind: "pending";
 	readonly origin: Point;
+	readonly timelineTime: number;
 	readonly topmostHit: ElementWithBounds | null;
 	readonly selectedHit: ElementWithBounds | null;
 	readonly selectedElements: readonly ElementRef[];
@@ -54,8 +58,7 @@ interface PendingGesture extends CapturedPointerState {
 interface DragElementSnapshot {
 	readonly trackId: string;
 	readonly elementId: string;
-	readonly initialTransform: Transform;
-	readonly initialParams: ParamValues;
+	readonly target: TransformGestureTarget;
 }
 
 interface DraggingGesture extends CapturedPointerState {
@@ -127,7 +130,7 @@ export interface TimelineOps {
 	}: {
 		elements: readonly ElementRef[];
 	}) => Array<{ track: TimelineTrack; element: TimelineElement }>;
-	previewElements: (updates: readonly TimelinePreviewUpdate[]) => void;
+	previewElements: (updates: readonly TimelinePreviewUpdate[], options?: { replace: boolean }) => void;
 	commitPreview: () => void;
 	beginPreviewGesture: TimelineManager["beginPreviewGesture"];
 }
@@ -210,8 +213,10 @@ function movedPastDragThreshold({
 
 function toDragElementSnapshots({
 	elementsWithTracks,
+	timelineTime,
 }: {
 	elementsWithTracks: Array<{ track: TimelineTrack; element: TimelineElement }>;
+	timelineTime: number;
 }): DragElementSnapshot[] {
 	const isVisibleVisualElement = (value: {
 		track: TimelineTrack;
@@ -225,8 +230,7 @@ function toDragElementSnapshots({
 		.map(({ track, element }) => ({
 			trackId: track.id,
 			elementId: element.id,
-			initialTransform: buildTransformFromParams({ params: element.params }),
-			initialParams: element.params,
+			target: captureTransformGestureTarget({ element, timelineTime }),
 		}));
 }
 
@@ -396,6 +400,7 @@ export class PreviewInteractionController {
 		this.gesture = {
 			kind: "pending",
 			origin: startPos,
+			timelineTime: this.deps.scene.getCurrentTime(),
 			pointerId,
 			releasePointer,
 			topmostHit: hits[0] ?? null,
@@ -513,6 +518,7 @@ export class PreviewInteractionController {
 				})
 			: this.groupSelection(dragTarget);
 		const draggableElements = toDragElementSnapshots({
+			timelineTime: pending.timelineTime,
 			elementsWithTracks: this.deps.timeline.getElementsWithTracks({
 				elements: dragSelection,
 			}),
@@ -551,13 +557,14 @@ export class PreviewInteractionController {
 	}): void {
 		const firstElement = drag.elements[0];
 		if (!firstElement) return;
+		const { position } = firstElement.target.transform;
 
 		const deltaX = currentPos.x - drag.origin.x;
 		const deltaY = currentPos.y - drag.origin.y;
 
 		const proposedPosition = {
-			x: firstElement.initialTransform.position.x + deltaX,
-			y: firstElement.initialTransform.position.y + deltaY,
+			x: position.x + deltaX,
+			y: position.y + deltaY,
 		};
 
 		const shouldSnap = !this.deps.input.isShiftHeld();
@@ -579,27 +586,22 @@ export class PreviewInteractionController {
 
 		this.deps.preview.onSnapLinesChange?.(activeLines);
 
-		const deltaSnappedX =
-			snappedPosition.x - firstElement.initialTransform.position.x;
-		const deltaSnappedY =
-			snappedPosition.y - firstElement.initialTransform.position.y;
+		const deltaSnappedX = snappedPosition.x - position.x;
+		const deltaSnappedY = snappedPosition.y - position.y;
 
 		this.deps.timeline.previewElements(
-			drag.elements.map(
-				({ trackId, elementId, initialTransform, initialParams }) => ({
-					trackId,
-					elementId,
-					updates: {
-						params: {
-							...initialParams,
-							"transform.positionX":
-								initialTransform.position.x + deltaSnappedX,
-							"transform.positionY":
-								initialTransform.position.y + deltaSnappedY,
-						},
+			drag.elements.map(({ trackId, elementId, target }) => ({
+				trackId,
+				elementId,
+				updates: buildTransformGesturePatch({
+					target,
+					values: {
+						"transform.positionX": target.transform.position.x + deltaSnappedX,
+						"transform.positionY": target.transform.position.y + deltaSnappedY,
 					},
 				}),
-			),
+			})),
+			{ replace: true },
 		);
 	}
 }
