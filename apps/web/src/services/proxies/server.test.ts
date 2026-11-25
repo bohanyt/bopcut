@@ -584,3 +584,136 @@ test("losing the writer token stops encoding and switches the session to reading
 		run.mockRestore();
 	}
 });
+
+test("full CUDA is verified before publishing and failures fall back to the current encoder", async () => {
+	const ids = ["cuda", "bad-pts", "oversized", "unsupported", "same-codec", "rotated", "full-range", "oom", "after-oom"];
+	const f = await fixture(ids, "2000000");
+	const now = Date.now() + 310_000;
+	const clock = spyOn(Date, "now").mockReturnValue(now);
+	const attempted: string[] = [];
+	let id = "";
+	let cuda = false;
+	let filterChecks = 0;
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-filters")) {
+			filterChecks++;
+			return toolResult(" ... scale_cuda V->V GPU accelerated video resizer");
+		}
+		if (args.includes("-show_frames")) {
+			const file = path.basename(args.at(-1)!, ".mp4");
+			const encoded = file.startsWith(".job-");
+			if (!encoded) id = file;
+			const { streams, frames } = JSON.parse(videoProbe(3, encoded).stdout);
+			Object.assign(streams[0], {
+				codec_name: id === "unsupported" || id === "same-codec" ? "hevc" : "h264",
+				sample_aspect_ratio: "1:1",
+				...(id === "full-range" && { color_range: "pc" }),
+			});
+			if (id === "rotated") {
+				if (encoded) Object.assign(streams[0], { width: 540, height: 960 });
+				else streams[0].side_data_list = [{ displaymatrix: "0: 0 -65536 0\n1: 65536 0 0\n2: 0 0 1073741824" }];
+			}
+			if (encoded && cuda && id === "bad-pts") frames[1].best_effort_timestamp = 1.125;
+			return toolResult(JSON.stringify({ streams, frames }));
+		}
+		if (args.includes("-fs")) {
+			cuda = args.includes("-hwaccel_output_format");
+			attempted.push(id + (cuda ? ":cuda" : ":current"));
+			if (cuda && (id === "unsupported" || id === "oom")) {
+				throw Object.assign(new Error("encode failed"), {
+					stderr: id === "oom" ? "CUDA_ERROR_OUT_OF_MEMORY" : "Device does not support the hevc codec",
+				});
+			}
+			await fs.writeFile(args.at(-1)!, cuda && id === "oversized" ? Buffer.alloc(Number(args[args.indexOf("-fs") + 1])) : "proxy");
+		}
+		return toolResult();
+	});
+	try {
+		const tab = f.tab("cuda", ids);
+		await tab.wait(event => event.state === "ready" && event.done === ids.length);
+		expect(filterChecks).toBe(1);
+		expect(attempted).toEqual([
+			"cuda:cuda", "bad-pts:cuda", "bad-pts:current", "oversized:cuda", "oversized:current",
+			"unsupported:cuda", "unsupported:current", "same-codec:current", "rotated:current",
+			"full-range:current", "oom:cuda", "oom:current", "after-oom:current",
+		]);
+		const ready = tab.events.flatMap(event => event.media ?? []);
+		expect(ready.map(({ id }) => id)).toEqual(ids);
+		for (const { id, info } of ready) {
+			const record = JSON.parse(await fs.readFile(path.join(f.cache, info.key + ".json"), "utf8"));
+			expect(record.encoding).toBe(id === "cuda" ? "h264_nvenc:scale_cuda" : "h264_nvenc:cuda");
+		}
+	} finally { await f.dispose(); clock.mockRestore(); run.mockRestore(); }
+});
+
+test("a stalled CUDA encode falls back, and closing the session prevents a fallback", async () => {
+	const f = await fixture(["stalled", "cancelled"]);
+	let now = Date.now() + 620_000;
+	const clock = spyOn(Date, "now").mockImplementation(() => now);
+	const started = Promise.withResolvers<void>();
+	const stopped = Promise.withResolvers<void>();
+	const attempts: string[] = [];
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args, signal) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-filters")) return toolResult(" ... scale_cuda V->V GPU accelerated video resizer");
+		if (args.includes("-show_frames")) {
+			const encoded = path.basename(args.at(-1)!).startsWith(".job-");
+			const { streams, frames } = JSON.parse(videoProbe(3, encoded).stdout);
+			return toolResult(JSON.stringify({ streams: [{ ...streams[0], codec_name: "h264" }], frames }));
+		}
+		if (args.includes("-fs")) {
+			const id = path.basename(args[args.indexOf("-i") + 1], ".mp4");
+			const cuda = args.includes("-hwaccel_output_format");
+			attempts.push(id + (cuda ? ":cuda" : ":current"));
+			if (cuda) {
+				if (id === "stalled") now += 31_000;
+				else started.resolve();
+				await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+				if (id === "cancelled") stopped.resolve();
+				throw signal.reason;
+			}
+			await fs.writeFile(args.at(-1)!, "proxy");
+		}
+		return toolResult();
+	});
+	try {
+		const tab = f.tab("stall", ["stalled"]);
+		await tab.wait(event => event.media?.id === "stalled");
+		const cancel = f.tab("cancel-cuda", ["cancelled"]);
+		await started.promise;
+		cancel.end();
+		await stopped.promise;
+		expect(attempts).toEqual(["stalled:cuda", "stalled:current", "cancelled:cuda"]);
+		expect(cancel.events.some(event => event.media)).toBe(false);
+	} finally { await f.dispose(); clock.mockRestore(); run.mockRestore(); }
+});
+
+test("CUDA is left alone after two sources failed for an unknown reason", async () => {
+	const ids = ["unknown-a", "unknown-b", "unknown-c", "unknown-d"];
+	const f = await fixture(ids);
+	const now = Date.now() + 1_240_000;
+	const clock = spyOn(Date, "now").mockImplementation(() => now);
+	const attempts: string[] = [];
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-filters")) return toolResult(" ... scale_cuda V->V GPU accelerated video resizer");
+		if (args.includes("-show_frames")) {
+			const encoded = path.basename(args.at(-1)!).startsWith(".job-");
+			const { streams, frames } = JSON.parse(videoProbe(3, encoded).stdout);
+			return toolResult(JSON.stringify({ streams: [{ ...streams[0], codec_name: "h264" }], frames }));
+		}
+		if (args.includes("-fs")) {
+			const cuda = args.includes("-hwaccel_output_format");
+			attempts.push(path.basename(args[args.indexOf("-i") + 1], ".mp4") + (cuda ? ":cuda" : ":current"));
+			if (cuda) throw Object.assign(new Error("tool exited with code 1"), { stderr: "Error initializing filter 'scale_cuda'" });
+			await fs.writeFile(args.at(-1)!, "proxy");
+		}
+		return toolResult();
+	});
+	try {
+		const tab = f.tab("unknown", ids);
+		await tab.wait(event => event.state === "ready" && event.done === 4);
+		expect(attempts).toEqual(["unknown-a:cuda", "unknown-a:current", "unknown-b:cuda", "unknown-b:current", "unknown-c:current", "unknown-d:current"]);
+	} finally { await f.dispose(); clock.mockRestore(); run.mockRestore(); }
+});
