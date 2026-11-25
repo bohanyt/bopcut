@@ -98,6 +98,13 @@ export function formatNumberForDisplay({
 		: normalizedIntegerPart;
 }
 
+export function parseDecimalInput({ input }: { input: string }): number | null {
+	const match = /^([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:e[+-]?\d+)?)(?:\s*(?:[%°×]|\p{L}+))?$/iu.exec(input.trim());
+	if (!match) return null;
+	const value = Number(match[1].replace(",", "."));
+	return Number.isFinite(value) ? value : null;
+}
+
 /**
  * Safely evaluates a mathematical expression without using eval() or new Function().
  * Supports +, -, *, /, parentheses, and decimal numbers.

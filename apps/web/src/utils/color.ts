@@ -46,7 +46,7 @@ export function appendAlpha({
 	rgbHex: string;
 	alpha: number;
 }): string {
-	if (alpha >= 1) return rgbHex;
+	if (rgbHex.length === 8 || alpha >= 1) return rgbHex;
 	const hex8 = formatHex8({ mode: "rgb", r: 0, g: 0, b: 0, alpha });
 	const alphaHex = hex8.slice(7, 9);
 	return rgbHex + alphaHex;
@@ -141,9 +141,9 @@ export function parseColorInput({
 }): string | null {
 	switch (format) {
 		case "hex": {
-			const cleaned = input.replace("#", "");
-			const isValidHex = /^[0-9a-fA-F]{3,8}$/.test(cleaned);
-			return isValidHex ? cleaned : null;
+			const cleaned = input.trim().replace(/^#/, "");
+			if (!/^(?:[\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i.test(cleaned)) return null;
+			return cleaned.length <= 4 ? cleaned.replace(/./g, "$&$&") : cleaned;
 		}
 		case "rgb": {
 			const parts = input.split(",").map((part) => parseInt(part.trim(), 10));

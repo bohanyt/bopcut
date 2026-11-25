@@ -51,6 +51,7 @@ import {
 	clamp,
 	formatNumberForDisplay,
 	getFractionDigitsForStep,
+	parseDecimalInput,
 	snapToStep,
 } from "@/utils/math";
 import {
@@ -799,14 +800,15 @@ function MaskNumberField({
 			maxFractionDigits,
 		}),
 		parse: (input) => {
-			const parsed = parseFloat(input);
-			if (Number.isNaN(parsed)) return null;
+			const parsed = parseDecimalInput({ input });
+			if (parsed === null) return null;
 			return (
 				clampDisplay(snapToStep({ value: parsed, step })) / displayMultiplier
 			);
 		},
 		onPreview,
 		onCommit,
+		onInvalid: () => timeline.discardPreview(),
 	});
 
 	return (
