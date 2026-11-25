@@ -1,4 +1,4 @@
-import { clampAnimationsToDuration } from "@/animation";
+import { clampAnimationsToDuration, splitAnimationsAtTime } from "@/animation";
 import {
 	clampRetimeRate,
 	getSourceSpanAtClipTime,
@@ -12,7 +12,7 @@ import {
 	updateTrackInSceneTracks,
 } from "@/timeline/track-element-update";
 import { rippleShiftElements } from "@/ripple";
-import { ZERO_MEDIA_TIME, roundMediaTime } from "@/wasm";
+import { ZERO_MEDIA_TIME, roundMediaTime, subMediaTime } from "@/wasm";
 import { reconcileCaptionEdit } from "@/text/caption";
 
 type ElementUpdateField = keyof TimelineElement | string;
@@ -183,20 +183,32 @@ const deriveRules: ElementUpdateRule[] = [
 	},
 ];
 
+export function animationsAfterLeftTrim({
+	element,
+	patch,
+	startTime = patch.startTime,
+	boundaryIdPrefix,
+}: {
+	element: TimelineElement;
+	patch: Partial<TimelineElement>;
+	startTime?: TimelineElement["startTime"];
+	boundaryIdPrefix?: string;
+}): TimelineElement["animations"] {
+	if (!element.animations || startTime === undefined || startTime === element.startTime ||
+		patch.trimStart === undefined || patch.startTime === undefined || patch.duration === undefined ||
+		patch.startTime + patch.duration !== element.startTime + element.duration) {
+		return element.animations;
+	}
+	const splitTime = subMediaTime({ a: startTime, b: element.startTime });
+	return splitAnimationsAtTime({
+		animations: element.animations,
+		splitTime,
+		shouldIncludeSplitBoundary: splitTime > ZERO_MEDIA_TIME,
+		boundaryIdPrefix,
+	}).rightAnimations;
+}
+
 const enforceRules: ElementUpdateRule[] = [
-	{
-		triggers: ["duration"],
-		apply: ({ element, context }) => ({
-			element: {
-				...element,
-				animations: clampAnimationsToDuration({
-					animations: element.animations,
-					duration: element.duration,
-					boundaryIdPrefix: context.boundaryIdPrefix,
-				}),
-			},
-		}),
-	},
 	{
 		triggers: ["startTime"],
 		apply: ({ element, context }) => {
@@ -232,6 +244,24 @@ const enforceRules: ElementUpdateRule[] = [
 				},
 			};
 		},
+	},
+	{
+		triggers: ["duration"],
+		apply: ({ element, originalElement, patch, context }) => ({
+			element: {
+				...element,
+				animations: clampAnimationsToDuration({
+					animations: Object.hasOwn(patch, "animations") ? element.animations : animationsAfterLeftTrim({
+						element: originalElement,
+						patch,
+						startTime: element.startTime,
+						boundaryIdPrefix: context.boundaryIdPrefix,
+					}),
+					duration: element.duration,
+					boundaryIdPrefix: context.boundaryIdPrefix,
+				}),
+			},
+		}),
 	},
 ];
 
