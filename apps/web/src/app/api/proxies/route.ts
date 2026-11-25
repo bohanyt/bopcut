@@ -43,6 +43,7 @@ export async function POST(request: Request) {
 				close = body.action === "pause" ? pauseProxyJobs() : openSession(id, {
 					project, ids: queue, paused: !!body.paused, software: body.software === true,
 					build: body.enabled === true || process.env.BOPENCUT_PROXIES !== "manual",
+					retry: typeof body.retry === "number" ? body.retry : undefined,
 					send(update) { if (!closed && !request.signal.aborted) controller.enqueue(encoder.encode(JSON.stringify(update) + "\n")); },
 				});
 				request.signal.addEventListener("abort", () => {

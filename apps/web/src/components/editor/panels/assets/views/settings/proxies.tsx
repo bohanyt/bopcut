@@ -15,7 +15,7 @@ export function ProxySettings() {
 			<SectionHeader><SectionTitle>{t("proxies.title")}</SectionTitle></SectionHeader>
 			<SectionContent className="flex flex-col gap-2 px-2 pb-2">
 				<label className="flex items-center gap-2 text-sm">
-					<input type="checkbox" role="switch" checked={enabled} onChange={event => save({ ...settings, enabled: event.currentTarget.checked })} />
+					<input type="checkbox" role="switch" checked={enabled} onChange={event => save({ ...settings, enabled: event.currentTarget.checked, retry: Date.now() })} />
 					{t("proxies.title")}
 				</label>
 				<label className="flex items-center gap-2 text-sm">
@@ -27,8 +27,7 @@ export function ProxySettings() {
 					: t(`proxies.${status}`)}</p>
 				{update?.error && <p className="text-muted-foreground text-xs break-words">{update.error}</p>}
 				{(status === "missing" || status === "failed" || status === "software") && (
-					// A changed setting opens a new session, which starts the tools again.
-					<Button variant="outline" size="sm" onClick={() => save({ ...settings, enabled: true })}>{t("common.retry")}</Button>
+					<Button variant="outline" size="sm" onClick={() => save({ ...settings, enabled: true, retry: Date.now() })}>{t("common.retry")}</Button>
 				)}
 				<p className="text-sm">{t("proxies.diskUsage", { size: ((update?.bytes ?? 0) / 1_000_000).toFixed(1) })}</p>
 				<Button variant="outline" size="sm" disabled={status === "readonly"} onClick={() => { void clear().catch(() => {}); }}>{t("proxies.deleteAll")}</Button>

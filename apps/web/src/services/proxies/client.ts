@@ -6,7 +6,7 @@ import { ALL_FORMATS, BlobSource, Input } from "mediabunny";
 import type { ProxyInfo, ProxyUpdate } from "./mapping";
 import { proxyFingerprintRegions, proxyProfile } from "./identity";
 
-type Preferences = { enabled?: boolean; software: boolean };
+type Preferences = { enabled?: boolean; software: boolean; retry?: number };
 const settingsKey = "bopencut-scrub-proxies";
 function preferences(): Preferences {
 	try { return { software: false, ...JSON.parse(localStorage.getItem(settingsKey) ?? "{}") }; }

@@ -16,6 +16,8 @@ const reserve = () => byteSetting(process.env.BOPENCUT_PROXY_FREE_BYTES, 5_000_0
 const limit = () => byteSetting(process.env.BOPENCUT_PROXY_LIMIT_BYTES, 8_000_000_000);
 class LowDisk extends Error {}
 class EncoderBusy extends Error {}
+const isBusy = (error: unknown) => /temporarily unavailable|encoder is busy|too many (sessions|concurrent)|out of memory|no free (session|encoder)/i
+	.test((error as { stderr?: string })?.stderr ?? "");
 export async function fingerprint(file: string) {
 	const input = await fs.open(file, "r");
 	try {
@@ -249,8 +251,7 @@ async function prepare(dir: string, identity: Source, software: boolean, encoder
 				} catch (error) {
 					if (error instanceof ProxyWriterLost) throw error;
 					signal.throwIfAborted();
-					const stderr = (error as { stderr?: string })?.stderr ?? "";
-					busy ||= /temporarily unavailable|encoder is busy|too many (sessions|concurrent)|out of memory|no free (session|encoder)/i.test(stderr);
+					busy ||= isBusy(error);
 				}
 			}
 			if (success) break;
@@ -299,6 +300,8 @@ type Session = {
 	project: string; ids: string[]; software: boolean; paused: boolean; send: (update: ProxyUpdate) => void;
 	/** False: existing proxies are used and no tool is started. */
 	build: boolean;
+	/** Set when the person asks to try again; a value is used once. */
+	retry?: number;
 	done: Set<string>; revisions: Map<string, number>; disk: boolean; bytes: number; written: Map<string, string>;
 	sequence: number; readerChecked?: number; readerPending: boolean;
 };
@@ -306,13 +309,16 @@ type Job = { session: Session; id: string; revision: number; source?: Source; co
 const sessions = new Map<string, Session>();
 const pauses = new Set<symbol>();
 const failures = new Set<string>();
+/** Sources that failed before the person asked to try again. They do not stop preparation a second time. */
+const failedBefore = new Set<string>();
+const usedRetries = new Set<number>();
 let active: Job | undefined;
 let running = false;
 let needsPump = false;
 let initialized: string | undefined;
 let wiping = false;
 let idle: PromiseWithResolvers<void> | undefined;
-let capabilities: { encoders: string[] | null; expiresAt: number; error?: string } | undefined;
+let capabilities: { encoders: string[] | null; expiresAt: number; error?: string; busy?: boolean } | undefined;
 /** Sources in a row that the tools failed on. Preparation stops at the limit, until a project is opened or the setting is changed. */
 let failedInRow = 0;
 const failureLimit = 3;
@@ -348,6 +354,7 @@ async function keepNeededJob() {
 	if ([...sessions.values()].some(session => usesJob(session, job))) return;
 	if (job.source) {
 		for (const session of sessions.values()) {
+			if (!session.build) continue;
 			for (const id of session.ids) {
 				if (active !== job || job.controller.signal.aborted) return;
 				const file = await sourcePath(session.project, id).catch(() => undefined);
@@ -370,6 +377,7 @@ export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" 
 		session.done.clear();
 	}
 	for (const id of session.done) if (!session.ids.includes(id) || replaced.includes(id)) session.done.delete(id);
+	if ((!session.build || stopped) && session.ids.some(id => !session.done.has(id))) session.readerChecked = undefined;
 	for (const id of replaced) session.revisions.set(id, (session.revisions.get(id) ?? 0) + 1);
 	for (const id of session.written.keys()) if (!session.ids.includes(id) || replaced.includes(id)) session.written.delete(id);
 	session.disk = false;
@@ -384,6 +392,11 @@ export function openSession(id: string, session: Omit<Session, "done" | "revisio
 		if (!capabilities?.encoders?.length) capabilities = undefined;
 		failedInRow = 0;
 		stopped = undefined;
+		if (entry.retry && !usedRetries.has(entry.retry)) {
+			usedRetries.add(entry.retry);
+			for (const key of failures) failedBefore.add(key);
+			failures.clear();
+		}
 	}
 	void keepNeededJob();
 	void pump();
@@ -407,9 +420,13 @@ function retryLater() {
 	retryTimer.unref?.();
 }
 async function detectEncoders(dir: string, signal: AbortSignal) {
-	if (capabilities && capabilities.expiresAt > Date.now()) return capabilities.encoders;
+	if (capabilities && capabilities.expiresAt > Date.now()) {
+		if (capabilities.busy) throw new EncoderBusy();
+		return capabilities.encoders;
+	}
 	let available: string[] | null;
 	let error: string | undefined;
+	let busy = false;
 	try {
 		const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
 		await runBackgroundProcess(probeCommand(), ["-version"], probeSignal, dir);
@@ -423,13 +440,17 @@ async function detectEncoders(dir: string, signal: AbortSignal) {
 					"-c:v", encoder, "-g", encoder === "h264_nvenc" ? "0" : "1", "-bf", "0", "-f", "null", "-"],
 					AbortSignal.any([signal, AbortSignal.timeout(12_000)]));
 				available.push(encoder);
-			} catch { signal.throwIfAborted(); }
+			} catch (cause) {
+				signal.throwIfAborted();
+				busy ||= isBusy(cause);
+			}
 		}
 	} catch (cause) {
 		signal.throwIfAborted();
 		available = null;
 		error = errorText(cause);
 	}
+	if (available && !available.length && busy) throw new EncoderBusy();
 	capabilities = { encoders: available, expiresAt: available?.length ? Date.now() + 300_000 : Infinity, error };
 	return available;
 }
@@ -527,7 +548,7 @@ async function pump() {
 				if (job.controller.signal.aborted || !usesJob(session, job)) continue;
 				const key = job.source?.key;
 				if (error instanceof EncoderBusy) {
-					capabilities = undefined;
+					capabilities = { encoders: [], expiresAt: Date.now() + 30_000, busy: true };
 					blocked.add(session);
 					retryLater();
 					continue;
@@ -536,7 +557,7 @@ async function pump() {
 				else if (key) {
 					if (failures.size >= 1024) failures.delete(failures.values().next().value!);
 					failures.add(key);
-					if (++failedInRow >= failureLimit) stopped = errorText(error);
+					if (!failedBefore.has(key) && ++failedInRow >= failureLimit) stopped = errorText(error);
 				}
 				session.done.add(id);
 			} finally {
