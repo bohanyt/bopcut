@@ -845,6 +845,9 @@ export class TimelineManager {
 				const mergedOverlay = {
 					...existingOverlay,
 					...elementUpdates,
+					...((existingOverlay?.params || elementUpdates.params) && {
+						params: { ...existingOverlay?.params, ...elementUpdates.params },
+					}),
 				} as Partial<TimelineElement>;
 				this.previewOverlay.set(elementId, mergedOverlay);
 			}
@@ -904,7 +907,12 @@ export class TimelineManager {
 			const nextElements = track.elements.map((element) => {
 				const overlay = this.previewOverlay.get(element.id);
 				if (!overlay) return element;
-				const next = { ...element, ...overlay } as TimelineElement;
+				// A preview can change one parameter; the clip keeps its others.
+				const next = {
+					...element,
+					...overlay,
+					...(overlay.params && { params: { ...element.params, ...overlay.params } }),
+				} as TimelineElement;
 				return element.type === "text" &&
 					next.type === "text" &&
 					element.params.content !== next.params.content
