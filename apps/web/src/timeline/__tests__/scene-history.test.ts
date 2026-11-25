@@ -416,6 +416,23 @@ test("an animation duration drag previews every change and commits one undo entr
 	expect(clip().params[PRESET_PARAM.inDuration]).toBe(1.25);
 });
 
+describe("previews of single parameters", () => {
+	test("keep the clip's other parameters", () => {
+		const { editor, first, main } = setupSplitHistory();
+		const styled = { content: "First", fontSize: 63, color: "#ab2211", muted: true };
+		editor.timeline.updateElements({ updates: [{ ...first, patch: { params: styled } }] });
+		const before = main()[0].params;
+		const preview = (params: Record<string, string | number>) => editor.timeline.previewElements({ updates: [{ ...first, updates: { params } }] });
+		preview({ content: "First draft" });
+		preview({ volume: 0.5 });
+		expect(editor.timeline.getPreviewTracks()?.main.elements[0].params).toEqual({ ...before, content: "First draft", volume: 0.5 });
+		editor.timeline.commitPreview();
+		expect(main()[0].params).toEqual({ ...before, content: "First draft", volume: 0.5 });
+		editor.command.undo();
+		expect(main()[0].params).toEqual(before);
+	});
+});
+
 describe("preview gesture history boundaries", () => {
 	for (const boundary of ["undo", "redo", "track replacement", "scene-list replacement", "scene switch", "scene initialization"] as const) {
 		test(`a held canvas drag cannot overwrite ${boundary}`, async () => {
