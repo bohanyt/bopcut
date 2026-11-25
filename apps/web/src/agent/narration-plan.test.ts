@@ -210,6 +210,28 @@ test("a shared cut at the first narration word extends the preceding intro witho
 	]);
 });
 
+test("cuts outside the narration stay and do not hold back their neighbours", () => {
+	const input = setup();
+	input.root.tracks.main.elements = [video("intro1", 0, 1), { ...video("intro2", 1, 1), sourceDuration: t(4) }, video("body", 2, 1)];
+	const proposals = (shift: number) => planNarration({
+		...input, oldWords: contiguous, newDuration: 4, includeUnchanged: true,
+		newWords: contiguous.map((word) => ({ ...word, start: word.start + shift, end: word.end + shift })),
+	}).elements.filter((row) => row.address.trackId === "t-main").map((row) => [row.address.id, row.kind, row.proposed]);
+	expect(proposals(0.5)).toEqual([
+		["intro2", "trim", { startFrame: 30, endFrame: 75 }], ["body", "move", { startFrame: 75, endFrame: 105 }],
+	]);
+	expect(proposals(0)).toEqual([
+		["intro2", "unchanged", { startFrame: 30, endFrame: 60 }], ["body", "unchanged", { startFrame: 60, endFrame: 90 }],
+	]);
+});
+
+test("a word as long as the tolerance is kept", () => {
+	const input = atZero();
+	const oldWords = timed([["hello", 0, 1], ["a", 2, 2.02], ["world", 2.1, 3], ["today", 3, 4]]);
+	const { totals } = planNarration({ ...input, oldWords, newWords: oldWords, newDuration: 4 });
+	expect([totals.unmatched, totals.inserted]).toEqual([0, 0]);
+});
+
 test("Indonesian numbers only join across whitespace and normalize outer punctuation", () => {
 	const list = words("nomor dua. Belas kasih dua, belas “DUA BELAS!”");
 	expect(narrationWords(list).map((word) => word.text))

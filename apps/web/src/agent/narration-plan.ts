@@ -101,7 +101,7 @@ export function planNarration({
 	}
 	const local = narrationWords(oldWords.filter((word) => {
 		const midpoint = (word.start + word.end) / 2;
-		return word.end - word.start < WORD_TOLERANCE - eps
+		return word.end - word.start <= WORD_TOLERANCE + eps
 			? midpoint >= original.from && midpoint < original.to
 			: Math.min(word.end, original.to) - Math.max(word.start, original.from) > WORD_TOLERANCE + eps;
 	})
@@ -193,11 +193,11 @@ export function planNarration({
 		const sharedStart = main && cuts.has(element.startTime), sharedEnd = main && cuts.has(endTicks);
 		const cutStart = sharedStart ? cuts.get(element.startTime) : undefined;
 		const cutEnd = sharedEnd ? cuts.get(endTicks) : undefined;
-		const startAnchor = cutStart ?? ownStart, endAnchor = cutEnd ?? ownEnd;
+		// A shared cut without an anchor lies outside the narration and stays where it is.
+		const startAnchor = sharedStart ? cutStart : ownStart, endAnchor = sharedEnd ? cutEnd : ownEnd;
 		const info = { start, end, startAnchor, endAnchor, followStart, caption: !!caption, sharedStart, sharedEnd };
 		if (!(startAnchor && endAnchor) && !cutStart && !cutEnd) return info;
-		const resolved = (!sharedStart || !!cuts.get(element.startTime)) && (!sharedEnd || !!cuts.get(endTicks)) &&
-			(!startAnchor || !endAnchor || clear(startAnchor, endAnchor)) && (!ownStart || !ownEnd || clear(ownStart, ownEnd));
+		const resolved = (!startAnchor || !endAnchor || clear(startAnchor, endAnchor)) && (!ownStart || !ownEnd || clear(ownStart, ownEnd));
 		const oldFrames = frame(end) - frame(start);
 		const map = (anchor: Anchor | undefined, fixed: number) =>
 			anchor ? clear(anchor, anchor) ? frame(mapped(anchor)) : null : frame(fixed);
