@@ -18,6 +18,7 @@ import { getKeyframeById } from "@/animation";
 import { RetimeKeyframesCommand } from "@/commands/timeline/element/keyframes/retime-keyframe";
 import type { SelectedKeyframeRef } from "@/animation/types";
 import type { TimelineElement } from "@/timeline";
+import { beginTimelineGesture } from "@/timeline/gesture-state";
 import type { Command } from "@/commands/base-command";
 import { finishFocusedField } from "@/utils/browser";
 
@@ -93,6 +94,7 @@ export class KeyframeDragController {
 	private mouseDownX: number | null = null;
 	private gestureOwner: PreviewGesture | null = null;
 	private canceledMouseDown = false;
+	private endGesture: (() => void) | null = null;
 	private readonly subscribers = new Set<() => void>();
 	private readonly configRef: KeyframeDragConfigRef;
 
@@ -128,6 +130,7 @@ export class KeyframeDragController {
 	destroy(): void {
 		this.subscribers.clear();
 		this.gestureOwner?.cancel();
+		this.endGesture?.();
 	}
 
 	onKeyframeMouseDown({
@@ -264,6 +267,8 @@ export class KeyframeDragController {
 	private finishSession(): void {
 		this.gestureOwner?.finish();
 		this.gestureOwner = null;
+		this.endGesture?.();
+		this.endGesture = null;
 		this.session = { kind: "idle" };
 		this.deactivate();
 		this.notify();
@@ -344,6 +349,7 @@ export class KeyframeDragController {
 				minDeltaTicks: -earliest,
 				maxDeltaTicks: element.duration - latest,
 			};
+			this.endGesture ??= beginTimelineGesture();
 			this.notify();
 			return;
 		}
