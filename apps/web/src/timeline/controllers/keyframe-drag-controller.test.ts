@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { FrameRate } from "opencut-wasm";
 import type { VideoElement } from "@/timeline";
-import type { SelectedKeyframeRef } from "@/animation/types";
+import type { ScalarAnimationKey, SelectedKeyframeRef } from "@/animation/types";
 import { TIMELINE_DRAG_THRESHOLD_PX } from "@/timeline/components/interaction";
 import { BASE_TIMELINE_PIXELS_PER_SECOND } from "@/timeline/scale";
 import { addMediaTime, mediaTime, roundFrameTicks, roundFrameTime, TICKS_PER_SECOND, ZERO_MEDIA_TIME } from "@/wasm";
@@ -27,7 +27,7 @@ const clip = (start: number, keyTicks: number[], duration = 600_000): VideoEleme
 	id: "c", type: "video", name: "c", mediaId: "m",
 	startTime: mediaTime({ ticks: start }), duration: mediaTime({ ticks: duration }),
 	trimStart: ZERO_MEDIA_TIME, trimEnd: ZERO_MEDIA_TIME, params: PARAMS,
-	animations: { opacity: { keys: keyTicks.map((time, i) => ({ id: `k${i}`, time: mediaTime({ ticks: time }), value: 1, segmentToNext: "linear", tangentMode: "flat" })) } },
+	animations: { opacity: { keys: keyTicks.map<ScalarAnimationKey>((time, i) => ({ id: `k${i}`, time: mediaTime({ ticks: time }), value: 1, segmentToNext: "linear", tangentMode: "flat" })) } },
 });
 
 function harness(element: VideoElement, fps: FrameRate, selected = [keyRef("k0")], grabbed = selected) {
