@@ -17,6 +17,7 @@ import { EditorHeader } from "@/components/editor/editor-header";
 import { EditorProvider } from "@/components/providers/editor-provider";
 import { Onboarding } from "@/components/editor/onboarding";
 import { MigrationDialog } from "@/project/components/migration-dialog";
+import { rememberPlayhead } from "@/project/playhead-memory";
 import { usePanelStore } from "@/editor/panel-store";
 import { usePasteMedia } from "@/media/use-paste-media";
 import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
@@ -106,11 +107,8 @@ function EditorLayout() {
 		(state) => state.setOverlayVisibility,
 	);
 
-	useLayoutEffect(() => {
-		// Restore the saved position on editor entry, even if the timeline remounts later.
-		const { playheadTime } = editor.project.getTimelineViewState();
-		if (playheadTime !== undefined) editor.playback.seek({ time: playheadTime });
-	}, [editor]);
+	// On editor entry, not when the timeline remounts later.
+	useLayoutEffect(() => rememberPlayhead(editor), [editor]);
 
 	const showBookmarkNotes = isPreviewOverlayVisible({
 		overlay: bookmarkNotesPreviewOverlay,

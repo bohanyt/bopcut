@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import type { ProjectNavigation } from "@/services/storage/types";
@@ -12,6 +12,7 @@ const { EditorCore } = await import("@/core");
 const { agentReadiness } = await import("@/agent/bridge");
 const { StorageService, storageService } = await import("@/services/storage/service");
 const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
+const { rememberPlayhead } = await import("@/project/playhead-memory");
 
 const asset = (id: string) => ({ id, name: id, type: "image", file: new File([id], `${id}.png`) }) as MediaAsset;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -325,6 +326,72 @@ describe("navigation and thumbnails", () => {
 		editor.project.setTimelineViewState({ viewState: view(23) });
 		expect(await editor.save.settle()).toBe(true);
 		expect(disk.viewWrites.map(({ id }) => id)).toEqual(["a", "b"]);
+	});
+
+	describe("the playhead after seeks without the mouse", () => {
+		const seconds = (value: number) => roundMediaTime({ time: value * 120_000 });
+		const withText = (id: string, playhead: number) => {
+			const stored = project(id, new Date(0));
+			const text = { id: "text", type: "text", name: "text", startTime: 0, duration: seconds(60), trimStart: 0, trimEnd: 0, params: { content: "text" } };
+			stored.scenes[0].tracks.overlay = [{ id: "t", name: "t", type: "text", hidden: false, elements: [text] }] as never;
+			stored.timelineViewState = { zoomLevel: 2, scrollLeft: 7, playheadTime: seconds(playhead) };
+			return stored;
+		};
+		const page = Object.assign(new EventTarget(), { hidden: false });
+		const hide = (hidden: boolean) => { page.hidden = hidden; page.dispatchEvent(new Event("visibilitychange")); };
+		const original = Object.getOwnPropertyDescriptor(globalThis, "document");
+		beforeEach(() => { page.hidden = false; Object.defineProperty(globalThis, "document", { value: page, configurable: true, writable: true }); });
+		afterEach(() => { if (original) Object.defineProperty(globalThis, "document", original); else delete (globalThis as { document?: unknown }).document; });
+		async function open(stored: TProject, others: TProject[] = []) {
+			const editor = await load(stored);
+			const disk = memoryDisk([stored, ...others]);
+			return { editor, disk, leave: rememberPlayhead(editor), saved: () => disk.viewWrites.map(({ id, navigation }) => [id, navigation.timelineViewState?.playheadTime]) };
+		}
+
+		test("is stored on exit and nothing is written per seek", async () => {
+			const { editor, disk, leave, saved } = await open(withText("a", 2));
+			expect(editor.playback.getCurrentTime()).toBe(seconds(2));
+			for (const at of [3, 4, 5]) editor.playback.seek({ time: seconds(at) });
+			expect(editor.save.getIsDirty()).toBe(false);
+			await editor.project.prepareExit();
+			editor.project.closeProject();
+			leave();
+			expect(await editor.save.settleProject("a")).toBeNull();
+			expect(saved()).toEqual([["a", seconds(5)]]);
+			expect(disk.viewWrites[0].navigation.timelineViewState).toMatchObject({ zoomLevel: 2, scrollLeft: 7 });
+			expect(disk.writes).toEqual([]);
+		});
+
+		test("is written at once when the page is hidden, and only if it moved", async () => {
+			const { editor, leave, saved } = await open(withText("a", 2));
+			hide(true);
+			hide(false);
+			await wait(5);
+			expect(saved()).toEqual([]);
+			editor.playback.seek({ time: seconds(9) });
+			hide(true);
+			await wait(5);
+			expect(saved()).toEqual([["a", seconds(9)]]);
+			leave();
+			hide(true);
+			await wait(5);
+			expect(saved()).toHaveLength(1);
+		});
+
+		test("belongs to the project that was left", async () => {
+			const { editor, leave, saved } = await open(withText("a", 2), [withText("b", 30)]);
+			editor.playback.seek({ time: seconds(9) });
+			const loading = editor.project.loadProject({ id: "b" });
+			leave();
+			await loading;
+			leave();
+			const leaveB = rememberPlayhead(editor);
+			expect(editor.playback.getCurrentTime()).toBe(seconds(30));
+			leaveB();
+			expect(await editor.save.settleProject("a")).toBeNull();
+			expect(await editor.save.settleProject("b")).toBeNull();
+			expect(saved()).toEqual([["a", seconds(9)]]);
+		});
 	});
 
 	test("a failed navigation write retries without serializing committed edits again", async () => {

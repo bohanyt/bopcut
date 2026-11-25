@@ -756,6 +756,7 @@ export class ProjectManager {
 		const take = this.editor.voiceOver.finishForNavigation();
 		if (take) await take;
 		if (!this.active) return;
+		this.storePlayhead();
 
 		try {
 			await this.updateThumbnailFromTimeline({ backgroundUpload: true });
@@ -848,6 +849,13 @@ export class ProjectManager {
 		};
 		this.editor.save.markNavigationDirty();
 		if (sceneChanged) this.notify();
+	}
+
+	/** Takes the playhead of the open scene into the saved view. */
+	storePlayhead(): void {
+		this.setTimelineViewState({
+			viewState: { ...this.getTimelineViewState(), playheadTime: this.editor.playback.getCurrentTime() },
+		});
 	}
 
 	getSavedProjects(): TProjectMetadata[] {

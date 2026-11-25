@@ -47,6 +47,8 @@ export class DiskAdapter {
 		await this.queued(id, async () => {
 			await checked(await fetch(`${projectUrl(id)}/navigation`, {
 				method: "PUT",
+				// Also sent while the page closes.
+				keepalive: true,
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(value),
 			}));
