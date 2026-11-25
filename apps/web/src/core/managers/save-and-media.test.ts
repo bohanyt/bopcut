@@ -1094,13 +1094,11 @@ describe("save sessions: reads, renames, deletes and the page guard", () => {
 
 			// Also in the middle of an edit: typing, a slider, a drag.
 			await editor.project.loadProject({ id: "a" });
-			editor.timeline.addTrack({ type: "text", index: 0 });
-			const [track] = editor.scenes.getActiveScene().tracks.overlay;
 			const element = { id: "title", type: "text", name: "title", startTime: 0, duration: 120000, trimStart: 0, trimEnd: 0, params: {} };
-			editor.timeline.updateTracks({ ...editor.scenes.getActiveScene().tracks, overlay: [{ ...track, elements: [element] } as never] });
+			editor.timeline.updateTracks({ ...editor.scenes.getActiveScene().tracks, overlay: [{ id: "text", name: "Text", type: "text", hidden: false, elements: [element] } as never] });
 			expect(await editor.save.flush()).toBe(true);
 			expect(listeners.size).toBe(0);
-			editor.timeline.previewElements({ updates: [{ trackId: track.id, elementId: "title", updates: { name: "typed" } }] });
+			editor.timeline.previewElements({ updates: [{ trackId: "text", elementId: "title", updates: { name: "typed" } }] });
 			expect(listeners.size).toBe(1);
 			editor.timeline.discardPreview();
 			expect(listeners.size).toBe(0);
