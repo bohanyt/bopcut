@@ -112,8 +112,12 @@ describe("folder storage", () => {
 			closed.resolve();
 		});
 		const readFile = handle.read.bind(handle);
+		const failRead = Promise.withResolvers<void>();
 		const read = kind === "read error"
-			? spyOn(handle, "read").mockImplementationOnce(readFile).mockRejectedValueOnce(new Error("disk read failed"))
+			? spyOn(handle, "read").mockImplementationOnce(readFile).mockImplementationOnce(async () => {
+				await failRead.promise;
+				throw new Error("disk read failed");
+			})
 			: undefined;
 		const controller = new AbortController();
 		try {
@@ -127,13 +131,16 @@ describe("folder storage", () => {
 			} else if (kind === "cancel") {
 				await body.cancel();
 			} else {
-				await expect(body.read()).rejects.toThrow("disk read failed");
+				const error = body.read().then(() => null, (reason: unknown) => reason);
+				failRead.resolve();
+				expect(await error).toMatchObject({ message: "disk read failed" });
 			}
 			await closed.promise;
 			expect(close).toHaveBeenCalledTimes(1);
 			await fs.unlink(file);
 			await fs.rmdir(dir);
 		} finally {
+			failRead.resolve();
 			controller.abort();
 			open.mockRestore();
 			read?.mockRestore();
