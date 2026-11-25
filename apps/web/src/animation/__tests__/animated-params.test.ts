@@ -33,15 +33,14 @@ describe("animated params", () => {
 		const key = (id: string, time: number, value: number) =>
 			({ id, time: mediaTime({ ticks: time }), value, segmentToNext: "bezier", tangentMode: "flat" }) as const;
 		const { leftAnimations, rightAnimations } = splitAnimationsAtTime({
-			animations: { opacity: { keys: [key("a", 0, 0), key("b", 4000, 1), key("c", 8000, 0)] } },
+			animations: { opacity: { keys: [key("a", 0, 0), key("b", 4000, 1), key("c", 8000, 0), key("d", 8000, 1)] } },
 			splitTime: mediaTime({ ticks: 6000 }),
 			boundaryIdPrefix: "split",
 		});
 		const keys = (channel: unknown) => (channel as ScalarAnimationChannel).keys.map(({ id, time }): [string, number] => [id, time]);
 		expect(keys(leftAnimations?.opacity).slice(0, 2)).toEqual([["a", 0], ["b", 4000]]);
 		expect(keys(leftAnimations?.opacity)).toHaveLength(3);
-		expect(keys(rightAnimations?.opacity).at(-1)).toEqual(["c", 2000]);
-		expect(keys(rightAnimations?.opacity)).toHaveLength(2);
+		expect(keys(rightAnimations?.opacity).slice(1)).toEqual([["c", 2000], ["d", 2000]]);
 	});
 
 	test("snaps and clamps number params", () => {

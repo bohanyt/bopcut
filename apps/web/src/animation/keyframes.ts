@@ -1102,12 +1102,10 @@ function splitScalarChannelAtTime({
 						dv: q2.y - p3.y,
 					},
 				},
-				...normalizedChannel.keys
-					.filter((key) => key.time > rightKey.time)
-					.map((key) => ({
-						...key,
-						time: subMediaTime({ a: key.time, b: splitTime }),
-					})),
+				...normalizedChannel.keys.slice(keyIndex + 2).map((key) => ({
+					...key,
+					time: subMediaTime({ a: key.time, b: splitTime }),
+				})),
 			];
 		} else {
 			leftKeys = [
