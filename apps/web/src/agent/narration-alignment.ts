@@ -127,7 +127,7 @@ function alignWindow(old: string[], next: string[], left: number, right: number,
 		}
 	}
 	const best = before.at(-1)!;
-	const candidates = [];
+	const candidates: { i: number; j: number; exact: boolean; margin: number }[] = [];
 	for (let i = 0; i < m; i++) {
 		let match = -1;
 		let alternative = Infinity;
