@@ -15,6 +15,7 @@ import {
 	type MediaTime,
 	maxMediaTime,
 	minMediaTime,
+	subMediaTime,
 	ZERO_MEDIA_TIME,
 } from "@/wasm";
 
@@ -30,6 +31,8 @@ function pasteKeyframesIntoElement({
 	clipboardItems: PasteKeyframeItem[];
 }): TimelineElement {
 	let nextElement = element;
+	// Keyframe times count from the start of the clip.
+	const localTime = subMediaTime({ a: time, b: element.startTime });
 
 	for (const item of clipboardItems) {
 		const target = resolveAnimationTarget({
@@ -43,7 +46,7 @@ function pasteKeyframesIntoElement({
 		const keyframeTime = maxMediaTime({
 			a: ZERO_MEDIA_TIME,
 			b: minMediaTime({
-				a: addMediaTime({ a: time, b: item.timeOffset }),
+				a: addMediaTime({ a: localTime, b: item.timeOffset }),
 				b: nextElement.duration,
 			}),
 		});

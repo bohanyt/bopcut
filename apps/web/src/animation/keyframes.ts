@@ -1062,7 +1062,7 @@ function splitScalarChannelAtTime({
 			const r1 = lerpPoint({ left: q1, right: q2, progress });
 			const splitPoint = lerpPoint({ left: r0, right: r1, progress });
 			leftKeys = [
-				...normalizedChannel.keys.filter((key) => key.time < splitTime),
+				...normalizedChannel.keys.slice(0, keyIndex),
 				{
 					...leftKey,
 					rightHandle: {
