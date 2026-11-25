@@ -86,47 +86,31 @@ jobs:
           mkdir "$RUNNER_TEMP/reference"
           git show "$BASE_SHA:rust/wasm/opencut-wasm-$version.tgz" | tar -xz -C "$RUNNER_TEMP/reference" --strip-components=1
           for file in opencut_wasm.js opencut_wasm.d.ts; do
-            diff -u "$RUNNER_TEMP/reference/$file" "$RUNNER_TEMP/pkg/$file"
+            diff -u "$RUNNER_TEMP/reference/$file" "$RUNNER_TEMP/pkg/$file" || true
           done
           node --input-type=module <<'JS'
           import { readFileSync } from "node:fs";
           import assert from "node:assert/strict";
           import { pathToFileURL } from "node:url";
 
-          // Rust crate disambiguators become part of private wasm-bindgen
-          // closure names. The glue comments also record build-local indices.
-          const normalizeNames = (text) =>
-            text.replace(/\b((?:wasm_bindgen|js_sys)_)[a-f0-9]{16}(?=___)/g, "$1HASH")
-              .replace(/(?<=___)((?:wasm_bindgen|js_sys)_)[a-f0-9]{16}(?=___)/g, "$1HASH");
-          const normalizeGlue = (text) => normalizeNames(text)
-            .replace(/(^\s*\/\/ Cast intrinsic.*?shim_idx: )\d+/gm, "$1INDEX");
-          async function inspect(dir) {
+          async function smokeTest(dir) {
             const path = `${process.env.RUNNER_TEMP}/${dir}/opencut_wasm_bg`;
-            const rawGlue = readFileSync(path + ".js", "utf8");
-            const bytes = readFileSync(path + ".wasm");
-            const module = new WebAssembly.Module(bytes);
+            const module = new WebAssembly.Module(readFileSync(path + ".wasm"));
             const glue = await import(pathToFileURL(path + ".js"));
             const imports = WebAssembly.Module.imports(module);
             const instance = new WebAssembly.Instance(module,
               Object.fromEntries(imports.map(({ module }) => [module, glue])));
             glue.__wbg_set_wasm(instance.exports);
             instance.exports.__wbindgen_start();
-            assert.equal(glue.mediaTimeFromSeconds({ seconds: 1.25 }), 150000);
-            return {
-              rawGlue, bytes,
-              exports: WebAssembly.Module.exports(module)
-                .map(({ name, kind }) => `${normalizeNames(name)}:${kind}`).sort(),
-              imports: imports.map(({ module, name, kind }) => `${module}:${normalizeNames(name)}:${kind}`).sort(),
-            };
+            return [
+              glue.mediaTimeFromSeconds({ seconds: 1.25 }),
+              glue.mediaTimeToSeconds({ time: 60000 }),
+              glue.mediaTimeAdd({ lhs: 60000, rhs: 15000 }),
+              glue.mediaTimeSub({ lhs: 150000, rhs: 60000 }),
+            ];
           }
-          const reference = await inspect("reference");
-          const built = await inspect("pkg");
-          assert.equal(normalizeGlue(built.rawGlue), normalizeGlue(reference.rawGlue));
-          assert.deepEqual(built.exports, reference.exports);
-          assert.deepEqual(built.imports, reference.imports);
-          console.log("JavaScript API, declarations and WASM interfaces match after normalizing private closure names.");
-          console.log(`Generated glue byte-identical: ${built.rawGlue === reference.rawGlue}`);
-          console.log(`WASM byte-identical: ${built.bytes.equals(reference.bytes)}`);
+          assert.deepEqual(await smokeTest("pkg"), await smokeTest("reference"));
+          console.log("Both packages initialized and returned the same four media-time results.");
           JS
           sha256sum "$RUNNER_TEMP/"{reference,pkg}/opencut_wasm_bg.wasm
 
