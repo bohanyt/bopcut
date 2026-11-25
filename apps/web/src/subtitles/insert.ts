@@ -8,14 +8,11 @@ import type { SubtitleCue } from "./types";
 export function insertCaptionChunksAsTextTrack({
 	editor,
 	captions,
-	sceneId = editor.scenes.getActiveSceneOrNull()?.id,
 }: {
 	editor: EditorCore;
 	captions: SubtitleCue[];
-	sceneId?: string;
 }): string | null {
-	const scene = editor.scenes.getScenes().find(({ id }) => id === sceneId);
-	if (!scene || captions.length === 0) {
+	if (captions.length === 0) {
 		return null;
 	}
 
@@ -28,17 +25,13 @@ export function insertCaptionChunksAsTextTrack({
 		track.elements.push({ ...element, id: generateUUID() });
 	});
 
-	const before = scene.tracks;
+	const before = editor.scenes.getActiveScene().tracks;
 	const after = { ...before, overlay: [track, ...before.overlay] };
 	const last = track.elements.at(-1);
-	const isActive = scene.id === editor.scenes.getActiveSceneOrNull()?.id;
 	editor.command.execute({
-		sceneId: scene.id,
 		command: new TracksSnapshotCommand({
 			before,
 			after,
-			sceneId: scene.id,
-			ripples: isActive,
 			selectedElements: last ? [{ trackId: track.id, elementId: last.id }] : undefined,
 		}),
 	});

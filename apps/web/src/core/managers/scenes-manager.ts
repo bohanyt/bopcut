@@ -454,15 +454,15 @@ export class ScenesManager {
 
 	/**
 	 * Derived compound state: clips that gained visuals leave audio tracks, then every
-	 * sourceDuration follows its nested scene. Relocations of scenes other than the edited one
+	 * sourceDuration follows its nested scene. Relocations of scenes other than the active one
 	 * are logged so the running command can undo and redo them.
 	 */
-	private normalize(scenes: TScene[], editedSceneId = this.active?.id): TScene[] {
+	private normalize(scenes: TScene[]): TScene[] {
 		const relocated = relocateVisualCompounds(scenes);
 		const synced = syncCompoundDurations(relocated);
 		if (this.derivedLog && relocated !== scenes) {
 			for (const [index, scene] of scenes.entries()) {
-				if (relocated[index] === scene || scene.id === editedSceneId) continue;
+				if (relocated[index] === scene || scene.id === this.active?.id) continue;
 				const logged = this.derivedLog.get(scene.id);
 				this.derivedLog.set(scene.id, {
 					before: logged?.before ?? scene.tracks,
@@ -479,23 +479,22 @@ export class ScenesManager {
 		});
 	}
 
-	updateSceneTracks({ tracks, sceneId = this.active?.id }: { tracks: SceneTracks; sceneId?: string }): void {
-		const scene = this.list.find(({ id }) => id === sceneId);
-		if (!scene) return;
+	updateSceneTracks({ tracks }: { tracks: SceneTracks }): void {
+		if (!this.active) return;
+		const activeId = this.active.id;
 		// Every timeline edit lands here, so this is the boundary that keeps compound cycles out.
-		assertTracksAcyclic({ scenes: this.list, sceneId: scene.id, tracks });
+		assertTracksAcyclic({ scenes: this.list, sceneId: activeId, tracks });
 
 		const updatedScene: TScene = {
-			...scene,
+			...this.active,
 			tracks,
 			updatedAt: new Date(),
 		};
 
 		this.list = this.normalize(
-			this.list.map((s) => (s.id === sceneId ? updatedScene : s)),
-			sceneId,
+			this.list.map((s) => (s.id === activeId ? updatedScene : s)),
 		);
-		this.active = this.list.find((s) => s.id === this.active?.id) ?? this.active;
+		this.active = this.list.find((s) => s.id === activeId) ?? updatedScene;
 		this.notify();
 
 		const activeProject = this.editor.project.getActive();

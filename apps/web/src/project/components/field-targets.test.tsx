@@ -165,34 +165,39 @@ function beginSubtitleImport() {
 	return () => act(async () => completeRead("1\n00:00:00,100 --> 00:00:01,000\nWords from scene one\n"));
 }
 
-test("an in-flight subtitle import stays in the original scene and is one Undo step", async () => {
-	scenes.push(scene("other", fixture()[0].tracks));
+test("a subtitle import in the same scene is one Undo step", async () => {
 	start();
 	render(<Captions />);
 	const finishImport = beginSubtitleImport();
-	await act(async () => editor.scenes.switchToScene({ sceneId: "other" }));
 	await finishImport();
-	const contents = (id: string) => editor.scenes.getScenes().find((scene) => scene.id === id)!.tracks.overlay
+	const contents = () => editor.scenes.getActiveScene().tracks.overlay
 		.flatMap((track) => track.elements.map((element) => element.params.content));
-	expect(editor.scenes.getActiveScene().id).toBe("other");
-	expect(contents("other")).not.toContain("Words from scene one");
-	expect(contents("main")).toContain("Words from scene one");
+	expect(contents()).toContain("Words from scene one");
 	act(() => editor.command.undo());
-	expect(contents("main")).not.toContain("Words from scene one");
+	expect(contents()).not.toContain("Words from scene one");
 	expect(editor.command.canUndo()).toBe(false);
 	act(() => editor.command.redo());
-	expect(contents("main")).toContain("Words from scene one");
+	expect(contents()).toContain("Words from scene one");
 });
 
-test("a subtitle import reports that its original scene is gone", async () => {
+test.each(["scene", "project"] as const)("a subtitle import stops after opening another %s", async (target) => {
 	scenes.push(scene("other", fixture()[0].tracks));
 	start();
-	await editor.scenes.switchToScene({ sceneId: "other" });
 	render(<Captions />);
 	const finishImport = beginSubtitleImport();
-	act(() => editor.scenes.setScenes({ scenes: [getHost(scenes)] }));
+	if (target === "scene") {
+		await act(async () => editor.scenes.switchToScene({ sceneId: "other" }));
+	} else {
+		const project = editor.project.getActive();
+		act(() => editor.project.setActiveProject({
+			project: { ...project, metadata: { ...project.metadata, id: "other-project" } },
+		}));
+	}
 	await finishImport();
-	expect(document.body.textContent).toContain("The original scene is no longer available.");
+	expect(document.body.textContent).toContain("You opened another scene or project. The subtitles were not imported.");
+	expect(editor.scenes.getScenes().flatMap(({ tracks }) =>
+		tracks.overlay.flatMap(({ elements }) => elements.map(({ params }) => params.content)),
+	)).not.toContain("Words from scene one");
 	expect(editor.command.canUndo()).toBe(false);
 });
 

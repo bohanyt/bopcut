@@ -182,8 +182,8 @@ export function Captions() {
 		dispatch({ type: "start", step: "captions.readingFile" });
 		try {
 			const input = await file.text();
-			if (session.aborted || !editor.scenes.getScenes().some(({ id }) => id === sceneId)) {
-				dispatch({ type: "fail", error: (t) => t("captions.importTargetGone") });
+			if (session.aborted || editor.scenes.getActiveSceneOrNull()?.id !== sceneId) {
+				dispatch({ type: "fail", error: (t) => t("captions.importTargetChanged") });
 				return;
 			}
 			const result = parseSubtitleFile({
@@ -201,7 +201,7 @@ export function Captions() {
 
 			dispatch({ type: "update_step", step: "captions.importing" });
 
-			if (!insertCaptionChunksAsTextTrack({ editor, captions: result.captions, sceneId })) {
+			if (!insertCaptions({ captions: result.captions })) {
 				dispatch({ type: "fail", error: (t) => t("captions.noneGenerated") });
 				return;
 			}

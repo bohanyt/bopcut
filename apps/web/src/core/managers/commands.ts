@@ -54,11 +54,9 @@ export class CommandManager {
 		try { return action(); } finally { this.recordsHumanFields = previous; }
 	}
 
-	execute({
-		command,
-		sceneId = this.getActiveSceneId(),
-	}: { command: Command; sceneId?: string | null }): CommandResult | undefined {
+	execute({ command }: { command: Command }): CommandResult | undefined {
 		const projectSession = this.editor.project.getSession();
+		const sceneId = this.getActiveSceneId();
 		const rippleEnabled = this.isRippleEnabled;
 		const beforeTracks =
 			rippleEnabled && command.ripples
