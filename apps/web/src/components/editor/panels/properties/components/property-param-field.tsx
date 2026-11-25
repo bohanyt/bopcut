@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useI18n } from "@/i18n/provider";
 import type {
 	ParamDefinition,
@@ -212,6 +212,7 @@ function NumberParamField({
 }) {
 	const { timeline } = useEditor();
 	const { min, max, step, displayMultiplier = 1 } = param;
+	const typedPreview = useRef<typeof onPreview | null>(null);
 	const displayValue = value * displayMultiplier;
 	const clampDisplayValue = (nextDisplayValue: number) =>
 		Math.max(
@@ -238,7 +239,8 @@ function NumberParamField({
 			if (Number.isNaN(parsed)) return null;
 			return clampDisplayValue(snapToStep({ value: parsed, step }));
 		},
-		onPreview: previewFromDisplay,
+		onStartEditing: () => { typedPreview.current = onPreview; },
+		onPreview: (displayVal) => (typedPreview.current ?? onPreview)(displayVal / displayMultiplier),
 		onCommit,
 	});
 
@@ -255,7 +257,10 @@ function NumberParamField({
 			isDefault={value === param.default}
 			onFocus={draft.onFocus}
 			onChange={draft.onChange}
-			onBlur={draft.onBlur}
+			onBlur={(event) => {
+				draft.onBlur(event);
+				typedPreview.current = null;
+			}}
 			onScrub={previewFromDisplay}
 			onScrubEnd={onCommit}
 			beginScrubGesture={timeline.beginPreviewGesture}

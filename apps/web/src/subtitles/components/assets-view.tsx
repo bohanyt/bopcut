@@ -177,9 +177,15 @@ export function Captions() {
 	};
 
 	const handleImportFile = async ({ file }: { file: File }) => {
+		const sceneId = editor.scenes.getActiveScene().id;
+		const session = editor.project.getSessionSignal();
 		dispatch({ type: "start", step: "captions.readingFile" });
 		try {
 			const input = await file.text();
+			if (session.aborted || !editor.scenes.getScenes().some(({ id }) => id === sceneId)) {
+				dispatch({ type: "fail", error: (t) => t("captions.importTargetGone") });
+				return;
+			}
 			const result = parseSubtitleFile({
 				fileName: file.name,
 				input,
@@ -195,7 +201,7 @@ export function Captions() {
 
 			dispatch({ type: "update_step", step: "captions.importing" });
 
-			if (!insertCaptions({ captions: result.captions })) {
+			if (!insertCaptionChunksAsTextTrack({ editor, captions: result.captions, sceneId })) {
 				dispatch({ type: "fail", error: (t) => t("captions.noneGenerated") });
 				return;
 			}

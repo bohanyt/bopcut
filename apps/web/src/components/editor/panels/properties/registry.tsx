@@ -378,7 +378,7 @@ function getCompoundConfig({
 				id: "compound",
 				labelKey: "properties.compound",
 				icon: <HugeiconsIcon icon={Layers01Icon} size={16} />,
-				content: ({ trackId }) => <CompoundTab element={element} trackId={trackId} />,
+				content: ({ trackId }) => <CompoundTab key={element.id} element={element} trackId={trackId} />,
 			},
 			buildTransformTab({ element }),
 			buildAnimationTab({ element }),

@@ -344,6 +344,7 @@ export const id = {
 	"captions.noValidCues": "Tidak ada entri subtitle yang valid dalam file",
 	"captions.preparingAudio": "Menyiapkan audio...",
 	"captions.readingFile": "Membaca file subtitle...",
+	"captions.importTargetGone": "Adegan tujuan sudah tidak tersedia. Buka adegan dan impor kembali subtitle.",
 	"captions.selectLanguage": "Pilih bahasa",
 	"captions.transcribing": "Mentranskripsikan...",
 	"captions.unexpectedError": "Terjadi kesalahan tak terduga",

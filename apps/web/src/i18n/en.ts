@@ -326,6 +326,7 @@ export const en = {
 	"captions.generateTranscript": "Generate transcript",
 	"captions.generating": "Generating captions...",
 	"captions.importing": "Importing subtitles...",
+	"captions.importTargetGone": "The original scene is no longer available. Open a scene and import the subtitles again.",
 	"captions.importWarning": "Imported {count} subtitle cue(s) and skipped {skipped} malformed cue(s).",
 	"captions.lang.de": "German",
 	"captions.lang.en": "English",

@@ -1,7 +1,8 @@
 "use client";
 
 import { useI18n } from "@/i18n/provider";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useEditor } from "@/editor/use-editor";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -25,13 +26,19 @@ export function CompoundTab({
 	const { t } = useI18n();
 	const editor = useEditor();
 	const [draft, setDraft] = useState<string | null>(null);
+	const pending = useRef<string | null>(null);
+	const session = editor.project.getSession();
 
-	const commitName = () => {
-		const name = draft?.trim();
-		setDraft(null);
-		if (!name || name === element.name) return;
-		editor.timeline.renameCompound({ sceneId: element.sceneId, name });
-	};
+	const commitName = useCommittedRef(() => {
+		const name = pending.current?.trim();
+		pending.current = null;
+		if (!name || editor.project.getSession() !== session) return;
+		const scene = editor.scenes.getScenes().find(({ id }) => id === element.sceneId);
+		if (scene?.kind === "compound" && scene.name !== name) {
+			editor.timeline.renameCompound({ sceneId: scene.id, name });
+		}
+	});
+	useEffect(() => () => commitName.current(), [commitName]);
 
 	return (
 		<Section sectionKey={`${element.id}:compound`}>
@@ -45,8 +52,14 @@ export function CompoundTab({
 							size="sm"
 							aria-label={t("properties.compoundName")}
 							value={draft ?? element.name}
-							onChange={(event) => setDraft(event.target.value)}
-							onBlur={commitName}
+							onChange={(event) => {
+								pending.current = event.currentTarget.value;
+								setDraft(pending.current);
+							}}
+							onBlur={() => {
+								commitName.current();
+								setDraft(null);
+							}}
 							onKeyDown={(event) => {
 								if (event.key === "Enter") event.currentTarget.blur();
 							}}
