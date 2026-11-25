@@ -35,8 +35,10 @@ function transcriptScenes(project: SerializedProject): TScene[] {
 	});
 }
 
-export async function readReviewableProject(projectId: string, signal: AbortSignal, { includeStaged = true, timeline = true } = {}) {
-	const dir = projectDir(projectId);
+export async function readReviewableProject(projectId: string, signal: AbortSignal, { includeStaged = true, timeline = true, directory }: {
+	includeStaged?: boolean; timeline?: boolean; directory?: string;
+} = {}) {
+	const dir = directory ?? projectDir(projectId);
 	const projectFile = await fileInside(path.dirname(dir), projectId, "project.json");
 	if (!projectFile) throw new Error("Project was not found on disk.");
 	const stored: unknown = await readJson(projectFile);
