@@ -11,6 +11,10 @@ mock.module("@/services/renderer/gpu-renderer", () => ({
 	initializeGpuRenderer: async () => {},
 	isGpuAvailable: () => false,
 }));
+// Loaded before the globals below: some modules choose their code by the presence of a document.
+const { EditorCore } = await import("@/core");
+const { useEditorActions } = await import("./use-editor-actions");
+const { useKeybindingsListener } = await import("./use-keybindings");
 
 const dom = new Window();
 const globals = {
@@ -24,10 +28,9 @@ const globals = {
 };
 const originals = Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
 let root: Root;
-let editor: Awaited<ReturnType<typeof setup>>;
+let editor: ReturnType<typeof setup>;
 
-async function setup() {
-	const { EditorCore } = await import("@/core");
+function setup() {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
 	editor.save.stop();
@@ -79,17 +82,16 @@ const whole = { title: [[0, 4]], bg: [[0, 4]], next: [[4, 8]], music: [[0, 4]] }
 beforeAll(() => {
 	for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
 });
-afterAll(() => {
+afterAll(async () => {
+	await dom.close();
 	for (const [key, descriptor] of originals) {
 		if (descriptor) Object.defineProperty(globalThis, key, descriptor);
 		else delete (globalThis as Record<string, unknown>)[key];
 	}
 });
 beforeEach(async () => {
-	editor = await setup();
-	const [{ createRoot }, { useEditorActions }, { useKeybindingsListener }] = await Promise.all([
-		import("react-dom/client"), import("./use-editor-actions"), import("./use-keybindings"),
-	]);
+	editor = setup();
+	const { createRoot } = await import("react-dom/client");
 	function Shortcuts() {
 		useEditorActions();
 		useKeybindingsListener();
@@ -101,7 +103,6 @@ beforeEach(async () => {
 });
 afterEach(async () => {
 	await act(async () => { root.unmount(); });
-	const { EditorCore } = await import("@/core");
 	EditorCore.reset();
 });
 
