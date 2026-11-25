@@ -62,6 +62,23 @@ export async function handleCli(req: Request, action: string, workspace: string)
 				return json({ error: error instanceof Error ? error.message : "Could not read the saved transcript." }, 400);
 			}
 		}
+		if (action === "narration-plan" && req.method === "GET") {
+			const clipId = url.searchParams.get("clip") ?? "", mediaId = url.searchParams.get("newMedia") ?? "";
+			const timeoutMs = Number(url.searchParams.get("timeoutMs") ?? 30_000);
+			if (!requested || !/^[\w-]{1,128}$/.test(clipId) || !/^[\w-]{1,128}$/.test(mediaId) ||
+				!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86_400_000) {
+				return json({ error: "Use narration-plan --project-id ID --clip CLIP_ID --new-media MEDIA_ID [--json]." }, 400);
+			}
+			try {
+				const { readNarrationPlan, formatNarrationPlan } = await import("./narration-plan-server");
+				const signal = AbortSignal.any([req.signal, AbortSignal.timeout(timeoutMs)]);
+				const plan = await readNarrationPlan({ projectId: requested, clipId, mediaId, timeoutMs, signal });
+				return url.searchParams.get("format") === "json" ? json(plan) : new Response(formatNarrationPlan(plan),
+					{ headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+			} catch (error) {
+				return json({ error: error instanceof Error ? error.message : "Could not plan narration replacement." }, 400);
+			}
+		}
 		if (action === "selection") {
 			const selected = await readInside(workspace, "selection.json");
 			return json({ selection: !requested || requested === selected?.projectId ? selected : null });

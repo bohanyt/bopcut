@@ -35,7 +35,9 @@ function transcriptScenes(project: SerializedProject): TScene[] {
 	});
 }
 
-export async function readReviewableProject(projectId: string, signal: AbortSignal, { includeStaged = true, timeline = true } = {}) {
+export async function readReviewableProject(projectId: string, signal: AbortSignal, {
+	includeStaged = true, timeline = true, mediaIds,
+}: { includeStaged?: boolean; timeline?: boolean; mediaIds?: (root: TScene | null) => string[] } = {}) {
 	const dir = projectDir(projectId);
 	const projectFile = await fileInside(path.dirname(dir), projectId, "project.json");
 	if (!projectFile) throw new Error("Project was not found on disk.");
@@ -46,12 +48,16 @@ export async function readReviewableProject(projectId: string, signal: AbortSign
 	const project = await migrateProject(stored, projectId, stored.version);
 	const navigation = await fileInside(dir, "navigation.json");
 	const saved = navigation ? await readJson(navigation).catch(() => null) : null;
+	const scenes = timeline ? transcriptScenes(project) : [];
+	const active = typeof saved?.currentSceneId === "string" && scenes.some((scene) => scene.id === saved.currentSceneId)
+		? saved.currentSceneId : project.currentSceneId ?? null;
+	const root = getRootScene(scenes, active);
 	const metadata = path.join(dir, "media", "_metadata");
-	const files = await readdir(metadata).catch((error: NodeJS.ErrnoException) => {
+	const files = mediaIds ? [...new Set(mediaIds(root))].map((id) => `${id}.json`) : await readdir(metadata).catch((error: NodeJS.ErrnoException) => {
 		if (error.code === "ENOENT") return [];
 		throw error;
 	});
-	const media: (TranscriptMedia & { diskFile?: string; width?: number; height?: number; fileType?: string })[] = [];
+	const media: (TranscriptMedia & { diskFile?: string; width?: number; height?: number; fileType?: string; type?: string })[] = [];
 	for (const file of files.sort()) {
 		signal.throwIfAborted();
 		if (!/^[\w-]{1,128}\.json$/.test(file)) continue;
@@ -63,6 +69,7 @@ export async function readReviewableProject(projectId: string, signal: AbortSign
 				duration: Number.isFinite(record.duration) && record.duration >= 0 ? record.duration : undefined,
 				hasAudio: typeof record.hasAudio === "boolean" ? record.hasAudio : undefined,
 				words: record.words,
+				type: typeof record.type === "string" ? record.type : undefined,
 				diskFile: typeof record.diskFile === "string" ? record.diskFile : undefined,
 				fileType: typeof record.fileType === "string" ? record.fileType : undefined,
 					width: typeof record.width === "number" ? record.width : undefined,
@@ -70,10 +77,7 @@ export async function readReviewableProject(projectId: string, signal: AbortSign
 			});
 		}
 	}
-	const scenes = timeline ? transcriptScenes(project) : [];
-	const active = typeof saved?.currentSceneId === "string" && scenes.some((scene) => scene.id === saved.currentSceneId)
-		? saved.currentSceneId : project.currentSceneId ?? null;
-	return { project, projectFile, dir, activeSceneId: active, root: getRootScene(scenes, active), scenes, media };
+	return { project, projectFile, dir, activeSceneId: active, root, scenes, media };
 }
 
 export async function readTranscriptView(projectId: string, name: string | null, signal: AbortSignal): Promise<string> {
