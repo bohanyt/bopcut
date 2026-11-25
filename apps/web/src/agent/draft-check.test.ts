@@ -58,7 +58,7 @@ test("reports step and one-frame displacement, a linear speed change, and a meas
 	expect(report.motion).toContainEqual(expect.objectContaining({ kind: "keyframe-jump", at: 3, property: "transform.positionX", change: 0.1 }));
 	expect(report.motion).toContainEqual(expect.objectContaining({ kind: "keyframe-jump", at: 2.433333, property: "transform.scaleX", change: 0.12 }));
 	expect(report.motion).toContainEqual(expect.objectContaining({ kind: "keyframe-jump", at: 4, property: "opacity", change: -0.5 }));
-	expect(report.motion).toContainEqual(expect.objectContaining({ kind: "speed-change", at: 2.25, before: 12, after: 0, change: -12 }));
+	expect(report.motion).toContainEqual(expect.objectContaining({ kind: "speed-change", at: 2.266667, before: 12, after: 0, change: -12 }));
 	expect(report.motion).toContainEqual(expect.objectContaining({ kind: "motion-at-start", at: 2, after: 12, unit: "degrees/frame" }));
 	expect(inspect(root, [root], 2.1, 2.24).motion).toEqual([]);
 });
@@ -66,12 +66,61 @@ test("reports step and one-frame displacement, a linear speed change, and a meas
 test("a one-second pan and eased turn produce no motion or repeat findings", () => {
 	const clean = scene("root", [shot("pan", "a", 0, 2, { animations: {
 		"transform.positionX": { keys: [key("from", 0, 0), key("to", 1, 576)] },
-		"transform.rotate": { keys: [key("from", 0, 0, "bezier"), key("to", 1, 360)] },
+		"transform.rotate": { keys: [
+			{ ...key("from", 0, 0, "bezier"), rightHandle: { dt: ticks(1 / 3), dv: 0 } },
+			{ ...key("to", 1, 90), leftHandle: { dt: ticks(-1 / 3), dv: 0 } },
+		] },
 	} }), shot("different", "b", 2, 3)]);
 	const report = inspect(clean);
 	expect(report.motion).toEqual([]);
 	expect(report.runs).toEqual([]);
 	expect(report.sources.map(({ uses }) => uses)).toEqual([1, 1]);
+});
+
+test("a default-handle Bézier has a measurable edge speed, peak, and change to a hold", () => {
+	const root = scene("root", [shot("curve", "a", 0, 2, { animations: {
+		"transform.rotate": { keys: [key("a", 0, 0, "bezier"), key("b", 0.5, 180, "step"), key("c", 1, 180)] },
+	} })]);
+	const { motion } = inspect(root);
+	expect(motion.find(row => row.kind === "motion-at-start")?.after).toBeCloseTo(12, 3);
+	expect(motion.find(row => row.kind === "peak-speed")?.change).toBeCloseTo(12, 3);
+	expect(motion.find(row => row.kind === "speed-change")).toMatchObject({ at: 0.5, after: 0 });
+	expect(motion.find(row => row.kind === "speed-change")?.change).toBeCloseTo(-12, 3);
+});
+
+test("measures a custom Bézier whose endpoint values are equal", () => {
+	const root = scene("root", [shot("overshoot", "a", 0, 2, { animations: {
+		"transform.rotate": { keys: [
+			{ ...key("a", 0, 0, "bezier"), rightHandle: { dt: ticks(0.2), dv: 180 } },
+			{ ...key("b", 0.6, 0), leftHandle: { dt: ticks(-0.2), dv: 0 } },
+		] },
+	} })]);
+	const peak = inspect(root).motion.find(row => row.kind === "peak-speed");
+	expect(peak?.change).toBeCloseTo(26.7593, 2);
+	expect(peak?.at).toBe(0.033333);
+});
+
+test("two closely spaced subframe keys do not inflate a small rendered movement", () => {
+	const root = scene("root", [shot("close", "a", 0, 2, { animations: {
+		"transform.positionX": { keys: [key("a", 1.001, 0), key("b", 1.002, 10)] },
+	} })]);
+	expect(inspect(root).motion).toEqual([]);
+});
+
+test("a late repeat stays ahead of single-use sources within the report budget", () => {
+	const singles = Array.from({ length: 100 }, (_, i) => shot("single-" + i, "source-" + i, i, i + 1));
+	const repeats = Array.from({ length: 10 }, (_, i) => shot("repeat-" + i, "repeated", 100 + i, 101 + i));
+	const root = scene("root", [...singles, ...repeats]);
+	const report = inspect(root, [root], 0, 110);
+	const text = String(formatDraftReport(report, false));
+	expect(text).toContain("Single-use sources: 100");
+	expect(text).toContain('"mediaId":"repeated","uses":10');
+	expect(text).not.toContain('"mediaId":"source-0"');
+	expect(String(formatDraftReport(report, false, true))).toContain('"mediaId":"source-0"');
+	const json = formatDraftReport(report, true);
+	if (typeof json === "string") throw new Error("Expected JSON data");
+	expect(json.sources[0]).toMatchObject({ mediaId: "repeated", uses: 10 });
+	expect(json.omitted.sources).toBeGreaterThan(0);
 });
 
 test("reports stable byte-bounded text and JSON with omitted counts", () => {

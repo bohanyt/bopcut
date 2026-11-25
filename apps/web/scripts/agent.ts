@@ -36,7 +36,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			...(command === "view" && { from: { type: "string" }, to: { type: "string" }, rows: { type: "string" }, file: { type: "string" } }),
 			...(command === "review" && { file: { type: "string" }, pictures: { type: "string" } }),
 			...(command === "draft-check" && {
-				from: { type: "string" }, to: { type: "string" }, json: { type: "boolean" },
+				from: { type: "string" }, to: { type: "string" }, json: { type: "boolean" }, all: { type: "boolean" },
 				position: { type: "string" }, scale: { type: "string" }, rotation: { type: "string" }, opacity: { type: "string" },
 			}),
 			...(command === "transcript-view" && { media: { type: "string" }, timeline: { type: "boolean" } }),
@@ -51,7 +51,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 	if (projectId !== undefined && !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) throw new Error("Pass a valid project ID to --project-id.");
 	const timeoutMs = Math.round(seconds * 1000);
 	if (command === "draft-check") {
-		if (!projectId) throw new Error("Use draft-check --project-id ID [--from SECONDS] [--to SECONDS] [--json].");
+		if (!projectId) throw new Error("Use draft-check --project-id ID [--from SECONDS] [--to SECONDS] [--json] [--all].");
 		const number = (flag: "from" | "to" | keyof DraftThresholds) => {
 			const value = values[flag];
 			if (value === undefined) return;
@@ -68,7 +68,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			const value = number(property);
 			if (value !== undefined) thresholds[property] = value;
 		}
-		return { command: "draft-check" as const, projectId, from, to, thresholds, json: values.json === true, timeoutMs };
+		return { command: "draft-check" as const, projectId, from, to, thresholds, json: values.json === true, all: values.all === true, timeoutMs };
 	}
 	const media = typeof values.media === "string" ? values.media : undefined;
 	if (command === "transcript-view" && (!projectId || (media !== undefined && (!media.trim() || values.timeline)))) {

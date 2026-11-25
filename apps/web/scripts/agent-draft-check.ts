@@ -20,7 +20,7 @@ async function loadTimeline() {
 let timeline: ReturnType<typeof loadTimeline> | undefined;
 
 export async function draftCheckCommand(options: {
-	projectId: string; from: number; to?: number; json: boolean; thresholds: Partial<DraftThresholds>; timeoutMs: number;
+	projectId: string; from: number; to?: number; json: boolean; all: boolean; thresholds: Partial<DraftThresholds>; timeoutMs: number;
 }) {
 	const webDir = path.resolve(import.meta.dir, "..");
 	loadEnvLocal(path.join(webDir, ".env.local"));
@@ -45,5 +45,5 @@ export async function draftCheckCommand(options: {
 	}
 	const report = inspectDraft({ root, scenes, media, canvas: canvasSize, fps: fps.numerator / fps.denominator,
 		from: options.from, to, thresholds: { ...draftThresholds, ...options.thresholds }, signal });
-	return formatDraftReport(report, options.json);
+	return formatDraftReport(report, options.json, options.all);
 }
