@@ -2,7 +2,7 @@ import {
 	DEFAULT_SHAPE_MASK_SHORT_SIDE_RATIO,
 	MIN_MASK_DIMENSION,
 } from "@/masks/dimensions";
-import { computeFeatherUpdate } from "../param-update";
+import { computeFeatherUpdate, computeRotationUpdate } from "../param-update";
 import type {
 	BaseMaskParams,
 	MaskDefaultContext,
@@ -208,6 +208,8 @@ export function computeBoxMaskParamUpdate({
 	startParams,
 	deltaX,
 	deltaY,
+	startCanvasX,
+	startCanvasY,
 	bounds,
 }: MaskParamUpdateArgs<RectangleMaskParams>): Partial<RectangleMaskParams> {
 	if (handleId.kind === "position") {
@@ -218,9 +220,7 @@ export function computeBoxMaskParamUpdate({
 	}
 
 	if (handleId.kind === "rotation") {
-		const currentAngle = (Math.atan2(deltaY, deltaX) * 180) / Math.PI;
-		const newRotation = (startParams.rotation + currentAngle) % 360;
-		return { rotation: newRotation < 0 ? newRotation + 360 : newRotation };
+		return computeRotationUpdate({ startParams, deltaX, deltaY, startCanvasX, startCanvasY, bounds });
 	}
 
 	if (handleId.kind === "feather") {
@@ -236,6 +236,10 @@ export function computeBoxMaskParamUpdate({
 
 	const halfWidth = startParams.width * bounds.width;
 	const halfHeight = startParams.height * bounds.height;
+	// Resize handles sit on the rotated mask: measure the drag along the mask's own axes.
+	const angleRad = (startParams.rotation * Math.PI) / 180;
+	const localX = deltaX * Math.cos(angleRad) + deltaY * Math.sin(angleRad);
+	const localY = deltaY * Math.cos(angleRad) - deltaX * Math.sin(angleRad);
 
 	if (
 		handleId.kind === "edge" &&
@@ -245,7 +249,7 @@ export function computeBoxMaskParamUpdate({
 		return {
 			width: Math.max(
 				MIN_MASK_DIMENSION,
-				startParams.width + (sign * deltaX * 2) / bounds.width,
+				startParams.width + (sign * localX * 2) / bounds.width,
 			),
 		};
 	}
@@ -258,7 +262,7 @@ export function computeBoxMaskParamUpdate({
 		return {
 			height: Math.max(
 				MIN_MASK_DIMENSION,
-				startParams.height + (sign * deltaY * 2) / bounds.height,
+				startParams.height + (sign * localY * 2) / bounds.height,
 			),
 		};
 	}
@@ -267,7 +271,7 @@ export function computeBoxMaskParamUpdate({
 		const signX = handleId.corner.x === "right" ? 1 : -1;
 		const signY = handleId.corner.y === "bottom" ? 1 : -1;
 		const distance = Math.sqrt(
-			(signX * deltaX + halfWidth) ** 2 + (signY * deltaY + halfHeight) ** 2,
+			(signX * localX + halfWidth) ** 2 + (signY * localY + halfHeight) ** 2,
 		);
 		const originalDistance = Math.sqrt(halfWidth ** 2 + halfHeight ** 2);
 		const scale = originalDistance > 0 ? distance / originalDistance : 1;
