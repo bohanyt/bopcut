@@ -43,6 +43,8 @@ import {
 	Layers01Icon,
 	Chart03Icon,
 	Unlink02Icon,
+	Undo02Icon,
+	Redo02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { OcRippleIcon } from "@/components/icons";
@@ -124,6 +126,9 @@ function ToolbarLeftSection() {
 			element: selectedElement.element,
 		});
 
+	const canUndo = useEditor((e) => e.command.canUndo());
+	const canRedo = useEditor((e) => e.command.canRedo());
+
 	const handleAction = ({
 		action,
 		event,
@@ -139,6 +144,22 @@ function ToolbarLeftSection() {
 		<div className="flex items-center gap-1">
 			<VoiceOverControl />
 			<TooltipProvider delayDuration={500}>
+				{/* Visible buttons for touch screens, where there are no keyboard shortcuts. */}
+				<ToolbarButton
+					icon={<HugeiconsIcon icon={Undo02Icon} />}
+					tooltip={t("shortcuts.action.undo")}
+					disabled={!canUndo}
+					onClick={({ event }) => handleAction({ action: "undo", event })}
+				/>
+				<ToolbarButton
+					icon={<HugeiconsIcon icon={Redo02Icon} />}
+					tooltip={t("shortcuts.action.redo")}
+					disabled={!canRedo}
+					onClick={({ event }) => handleAction({ action: "redo", event })}
+				/>
+
+				<div className="bg-border mx-1 h-6 w-px" />
+
 				<ToolbarButton
 					icon={<HugeiconsIcon icon={ScissorIcon} />}
 					tooltip={t("timeline.splitElement")}
