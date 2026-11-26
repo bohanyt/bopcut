@@ -258,6 +258,15 @@ export function getScalarChannelValueAtTime({
 		return fallbackValue;
 	}
 
+	// Keys stacked at one time form a jump: at that time the later key holds.
+	let exactIndex = -1;
+	for (let keyIndex = 0; keyIndex < normalizedChannel.keys.length; keyIndex++) {
+		const keyTime = normalizedChannel.keys[keyIndex].time;
+		if (keyTime === time) exactIndex = keyIndex;
+		else if (keyTime > time) break;
+	}
+	if (exactIndex >= 0) return normalizedChannel.keys[exactIndex].value;
+
 	if (time <= firstKey.time) {
 		if (time < firstKey.time) {
 			return extrapolateScalarEdge({
