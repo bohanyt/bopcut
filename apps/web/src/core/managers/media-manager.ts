@@ -303,6 +303,17 @@ export class MediaManager {
 		this.notify();
 	}
 
+	/**
+	 * Removes an asset no clip uses, without an Undo step: for an import the person abandoned (a
+	 * voice-over take saved as a WAV instead). An asset that was put on the timeline meanwhile stays.
+	 */
+	discardUnusedAsset({ projectId, id }: { projectId: string; id: string }): boolean {
+		if (!this.editor.project.canImportMedia(projectId) || !this.getAssets().some((asset) => asset.id === id)) return false;
+		if (mediaIdsInScenes(this.editor.scenes.getScenes()).has(id)) return false;
+		new RemoveMediaAssetCommand({ projectId, assetId: id }).execute();
+		return true;
+	}
+
 	removeMediaAsset({ projectId, id }: { projectId: string; id: string }): void {
 		this.removeMediaAssets({ projectId, ids: [id] });
 	}

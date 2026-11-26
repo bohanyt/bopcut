@@ -227,12 +227,18 @@ export class VoiceOver {
 	}
 
 	saveWav = (): void => {
-		if (this.state.phase !== "recovery" || !this.pending) return;
-		const { file } = this.pending;
+		const pending = this.pending;
+		if (this.state.phase !== "recovery" || !pending) return;
+		const { file } = pending;
 		downloadBlob({ blob: file, filename: file.name });
 		this.pending = null;
 		toast.dismiss(recoveryToast);
 		this.leaveCapture();
+		// The take left as a file: a write that is still running or landed late must not stay in the bin.
+		void (pending.saving ?? Promise.resolve()).catch(() => {}).then(() => {
+			if (!pending.asset || this.disposed) return;
+			this.editor.media.discardUnusedAsset({ projectId: pending.session.scope.projectId, id: pending.asset.mediaId });
+		});
 	};
 
 	dispose(): void {
