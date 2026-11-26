@@ -12,7 +12,8 @@ import {
 	updateTrackInSceneTracks,
 } from "@/timeline/track-element-update";
 import { rippleShiftElements } from "@/ripple";
-import { ZERO_MEDIA_TIME, roundMediaTime, subMediaTime } from "@/wasm";
+import { TICKS_PER_SECOND, ZERO_MEDIA_TIME, mediaTime, roundFrameTicks, roundMediaTime, subMediaTime } from "@/wasm";
+import type { FrameRate } from "opencut-wasm";
 import { reconcileCaptionEdit } from "@/text/caption";
 
 type ElementUpdateField = keyof TimelineElement | string;
@@ -56,11 +57,14 @@ export function applyElementRetime({
 	retime,
 	rippleEnabled,
 	boundaryIdPrefix,
+	fps,
 }: ElementRef & {
 	tracks: SceneTracks;
 	retime?: RetimeConfig;
 	rippleEnabled: boolean;
 	boundaryIdPrefix: string;
+	/** The project's frame rate: the new duration lands on its frame grid. */
+	fps?: FrameRate;
 }): SceneTracks | null {
 	const track = findTrackInSceneTracks({ tracks, trackId });
 	const element = track?.elements.find((candidate) => candidate.id === elementId);
@@ -69,7 +73,7 @@ export function applyElementRetime({
 	const next = applyElementUpdate({
 		element,
 		patch: { retime },
-		context: { tracks, trackId, boundaryIdPrefix },
+		context: { tracks, trackId, boundaryIdPrefix, fps },
 	});
 	if (!isRetimableElement(next)) return tracks;
 	const delta = next.duration - element.duration;
@@ -115,6 +119,8 @@ export interface ElementUpdateContext {
 	tracks: SceneTracks;
 	trackId: string;
 	boundaryIdPrefix?: string;
+	/** Without it a retimed duration is only rounded to ticks. */
+	fps?: FrameRate;
 }
 
 interface ElementUpdateRuleResult {
@@ -137,12 +143,12 @@ interface ElementUpdateRule {
 const deriveRules: ElementUpdateRule[] = [
 	{
 		triggers: ["retime"],
-		apply: ({ element, originalElement, patch }) => {
+		apply: ({ element, originalElement, patch, context }) => {
 			if (!("retime" in patch) || !isRetimableElement(element)) {
 				return { element };
 			}
 
-			const nextRetime = patch.retime
+			let nextRetime = patch.retime
 				? {
 						...patch.retime,
 						rate: clampRetimeRate({ rate: patch.retime.rate }),
@@ -164,12 +170,27 @@ const deriveRules: ElementUpdateRule[] = [
 				0,
 				sourceDuration - element.trimStart - element.trimEnd,
 			);
-			const nextDuration = roundMediaTime({
+			let nextDuration = roundMediaTime({
 				time: getTimelineDurationForSourceSpan({
 					sourceSpan: visibleSourceSpan,
 					retime: nextRetime,
 				}),
 			});
+			let trimEnd = element.trimEnd;
+			if (context.fps && visibleSourceSpan > 0) {
+				const onGrid = speedOnFrameGrid({
+					fps: context.fps,
+					duration: nextDuration,
+					rate: nextRetime?.rate ?? 1,
+					// The source after the clip's start that it may show: its trimmed tail too.
+					availableSource: sourceDuration - element.trimStart,
+				});
+				nextDuration = mediaTime({ ticks: onGrid.duration });
+				trimEnd = mediaTime({ ticks: onGrid.trimEnd });
+				if (onGrid.rate !== (nextRetime?.rate ?? 1)) {
+					nextRetime = { ...(nextRetime ?? { rate: 1 }), rate: onGrid.rate };
+				}
+			}
 
 			// Keys stay on the same footage: from rate r1 to r2 each key time scales by r1 / r2.
 			const previousRate = isRetimableElement(originalElement) ? originalElement.retime?.rate ?? 1 : 1;
@@ -182,9 +203,12 @@ const deriveRules: ElementUpdateRule[] = [
 					...element,
 					retime: nextRetime,
 					duration: nextDuration,
+					trimEnd,
 					animations,
 				},
-				changedFields: ["retime", "duration", "animations"],
+				changedFields: trimEnd === element.trimEnd
+					? ["retime", "duration", "animations"]
+					: ["retime", "duration", "trimEnd", "animations"],
 			};
 		},
 	},
@@ -341,6 +365,32 @@ function shouldApplyRule({
 	changedFields: Set<ElementUpdateField>;
 }): boolean {
 	return rule.triggers.some((trigger) => changedFields.has(trigger));
+}
+
+/**
+ * A speed change keeps the clip on the project's frame grid and at least one frame long. The rate
+ * stays as asked: the duration goes to the nearest frame the source can fill, and the source left
+ * over after it (a part of a frame) goes into the end trim. When even one frame needs more source
+ * than there is, the rate is lowered until one frame fits.
+ */
+export function speedOnFrameGrid({ fps, duration, rate, availableSource }: {
+	fps: FrameRate;
+	/** The exact duration at the rate, in ticks. */
+	duration: number;
+	rate: number;
+	/** The source after the clip's trimmed start, in ticks. */
+	availableSource: number;
+}): { duration: number; rate: number; trimEnd: number } {
+	const frame = (TICKS_PER_SECOND * fps.denominator) / fps.numerator;
+	const maxFrames = Math.floor(availableSource / rate / frame + 1e-9);
+	if (maxFrames < 1) {
+		const oneFrame = roundFrameTicks({ ticks: frame, fps });
+		const fitted = clampRetimeRate({ rate: availableSource / oneFrame });
+		return { duration: oneFrame, rate: fitted, trimEnd: Math.max(0, Math.round(availableSource - oneFrame * fitted)) };
+	}
+	const frames = Math.min(maxFrames, Math.max(1, Math.round(duration / frame)));
+	const onGrid = roundFrameTicks({ ticks: frames * frame, fps });
+	return { duration: onGrid, rate, trimEnd: Math.max(0, Math.round(availableSource - onGrid * rate)) };
 }
 
 function getSourceDuration({
