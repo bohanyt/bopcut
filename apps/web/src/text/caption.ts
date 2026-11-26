@@ -1,5 +1,5 @@
 import type { TextElement } from "@/timeline";
-import { TICKS_PER_SECOND } from "@/wasm";
+import { mediaTime, TICKS_PER_SECOND } from "@/wasm";
 
 export interface CaptionWord {
 	text: string;
@@ -152,19 +152,26 @@ export function reconcileCaptionEdit(
 	previous: TextElement,
 	next: TextElement,
 ): TextElement {
-	if (
-		!previous.caption ||
-		next.caption !== previous.caption ||
-		previous.params.content === next.params.content
-	)
-		return next;
+	if (!previous.caption || next.caption !== previous.caption) return next;
+	const visibleEnd = next.trimStart + next.duration;
+	// Old duration-only edits can leave saved words beyond the recorded trim.
+	const wordEnd = previous.caption.words.at(-1)?.end ?? 0;
+	const extent = Math.max(
+		visibleEnd,
+		previous.trimStart + previous.duration + previous.trimEnd,
+		Math.ceil(wordEnd * TICKS_PER_SECOND - 1e-6),
+	);
+	const trimEnd = mediaTime({ ticks: extent - visibleEnd });
+	if (previous.params.content === next.params.content) {
+		return trimEnd === next.trimEnd ? next : { ...next, trimEnd };
+	}
 	return {
 		...next,
+		trimEnd,
 		caption: editCaptionText(
 			previous.caption,
 			String(next.params.content ?? ""),
-			next.duration / TICKS_PER_SECOND,
-			next.trimStart / TICKS_PER_SECOND,
+			extent / TICKS_PER_SECOND,
 		),
 	};
 }

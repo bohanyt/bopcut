@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { checkAgentCaption, resolveCaptionPreset, updateAgentCaption } from "./captions";
-import { TICKS_PER_SECOND, type MediaTime } from "@/wasm";
+import { mediaTimeFromSeconds, TICKS_PER_SECOND, type MediaTime } from "@/wasm";
 import { buildDefaultScene } from "@/timeline/scenes";
 import type { TextElement } from "@/timeline";
 import type { AgentElement } from "./elements";
@@ -130,6 +130,45 @@ describe("agent captions", () => {
 			resolveCaptionPreset({ text: "Text", preset: "Missing" }, []),
 		).toThrow("not found");
 	});
+
+	test("a draft duration edit keeps the full caption window and lengthening consumes the tail trim", () => {
+		const scene = buildDefaultScene({ name: "Main", isMain: true });
+		const element = phrase();
+		element.caption!.words = [
+			{ text: "A", start: 0, end: 0.5 },
+			{ text: "simple", start: 0.5, end: 1.3 },
+			{ text: "phrase", start: 2, end: 2.5 },
+		];
+		let scenes = [scene];
+		const apply = (ops: Parameters<typeof computeAgentDraft>[0]["ops"]) => {
+			const result = computeAgentDraft({
+				scenes,
+				rootSceneId: scene.id,
+				ops,
+				canvas,
+				mediaFor: () => undefined,
+				fps: { numerator: 30, denominator: 1 },
+				ripple: false,
+			});
+			expect(result.results.every(({ ok }) => ok)).toBe(true);
+			scenes = result.scenes;
+			return scenes[0].tracks.overlay[0].elements[0] as TextElement;
+		};
+		const match = { agentId: "caption-0" };
+		apply([{ op: "add", track: { name: "Captions" }, element }]);
+		const shortened = apply([{ op: "set", match, duration: 1.5 }]);
+		expect(shortened.trimEnd).toBe(mediaTimeFromSeconds({ seconds: 1.5 }));
+		apply([{ op: "set", match, caption: { words: element.caption!.words } }]);
+		const edited = apply([
+			{ op: "set", match, caption: { text: "A simple ending" } },
+		]);
+		expect(edited.caption?.words.at(-1)).toMatchObject({
+			text: "ending", start: 1.3, end: 3,
+		});
+		const extended = apply([{ op: "set", match, duration: 2.5 }]);
+		expect(extended.trimEnd).toBe(mediaTimeFromSeconds({ seconds: 0.5 }));
+		expect(extended.caption).toEqual(edited.caption);
+	});
 	test("ordinary text content updates reconcile caption timings through the command pipeline", () => {
 		const scene = buildDefaultScene({ name: "Main", isMain: true });
 		const built = buildBundleScenes({
@@ -176,6 +215,9 @@ describe("agent captions", () => {
 		const updated = updateAgentCaption(left, { text: "A simple phrase", words });
 		expect(updated.caption?.words.map((w) => w.end)).toEqual([0.8, 1.9, 3]);
 		expect(() => updateAgentCaption(left, { text: "A simple phrase", words: [...words.slice(0, 2), { text: "phrase", start: 1.9, end: 3.5 }] })).toThrow();
+		const edited = updateAgentCaption(updated, { text: "A simple ending" });
+		expect(edited.caption?.words.slice(0, 2)).toEqual(words.slice(0, 2));
+		expect(edited.caption?.words[2]).toMatchObject({ text: "ending", start: 1.9, end: 3 });
 	});
 
 	test("trimStart of a new caption is kept, and words without timings spread over the visible part", () => {
