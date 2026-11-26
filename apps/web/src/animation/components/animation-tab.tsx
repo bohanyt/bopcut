@@ -128,6 +128,8 @@ function PresetDuration({
 	const value = clampDuration(duration);
 	const resetValue = clampDuration(defaultDuration);
 	const [draft, setDraft] = useState<string | null>(null);
+	// Escape blurs the field: the blur that follows drops the typed value instead of applying it.
+	const cancelDraft = useRef(false);
 	const drag = useRef<{
 		pointerId: number;
 		previewing: boolean;
@@ -224,9 +226,15 @@ function PresetDuration({
 					suffixClassName="right-2 left-auto!"
 					disabled={min === max}
 					onChange={(event) => setDraft(event.target.value)}
+					onKeyDown={(event) => {
+						if (event.key === "Escape") cancelDraft.current = true;
+					}}
 					onBlur={() => {
+						const cancelled = cancelDraft.current;
+						cancelDraft.current = false;
 						if (draft === null) return;
 						setDraft(null);
+						if (cancelled) return;
 						const input = draft.trim();
 						if (!/^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)$/.test(input)) return;
 						const seconds = Number(input.replace(",", "."));
