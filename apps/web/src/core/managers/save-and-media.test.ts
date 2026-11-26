@@ -746,6 +746,21 @@ describe("media manifest cache", () => {
 	});
 });
 
+test("two quick duplicates of one project get different numbers", async () => {
+	const a = project("a", new Date(0));
+	const editor = await load(a);
+	const disk = memoryDisk([a]);
+	const reading = gate();
+	let reads = 0;
+	disk.hooks.read = async () => { if (++reads === 1) await reading.promise; };
+	const first = editor.project.duplicateProjects({ ids: ["a"] });
+	const second = editor.project.duplicateProjects({ ids: ["a"] });
+	reading.open();
+	const ids = [...await first, ...await second];
+	const names = ids.map((id) => disk.files.get(id)?.metadata.name);
+	expect(names).toEqual([`(1) ${a.metadata.name}`, `(2) ${a.metadata.name}`]);
+});
+
 describe("project command history", () => {
 	test.each([
 		["after clearing history", false],
