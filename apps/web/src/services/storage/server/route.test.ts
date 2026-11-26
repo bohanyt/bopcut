@@ -48,6 +48,30 @@ describe("project adapter", () => {
 		expect(await fs.readdir(path.join(root, "projects"))).not.toContain(id);
 	});
 
+	test("a delete that cannot move the project keeps its migration marker and the project", async () => {
+		const id = "locked-project";
+		expect((await PUT(request(id, "PUT", { "if-match": "new" }, { metadata: { id, name: id } }), ctx(id))).status).toBe(200);
+		const markerFile = path.join(root, "migrated", `${id}.json`);
+		await fs.mkdir(path.dirname(markerFile), { recursive: true });
+		await fs.writeFile(markerFile, JSON.stringify({ migrated: true }));
+		const busy = Object.assign(new Error("resource busy"), { code: "EBUSY" });
+		const realRename = fs.rename.bind(fs);
+		// Only the move into the trash fails (atomic writes rename temp files too).
+		const rename = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+			if (String(to).includes(`${path.sep}trash${path.sep}`)) throw busy;
+			return realRename(from, to);
+		});
+		try {
+			expect((await DELETE(request(id, "DELETE"), ctx(id))).status).not.toBe(200);
+		} finally {
+			rename.mockRestore();
+		}
+		expect(JSON.parse(await fs.readFile(markerFile, "utf8"))).toEqual({ migrated: true });
+		expect((await GET(request(id, "GET"), ctx(id))).status).toBe(200);
+		expect((await DELETE(request(id, "DELETE"), ctx(id))).status).toBe(200);
+		expect(JSON.parse(await fs.readFile(markerFile, "utf8"))).toEqual({ deleted: true });
+	});
+
 	test("detects stale revisions and migration does not restore deleted projects", async () => {
 		const id = "test-project";
 		const first = { metadata: { id, name: "awal" } };
