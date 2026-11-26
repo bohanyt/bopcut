@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { promises as fs } from "node:fs";
 import { mkdtemp, readFile, readdir, rmdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -105,6 +106,19 @@ test("automatic VTT is requested only when JSON3 is absent", async () => {
 	await expect(get()).rejects.toThrow("captions unavailable");
 	expect(calls).toHaveLength(2);
 	expect(calls[1]).toContain("json3");
+});
+
+test("a caption track over 32 MB is named in the unavailable message", async () => {
+	const realStat = fs.stat.bind(fs);
+	const stat = spyOn(fs, "stat").mockImplementation(async (target) => {
+		const real = await realStat(target);
+		return /captions\./.test(String(target)) ? Object.assign(Object.create(Object.getPrototypeOf(real)), real, { size: 33 * 1024 * 1024 }) : real;
+	});
+	try {
+		await expect(get()).rejects.toThrow(/captions unavailable.*larger than 32 MB/);
+	} finally {
+		stat.mockRestore();
+	}
 });
 
 test("ranges overlap half-open edges and preserve full cue times", async () => {
