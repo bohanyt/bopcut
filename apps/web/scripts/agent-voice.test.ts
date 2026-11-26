@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "./agent";
-import { voiceCommand, wavDuration } from "./agent-voice";
+import { voiceCommand, wavDuration } from "../src/agent/voice";
 
 function wav(seconds: number, { sampleRate = 8000, dataSize }: { sampleRate?: number; dataSize?: number } = {}) {
 	const bytes = Math.round(seconds * sampleRate) * 2;

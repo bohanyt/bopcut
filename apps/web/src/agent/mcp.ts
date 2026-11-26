@@ -6,9 +6,10 @@ import { readProjectSummary } from "@/services/storage/server/projects";
 import { handleCli } from "./cli-api";
 import { launchBrowser } from "./hidden-browser";
 import { type DraftContext, draftResult, MAX_DRAFT_OPS, MAX_DRAFT_WAIT_SECONDS, submitDraft } from "./mcp-drafts";
-import { cancelJob, exportVideo, type JobAnswer, type JobContext, jobStatus, MAX_JOB_WAIT_SECONDS, renderFrames } from "./mcp-jobs";
+import { cancelJob, exportVideo, type JobAnswer, type JobContext, jobStatus, makeVoice, MAX_JOB_WAIT_SECONDS, renderFrames } from "./mcp-jobs";
 import { isForeignOrigin } from "./origin";
 import { MAX_FRAMES } from "./render-input";
+import { MAX_VOICE_TEXT } from "./voice";
 
 /**
  * A Model Context Protocol server over Streamable HTTP, stateless with JSON answers (no event
@@ -21,7 +22,8 @@ const INSTRUCTIONS = "Tools for a local bopcut editor: list projects, then read 
 	"selection and timeline transcript, and plan dead-air cuts. Times are seconds on the root timeline. " +
 	"Change a project with submit_draft: its ops apply in the open editor as one Undo step, which the person can undo. " +
 	"Put the snapshot's syncedAt from get_status in basedOn, so ops on clips the person changed since are refused. " +
-	"Look at the result with get_frames and export it with export_video; both run as jobs that get_job follows.";
+	"Look at the result with get_frames and export it with export_video; both run as jobs that get_job follows. " +
+	"make_voice, when the editor has a text-to-speech command, speaks narration for a draft.";
 
 type JsonRpcId = string | number | null;
 type JsonRpcMessage = { jsonrpc?: unknown; id?: JsonRpcId; method?: unknown; params?: unknown };
@@ -35,7 +37,7 @@ const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: t
 const changesProject = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
 /** Renders write new files into the workspace and leave the project as it is. */
 const writesFiles = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
-const jobId = { type: "string", description: "The jobId that export_video or get_frames returned." };
+const jobId = { type: "string", description: "The jobId that export_video, get_frames or make_voice returned." };
 /** Pictures for a client to look at: smaller than a full frame unless asked for. */
 const MCP_FRAME_WIDTH = 960;
 
@@ -162,8 +164,24 @@ export const MCP_TOOLS = [
 		annotations: writesFiles,
 	},
 	{
+		name: "make_voice", title: "Make narration",
+		description: "Speaks a text with the editor's text-to-speech command (BOPENCUT_TTS) and saves voice/<name>.wav under the agent files " +
+			"folder, with the spoken words' times when the command reports them. The result's asset goes into a submit_draft add op as it is; " +
+			"its words allow cuts by word and captions. Speak one line or section per name, so each can be redone alone. Runs as a job like export_video.",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["name", "text"],
+			properties: {
+				name: { type: "string", pattern: "^[\\w-]{1,64}$", description: "File name without extension: 1 to 64 letters, digits, - or _." },
+				text: { type: "string", maxLength: MAX_VOICE_TEXT, description: "The words to speak." },
+				replace: { type: "boolean", description: "Make a name that exists again. The old take stays until the new one is done." },
+			},
+		},
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+	},
+	{
 		name: "get_job", title: "Job progress",
-		description: "The stage of an export or frames job, or its result once it is done (the video's path, or the frames as pictures). " +
+		description: "The stage of an export, frames or voice job, or its result once it is done (the video's path, the frames as pictures, " +
+			"or the voice's file and asset). " +
 			"Waits up to waitSeconds for it to finish.",
 		inputSchema: {
 			type: "object", additionalProperties: false, required: ["jobId"],
@@ -192,7 +210,7 @@ const DRAFT_WAIT_MS = 15_000;
 /** How long a render tool waits before it answers with its job: a short one is done by then. */
 const JOB_WAIT_MS = 20_000;
 type ToolContext = DraftContext & JobContext;
-export type McpOptions = Partial<Pick<ToolContext, "editorOpen" | "waitMs" | "launch" | "jobWaitMs">>;
+export type McpOptions = Partial<Pick<ToolContext, "editorOpen" | "waitMs" | "launch" | "jobWaitMs" | "filesRoot" | "tts">>;
 
 /**
  * The open tabs are known to the agent routes, so they are asked over HTTP, as the CLI asks them,
@@ -289,6 +307,7 @@ async function callTool(name: string, args: Args, context: ToolContext): Promise
 		case "get_frames": return structured(await renderFrames({ width: MCP_FRAME_WIDTH, ...args }, requireProject(args), context));
 		case "get_job": return structured(await jobStatus(args, context));
 		case "cancel_job": return structured(await cancelJob(args, context));
+		case "make_voice": return structured(await makeVoice(args, context));
 		default: throw new UnknownTool(name);
 	}
 }
@@ -313,7 +332,8 @@ async function answer(message: JsonRpcMessage, context: ToolContext) {
 			} };
 		}
 		case "ping": return { jsonrpc: "2.0", id, result: {} };
-		case "tools/list": return { jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } };
+		// Narration needs a text-to-speech command; without one the tool is not offered.
+		case "tools/list": return { jsonrpc: "2.0", id, result: { tools: MCP_TOOLS.filter((tool) => tool.name !== "make_voice" || context.tts?.trim()) } };
 		case "tools/call": {
 			const name = params.name;
 			const args = (params.arguments && typeof params.arguments === "object" ? params.arguments : {}) as Args;
@@ -355,6 +375,8 @@ export async function handleMcp(req: Request, workspace: string, options: McpOpt
 		workspace, signal: req.signal, origin: url.origin, waitMs: options.waitMs ?? DRAFT_WAIT_MS,
 		editorOpen: options.editorOpen ?? ((projectId) => askEditorOpen(url.origin, projectId, req.signal)),
 		launch: options.launch ?? launchBrowser, jobWaitMs: options.jobWaitMs ?? JOB_WAIT_MS,
+		filesRoot: options.filesRoot ?? path.resolve(process.env.AGENT_FILES_ROOT ?? workspace),
+		tts: "tts" in options ? options.tts : process.env.BOPENCUT_TTS,
 	};
 	const answers = [];
 	for (const message of requests) answers.push(await answer(message, context));

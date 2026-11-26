@@ -132,3 +132,44 @@ test("cancel_job stops a running job and its render connection", async () => {
 	expect(render.cancelled).toBe(true);
 	expect((await call("get_job", { jobId, waitSeconds: 0 })).structuredContent.status).toBe("cancelled");
 });
+
+test("make_voice speaks with the configured command and saves the take with its words, ready for a draft", async () => {
+	const filesRoot = path.join(workspace, "files");
+	await fs.mkdir(filesRoot, { recursive: true });
+	// A stand-in for a real voice: a quarter second per word, with word times.
+	const tts = path.join(workspace, "tts.js");
+	await fs.writeFile(tts, `
+		const fs = require("node:fs");
+		const arg = (name) => process.argv[process.argv.indexOf(name) + 1];
+		const text = fs.readFileSync(arg("--text-file"), "utf8");
+		if (text === "fail") { console.error("voice model missing"); process.exit(3); }
+		const words = text.split(/\\s+/);
+		const bytes = words.length * 4000;
+		const out = Buffer.alloc(44 + bytes);
+		out.write("RIFF", 0); out.writeUInt32LE(36 + bytes, 4); out.write("WAVE", 8); out.write("fmt ", 12);
+		out.writeUInt32LE(16, 16); out.writeUInt16LE(1, 20); out.writeUInt16LE(1, 22); out.writeUInt32LE(8000, 24);
+		out.writeUInt32LE(16000, 28); out.writeUInt16LE(2, 32); out.writeUInt16LE(16, 34); out.write("data", 36); out.writeUInt32LE(bytes, 40);
+		fs.writeFileSync(arg("--out"), out);
+		fs.writeFileSync(arg("--words"), JSON.stringify(words.map((word, i) => ({ text: word, start: i / 4, end: (i + 1) / 4 }))));
+	`);
+	const voice = { filesRoot, tts: `"${process.execPath}" "${tts}"`, jobWaitMs: 20_000 };
+	const made = await call("make_voice", { name: "hook", text: "Siapa yang menang?" }, voice);
+	const take = path.join(filesRoot, "voice", "hook.wav");
+	expect(made.isError).toBeUndefined();
+	expect(made.structuredContent).toMatchObject({ kind: "voice", projectId: null, status: "done", path: take,
+		message: `Saved ${take} (0.75 s). Its asset goes into a submit_draft add op as it is.`,
+		result: { path: "voice/hook.wav", duration: 0.75, asset: { path: "voice/hook.wav", type: "audio", name: "hook",
+			words: [{ text: "Siapa", start: 0, end: 0.25 }, { text: "yang", start: 0.25, end: 0.5 }, { text: "menang?", start: 0.5, end: 0.75 }] } } });
+	expect((await fs.stat(take)).size).toBe(44 + 12_000);
+
+	expect(await call("make_voice", { name: "hook", text: "Lagi" }, voice))
+		.toMatchObject({ isError: true, content: [{ text: "voice/hook.wav already exists. Pass replace: true to make it again, or choose another name." }] });
+	expect((await call("make_voice", { name: "hook", text: "Lagi", replace: true }, voice)).structuredContent.result.duration).toBe(0.25);
+	expect(await call("make_voice", { name: "hook", text: "fail", replace: true }, voice))
+		.toMatchObject({ isError: true, structuredContent: { status: "failed", message: "The job failed: The text-to-speech command failed: voice model missing" } });
+	expect((await fs.stat(take)).size).toBe(44 + 4000);
+	expect(await call("make_voice", { name: "../hook", text: "Halo" }, voice)).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("Pass a name") }] });
+	expect(await call("make_voice", { name: "intro", text: " " }, voice)).toMatchObject({ isError: true });
+	expect(await call("make_voice", { name: "intro", text: "Halo" }, { ...voice, tts: undefined }))
+		.toMatchObject({ isError: true, content: [{ text: expect.stringContaining("Set BOPENCUT_TTS") }] });
+});
