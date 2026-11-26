@@ -126,8 +126,9 @@ function drawGlyphs(
 	for (const stroke of layout.style.strokes) if (stroke.width > 0) draw(stroke);
 	draw();
 	ctx.fillStyle = color;
-	// Underlines and strikes come with the whole text, not before its letters.
-	if (!typing) for (let i = 0; i < layout.lines.length; i++)
+	// Underlines and strikes come with the whole text, not before its letters or words appear.
+	const revealing = layout.wordReveal?.some((shown) => shown < 1) ?? false;
+	if (!typing && !revealing) for (let i = 0; i < layout.lines.length; i++)
 		drawTextDecoration({
 			ctx,
 			textDecoration: layout.textDecoration,

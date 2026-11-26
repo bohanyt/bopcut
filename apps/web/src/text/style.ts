@@ -232,7 +232,7 @@ export function resolveTextStyle(
 		highlightColor: color("caption.highlightColor", "#ffff00"),
 		activeColor: color("caption.activeColor", "#ffff00"),
 		activeEnabled: element.params["caption.activeEnabled"] === true,
-		activeScale: Math.max(1, number("caption.activeScale", 1)),
+		activeScale: Math.min(3, Math.max(1, number("caption.activeScale", 1))),
 		reveal: element.params["caption.reveal"] === true,
 		revealFade: Math.max(0, number("caption.revealFade", 0.12)),
 		revealPop: Math.min(3, Math.max(0.2, number("caption.revealPop", 1))),

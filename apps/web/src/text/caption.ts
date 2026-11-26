@@ -206,10 +206,12 @@ export function reconcileCaptionEdit(
 	return {
 		...next,
 		trimEnd,
+		// New and redistributed words stay inside the clip's source window, which starts at trimStart.
 		caption: editCaptionText(
 			previous.caption,
 			String(next.params.content ?? ""),
-			extent / TICKS_PER_SECOND,
+			(extent - next.trimStart) / TICKS_PER_SECOND,
+			next.trimStart / TICKS_PER_SECOND,
 		),
 	};
 }
