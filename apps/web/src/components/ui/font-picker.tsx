@@ -14,6 +14,7 @@ import { loadFullFont } from "@/fonts/google-fonts";
 import { SYSTEM_FONTS } from "@/fonts/system-fonts";
 import type { FontAtlas, FontAtlasEntry } from "@/fonts/types";
 import { useFontAtlas } from "@/fonts/use-font-atlas";
+import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { cn } from "@/utils/ui";
 import { ChevronDown, Search } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -57,6 +58,9 @@ export function FontPicker({
 		return fontNames.filter((name) => name.toLowerCase().includes(query));
 	}, [fontNames, search]);
 
+	const pendingChoice = useRef<AbortController | null>(null);
+	const notifyChoice = useCommittedRef(onValueChange);
+
 	const listHeight = Math.min(
 		MAX_LIST_HEIGHT,
 		filteredFonts.length * ROW_HEIGHT,
@@ -64,6 +68,9 @@ export function FontPicker({
 
 	const handleSelect = useCallback(
 		async ({ family }: { family: string }) => {
+			pendingChoice.current?.abort();
+			const choice = new AbortController();
+			pendingChoice.current = choice;
 			if (!SYSTEM_FONTS.has(family)) {
 				try {
 					await loadFullFont({ family });
@@ -71,10 +78,12 @@ export function FontPicker({
 					// ignore load failure, font will fall back to system default
 				}
 			}
-			onValueChange?.(family);
+			if (choice.signal.aborted) return;
+			pendingChoice.current = null;
+			notifyChoice.current?.(family);
 			setOpen(false);
 		},
-		[onValueChange],
+		[notifyChoice],
 	);
 
 	useEffect(() => {
@@ -83,6 +92,7 @@ export function FontPicker({
 			setActiveTab("all");
 		}
 	}, [open]);
+	useEffect(() => () => pendingChoice.current?.abort(), []);
 
 	const activeFontTab = FONT_TABS.find((tab) => tab.key === activeTab) ?? FONT_TABS[0];
 

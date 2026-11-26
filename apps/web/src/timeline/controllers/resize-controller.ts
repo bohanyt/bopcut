@@ -37,6 +37,7 @@ import type { ElementRef } from "@/timeline/types";
 import type { FrameRate } from "opencut-wasm";
 import type { SourceWord } from "@/media/words";
 import { wordEdgeTimes } from "@/timeline/word-cuts";
+import { listenForTimelineMouseDrag } from "./mouse-drag";
 
 // --- Session ---
 
@@ -206,6 +207,7 @@ export class ResizeController {
 		track: TimelineTrack;
 		side: ResizeSide;
 	}): void {
+		if (event.button !== 0) return;
 		event.stopPropagation();
 		event.preventDefault();
 		finishFocusedField(event.currentTarget);
@@ -247,13 +249,18 @@ export class ResizeController {
 	}
 
 	private activate(): void {
-		document.addEventListener("mousemove", this.handleMouseMove);
-		document.addEventListener("mouseup", this.handleMouseUp);
+		this.stopListening = listenForTimelineMouseDrag({
+			onMove: this.handleMouseMove,
+			onRelease: this.handleMouseUp,
+			onCancel: () => this.gestureOwner?.cancel(),
+		});
 	}
 
+	private stopListening?: () => void;
+
 	private deactivate(): void {
-		document.removeEventListener("mousemove", this.handleMouseMove);
-		document.removeEventListener("mouseup", this.handleMouseUp);
+		this.stopListening?.();
+		this.stopListening = undefined;
 	}
 
 	private notify(): void {

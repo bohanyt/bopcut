@@ -32,7 +32,7 @@ export function useTransformHandles({
 		},
 		timeline: {
 			previewElements: (updates) =>
-				editor.timeline.previewElements({ updates }),
+				editor.timeline.previewElements({ updates, replace: true }),
 			commitPreview: () => editor.timeline.commitPreview(),
 			beginPreviewGesture: editor.timeline.beginPreviewGesture,
 		},

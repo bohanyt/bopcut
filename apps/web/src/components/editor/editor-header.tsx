@@ -251,6 +251,7 @@ export function EditableProjectName() {
 	};
 
 	const handleKeyDown = (event: React.KeyboardEvent) => {
+		if (event.nativeEvent.isComposing) return;
 		if (event.key === "Enter") {
 			event.preventDefault();
 			inputRef.current?.blur();

@@ -235,6 +235,7 @@ function NumberField({
 				onFocus?.(event);
 			}}
 			onKeyDown={(event) => {
+				if (event.nativeEvent.isComposing) return;
 				const shouldBlurInput = event.key === "Enter" || event.key === "Escape";
 				if (shouldBlurInput) event.currentTarget.blur();
 				onKeyDown?.(event);

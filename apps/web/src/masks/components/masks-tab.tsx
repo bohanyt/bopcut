@@ -22,7 +22,8 @@ import {
 	RotateClockwiseIcon,
 	TextFontIcon,
 } from "@hugeicons/core-free-icons";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { Button } from "@/components/ui/button";
 import { ColorPicker } from "@/components/ui/color-picker";
 import { FontPicker } from "@/components/ui/font-picker";
@@ -50,6 +51,7 @@ import {
 	clamp,
 	formatNumberForDisplay,
 	getFractionDigitsForStep,
+	parseDecimalInput,
 	snapToStep,
 } from "@/utils/math";
 import {
@@ -183,26 +185,8 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 	};
 
 	const commitMask = ({ maskType }: { maskType: MaskType }) => {
-		if (editor.timeline.isPreviewActive()) {
-			editor.timeline.commitPreview();
-		} else {
-			editor.timeline.updateElements({
-				updates: [
-					{
-						trackId,
-						elementId: element.id,
-						patch: {
-							masks: [
-								buildDefaultMaskInstance({
-									maskType,
-									elementSize: getElementSize(),
-								}),
-							],
-						} as Partial<MaskableElement>,
-					},
-				],
-			});
-		}
+		previewMask({ maskType });
+		editor.timeline.commitPreview();
 		markCommitted();
 		setIsDropdownOpen(false);
 	};
@@ -278,7 +262,7 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 			) : (
 				masks.map((mask, index) => (
 					<MaskItem
-						key={mask.id}
+						key={`${element.id}:${mask.id}`}
 						trackId={trackId}
 						elementId={element.id}
 						mask={renderMasks[index] ?? mask}
@@ -305,7 +289,7 @@ function MaskItem({
 	const definition = getMaskDefinition(mask.type);
 
 	return (
-		<Section sectionKey={`mask-item:${mask.id}`} showTopBorder={false}>
+		<Section sectionKey={`mask-item:${elementId}:${mask.id}`} showTopBorder={false}>
 			<SectionHeader
 				trailing={
 					<div className="flex items-center gap-1">
@@ -649,11 +633,23 @@ function TextMaskFields({
 	fontSizeParam: NumberParamDefinition;
 }) {
 	const { t } = useI18n();
+	const { timeline } = useEditor();
+	const pendingPreview = useRef<ReturnType<typeof timeline.getPreviewTracks>>(null);
+	const commitContent = useCommittedRef(() => {
+		const preview = pendingPreview.current;
+		pendingPreview.current = null;
+		if (preview && timeline.getPreviewTracks() === preview) onCommit();
+	});
+	useEffect(() => () => commitContent.current(), [commitContent]);
 	const content = usePropertyDraft({
 		displayValue: mask.params.content,
 		parse: (input) => input,
-		onPreview: (value) => previewParam("content")(value),
-		onCommit,
+		onPreview: (value) => {
+			previewParam("content")(value);
+			pendingPreview.current = timeline.getPreviewTracks();
+		},
+		onCommit: () => commitContent.current(),
+		supportsExpressions: false,
 	});
 
 	const previewNumberParam = (key: string) => (value: number) =>
@@ -786,14 +782,15 @@ function MaskNumberField({
 			maxFractionDigits,
 		}),
 		parse: (input) => {
-			const parsed = parseFloat(input);
-			if (Number.isNaN(parsed)) return null;
+			const parsed = parseDecimalInput({ input });
+			if (parsed === null) return null;
 			return (
 				clampDisplay(snapToStep({ value: parsed, step })) / displayMultiplier
 			);
 		},
 		onPreview,
 		onCommit,
+		onInvalid: () => timeline.discardPreview(),
 	});
 
 	return (

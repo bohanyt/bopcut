@@ -130,6 +130,8 @@ export function Captions() {
 	};
 
 	const handleGenerateTranscript = async () => {
+		const sceneId = editor.scenes.getActiveScene().id;
+		const session = editor.project.getSessionSignal();
 		dispatch({ type: "start", step: "captions.extractingAudio" });
 		try {
 			const audioBlob = await extractTimelineAudio({
@@ -151,6 +153,10 @@ export function Captions() {
 				onProgress: handleProgress,
 			});
 
+			if (session.aborted || editor.scenes.getActiveSceneOrNull()?.id !== sceneId) {
+				dispatch({ type: "fail", error: (t) => t("captions.importTargetChanged") });
+				return;
+			}
 			dispatch({ type: "update_step", step: "captions.generating" });
 			const captionChunks = buildCaptionChunks({ segments: result.segments });
 
@@ -177,9 +183,15 @@ export function Captions() {
 	};
 
 	const handleImportFile = async ({ file }: { file: File }) => {
+		const sceneId = editor.scenes.getActiveScene().id;
+		const session = editor.project.getSessionSignal();
 		dispatch({ type: "start", step: "captions.readingFile" });
 		try {
 			const input = await file.text();
+			if (session.aborted || editor.scenes.getActiveSceneOrNull()?.id !== sceneId) {
+				dispatch({ type: "fail", error: (t) => t("captions.importTargetChanged") });
+				return;
+			}
 			const result = parseSubtitleFile({
 				fileName: file.name,
 				input,

@@ -41,6 +41,7 @@ const messageKeys = new Map<string, StaticMessageKey>([
 	["a save of it is still running; try again in a moment", "projects.savePending"],
 	["The project kept changing; try again", "storage.projectChanging"],
 	["The project was deleted; not saved", "storage.projectDeleted"],
+	["The editor's server does not answer", "storage.serverAway"],
 	["This project is being deleted", "projects.deleting"],
 	["the project is still loading", "projects.stillLoading"],
 	["saving is off", "storage.saveOff"],

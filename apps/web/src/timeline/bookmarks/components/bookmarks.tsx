@@ -1,7 +1,7 @@
 "use client";
 
 import { useI18n } from "@/i18n/provider";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
 import type { BookmarkDragState } from "../hooks/use-bookmark-drag";
@@ -83,7 +83,11 @@ export function TimelineBookmarksRow({
 	handleRulerPointerDown,
 }: TimelineBookmarksRowProps) {
 	const { t } = useI18n();
-	const bookmarks = useEditor((e) => e.scenes.getActiveScene().bookmarks);
+	const scene = useEditor((e) => e.scenes.getActiveScene());
+	const promotedKeys = useRef(new Map<string, string>());
+	const assignedKeys = new Set(scene.bookmarks.flatMap(({ id }) =>
+		id ? [promotedKeys.current.get(id) ?? id] : [],
+	));
 
 	return (
 		<div
@@ -109,15 +113,25 @@ export function TimelineBookmarksRow({
 					handleRulerTrackingPointerDown(event);
 				}}
 			>
-				{bookmarks.map((bookmark, index) => (
-					<TimelineBookmark
-						key={bookmark.id ?? `bookmark-${bookmark.time}-${index}`}
-						bookmark={bookmark}
-						zoomLevel={zoomLevel}
-						dragState={dragState}
-						onBookmarkMouseDown={onBookmarkMouseDown}
-					/>
-				))}
+				{scene.bookmarks.map((bookmark, index) => {
+					let key = bookmark.id
+						? promotedKeys.current.get(bookmark.id) ?? bookmark.id
+						: `bookmark-${bookmark.time}-${index}`;
+					// A promoted bookmark may have moved away from this legacy slot.
+					if (!bookmark.id) {
+						while (assignedKeys.has(key)) key += ":legacy";
+					}
+					return (
+						<TimelineBookmark
+							key={`${scene.id}:${key}`}
+							bookmark={bookmark}
+							zoomLevel={zoomLevel}
+							dragState={dragState}
+							onBookmarkMouseDown={onBookmarkMouseDown}
+							onAssignId={(id) => promotedKeys.current.set(id, key)}
+						/>
+					);
+				})}
 			</button>
 		</div>
 	);
@@ -128,10 +142,12 @@ function TimelineBookmark({
 	zoomLevel,
 	dragState,
 	onBookmarkMouseDown,
+	onAssignId,
 }: {
 	bookmark: Bookmark;
 	zoomLevel: number;
 	dragState: BookmarkDragState;
+	onAssignId: (id: string) => void;
 	onBookmarkMouseDown: (params: {
 		event: React.MouseEvent;
 		bookmark: Bookmark;
@@ -305,6 +321,7 @@ function TimelineBookmark({
 					time={time}
 					timelineDuration={duration}
 					onPopoverClose={() => setIsPopoverOpen(false)}
+					onAssignId={onAssignId}
 				/>
 			</PopoverContent>
 		</Popover>
@@ -316,11 +333,13 @@ function BookmarkPopoverContent({
 	time,
 	timelineDuration,
 	onPopoverClose,
+	onAssignId,
 }: {
 	bookmark: Bookmark;
 	time: MediaTime;
 	timelineDuration: MediaTime;
 	onPopoverClose: () => void;
+	onAssignId: (id: string) => void;
 }) {
 	const { t } = useI18n();
 	const editor = useEditor();
@@ -349,7 +368,13 @@ function BookmarkPopoverContent({
 		const updates: Partial<Omit<Bookmark, "time">> = {};
 		if (note !== undefined && note !== bookmark.note) {
 			updates.note = note;
-			if (!bookmark.id) { updates.id = generateUUID(); updates.author = "user"; updates.createdAt = new Date().toISOString(); updates.resolved = false; }
+			if (!bookmark.id) {
+				updates.id = generateUUID();
+				onAssignId(updates.id);
+				updates.author = "user";
+				updates.createdAt = new Date().toISOString();
+				updates.resolved = false;
+			}
 		}
 		if (
 			color !== undefined &&
@@ -380,7 +405,7 @@ function BookmarkPopoverContent({
 				<Input
 					placeholder={t("bookmark.addNote")}
 					value={bookmark.note ?? ""}
-					onChange={(event) => handleUpdate({ note: event.target.value })}
+					onChange={(event) => handleUpdate({ note: event.currentTarget.value })}
 					className="h-8 text-sm"
 				/>
 			</div>

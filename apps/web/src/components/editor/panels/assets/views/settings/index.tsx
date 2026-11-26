@@ -31,7 +31,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
 import { cn } from "@/utils/ui";
 import { dimensionToAspectRatio } from "@/utils/geometry";
-import { formatNumberForDisplay } from "@/utils/math";
+import { formatNumberForDisplay, parseDecimalInput } from "@/utils/math";
 import { OcSquarePlusIcon } from "@/components/icons";
 import type { TCanvasSize } from "@/project/types";
 import { toast } from "sonner";
@@ -68,11 +68,8 @@ function formatCanvasDimension({ value }: { value: number }) {
 }
 
 function parseCanvasDimension({ input }: { input: string }): number | null {
-	const trimmed = input.trim();
-	if (!trimmed) return null;
-
-	const parsed = Number(trimmed);
-	if (!Number.isFinite(parsed)) return null;
+	const parsed = parseDecimalInput({ input });
+	if (parsed === null) return null;
 
 	const rounded = Math.round(parsed);
 	return rounded > 0 ? rounded : null;
@@ -95,21 +92,11 @@ function useCanvasDimensionDraft({
 	value: number;
 	onCommit: (value: number) => void;
 }) {
-	const [pendingValue, setPendingValue] = useState(value);
-
 	return usePropertyDraft({
 		displayValue: formatCanvasDimension({ value }),
 		parse: (input) => parseCanvasDimension({ input }),
-		onStartEditing: () => {
-			setPendingValue(value);
-		},
-		onPreview: (nextValue) => {
-			setPendingValue(nextValue);
-		},
-		onCommit: () => {
-			if (pendingValue !== value) {
-				onCommit(pendingValue);
-			}
+		onCommit: (nextValue) => {
+			if (nextValue !== value) onCommit(nextValue);
 		},
 	});
 }

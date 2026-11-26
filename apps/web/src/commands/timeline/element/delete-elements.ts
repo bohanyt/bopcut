@@ -18,7 +18,7 @@ function removeTrackElements<TTrack extends TimelineTrack>({
 			),
 	);
 
-	return { ...track, elements: nextElements } as TTrack;
+	return nextElements.length === track.elements.length ? track : { ...track, elements: nextElements };
 }
 
 export class DeleteElementsCommand extends Command {
@@ -36,21 +36,27 @@ export class DeleteElementsCommand extends Command {
 
 	execute(): CommandResult | undefined {
 		const editor = EditorCore.getInstance();
-		this.savedState = editor.scenes.getActiveScene().tracks;
+		const before = editor.scenes.getActiveScene().tracks;
+		this.savedState = before;
 
 		const updatedTracks: SceneTracks = {
-			overlay: this.savedState.overlay.map((track) =>
+			overlay: before.overlay.map((track) =>
 				removeTrackElements({ track, elements: this.elements }),
 			),
 			main: removeTrackElements({
-				track: this.savedState.main,
+				track: before.main,
 				elements: this.elements,
 			}),
-			audio: this.savedState.audio.map((track) =>
+			audio: before.audio.map((track) =>
 				removeTrackElements({ track, elements: this.elements }),
 			),
 		};
 
+		if (
+			updatedTracks.main === before.main &&
+			updatedTracks.overlay.every((track, index) => track === before.overlay[index]) &&
+			updatedTracks.audio.every((track, index) => track === before.audio[index])
+		) return { changed: false };
 		editor.timeline.updateTracks(updatedTracks);
 
 		return {

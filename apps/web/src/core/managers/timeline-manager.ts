@@ -599,7 +599,9 @@ export class TimelineManager {
 
 	removeKeyframes({
 		keyframes,
+		clearSelection = false,
 	}: {
+		clearSelection?: boolean;
 		keyframes: Array<{
 			trackId: string;
 			elementId: string;
@@ -661,8 +663,9 @@ export class TimelineManager {
 						valueAtPlayheadMap.get(`${elementId}:${propertyPath}`) ?? null,
 				}),
 		);
+		const selection = clearSelection ? { selectedKeyframes: [], keyframeSelectionAnchor: null } : undefined;
 		const command =
-			commands.length === 1 ? commands[0] : new BatchCommand(commands);
+			commands.length === 1 && !selection ? commands[0] : new BatchCommand(commands, selection);
 		this.editor.command.execute({ command });
 	}
 
@@ -821,7 +824,10 @@ export class TimelineManager {
 
 	previewElements({
 		updates,
+		replace = false,
 	}: {
+		/** Replace this element's overlay when the gesture computes each update from its starting state. */
+		replace?: boolean;
 		updates: readonly {
 			trackId: string;
 			elementId: string;
@@ -834,6 +840,11 @@ export class TimelineManager {
 		let changedOverlayCount = 0;
 		for (const { elementId, updates: elementUpdates } of updates) {
 			const existingOverlay = this.previewOverlay.get(elementId);
+			if (replace) {
+				this.previewOverlay.set(elementId, elementUpdates);
+				changedOverlayCount += 1;
+				continue;
+			}
 			const changed = Object.entries(elementUpdates).some(([key, value]) => {
 				return !Object.is(
 					existingOverlay?.[key as keyof TimelineElement],
@@ -845,6 +856,9 @@ export class TimelineManager {
 				const mergedOverlay = {
 					...existingOverlay,
 					...elementUpdates,
+					...((existingOverlay?.params || elementUpdates.params) && {
+						params: { ...existingOverlay?.params, ...elementUpdates.params },
+					}),
 				} as Partial<TimelineElement>;
 				this.previewOverlay.set(elementId, mergedOverlay);
 			}
@@ -904,7 +918,12 @@ export class TimelineManager {
 			const nextElements = track.elements.map((element) => {
 				const overlay = this.previewOverlay.get(element.id);
 				if (!overlay) return element;
-				const next = { ...element, ...overlay } as TimelineElement;
+				// A preview can change one parameter; the clip keeps its others.
+				const next = {
+					...element,
+					...overlay,
+					...(overlay.params && { params: { ...element.params, ...overlay.params } }),
+				} as TimelineElement;
 				return element.type === "text" &&
 					next.type === "text" &&
 					element.params.content !== next.params.content

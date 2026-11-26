@@ -22,6 +22,7 @@ export function useKeybindingsListener() {
 	useEffect(() => {
 		const eventOptions: AddEventListenerOptions = { capture: true };
 		const handleKeyDown = (ev: KeyboardEvent) => {
+			if (ev.isComposing) return;
 			const normalizedKey = (ev.key ?? "").toLowerCase();
 
 			if (overlayDepth > 0 || isLoadingProject || isRecording) {
@@ -87,6 +88,7 @@ export function useKeybindingsListener() {
 		const handleEscape = (ev: KeyboardEvent) => {
 			if (
 				(ev.key ?? "").toLowerCase() !== "escape" ||
+				ev.isComposing ||
 				ev.defaultPrevented ||
 				overlayDepth > 0 ||
 				isLoadingProject ||

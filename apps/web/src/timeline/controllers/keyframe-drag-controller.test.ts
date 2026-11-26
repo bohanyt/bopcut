@@ -28,31 +28,47 @@ const clip = (start: number, keyTicks: number[], duration = 600_000): VideoEleme
 	id: "c", type: "video", name: "c", mediaId: "m",
 	startTime: mediaTime({ ticks: start }), duration: mediaTime({ ticks: duration }),
 	trimStart: ZERO_MEDIA_TIME, trimEnd: ZERO_MEDIA_TIME, params: PARAMS,
-	animations: { opacity: { keys: keyTicks.map<ScalarAnimationKey>((time, i) => ({ id: `k${i}`, time: mediaTime({ ticks: time }), value: 1, segmentToNext: "linear", tangentMode: "flat" })) } },
+	animations: { opacity: { keys: keyTicks.map<ScalarAnimationKey>((time, i) => ({
+		id: `k${i}`, time: mediaTime({ ticks: time }), value: 1, segmentToNext: "linear", tangentMode: "flat",
+	})) } },
 });
 
 function harness(element: VideoElement, fps: FrameRate, selected = [keyRef("k0")], grabbed = selected) {
-	const page = Object.assign(new EventTarget(), { activeElement: null });
+	const view = new EventTarget();
+	const page = Object.assign(new EventTarget(), { activeElement: null, defaultView: view });
+	const commits: unknown[] = [];
+	let cancelPrevious: (() => void) | undefined;
 	const prev = Object.getOwnPropertyDescriptor(globalThis, "document");
 	Object.defineProperty(globalThis, "document", { configurable: true, value: page });
 	const cfg: KeyframeDragConfig = {
 		zoomLevel: 1, getFps: () => fps, element, displayedStartTime: element.startTime, selectedKeyframes: selected,
 		isKeyframeSelected: () => true, setKeyframeSelection: () => {}, toggleKeyframeSelection: () => {},
-		selectKeyframeRange: () => {}, executeCommand: () => {}, beginPreviewGesture: () => ({ finish: () => {}, cancel: () => {} }),
+		selectKeyframeRange: () => {}, executeCommand: (command) => { commits.push(command); },
+		beginPreviewGesture: (cancel) => {
+			cancelPrevious?.();
+			cancelPrevious = cancel;
+			return { finish: () => { cancelPrevious = undefined; }, cancel };
+		},
 		seek: () => {}, getTotalDuration: () => mediaTime({ ticks: 1_000_000 }),
 	};
 	const c = new KeyframeDragController({ configRef: { current: cfg } });
 	const before = cleanup;
-	cleanup = () => { c.destroy(); if (prev) Object.defineProperty(globalThis, "document", prev); before?.(); };
-	const down = () => c.onKeyframeMouseDown({
-		event: { button: 0, clientX: START, clientY: 0, metaKey: false, ctrlKey: false, shiftKey: false,
+	cleanup = () => {
+		c.destroy();
+		if (prev) Object.defineProperty(globalThis, "document", prev);
+		else Reflect.deleteProperty(globalThis, "document");
+		before?.();
+	};
+	const down = (button = 0) => c.onKeyframeMouseDown({
+		event: { button, clientX: START, clientY: 0, metaKey: false, ctrlKey: false, shiftKey: false,
 			preventDefault: () => {}, stopPropagation: () => {}, currentTarget: { ownerDocument: page } } as unknown as ReactMouseEvent,
 		keyframes: grabbed,
 	});
 	const move = (x: number) => page.dispatchEvent(Object.assign(new Event("mousemove"), { clientX: x }));
+	const up = (button = 0) => page.dispatchEvent(Object.assign(new Event("mouseup"), { button }));
 	const drag = (x: number) => { down(); move(START + DRAG); move(x); return c.keyframeDragState.deltaTicks; };
 	const xFor = (ticks: number) => START + (ticks / TICKS_PER_SECOND) * PPS;
-	return { drag, move, down, xFor, state: () => c.keyframeDragState, raw: (x: number) => Math.round(((x - START) / PPS) * TICKS_PER_SECOND) };
+	return { drag, move, down, up, view, commits, xFor, state: () => c.keyframeDragState, raw: (x: number) => Math.round(((x - START) / PPS) * TICKS_PER_SECOND) };
 }
 
 test("grabbed key anchors frame snapping when it is not the first selected key", () => {
@@ -109,8 +125,30 @@ test("counts as a gesture from the first move to the release", () => {
 	expect(isTimelineGestureActive()).toBe(false);
 	h.move(START + DRAG);
 	expect(isTimelineGestureActive()).toBe(true);
-	document.dispatchEvent(new Event("mouseup"));
+	h.up();
 	expect(isTimelineGestureActive()).toBe(false);
+});
+
+test("middle-button press does not start a keyframe drag", () => {
+	const h = harness(clip(0, [30_000]), { numerator: 30, denominator: 1 });
+	h.down(1);
+	h.move(START + DRAG);
+	expect(isTimelineGestureActive()).toBe(false);
+	h.up(1);
+	expect(h.commits).toHaveLength(0);
+});
+
+test("secondary release leaves keyframe drag active and window blur cancels it", () => {
+	const h = harness(clip(0, [30_000]), { numerator: 30, denominator: 1 });
+	h.down();
+	h.move(START + DRAG);
+	h.up(2);
+	expect(isTimelineGestureActive()).toBe(true);
+	expect(h.commits).toHaveLength(0);
+	h.view.dispatchEvent(new Event("blur"));
+	expect(isTimelineGestureActive()).toBe(false);
+	h.up();
+	expect(h.commits).toHaveLength(0);
 });
 
 test("clamps at both clip ends", () => {

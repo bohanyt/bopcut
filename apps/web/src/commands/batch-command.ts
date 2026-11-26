@@ -1,12 +1,13 @@
 import { Command, type CommandContext, type CommandResult } from "./base-command";
 import { EditorCore } from "@/core";
+import type { EditorSelectionPatch } from "@/selection/editor-selection";
 
 export class BatchCommand extends Command {
 	// Ripple is applied per child below, so children that opt out (compound create/ungroup)
 	// stay exempt, also inside nested batches.
 	override readonly ripples = false;
 
-	constructor(private commands: Command[]) {
+	constructor(private commands: Command[], private selection?: EditorSelectionPatch) {
 		super();
 	}
 
@@ -58,6 +59,7 @@ export class BatchCommand extends Command {
 			throw error;
 		}
 
-		return done.length > 0 ? latestSelectionResult : { changed: false };
+		if (done.length === 0) return { changed: false };
+		return this.selection ? { selection: this.selection } : latestSelectionResult;
 	}
 }

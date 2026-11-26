@@ -2,6 +2,7 @@ import { Command, type CommandResult } from "@/commands/base-command";
 import { EditorCore } from "@/core";
 import { isVisualElement, updateElementInSceneTracks } from "@/timeline";
 import type { SceneTracks, VisualElement } from "@/timeline";
+import { parseEffectParamPath } from "@/animation";
 
 function removeEffectFromElement({
 	element,
@@ -12,7 +13,11 @@ function removeEffectFromElement({
 }): VisualElement {
 	const currentEffects = element.effects ?? [];
 	const filtered = currentEffects.filter((effect) => effect.id !== effectId);
-	return { ...element, effects: filtered };
+	const animations = element.animations && Object.fromEntries(
+		Object.entries(element.animations).filter(([propertyPath]) =>
+			parseEffectParamPath({ propertyPath })?.effectId !== effectId),
+	);
+	return { ...element, effects: filtered, ...(animations && { animations }) };
 }
 
 export class RemoveClipEffectCommand extends Command {
