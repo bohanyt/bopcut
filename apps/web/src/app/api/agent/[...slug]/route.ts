@@ -10,11 +10,11 @@ import { handleGif } from "@/media/gif-server";
 import { handleSfx, libraryPreviewFile } from "@/sounds/sfx-server";
 import { MUSIC_LIBRARY, handleMusic } from "@/sounds/music-server";
 import { handleDuck } from "@/sounds/duck-server";
-import { parseSelectionPayload } from "@/agent/selection-payload";
+import { MAX_SELECTION_BYTES, parseSelectionPayload } from "@/agent/selection-payload";
 import { consumeAppliedDraft } from "@/agent/draft-store";
 import { isForeignOrigin } from "@/agent/origin";
 import { atomicWrite } from "@/services/storage/server/files";
-import { handleExportFile, handleExportResult } from "@/agent/export-server";
+import { handleExportFile, handleExportResult, readTextLimited } from "@/agent/export-server";
 import { handleCli } from "@/agent/cli-api";
 import { inside as resolveInsideRoot } from "@/agent/inside";
 import { renderPresence, renderRequest, renderWorker } from "@/agent/render-server";
@@ -123,8 +123,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 	}
 	if (slug[0] === "selection") {
 		// What the user points at right now (selected elements + playhead); see AGENT.md.
-		const text = await req.text();
-		if (text.length > 4 * 1024 * 1024) return Response.json({ error: "Selection too large" }, { status: 413 });
+		const text = await readTextLimited(req, MAX_SELECTION_BYTES);
+		if (text === null) return Response.json({ error: "Selection too large" }, { status: 413 });
 		let body: unknown = null;
 		try {
 			body = JSON.parse(text);

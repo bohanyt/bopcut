@@ -516,6 +516,18 @@ describe("compound naming", () => {
 });
 
 describe("selection context for agents", () => {
+	test("a selection beyond the endpoint limit keeps the first 5000 clips and marks it partial", () => {
+		const scenes = nested();
+		const main = scenes[0].tracks.main;
+		const source = main.elements[0];
+		main.elements = Array.from({ length: 5001 }, (_, i) => ({ ...source, id: `clip-${i}` }));
+		const editor = setup(scenes);
+		editor.selection.setSelectedElements({ elements: main.elements.map(({ id }) => ({ trackId: main.id, elementId: id })) });
+		const selection = agentSelection();
+		expect(selection?.selected).toHaveLength(5000);
+		expect(selection).toMatchObject({ truncated: true });
+		expect(selection?.selected.at(-1)?.id).toBe("clip-4999");
+	});
 	test("selected elements come with their address, timing and track; the playhead is in seconds", () => {
 		const editor = setup();
 		editor.selection.setSelectedElements({ elements: [{ trackId: "t-c1", elementId: "c1" }, { trackId: "t-main", elementId: "bg" }] });

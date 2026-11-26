@@ -5,24 +5,39 @@ export function createSelectionWriter({
 }: {
 	isScrubbing: () => boolean;
 	readBody: () => string;
-	send: (body: string) => Promise<void>;
+	/** Return false for a permanent rejection. Throw when the write can be retried. */
+	send: (body: string) => Promise<void | false>;
 }) {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let pending = false;
 	let sending = false;
 	let lastBody: string | undefined;
+	let failedBody: string | undefined;
+	let retryDelay = 500;
+
+	const arm = (delay: number) => {
+		timer = setTimeout(() => {
+			timer = undefined;
+			pending = true;
+			void flush();
+		}, delay);
+	};
 
 	const flush = async () => {
 		if (!pending || sending || isScrubbing()) return;
 		pending = false;
 		const body = readBody();
 		if (body === lastBody) return;
+		if (body !== failedBody) retryDelay = 500;
 		sending = true;
 		try {
-			await send(body);
-			lastBody = body;
+			if (await send(body) !== false) lastBody = body;
+			failedBody = undefined;
 		} catch {
 			lastBody = undefined;
+			failedBody = body;
+			if (!pending && timer === undefined) arm(retryDelay);
+			retryDelay = Math.min(10_000, retryDelay * 2);
 		} finally {
 			sending = false;
 			void flush();
@@ -34,10 +49,7 @@ export function createSelectionWriter({
 			if (isScrubbing()) return;
 			clearTimeout(timer);
 			pending = false;
-			timer = setTimeout(() => {
-				pending = true;
-				void flush();
-			}, 250);
+			arm(250);
 		},
 	};
 }

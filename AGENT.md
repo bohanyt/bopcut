@@ -122,6 +122,7 @@ The user selects what is wrong in the editor, switches to their agent and says "
 
 `{projectId, sceneId, activeSceneId, playhead, selected:[...], updatedAt}`
 - `selected` lists the selected elements in the same shape as the snapshot (address, timing, params), each with its `track: {id, name, type}`.
+- When the selection exceeds 5,000 clips or the 4 MiB payload limit, `selected` contains the prefix that fits and `truncated: true` marks it as partial. Ask the user to narrow the selection if the complete set matters for the edit.
 - `playhead` is in seconds, in the open scene. Inside an open compound clip, times are relative to its content.
 - With no project open, the file is `{projectId: null, sceneId: null, activeSceneId: null, playhead: null, selected: []}`.
 - `updatedAt` is set by the server when it writes the file. A selection is only valid for its `projectId`: compare it with the snapshot's project before using it. If the editor tab was closed, the file keeps the last selection, so an old `updatedAt` means the user may have moved on.

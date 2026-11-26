@@ -1,10 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_SELECTED, NO_SELECTION, parseSelectionPayload } from "./selection-payload";
+import { boundSelectionPayload, MAX_SELECTED, MAX_SELECTION_BYTES, NO_SELECTION, parseSelectionPayload } from "./selection-payload";
 
 const now = new Date("2026-01-02T03:04:05.000Z");
 const valid = { projectId: "p", sceneId: "main", activeSceneId: "s1", playhead: 12.5, selected: [{ id: "c1", track: { id: "t", name: "Clips", type: "video" } }] };
 
 describe("selection.json payload", () => {
+	test("the byte limit keeps a whole prefix and the server preserves the truncation flag", () => {
+		const item = { id: "wide", text: "😀".repeat(600_000) };
+		const selected = [valid.selected[0], item, { ...item, id: "discarded" }];
+		const payload = boundSelectionPayload({ ...valid, selected });
+		expect(payload.selected.map((entry) => entry.id)).toEqual(["c1", "wide"]);
+		expect(new TextEncoder().encode(JSON.stringify(payload)).byteLength).toBeLessThanOrEqual(MAX_SELECTION_BYTES);
+		expect(parseSelectionPayload(payload, now)).toMatchObject({ truncated: true });
+	});
 	test("a valid selection keeps only the known fields and gets the server's timestamp", () => {
 		const file = parseSelectionPayload({ ...valid, updatedAt: "1999-01-01", extra: "dropped" }, now);
 		expect(file).toEqual({ ...valid, updatedAt: "2026-01-02T03:04:05.000Z" });

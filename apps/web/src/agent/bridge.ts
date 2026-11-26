@@ -27,7 +27,7 @@ import { type Draft, type DraftOp, computeAgentDraft } from "./draft";
 import { AgentDraftCommand } from "./draft-command";
 import { getReachableScenes, getRootScene, selectionInScene } from "./scene-graph";
 import { s, buildAllEditItems, buildEditItems, buildSceneSnapshot } from "./snapshot";
-import { NO_SELECTION } from "./selection-payload";
+import { boundSelectionPayload, NO_SELECTION } from "./selection-payload";
 import { mediaIdsInScenes } from "@/core/managers/media-manager";
 import type { SaveSession } from "@/core/managers/save-manager";
 import type { TProject } from "@/project/types";
@@ -164,7 +164,7 @@ export function agentSelection(view?: ReturnType<typeof buildSceneSnapshot>) {
 		const element = lane?.elements.find((e) => e.id === elementId);
 		return element && lane ? [{ ...element, track: { id: lane.id, name: lane.name, type: lane.type } }] : [];
 	});
-	return { ...location, selected };
+	return boundSelectionPayload({ ...location, selected });
 }
 
 function editSnapshot(): EditSnapshot | null {
@@ -223,8 +223,11 @@ export function installAgentBridge() {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body,
+				signal: AbortSignal.timeout(REQUEST_WAIT_MS),
 			});
-			if (!response.ok) throw new Error("Could not sync agent selection");
+			if (response.ok) return;
+			if (response.status === 408 || response.status === 429 || response.status >= 500) throw new Error("Could not sync agent selection");
+			return false;
 		},
 	});
 	editor.selection.subscribe(pushSelection);
