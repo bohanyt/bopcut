@@ -260,6 +260,23 @@ describe("removing used media", () => {
 		expect(restore).toHaveBeenCalledWith(expect.objectContaining({ projectId: "a", mediaAsset: expect.objectContaining({ id: "first" }) }));
 	});
 
+	test("a redo during the undo's storage check sends only the delete", async () => {
+		const { editor, remove, restore, stored } = await setup();
+		const checking = gate();
+		stored.mockImplementation(async () => {
+			await checking.promise;
+			return false;
+		});
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		editor.command.undo();
+		editor.save.stop();
+		editor.command.redo();
+		checking.open();
+		await until(() => remove.mock.calls.length === 1);
+		await editor.media.settleBinWrites("a");
+		expect(restore).not.toHaveBeenCalled();
+	});
+
 	test("a removal while the project media reloads stays removed", async () => {
 		const { editor } = await setup();
 		const assets = editor.media.getAssets();

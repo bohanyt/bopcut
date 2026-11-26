@@ -159,18 +159,19 @@ export class MediaManager {
 		};
 		// Capture a projected thumbnail before its metadata disappears. A later history action
 		// only waits for the earlier request to be sent, even if its response is delayed.
-		const write = () => {
+		const write = (): Promise<void> => {
 			if (asset && ifMissing) {
-				// Another tab may have removed the bytes meanwhile. Later writes wait for this check.
+				// Another tab may have removed the bytes meanwhile. Later writes wait for this check, and a
+				// later write (a Redo) replaces the upload.
 				return storageService.hasStoredMediaAsset({ projectId, id, signal: AbortSignal.timeout(10_000) })
 					.catch(() => false)
-					.then((stored) => stored ? started?.resolve() : send());
+					.then((stored) => stored || projectWrites.get(id)?.done !== done ? started?.resolve() : send());
 			}
 			return reference && removedAsset
 				? storageService.captureRemovedThumbnail(removedAsset, pending?.asset?.file === removedAsset.file).then(send, send)
 				: send();
 		};
-		const done = (previous ? previous.then(write) : write()).finally(() => {
+		const done: Promise<void> = (previous ? previous.then(write) : write()).finally(() => {
 			if (projectWrites.get(id)?.done === done) projectWrites.delete(id);
 			if (!projectWrites.size && this.binWrites.get(projectId) === projectWrites) this.binWrites.delete(projectId);
 		});
