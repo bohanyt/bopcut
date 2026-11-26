@@ -19,7 +19,8 @@ import {
 	BUILTIN_PRESETS,
 	PRESET_MATCH_TOLERANCE,
 } from "./easing-presets";
-import { removePreset, savePreset, useCustomPresets } from "./custom-presets-store";
+import { removePreset, restorePreset, savePreset, useCustomPresets } from "./custom-presets-store";
+import { toast } from "sonner";
 import { BezierGraph, BEZIER_GRAPH_MIN_HEIGHT } from "./bezier-graph";
 
 const COLLAPSED_MAX = 6;
@@ -161,7 +162,15 @@ export function GraphEditorPopover({
 									isActive={activePresetId === preset.id}
 									disabled={!canEdit}
 									onSelect={() => onCommitValue?.(preset.value)}
-									onDelete={() => removePreset({ id: preset.id })}
+									deleteLabel={t("graph.deletePreset", { name: preset.label })}
+									onDelete={() => {
+										// Presets live outside the project history, so the toast carries the Undo.
+										const removed = removePreset({ id: preset.id });
+										if (!removed) return;
+										toast(t("graph.presetDeleted", { name: preset.label }), {
+											action: { label: t("shortcuts.action.undo"), onClick: () => restorePreset(removed) },
+										});
+									}}
 								/>
 							))}
 							<button
@@ -243,12 +252,13 @@ function ExpandableGrid({
 	);
 }
 
-function PresetItem({
+export function PresetItem({
 	value,
 	label,
 	isActive,
 	onSelect,
 	onDelete,
+	deleteLabel,
 	disabled,
 }: {
 	value: NormalizedCubicBezier;
@@ -256,51 +266,56 @@ function PresetItem({
 	isActive: boolean;
 	onSelect: () => void;
 	onDelete?: () => void;
+	deleteLabel?: string;
 	disabled?: boolean;
 }) {
+	// The delete button sits next to the preset button (buttons cannot be nested). It shows on hover,
+	// on keyboard focus, and always on touch screens, which have no hover.
 	return (
-		<button
-			type="button"
-			onClick={onSelect}
-			disabled={disabled}
-			className={cn(
-				"group relative flex flex-col items-center gap-1 rounded-sm px-1 py-1",
-				disabled
-					? "cursor-not-allowed opacity-50"
-					: "hover:bg-foreground/5 cursor-pointer",
-				isActive && "bg-primary/5! text-primary",
-			)}
-		>
-			<div
+		<div className="group relative">
+			<button
+				type="button"
+				onClick={onSelect}
+				disabled={disabled}
 				className={cn(
-					"flex aspect-video w-full items-center justify-center rounded-sm bg-foreground/5",
-					isActive && "bg-primary/5!",
+					"flex w-full flex-col items-center gap-1 rounded-sm px-1 py-1",
+					disabled
+						? "cursor-not-allowed opacity-50"
+						: "hover:bg-foreground/5 cursor-pointer",
+					isActive && "bg-primary/5! text-primary",
 				)}
 			>
-				<CurveThumb value={value} />
-			</div>
-			<span
-				className={cn(
-					"text-[10px] leading-tight",
-					isActive ? "text-primary" : "text-muted-foreground",
-				)}
-			>
-				{label}
-			</span>
+				<div
+					className={cn(
+						"flex aspect-video w-full items-center justify-center rounded-sm bg-foreground/5",
+						isActive && "bg-primary/5!",
+					)}
+				>
+					<CurveThumb value={value} />
+				</div>
+				<span
+					className={cn(
+						"text-[10px] leading-tight",
+						isActive ? "text-primary" : "text-muted-foreground",
+					)}
+				>
+					{label}
+				</span>
+			</button>
 			{onDelete && (
 				<Button
+					type="button"
 					variant="destructive"
 					size="icon"
-					className="absolute -right-0.5 -top-0.5 hidden size-4.5 rounded-full [&_svg]:size-3 group-hover:flex"
-					onClick={(event) => {
-						event.stopPropagation();
-						onDelete();
-					}}
+					aria-label={deleteLabel}
+					title={deleteLabel}
+					className="absolute -right-1 -top-1 hidden size-5 rounded-full [&_svg]:size-3 group-hover:flex group-focus-within:flex pointer-coarse:flex"
+					onClick={onDelete}
 				>
 					<HugeiconsIcon icon={Delete02Icon} />
 				</Button>
 			)}
-		</button>
+		</div>
 	);
 }
 

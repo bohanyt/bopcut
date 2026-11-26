@@ -114,10 +114,11 @@ export function TimelinePlayhead({
 		>
 			<div className="bg-primary pointer-events-none absolute left-0 h-full w-0.5" />
 
-			<button
-				type="button"
-				aria-label={t("timeline.dragPlayhead")}
-				className={`pointer-events-auto absolute top-1 left-1/2 size-3 touch-none -translate-x-1/2 transform cursor-col-resize rounded-full border-2 shadow-xs ${isSnappingToPlayhead ? "bg-primary border-primary" : "bg-primary border-primary/50"}`}
+			{/* The slider above is the control; this is its grip. The 12 px dot takes touches 32 px wide. */}
+			<span
+				aria-hidden="true"
+				title={t("timeline.dragPlayhead")}
+				className={`pointer-events-auto absolute top-1 left-1/2 size-3 touch-none -translate-x-1/2 transform cursor-col-resize rounded-full border-2 shadow-xs before:absolute before:-inset-2.5 before:content-[''] ${isSnappingToPlayhead ? "bg-primary border-primary" : "bg-primary border-primary/50"}`}
 				onPointerDown={onPointerDown}
 			/>
 		</div>

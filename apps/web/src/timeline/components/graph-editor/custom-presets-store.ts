@@ -95,7 +95,19 @@ export function savePreset({ value }: { value: NormalizedCubicBezier }): void {
 	notify();
 }
 
-export function removePreset({ id }: { id: string }): void {
-	writeToStorage({ presets: getSnapshot().filter((preset) => preset.id !== id) });
+export function removePreset({ id }: { id: string }): { preset: EasingPreset; index: number } | null {
+	const presets = getSnapshot();
+	const index = presets.findIndex((preset) => preset.id === id);
+	if (index === -1) return null;
+	writeToStorage({ presets: presets.filter((preset) => preset.id !== id) });
+	notify();
+	return { preset: presets[index], index };
+}
+
+/** Puts a deleted preset back at its place (the Undo of a delete). */
+export function restorePreset({ preset, index }: { preset: EasingPreset; index: number }): void {
+	const presets = getSnapshot().filter((entry) => entry.id !== preset.id);
+	presets.splice(Math.min(index, presets.length), 0, preset);
+	writeToStorage({ presets });
 	notify();
 }

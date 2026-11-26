@@ -374,6 +374,8 @@ interface ColorPickerProps {
 	className?: string;
 	contentSide?: ComponentProps<typeof PopoverContent>["side"];
 	contentAlign?: ComponentProps<typeof PopoverContent>["align"];
+	/** Accessible name of the swatch button and the color field. */
+	label?: string;
 }
 
 const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
@@ -387,6 +389,7 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 			onDragCancel,
 			contentSide,
 			contentAlign,
+			label,
 			...props
 		},
 		ref,
@@ -457,6 +460,7 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 						<button
 							className="size-4.5 relative cursor-pointer overflow-hidden rounded-sm border hover:ring-1 hover:ring-foreground/20"
 							type="button"
+							aria-label={label}
 						>
 							<span
 								className="absolute inset-0 dark:invert"
@@ -470,6 +474,7 @@ const ColorPicker = forwardRef<HTMLDivElement, ColorPickerProps>(
 					</PopoverTrigger>
 					<div className="flex flex-1 items-center">
 						<Input
+							aria-label={label}
 							className="border-0! bg-transparent p-0 ring-0! ring-offset-0! uppercase"
 							size="sm"
 							containerClassName="w-full"

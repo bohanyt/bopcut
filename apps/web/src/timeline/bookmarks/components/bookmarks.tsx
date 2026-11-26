@@ -1,7 +1,7 @@
 "use client";
 
 import { useI18n } from "@/i18n/provider";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import type { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
 import type { BookmarkDragState } from "../hooks/use-bookmark-drag";
@@ -94,14 +94,14 @@ export function TimelineBookmarksRow({
 			className="relative flex-1 overflow-hidden"
 			style={{ height: TIMELINE_BOOKMARK_ROW_HEIGHT_PX }}
 		>
-			<button
-				className="relative w-full cursor-default touch-none select-none border-0 bg-transparent p-0"
+			{/* Not a button: it holds the bookmark buttons, and buttons cannot be nested. */}
+			<div
+				role="presentation"
+				className="relative w-full cursor-default touch-none select-none"
 				style={{
 					height: TIMELINE_BOOKMARK_ROW_HEIGHT_PX,
 					width: `${dynamicTimelineWidth}px`,
 				}}
-				aria-label={t("timeline.ruler")}
-				type="button"
 				onWheel={handleWheel}
 				onClick={(event) => {
 					if (!event.currentTarget.contains(event.target as Node)) return;
@@ -132,7 +132,7 @@ export function TimelineBookmarksRow({
 						/>
 					);
 				})}
-			</button>
+			</div>
 		</div>
 	);
 }
@@ -196,10 +196,12 @@ function TimelineBookmark({
 		}
 	};
 
+	// Keyboard users cannot double-click: Enter seeks and opens the editor, Space only seeks.
 	const handleKeyDown = (event: React.KeyboardEvent) => {
 		if (event.key !== "Enter" && event.key !== " ") return;
 		event.preventDefault();
 		handleSeek();
+		if (event.key === "Enter") setIsPopoverOpen(true);
 	};
 
 	const handleMouseDown = (event: React.MouseEvent) => {
@@ -212,7 +214,8 @@ function TimelineBookmark({
 		<Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
 			<PopoverAnchor asChild>
 				<button
-					className="absolute top-0 h-full min-w-0.5 border-0 bg-transparent p-0"
+					aria-haspopup="dialog"
+					className="absolute top-0 h-full min-w-0.5 border-0 bg-transparent p-0 before:absolute before:inset-y-0 before:-inset-x-2.5 before:content-['']"
 					style={{
 						left: `${bookmarkLeft}px`,
 						width: `${bookmarkWidth}px`,
@@ -342,6 +345,7 @@ function BookmarkPopoverContent({
 	onAssignId: (id: string) => void;
 }) {
 	const { t } = useI18n();
+	const fieldId = useId();
 	const editor = useEditor();
 	useSyncExternalStore(editor.voiceOver.subscribe, editor.voiceOver.getSnapshot, editor.voiceOver.getServerSnapshot);
 	const committedColor = (bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR)
@@ -401,8 +405,9 @@ function BookmarkPopoverContent({
 	return (
 		<>
 			<div className="flex flex-col gap-2">
-				<Label className="text-xs">{t("bookmark.note")}</Label>
+				<Label htmlFor={`${fieldId}-note`} className="text-xs">{t("bookmark.note")}</Label>
 				<Input
+					id={`${fieldId}-note`}
 					placeholder={t("bookmark.addNote")}
 					value={bookmark.note ?? ""}
 					onChange={(event) => handleUpdate({ note: event.currentTarget.value })}
@@ -413,6 +418,7 @@ function BookmarkPopoverContent({
 				<Label className="text-xs">{t("common.color")}</Label>
 				<div className="relative">
 					<ColorPicker
+						label={t("common.color")}
 						beginDragGesture={editor.timeline.beginPreviewGesture}
 						onDragCancel={(color) => setDraftColorHex(uppercase({ string: color }))}
 						value={uppercase({ string: draftColorHex })}
@@ -451,9 +457,10 @@ function BookmarkPopoverContent({
 				</div>
 			</div>
 			<div className="flex flex-col gap-2">
-				<Label className="text-xs">{t("common.duration")}</Label>
+				<Label htmlFor={`${fieldId}-duration`} className="text-xs">{t("common.duration")}</Label>
 				<div className="flex items-center gap-1.5">
 					<Input
+						id={`${fieldId}-duration`}
 						type="number"
 						min={0}
 						step={0.1}
