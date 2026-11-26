@@ -5,7 +5,8 @@ import { fileInside } from "./inside";
 import { isForeignOrigin } from "./origin";
 import { isCliRenderRunning, startRender } from "./render-server";
 import { reserveEditorActivity, reserveReview } from "./review-activity";
-import { readTranscriptView } from "./transcript-view-server";
+import { readSilencePlan, readTranscriptView } from "./transcript-view-server";
+import { DEFAULT_SILENCE_OPTIONS } from "./silence-plan";
 
 type Snapshot = { projectId?: string; notes?: unknown; syncedAt?: string };
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -60,6 +61,28 @@ export async function handleCli(req: Request, action: string, workspace: string)
 				return new Response(result, { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
 			} catch (error) {
 				return json({ error: error instanceof Error ? error.message : "Could not read the saved transcript." }, 400);
+			}
+		}
+		if (action === "silence-plan" && req.method === "GET") {
+			const usage = "Use silence-plan --project-id ID [--min-gap SECONDS] [--pad SECONDS] [--keep-fillers] [--keep-lead] [--tail] [--ignore-media NAME,...].";
+			const number = (key: string, fallback: number, min: number, max: number) => {
+				const value = url.searchParams.get(key);
+				const parsed = value === null ? fallback : value.trim() ? Number(value) : NaN;
+				return parsed >= min && parsed <= max ? parsed : NaN;
+			};
+			const minGap = number("minGap", DEFAULT_SILENCE_OPTIONS.minGap, 0.05, 10);
+			const pad = number("pad", DEFAULT_SILENCE_OPTIONS.pad, 0, 1);
+			const ignore = (url.searchParams.get("ignore") ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+			if (!requested || !Number.isFinite(minGap) || !Number.isFinite(pad) || ignore.length > 50) return json({ error: usage }, 400);
+			try {
+				return json(await readSilencePlan(requested, {
+					minGap, pad, ignoreMedia: ignore,
+					fillers: url.searchParams.get("fillers") !== "0",
+					lead: url.searchParams.get("lead") !== "0",
+					tail: url.searchParams.get("tail") === "1",
+				}, req.signal));
+			} catch (error) {
+				return json({ error: error instanceof Error ? error.message : "Could not plan the silence cuts." }, 400);
 			}
 		}
 		if (action === "narration-plan" && req.method === "GET") {

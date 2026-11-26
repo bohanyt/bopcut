@@ -63,6 +63,15 @@ test("the read-only commands share project and timeout options", () => {
 	}
 });
 
+test("silence-plan needs a project and passes its options to the server", () => {
+	expect(parseArgs(["silence-plan", "--project-id", "p", "--min-gap", "0.3", "--pad", "0.05", "--keep-fillers", "--tail",
+		"--ignore-media", "Music,SFX"])).toMatchObject({
+		command: "silence-plan", projectId: "p", silence: { minGap: "0.3", pad: "0.05", fillers: "0", tail: "1", ignore: "Music,SFX" },
+	});
+	expect(parseArgs(["silence-plan", "--project-id", "p"])).toMatchObject({ silence: {} });
+	expect(() => parseArgs(["silence-plan"])).toThrow("Use silence-plan --project-id ID");
+});
+
 test("the CLI rejects deferred commands, unexpected options, and remote addresses", () => {
 	expect(() => parseArgs(["draft"])).toThrow("status|selection|notes");
 	expect(() => parseArgs(["prefs"])).toThrow("status|selection|notes");
