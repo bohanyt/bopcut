@@ -48,6 +48,30 @@ describe("project adapter", () => {
 		expect(await fs.readdir(path.join(root, "projects"))).not.toContain(id);
 	});
 
+	test("a media upload streams without holding the project lock", async () => {
+		const id = "slow-upload";
+		expect((await PUT(request(id, "PUT", { "if-match": "new" }, { metadata: { id, name: id } }), ctx(id))).status).toBe(200);
+		let controller!: ReadableStreamDefaultController<Uint8Array>;
+		const body = new ReadableStream<Uint8Array>({ start: (control) => { controller = control; } });
+		const metadata = { id: "slow", fileName: "slow.mp4", fileType: "video/mp4" };
+		const media = { params: Promise.resolve({ slug: ["projects", id, "media", "slow"] }) };
+		const upload = PUT(new Request(`http://127.0.0.1:3021/api/storage/projects/${id}/media/slow`, {
+			method: "PUT",
+			headers: { "x-media-metadata": encodeURIComponent(JSON.stringify(metadata)) },
+			body,
+		}), media);
+		controller.enqueue(new TextEncoder().encode("first "));
+		await Bun.sleep(50);
+		// A timeline save of the same project gets the lock while the body is still arriving.
+		const save = withProjectLock(id, async () => "saved");
+		expect(await Promise.race([save, Bun.sleep(500).then(() => "waited")])).toBe("saved");
+		controller.enqueue(new TextEncoder().encode("second"));
+		controller.close();
+		expect((await upload).status).toBe(200);
+		expect(await (await GET(request(`${id}/media/slow`, "GET"), media)).text()).toBe("first second");
+		expect(await fs.readdir(path.join(root, "uploads"))).toEqual([]);
+	});
+
 	test("a delete that cannot move the project keeps its migration marker and the project", async () => {
 		const id = "locked-project";
 		expect((await PUT(request(id, "PUT", { "if-match": "new" }, { metadata: { id, name: id } }), ctx(id))).status).toBe(200);

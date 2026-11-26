@@ -9,7 +9,9 @@ import {
 	removeMedia,
 	revision,
 	safeId,
-	saveMedia,
+	commitMedia,
+	discardReceivedMedia,
+	receiveMedia,
 	statFile,
 	withProjectLock,
 } from "@/services/storage/server/files";
@@ -262,20 +264,27 @@ async function handle(
 				}
 				if (method === "GET")
 					return await mediaResponse(id, mediaId, req.headers.get("range"), req.signal);
-				if (method === "PUT")
-					return await withProjectLock(id, async () => {
-						// A delayed upload or Undo write must not recreate a deleted project.
-						if (!(await statFile(projectFile(id))) && (await readJson(marker(id)))?.deleted)
-							return new Response(null, { status: 404 });
-						if (!req.body) return new Response(null, { status: 400 });
-						const metadata = JSON.parse(
-							decodeURIComponent(req.headers.get("x-media-metadata") ?? ""),
-						);
-						const savedRevision = await saveMedia(id, mediaId, metadata, req.body);
-						return Response.json({ ok: true }, {
-							headers: savedRevision ? { "X-Media-Revision": savedRevision } : undefined,
+				if (method === "PUT") {
+					if (!req.body) return new Response(null, { status: 400 });
+					const metadata = JSON.parse(
+						decodeURIComponent(req.headers.get("x-media-metadata") ?? ""),
+					);
+					// The body streams without the project lock: timeline saves do not wait for a large upload.
+					const received = await receiveMedia(id, mediaId, metadata, req.body);
+					try {
+						return await withProjectLock(id, async () => {
+							// A delayed upload or Undo write must not recreate a deleted project.
+							if (!(await statFile(projectFile(id))) && (await readJson(marker(id)))?.deleted)
+								return new Response(null, { status: 404 });
+							const savedRevision = await commitMedia(id, mediaId, metadata, received);
+							return Response.json({ ok: true }, {
+								headers: savedRevision ? { "X-Media-Revision": savedRevision } : undefined,
+							});
 						});
-					});
+					} finally {
+						await discardReceivedMedia(received);
+					}
+				}
 				if (method === "POST") {
 					const metadata = await req.json();
 					if (metadata?.id !== mediaId) return new Response(null, { status: 400 });
