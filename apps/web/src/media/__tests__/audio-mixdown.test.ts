@@ -1,14 +1,18 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { AudioBufferSink, Input, InputAudioTrack, type WrappedAudioBuffer } from "mediabunny";
 import { TestAudioBuffer } from "./audio-buffer";
+import { collectAudioClips } from "@/media/audio";
 import { mixTimelineAudio } from "@/media/audio-mixdown";
 import { openAudioInput, decodeAudioWindow, sliceAudioWindow } from "@/media/audio-window";
 import { createBlockMastering } from "@/media/audio-mastering";
 import { createStereoSampler } from "@/media/audio-resample";
 import { createPitchReader } from "@/retime/audio-stretch";
-import { t } from "@/timeline/__tests__/compound-fixtures";
+import { buildAudioGainAutomation } from "@/timeline/audio-state";
+import { buildCompoundFromElements } from "@/timeline/compound";
+import { findCompound, getHost, scene, t } from "@/timeline/__tests__/compound-fixtures";
 import type { SceneTracks, UploadAudioElement } from "@/timeline";
 import type { MediaAsset } from "@/media/types";
+import { subMediaTime } from "@/wasm";
 
 const sampleRate = 8_000;
 const second = (samples: number) => samples / sampleRate;
@@ -59,6 +63,46 @@ function timeline(...elements: UploadAudioElement[]): SceneTracks {
 		audio: [{ id: "audio", type: "audio", name: "Audio", muted: false, elements }],
 	};
 }
+
+test.each([false, true])("compound trim keeps the child's audio fades with nesting %s", async (nested) => {
+	installBuffer();
+	stubPackets(async function* () { yield packet(0, 4 * sampleRate, 0); });
+	const child = { ...clip("child", 0, 0, 4), params: { volume: 0, fadeIn: 1, fadeOut: 1 } };
+	let group = buildCompoundFromElements({
+		scenes: [scene("main", timeline(child))],
+		hostSceneId: "main",
+		elements: [{ trackId: "audio", elementId: child.id }],
+	});
+	if (nested) {
+		Object.assign(findCompound(group.scenes), { trimStart: t(0.25), duration: t(3.5), trimEnd: t(0.25) });
+		group = buildCompoundFromElements({ scenes: group.scenes, hostSceneId: "main", elements: [group.compound] });
+	}
+	const start = nested ? 0.25 : 2;
+	const duration = nested ? 3 : 1;
+	const compound = findCompound(group.scenes);
+	const trimEnd = subMediaTime({ a: compound.duration, b: t(start + duration) });
+	Object.assign(compound, { trimStart: t(start), duration: t(duration), trimEnd });
+	const { scenes } = group;
+	const tracks = getHost(scenes).tracks;
+	const [block] = await Array.fromAsync(mixTimelineAudio({
+		tracks, scenes, mediaAssets: [asset], duration: t(duration), sampleRate,
+	}));
+	const samples = block.getChannelData(0);
+	expect(samples[0]).toBeCloseTo(nested ? 0.25 : 0.5, 5);
+	expect(samples[Math.floor(samples.length / 2)]).toBeCloseTo(0.5, 5);
+	expect(samples.at(-1)).toBeCloseTo(nested ? 0.25 + 0.5 / sampleRate : 0.5, 5);
+
+	const [playbackClip] = await collectAudioClips({ tracks, scenes, mediaAssets: [asset] });
+	const points = buildAudioGainAutomation({
+		element: playbackClip.timelineElement,
+		fromLocalTime: 0,
+		toLocalTime: duration,
+		stepSeconds: 4,
+	});
+	expect(points.map(({ localTime, gain }) => [localTime, gain])).toEqual(nested
+		? [[0, 0.5], [0.5, 1], [2.5, 1], [3, 0.5]]
+		: [[0, 1], [1, 1]]);
+});
 
 test("overlapping cuts share one late decode window and muted clips do not request samples", async () => {
 	installBuffer();

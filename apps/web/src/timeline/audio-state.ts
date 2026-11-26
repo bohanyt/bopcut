@@ -1,15 +1,37 @@
 import { hasKeyframesForPath } from "@/animation/keyframe-query";
 import { resolveNumberAtTime } from "@/animation/values";
-import { TICKS_PER_SECOND } from "@/wasm";
+import { TICKS_PER_SECOND, type MediaTime } from "@/wasm";
 import { VOLUME_DB_MAX, VOLUME_DB_MIN } from "./audio-constants";
 import type { TimelineElement } from "./types";
 
 const DEFAULT_STEP_SECONDS = 1 / 60;
+const audioFadeWindow = Symbol("audioFadeWindow");
 
 export type AudioCapableElement = Extract<
 	TimelineElement,
 	{ type: "audio" | "video" }
->;
+> & {
+	[audioFadeWindow]?: { offsetTicks: number; duration: MediaTime };
+};
+
+/** Keeps the original fade window on a mixer-only clip cut by a compound. */
+export function keepAudioFadeTiming({
+	original,
+	clipped,
+}: {
+	original: AudioCapableElement;
+	clipped: AudioCapableElement;
+}): AudioCapableElement {
+	if (clipped === original) return clipped;
+	const fadeWindow = original[audioFadeWindow];
+	return {
+		...clipped,
+		[audioFadeWindow]: {
+			offsetTicks: (fadeWindow?.offsetTicks ?? 0) + (clipped.startTime - original.startTime),
+			duration: fadeWindow?.duration ?? original.duration,
+		},
+	};
+}
 
 export function clampDb(value: number): number {
 	if (!Number.isFinite(value)) {
@@ -69,11 +91,13 @@ export function fadeGainAt({
 }): number {
 	const { fadeIn, fadeOut } = getElementFades({ element });
 	if (!fadeIn && !fadeOut) return 1;
-	const duration = element.duration / TICKS_PER_SECOND;
+	const fadeWindow = element[audioFadeWindow];
+	const duration = (fadeWindow?.duration ?? element.duration) / TICKS_PER_SECOND;
+	const fadeTime = localTime + (fadeWindow?.offsetTicks ?? 0) / TICKS_PER_SECOND;
 	let gain = 1;
-	if (fadeIn > 0) gain *= Math.min(1, Math.max(0, localTime / fadeIn));
+	if (fadeIn > 0) gain *= Math.min(1, Math.max(0, fadeTime / fadeIn));
 	if (fadeOut > 0)
-		gain *= Math.min(1, Math.max(0, (duration - localTime) / fadeOut));
+		gain *= Math.min(1, Math.max(0, (duration - fadeTime) / fadeOut));
 	return gain;
 }
 
@@ -176,9 +200,15 @@ export function buildAudioGainAutomation({
 	}
 	// Exact points where fades start and end, so a fade shorter than a step still lands on time.
 	const { fadeIn, fadeOut } = getElementFades({ element });
-	const clipDuration = element.duration / TICKS_PER_SECOND;
-	for (const edge of [fadeIn, clipDuration - fadeOut]) {
-		if ((edge === fadeIn ? fadeIn > 0 : fadeOut > 0) && edge > startTime && edge < endTime && !points.some((p) => Math.abs(p.localTime - edge) < 1e-6)) {
+	const fadeWindow = element[audioFadeWindow];
+	const duration = (fadeWindow?.duration ?? element.duration) / TICKS_PER_SECOND;
+	const offset = (fadeWindow?.offsetTicks ?? 0) / TICKS_PER_SECOND;
+	const fadeEdges = [
+		fadeIn > 0 ? fadeIn - offset : undefined,
+		fadeOut > 0 ? duration - fadeOut - offset : undefined,
+	];
+	for (const edge of fadeEdges) {
+		if (edge !== undefined && edge > startTime && edge < endTime && !points.some((p) => Math.abs(p.localTime - edge) < 1e-6)) {
 			points.push({ localTime: edge, gain: resolveEffectiveAudioGain({ element, trackMuted, localTime: edge }) });
 		}
 	}
