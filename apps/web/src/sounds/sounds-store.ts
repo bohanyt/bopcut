@@ -73,7 +73,8 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 	showCommercialOnly: true,
 
 	toggleCommercialFilter: () => {
-		set((state) => ({ showCommercialOnly: !state.showCommercialOnly }));
+		// Results were fetched for the other setting: load the top sounds and the current search again.
+		set((state) => ({ showCommercialOnly: !state.showCommercialOnly, hasLoaded: false, lastSearchQuery: "" }));
 	},
 
 	searchQuery: "",
@@ -216,16 +217,21 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 			return false;
 		}
 
+		const editor = EditorCore.getInstance();
+		// The download can outlast a switch to another project or scene: the sound must not land there.
+		const session = editor.media.startImport();
+		if (!session) return false;
+		const sceneId = editor.scenes.getActiveSceneOrNull()?.id;
 		try {
-			const editor = EditorCore.getInstance();
 			const currentTime = editor.playback.getCurrentTime();
 
-			const response = await fetch(audioUrl);
+			const response = await fetch(audioUrl, { signal: session.signal });
 			if (!response.ok)
 				throw new Error(`Failed to download audio: ${response.statusText}`);
 
 			const arrayBuffer = await response.arrayBuffer();
 			const buffer = await decodeAudioBuffer({ arrayBuffer });
+			if (session.signal.aborted || editor.scenes.getActiveSceneOrNull()?.id !== sceneId) return false;
 
 			const element = buildLibraryAudioElement({
 				sourceUrl: audioUrl,
@@ -241,6 +247,7 @@ export const useSoundsStore = create<SoundsStore>((set, get) => ({
 			});
 			return true;
 		} catch (error) {
+			if (session.signal.aborted) return false;
 			console.error("Failed to add sound to timeline:", error);
 			toast.error(
 				error instanceof Error

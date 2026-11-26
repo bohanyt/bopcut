@@ -1,5 +1,20 @@
 import { useEffect } from "react";
 import { useSoundsStore } from "@/sounds/sounds-store";
+import type { SoundEffect } from "@/sounds/types";
+
+/** Adds one more fetched page to the search results (with a query) or to the top sounds. */
+export function appendSoundsPage({ data, query, page }: {
+	data: { results: SoundEffect[]; next?: string | null; count: number };
+	query: string;
+	page: number;
+}): void {
+	const store = useSoundsStore.getState();
+	if (query.trim()) store.appendSearchResults({ results: data.results });
+	else store.appendTopSounds({ results: data.results });
+	store.setCurrentPage({ page });
+	store.setHasNextPage({ hasNext: !!data.next });
+	store.setTotalCount({ count: data.count });
+}
 
 export function useSoundSearch({
 	query,
@@ -25,8 +40,6 @@ export function useSoundSearch({
 		setHasNextPage,
 		setTotalCount,
 		setLoadingMore,
-		appendSearchResults,
-		appendTopSounds,
 		resetPagination,
 	} = useSoundsStore();
 
@@ -52,17 +65,7 @@ export function useSoundSearch({
 			);
 
 			if (response.ok) {
-				const data = await response.json();
-
-				if (query.trim()) {
-					appendSearchResults(data.results);
-				} else {
-					appendTopSounds(data.results);
-				}
-
-				setCurrentPage({ page: nextPage });
-				setHasNextPage({ hasNext: !!data.next });
-				setTotalCount(data.count);
+				appendSoundsPage({ data: await response.json(), query, page: nextPage });
 			} else {
 				setSearchError({ error: `Load more failed: ${response.status}` });
 			}
@@ -96,7 +99,7 @@ export function useSoundSearch({
 				resetPagination();
 
 				const response = await fetch(
-					`/api/sounds/search?q=${encodeURIComponent(query)}&type=effects&page=1`,
+					`/api/sounds/search?q=${encodeURIComponent(query)}&type=effects&page=1&commercial_only=${commercialOnly}`,
 				);
 
 				if (!ignore) {

@@ -144,7 +144,7 @@ function SoundEffectsView() {
 				}
 
 				const response = await fetch(
-					"/api/sounds/search?page_size=50&sort=downloads",
+					`/api/sounds/search?page_size=50&sort=downloads&commercial_only=${useSoundsStore.getState().showCommercialOnly}`,
 				);
 
 				if (!shouldIgnore) {
