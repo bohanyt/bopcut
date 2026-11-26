@@ -51,22 +51,22 @@ export function resolveCaptionPreset(
 function captionStyle(caption: Partial<AgentCaption>): ParamValues {
 	if (caption.preset)
 		throw new Error(`Text preset has not been loaded: ${caption.preset}`);
-	const style = validateTextPreset({
+	// The highlight shorthand goes through the same checks as a style: colors must parse and the
+	// scale is kept to the range the properties panel allows.
+	const highlight = caption.highlight;
+	const emphasisColor = highlight?.emphasisColor ?? highlight?.color;
+	return validateTextPreset({
 		name: "Style",
-		style: caption.style ?? {},
+		style: {
+			...(caption.style ?? {}),
+			...(highlight && {
+				"caption.activeEnabled": highlight.enabled ?? true,
+				...(highlight.color !== undefined && { "caption.activeColor": highlight.color }),
+				...(emphasisColor !== undefined && { "caption.highlightColor": emphasisColor }),
+				"caption.activeScale": highlight.scale ?? 1,
+			}),
+		},
 	}).style;
-	return {
-		...style,
-		...(caption.highlight
-			? {
-					"caption.activeEnabled": caption.highlight.enabled ?? true,
-					"caption.activeColor": caption.highlight.color,
-					"caption.highlightColor":
-						caption.highlight.emphasisColor ?? caption.highlight.color,
-					"caption.activeScale": caption.highlight.scale ?? 1,
-				}
-			: {}),
-	};
 }
 
 export function updateAgentCaption(

@@ -346,8 +346,9 @@ test("large subtitle imports publish one complete track and keep its IDs and sel
 		expect(measurements).toBe(1);
 		expect(trackId).toBe(imported.id);
 		expect(tracks.overlay.slice(1)).toEqual(before.overlay);
+		// Each 2 s cue overlaps the next by 0.5 s, so it ends where the next starts; the last keeps 2 s.
 		expect(imported.elements.map(({ startTime, duration }) => [startTime, duration]))
-			.toEqual(captions.map((cue) => [t(cue.startTime), t(cue.duration)]));
+			.toEqual(captions.map((cue, index) => [t(cue.startTime), t(index < captions.length - 1 ? 1.5 : cue.duration)]));
 		const selection = [{ trackId: imported.id, elementId: imported.elements.at(-1)!.id }];
 		expect(editor.selection.getSelectedElements()).toEqual(selection);
 

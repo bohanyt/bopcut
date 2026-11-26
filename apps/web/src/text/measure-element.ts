@@ -189,8 +189,10 @@ export function measureTextElement({
 			}));
 		for (const run of runs) {
 			const metric = ctx.measureText(run.text);
+			// The largest a word can draw: the active-word scale times the pop of an appearing word.
 			const bump =
-				element.caption && style.activeEnabled ? style.activeScale : 1;
+				(element.caption && style.activeEnabled ? Math.max(1, style.activeScale) : 1) *
+				(element.caption && style.reveal ? Math.max(1, style.revealPop) : 1);
 			const center = run.x + run.width / 2;
 			left = Math.min(
 				left,
