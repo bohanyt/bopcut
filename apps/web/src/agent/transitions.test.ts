@@ -131,6 +131,23 @@ describe("transitions", () => {
 		expect(out.scenes[0].tracks.overlay.length).toBe(1);
 		expect(out.scenes[0].tracks.overlay[0].elements.length).toBe(2);
 	});
+
+	test.each(["crossfade", "flash"])("reapplying %s leaves the existing transition intact", (type) => {
+		const op = { op: "transition", match: { agentId: "B" }, type, duration: 0.5 };
+		const repeat = { ...op, duration: 0.3 };
+		const first = run(pair(), [op]);
+		expect(first.results[0].ok).toBe(true);
+
+		const later = run(first.scenes, [repeat]);
+		const partId = `B~${type}`;
+		expect(later.scenes[0].tracks.overlay.flatMap((track): TimelineElement[] => track.elements)
+			.filter((element) => element.agentId === partId)).toHaveLength(1);
+		expect(later.results[0]).toMatchObject({ ok: false, error: expect.stringContaining(partId) });
+		expect(later.scenes).toEqual(first.scenes);
+
+		const together = run(pair(), [op, repeat]);
+		expect(together.results.map((result) => result.ok)).toEqual([true, false]);
+	});
 });
 
 describe("transitions: review fixes", () => {
