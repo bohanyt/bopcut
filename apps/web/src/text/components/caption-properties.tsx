@@ -45,6 +45,8 @@ export function CaptionProperties({
 		editor.timeline.updateElements({
 			updates: [{ trackId, elementId: element.id, patch }],
 		});
+	// The workspace keeps one preset per name: saving under a taken name replaces that preset.
+	const replaced = presets.find((preset) => preset.name === name.trim());
 	const save = async () => {
 		setBusy(true);
 		try {
@@ -62,7 +64,22 @@ export function CaptionProperties({
 			await saveTextPreset(preset);
 			setPresets(await loadTextPresets());
 			setChosen(preset.name);
-			toast.success(t("text.styleSaved"));
+			if (replaced) {
+				// Preset files are outside the editor's history: Undo writes the replaced one back.
+				toast.success(t("text.presetReplaced", { name: preset.name }), {
+					action: {
+						label: t("shortcuts.action.undo"),
+						onClick: () => {
+							saveTextPreset(replaced)
+								.then(loadTextPresets)
+								.then(setPresets)
+								.catch(report);
+						},
+					},
+				});
+			} else {
+				toast.success(t("text.styleSaved"));
+			}
 		} catch (error) {
 			report(error);
 		} finally {
@@ -102,9 +119,12 @@ export function CaptionProperties({
 					placeholder={t("text.presetName")}
 				/>
 				<Button size="sm" disabled={busy || !name.trim()} onClick={save}>
-					{t("common.save")}
+					{replaced ? t("text.replacePreset") : t("common.save")}
 				</Button>
 			</div>
+			{replaced && (
+				<p className="text-muted-foreground text-xs">{t("text.presetNameTaken", { name: replaced.name })}</p>
+			)}
 			{/* In a narrow panel the button moves under the select instead of cutting its text off. */}
 			<div className="flex flex-wrap gap-2">
 				<select
