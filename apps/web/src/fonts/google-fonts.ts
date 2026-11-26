@@ -6,6 +6,14 @@ const FONT_ATLAS_PATH = "/fonts/font-atlas.json";
 const FONT_CHUNK_PATH_PREFIX = "/fonts/font-chunk-";
 
 const fullLoaded = new Set<string>();
+const fullLoading = new Map<string, Promise<void>>();
+const loadListeners = new Set<() => void>();
+
+/** Calls `listener` each time a font finished loading, so text drawn with its fallback is drawn again. */
+export function subscribeFontLoads(listener: () => void): () => void {
+	loadListeners.add(listener);
+	return () => loadListeners.delete(listener);
+}
 
 let cachedAtlas: FontAtlas | null = null;
 let atlasFetchPromise: Promise<FontAtlas | null> | null = null;
@@ -22,6 +30,7 @@ export function clearFontAtlasCache(): void {
 	cachedAtlas = null;
 	atlasFetchPromise = null;
 	fullLoaded.clear();
+	fullLoading.clear();
 }
 
 export function loadFontAtlas(): Promise<FontAtlas | null> {
@@ -58,30 +67,44 @@ function preloadChunkImages({ atlas }: { atlas: FontAtlas }): void {
 	}
 }
 
-export async function loadFullFont({
+/** Loads a Google font once; concurrent calls share the request, and a failed one is retried next time. */
+export function loadFullFont({
 	family,
 	weights = [400, 700],
 }: {
 	family: string;
 	weights?: number[];
 }): Promise<void> {
-	if (fullLoaded.has(family)) return;
+	if (fullLoaded.has(family)) return Promise.resolve();
+	const running = fullLoading.get(family);
+	if (running) return running;
 
-	const url = `${GOOGLE_FONTS_CSS}?family=${encodeGoogleFontsFamily(family)}:wght@${weights.join(";")}&display=swap`;
-	const link = document.createElement("link");
-	link.rel = "stylesheet";
-	link.href = url;
-	document.head.appendChild(link);
-	await new Promise<void>((resolve) => {
-		link.addEventListener("load", () => resolve(), { once: true });
-		link.addEventListener("error", () => resolve(), { once: true });
+	const task = (async () => {
+		const url = `${GOOGLE_FONTS_CSS}?family=${encodeGoogleFontsFamily(family)}:wght@${weights.join(";")}&display=swap`;
+		const link = document.createElement("link");
+		link.rel = "stylesheet";
+		link.href = url;
+		document.head.appendChild(link);
+		const loaded = await new Promise<boolean>((resolve) => {
+			link.addEventListener("load", () => resolve(true), { once: true });
+			link.addEventListener("error", () => resolve(false), { once: true });
+		});
+		if (!loaded) {
+			link.remove();
+			return;
+		}
+		await Promise.all(
+			weights.map((weight) =>
+				document.fonts.load(`${weight} 16px "${family.replace(/"/g, '\\"')}"`),
+			),
+		);
+		fullLoaded.add(family);
+		for (const listener of [...loadListeners]) listener();
+	})().finally(() => {
+		if (fullLoading.get(family) === task) fullLoading.delete(family);
 	});
-	await Promise.all(
-		weights.map((weight) =>
-			document.fonts.load(`${weight} 16px "${family.replace(/"/g, '\\"')}"`),
-		),
-	);
-	fullLoaded.add(family);
+	fullLoading.set(family, task);
+	return task;
 }
 
 export async function loadFonts({

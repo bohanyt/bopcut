@@ -8,6 +8,7 @@ import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { preparePreviewOriginals, visibleVideoNodes } from "@/services/renderer/resolve";
+import { subscribeFontLoads } from "@/fonts/google-fonts";
 import { useProxySession, useProxyStore } from "@/services/proxies/client";
 import { VideoCache } from "@/services/video-cache/service";
 import { previewCanvasSize } from "@/canvas/sizes";
@@ -366,6 +367,8 @@ function PreviewCanvas({
 				else settle.reset();
 			}),
 			modelGraphics.subscribe(() => { if (!modelGraphics.getSnapshot()) redraw(); }),
+			// Text drawn with a fallback font while its font loaded is drawn again.
+			subscribeFontLoads(redraw),
 		];
 		updateTarget();
 		return () => {

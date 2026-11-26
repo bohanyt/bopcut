@@ -25,6 +25,7 @@ import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
 import { loadFonts } from "@/fonts/google-fonts";
 import { DEFAULTS } from "@/timeline/defaults";
 import { getElementFontFamilies } from "@/timeline/element-utils";
+import type { TScene } from "@/timeline/types";
 import { frameRateToFloat, getRaisedProjectFpsForImportedMedia } from "@/fps/utils";
 import type { MediaAsset } from "@/media/types";
 import { mediaIdsInScenes } from "./media-manager";
@@ -75,7 +76,25 @@ export class ProjectManager {
 	private thumbnailGeneration = 0;
 	private thumbnailUploads = new Map<string, Promise<void>>();
 
-	constructor(private editor: EditorCore) {}
+	private fontScenes: TScene[] | null = null;
+
+	constructor(private editor: EditorCore) {
+		// Text added while the project is open (a draft, a style preset, a subtitle import) can bring a
+		// font the project did not use when it opened: load it now, not on the next reopen.
+		editor.scenes.subscribe(() => {
+			const scenes = editor.scenes.getScenes();
+			if (scenes === this.fontScenes) return;
+			this.fontScenes = scenes;
+			this.loadSceneFonts(scenes).catch((error) => console.error("Failed to load fonts:", error));
+		});
+	}
+
+	/** Loads the fonts the scenes' text uses (shared with loads already running). */
+	loadSceneFonts(scenes: TScene[] = this.editor.scenes.getScenes()): Promise<void> {
+		if (typeof document === "undefined") return Promise.resolve();
+		const families = scenes.flatMap((scene) => getElementFontFamilies({ tracks: scene.tracks }));
+		return loadFonts({ families: [...new Set(families)] });
+	}
 
 	private async ensureStorageMigrations(): Promise<void> {
 		if (this.storageMigrationPromise) {
@@ -161,8 +180,7 @@ export class ProjectManager {
 	}
 
 	private loadProjectFonts(project: TProject) {
-		const families = (project.scenes ?? []).flatMap((scene) => getElementFontFamilies({ tracks: scene.tracks }));
-		return loadFonts({ families: [...new Set(families)] });
+		return this.loadSceneFonts(project.scenes ?? []);
 	}
 
 	async loadProject({ id }: { id: string }): Promise<void> {

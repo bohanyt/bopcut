@@ -293,6 +293,13 @@ export class RendererManager {
 				return { success: false, error: "Project is empty", issue: { kind: "empty" } };
 			}
 
+			// Text added since the project opened may still be loading its font: wait a little for it.
+			let fontWait: ReturnType<typeof setTimeout> | undefined;
+			await waitWithAbort(Promise.race([
+				this.editor.project.loadSceneFonts().catch(() => {}),
+				new Promise<void>((resolve) => { fontWait = setTimeout(resolve, 10_000); }),
+			]), signal).finally(() => clearTimeout(fontWait));
+
 			const exportFps = fps ?? activeProject.settings.fps;
 			const { canvasSize, background } = activeProject.settings;
 
