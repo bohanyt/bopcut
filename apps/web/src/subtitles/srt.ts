@@ -1,12 +1,14 @@
 import type { ParseSubtitleResult, SubtitleCue } from "./types";
 
-const TIMESTAMP_SEPARATOR = /\s*-->\s*/;
-const TIMESTAMP = String.raw`\d{2}:\d{2}:\d{2}[,.]\d{1,3}`;
-const TIMESTAMP_LINE = String.raw`${TIMESTAMP}[^\S\n]*-->[^\S\n]*${TIMESTAMP}[^\S\n]*`;
-const TIMESTAMP_PATTERN = new RegExp(`^${TIMESTAMP_LINE}$`);
-// Some files omit the blank line before a numbered cue.
-const CUE_SEPARATOR = new RegExp(String.raw`\n(?:\n+|(?=[^\S\n]*\d+[^\S\n]*\n[^\S\n]*${TIMESTAMP_LINE}(?:\n|$)))`);
+const TIMESTAMP = String.raw`\d+:\d{2}:\d{2}[,.]\d{1,3}`;
+// Positioning may follow the end time (`position:50% line:90%`, legacy `X1:… Y2:…`); it is ignored.
+const TIMESTAMP_PATTERN = new RegExp(String.raw`^(${TIMESTAMP})\s*-->\s*(${TIMESTAMP})(?:\s+.*)?$`);
+const INDEX_PATTERN = /^\d+$/;
 
+/**
+ * Reads SubRip line by line: a timestamp line starts a cue, an index line right before one is dropped, and
+ * text runs until a blank line or the next cue, so files that omit blank lines or index lines still split.
+ */
 export function parseSrt({ input }: { input: string }): ParseSubtitleResult {
 	const normalized = input.replace(/\r\n?/g, "\n").trim();
 	if (!normalized) {
@@ -17,60 +19,55 @@ export function parseSrt({ input }: { input: string }): ParseSubtitleResult {
 		};
 	}
 
-	const blocks = normalized.split(CUE_SEPARATOR);
+	const lines = normalized.split("\n").map((line) => line.trim());
 	const cues: SubtitleCue[] = [];
 	let skippedCueCount = 0;
+	let current: { start: string; end: string; text: string[] } | null = null;
+	// Lines outside any cue (a block without a valid timestamp) count as one skipped cue per block.
+	let stray = false;
 
-	for (const block of blocks) {
-		const lines = block
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line.length > 0);
-
-		if (lines.length < 2) {
-			skippedCueCount += 1;
-			continue;
-		}
-
-		const timestampIndex = TIMESTAMP_SEPARATOR.test(lines[0]) ? 0 : 1;
-		const timestampLine = lines[timestampIndex];
-		if (!timestampLine || !TIMESTAMP_PATTERN.test(timestampLine)) {
-			skippedCueCount += 1;
-			continue;
-		}
-
-		const textLines = lines.slice(timestampIndex + 1);
-		const text = textLines.join("\n").trim();
-		if (!text) {
-			skippedCueCount += 1;
-			continue;
-		}
-
-		const [rawStart, rawEnd] = timestampLine.split(TIMESTAMP_SEPARATOR);
-		if (!rawStart || !rawEnd) {
-			skippedCueCount += 1;
-			continue;
-		}
-
-		const startTime = parseSrtTimestamp({ input: rawStart });
-		const endTime = parseSrtTimestamp({ input: rawEnd });
+	const finishCue = () => {
+		if (!current) return;
+		const cue = current;
+		current = null;
+		const text = cue.text.join("\n").trim();
+		const startTime = parseSrtTimestamp({ input: cue.start });
+		const endTime = parseSrtTimestamp({ input: cue.end });
 		const duration = endTime - startTime;
-
-		if (
-			!Number.isFinite(startTime) ||
-			!Number.isFinite(endTime) ||
-			duration <= 0
-		) {
+		if (!text || !Number.isFinite(startTime) || !Number.isFinite(endTime) || duration <= 0) {
 			skippedCueCount += 1;
+			return;
+		}
+		cues.push({ text, startTime, duration });
+	};
+	const finishStray = () => {
+		if (stray) skippedCueCount += 1;
+		stray = false;
+	};
+
+	for (const [index, line] of lines.entries()) {
+		if (!line) {
+			finishCue();
+			finishStray();
 			continue;
 		}
-
-		cues.push({
-			text,
-			startTime,
-			duration,
-		});
+		const timestamp = line.match(TIMESTAMP_PATTERN);
+		if (timestamp) {
+			finishCue();
+			finishStray();
+			current = { start: timestamp[1], end: timestamp[2], text: [] };
+			continue;
+		}
+		if (INDEX_PATTERN.test(line) && TIMESTAMP_PATTERN.test(lines[index + 1] ?? "")) {
+			finishCue();
+			finishStray();
+			continue;
+		}
+		if (current) current.text.push(line);
+		else stray = true;
 	}
+	finishCue();
+	finishStray();
 
 	return {
 		captions: cues,
@@ -81,7 +78,7 @@ export function parseSrt({ input }: { input: string }): ParseSubtitleResult {
 
 function parseSrtTimestamp({ input }: { input: string }): number {
 	const normalized = input.trim().replace(",", ".");
-	const match = normalized.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{1,3})$/);
+	const match = normalized.match(/^(\d+):(\d{2}):(\d{2})\.(\d{1,3})$/);
 	if (!match) {
 		return Number.NaN;
 	}
