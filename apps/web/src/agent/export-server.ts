@@ -44,30 +44,42 @@ async function readResult(workspace: string): Promise<Result | null> {
 }
 
 const isFinal = (result: Result | null, rev: string) => result?.rev === rev && (result.status === "done" || result.status === "error");
+const liveClaim = (current: Result | null, now: number) =>
+	current?.status === "exporting" && now - Date.parse(String(current.updatedAt)) < CLAIM_MS;
+const ownsClaim = (current: Result | null, result: Result) =>
+	current?.status === "exporting" && current.rev === result.rev && current.tab === result.tab && current.projectId === result.projectId;
+const claimRefusal = (current: Result | null, result: Result, now: number) => {
+	if (isFinal(current, result.rev)) return "answered";
+	if (!liveClaim(current, now) || !ownsClaim(current, result)) return "claimed";
+	return null;
+};
 
 /**
  * Writes an answer to the result file, unless the request already has its final answer ("answered") or
  * another tab is exporting it ("claimed"; an "exporting" answer from a tab is its claim).
  */
-export function writeExportResult({ workspace, result, now = Date.now() }: { workspace: string; result: Result; now?: number }): Promise<{ ok: true } | { ok: false; reason: "answered" | "claimed" }> {
+export function writeExportResult({ workspace, result, now }: { workspace: string; result: Result; now?: number }): Promise<{ ok: true } | { ok: false; reason: "answered" | "claimed" }> {
 	return oneAtATime(async () => {
 		const current = await readResult(workspace);
+		const time = now ?? Date.now();
 		if (isFinal(current, result.rev)) return { ok: false, reason: "answered" } as const;
 		if (result.status === "release") {
-			if (current?.rev !== result.rev || current.status !== "exporting" ||
-				current.tab !== result.tab || current.projectId !== result.projectId) {
-				return { ok: false, reason: "claimed" } as const;
-			}
+			if (!ownsClaim(current, result)) return { ok: false, reason: "claimed" } as const;
 			await fs.rm(path.join(workspace, RESULT_FILE), { force: true });
 			return { ok: true } as const;
 		}
-		if (
-			result.status === "exporting" && current?.rev === result.rev && current.status === "exporting" && current.tab !== result.tab &&
-			now - Date.parse(String(current.updatedAt)) < CLAIM_MS
-		) {
-			return { ok: false, reason: "claimed" } as const;
+		const { renew, preflight, ...stored } = result;
+		if (result.status === "exporting" && renew !== true) {
+			if (current?.rev === result.rev && liveClaim(current, time) && !ownsClaim(current, result)) {
+				return { ok: false, reason: "claimed" } as const;
+			}
+		} else if (result.status === "error" && preflight === true) {
+			if (liveClaim(current, time)) return { ok: false, reason: "claimed" } as const;
+		} else {
+			const reason = claimRefusal(current, result, time);
+			if (reason) return { ok: false, reason } as const;
 		}
-		await atomicWrite(path.join(workspace, RESULT_FILE), JSON.stringify({ ...result, updatedAt: new Date(now).toISOString() }, null, 1));
+		await atomicWrite(path.join(workspace, RESULT_FILE), JSON.stringify({ ...stored, updatedAt: new Date(time).toISOString() }, null, 1));
 		return { ok: true } as const;
 	});
 }
@@ -90,8 +102,8 @@ export async function handleExportResult(req: Request, workspace: string): Promi
 		// "done" is written with the video (POST export-file), never on its own.
 		return Response.json({ error: "Invalid result" }, { status: 400 });
 	}
-	if (result.status === "release" && (typeof result.tab !== "string" || !result.tab || typeof result.projectId !== "string" || !result.projectId)) {
-		return Response.json({ error: "Invalid claim release" }, { status: 400 });
+	if (typeof result.tab !== "string" || !result.tab || typeof result.projectId !== "string" || !result.projectId) {
+		return Response.json({ error: "Invalid export claim" }, { status: 400 });
 	}
 	const written = await writeExportResult({ workspace, result });
 	return written.ok ? Response.json({ ok: true }) : refused(written.reason);
@@ -111,18 +123,34 @@ export async function handleExportFile(req: Request, workspace: string, job?: {
 	}
 	if (!REV.test(rev) || !req.body || !done || typeof done !== "object" || (query.get("result") ?? "").length > 4096) return Response.json({ error: "Invalid export" }, { status: 400 });
 	if (Number(req.headers.get("content-length") ?? 0) > MAX_EXPORT_BYTES) return Response.json({ error: "Export too large" }, { status: 413 });
-	// Not saved again once the request has its answer (for example from another tab).
-	if (!job && isFinal(await readResult(workspace), rev)) return refused("answered");
-	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, temp: job?.temp, signal: job?.signal, beforePublish: job?.beforePublish, onUpload: job?.onUpload });
+	const identity = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done" };
+	if (!job) {
+		if (!identity.tab || !identity.projectId) return Response.json({ error: "Invalid export claim" }, { status: 400 });
+		const reason = claimRefusal(await readResult(workspace), identity, Date.now());
+		if (reason) return refused(reason);
+	}
+	const saved = await saveExport({ dir: path.join(workspace, "exports"), name: query.get("name") ?? "", format: query.get("format") ?? "", body: req.body, temp: job?.temp, signal: job?.signal ?? req.signal, beforePublish: job?.beforePublish, onUpload: job?.onUpload });
 	if ("error" in saved) return Response.json({ error: saved.error }, { status: saved.status });
 	const file = `exports/${saved.file}`;
 	const fields = Object.fromEntries(DONE_FIELDS.filter((key) => key in done).map((key) => [key, done[key]]));
 	const fileMtimeMs = await fs.stat(path.join(workspace, file)).then((stat) => stat.mtimeMs, () => undefined);
-	const result: Result = { rev, projectId: query.get("projectId") ?? undefined, tab: query.get("tab") ?? undefined, status: "done", file,
-		bytes: saved.bytes, fileMtimeMs, ...fields };
-	await saveExportProfile(workspace, file, result).catch(() => { /* The export can be reviewed without a known profile. */ });
-	if (job) await job.finish({ ...result, updatedAt: new Date().toISOString() });
-	else await writeExportResult({ workspace, result });
+	const result: Result = { ...identity, file, bytes: saved.bytes, fileMtimeMs, ...fields };
+	const profile = () => saveExportProfile(workspace, file, result).catch(() => { /* The export can be reviewed without a known profile. */ });
+	if (job) {
+		await profile();
+		await job.finish({ ...result, updatedAt: new Date().toISOString() });
+	} else {
+		// The stream may outlast the claim. The terminal write checks ownership again under the result lock.
+		let committed = false;
+		try {
+			const written = await writeExportResult({ workspace, result });
+			if (!written.ok) return refused(written.reason);
+			committed = true;
+		} finally {
+			if (!committed) await fs.rm(path.join(workspace, file), { force: true });
+		}
+		await profile();
+	}
 	return Response.json({ file, bytes: saved.bytes });
 }
 
