@@ -5,13 +5,16 @@ import type { TProject, TProjectSettings } from "@/project/types";
 export class UpdateProjectSettingsCommand extends Command {
 	private savedSettings: Partial<TProjectSettings> | null = null;
 	private savedUpdatedAt: Date | null = null;
+	private savedFpsEditRevision: symbol | undefined;
+	private readonly fpsEditRevision: symbol | undefined;
 
 	constructor(
 		private updates: Partial<TProjectSettings>,
 		private settingsBeforePreview?: Partial<TProjectSettings>,
-		private readonly explicitEdit = false,
+		explicitEdit = false,
 	) {
 		super();
+		this.fpsEditRevision = explicitEdit && updates.fps ? Symbol() : undefined;
 	}
 
 	execute(): CommandResult | undefined {
@@ -34,7 +37,10 @@ export class UpdateProjectSettingsCommand extends Command {
 			metadata: { ...activeProject.metadata, updatedAt: new Date() },
 		};
 
-		if (this.explicitEdit && this.updates.fps) editor.project.markFpsEdited();
+		if (this.fpsEditRevision) {
+			this.savedFpsEditRevision = editor.project.getFpsEditRevision();
+			editor.project.setFpsEditRevision(this.fpsEditRevision);
+		}
 		editor.project.setActiveProject({ project: updatedProject });
 		editor.save.markDirty();
 	}
@@ -51,7 +57,7 @@ export class UpdateProjectSettingsCommand extends Command {
 			metadata: { ...activeProject.metadata, updatedAt: this.savedUpdatedAt },
 		};
 
-		if (this.explicitEdit && this.updates.fps) editor.project.markFpsEdited();
+		if (this.fpsEditRevision) editor.project.setFpsEditRevision(this.savedFpsEditRevision);
 		editor.project.setActiveProject({ project: updatedProject });
 		editor.save.markDirty();
 	}
