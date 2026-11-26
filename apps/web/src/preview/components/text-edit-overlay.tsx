@@ -21,10 +21,12 @@ export function TextEditOverlay({
 	element,
 	onPreview,
 	onCommit,
+	onCancel,
 }: {
 	element: TextElement;
 	onPreview: (text: string) => void;
 	onCommit: () => void;
+	onCancel: () => void;
 }) {
 	const { t } = useI18n();
 	const canvasSize = useEditor((editor) => editor.project.getActive().settings.canvasSize);
@@ -56,11 +58,11 @@ export function TextEditOverlay({
 			const { key } = event;
 			if (key === "Escape") {
 				event.preventDefault();
-				onCommit();
+				onCancel();
 				return;
 			}
 		},
-		[onCommit],
+		[onCancel],
 	);
 
 	if (!canvasSize) return null;

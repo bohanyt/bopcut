@@ -41,6 +41,7 @@ export function PreviewInteractionOverlay() {
 		onDoubleClick,
 		editingText,
 		commitTextEdit,
+		cancelTextEdit,
 		previewTextEdit,
 	} = usePreviewInteraction({
 		onSnapLinesChange: setSnapLines,
@@ -82,6 +83,7 @@ export function PreviewInteractionOverlay() {
 					element={editingText.element}
 					onPreview={previewTextEdit}
 					onCommit={commitTextEdit}
+					onCancel={cancelTextEdit}
 				/>
 			) : isMaskMode ? (
 				<MaskHandles onSnapLinesChange={setSnapLines} />

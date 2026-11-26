@@ -14,7 +14,8 @@ import { usePreviewViewport } from "@/preview/components/preview-viewport";
 import { useEditor } from "@/editor/use-editor";
 import type { PreviewOverlayControl } from "@/preview/overlays";
 import { useEffect } from "react";
-import { changeGroup } from "@/preview/group-actions";
+import { changeGroup, groupShortcutAction } from "@/preview/group-actions";
+import { useKeybindingsStore } from "@/actions/keybindings-store";
 import { toast } from "sonner";
 
 export function PreviewContextMenu({
@@ -37,19 +38,12 @@ export function PreviewContextMenu({
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
 			const target = event.target as HTMLElement | null;
-			if (
-				target?.isContentEditable ||
-				/^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName ?? "")
-			)
-				return;
-			if (
-				(event.ctrlKey || event.metaKey) &&
-				event.key.toLowerCase() === "g" &&
-				!event.altKey
-			) {
-				event.preventDefault();
-				changeGroup(editor, event.shiftKey);
-			}
+			const inTextField = target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName ?? "");
+			const isGroupKey = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "g";
+			// Outside text fields Ctrl+G never reaches the browser's own find, also when it does nothing here.
+			if (isGroupKey && !inTextField) event.preventDefault();
+			const action = groupShortcutAction(event, useKeybindingsStore.getState());
+			if (action) changeGroup(editor, action === "ungroup");
 		};
 		document.addEventListener("keydown", onKeyDown);
 		return () => document.removeEventListener("keydown", onKeyDown);

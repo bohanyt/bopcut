@@ -88,6 +88,7 @@ export function usePreviewInteraction({
 		onDoubleClick: controller.onDoubleClick,
 		editingText: controller.editingText,
 		commitTextEdit: controller.commitTextEdit,
+		cancelTextEdit: controller.cancelTextEdit,
 		previewTextEdit: controller.previewTextEdit,
 	};
 }

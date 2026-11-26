@@ -296,6 +296,8 @@ function PreviewCanvas({
 			proxy === lastWasProxy.current &&
 			renderTree === lastSceneRef.current
 		) {
+			// This frame rendered before and is the one on screen, so a failure of another frame no longer applies.
+			markRenderFailed(false);
 			return;
 		}
 
