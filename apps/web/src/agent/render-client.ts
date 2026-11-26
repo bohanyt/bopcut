@@ -1,6 +1,8 @@
-import { launchBrowser, type BrowserExit, type RunningBrowser } from "./agent-browser";
-import { renderGpuWorkaround } from "../src/agent/render-gpu";
-import { renderTimeoutMessage, waitingForRender } from "../src/agent/render-timeout";
+import { launchBrowser, type BrowserExit, type RunningBrowser } from "./hidden-browser";
+import { renderGpuWorkaround } from "./render-gpu";
+import { renderTimeoutMessage, waitingForRender } from "./render-timeout";
+
+/** Reads a render answer of /api/agent/cli/render (stages, a hidden browser launch, the result), for the CLI and the MCP server. */
 
 /** A browser that ends this fast on its own did not run the page: something took its launch over. */
 const QUICK_EXIT_MS = 5000;
@@ -73,4 +75,9 @@ export async function runRender(response: Response, { timeoutMs, signal: interru
 		signal.removeEventListener("abort", abort);
 		await Promise.all([reader.cancel().catch(() => {}), browser?.stop()]);
 	}
+}
+
+/** A render result that is a failure: an error, or frames of which none could be rendered. */
+export function renderFailed(command: string, result: Record<string, unknown>) {
+	return !!result.error || result.status === "error" || (command === "frames" && Array.isArray(result.files) && !result.files.length && Array.isArray(result.errors) && result.errors.length > 0);
 }

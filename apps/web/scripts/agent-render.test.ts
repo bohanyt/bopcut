@@ -3,8 +3,8 @@ import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { main, parseArgs, renderFailed } from "./agent";
-import { launchBrowser, type RunningBrowser } from "./agent-browser";
-import { runRender, hiddenBrowserExitMessage } from "./agent-render";
+import { launchBrowser, type RunningBrowser } from "../src/agent/hidden-browser";
+import { runRender, hiddenBrowserExitMessage } from "../src/agent/render-client";
 import { isRenderAdapterStage, renderAdapterStage } from "../src/agent/render-gpu";
 
 test.each([["default", undefined], ["low-power", "low-power"]] as const)("launches the hidden browser with GPU mode %s", (_name, mode) => {

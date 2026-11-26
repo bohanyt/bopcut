@@ -64,10 +64,12 @@ test("initialize negotiates the protocol version and lists the tools, marking th
 	expect((await rpc("ping")).result).toEqual({});
 	const { tools } = (await rpc("tools/list")).result;
 	expect(tools.map(({ name }: { name: string }) => name)).toEqual(MCP_TOOLS.map(({ name }) => name));
+	const writers = ["submit_draft", "export_video", "get_frames", "cancel_job"];
 	for (const tool of tools) {
-		expect(tool).toMatchObject({ inputSchema: { type: "object" }, annotations: { readOnlyHint: tool.name !== "submit_draft" } });
+		expect(tool).toMatchObject({ inputSchema: { type: "object" }, annotations: { readOnlyHint: !writers.includes(tool.name) } });
 	}
-	expect(tools.find(({ name }: { name: string }) => name === "submit_draft").annotations.destructiveHint).toBe(true);
+	const destructive = tools.filter(({ annotations }: { annotations: { destructiveHint: boolean } }) => annotations.destructiveHint);
+	expect(destructive.map(({ name }: { name: string }) => name)).toEqual(["submit_draft", "cancel_job"]);
 	const notified = await post({ jsonrpc: "2.0", method: "notifications/initialized" });
 	expect(notified.status).toBe(202);
 	const batch = await (await post([{ jsonrpc: "2.0", id: "a", method: "ping" }, { jsonrpc: "2.0", method: "notifications/initialized" }])).json();
