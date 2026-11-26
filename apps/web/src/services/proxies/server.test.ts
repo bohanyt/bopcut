@@ -433,6 +433,16 @@ test("an oversized estimate preserves the cache and yields to the next source", 
 		expect(await fs.stat(existingVideo)).toBeDefined();
 		expect(encoded).toEqual(["small.mp4"]);
 		expect(tab.events.some(event => event.media?.id === "small")).toBe(true);
+
+		const beforeReorder = tab.events.length;
+		updateSession("sizes", { ids: ["small", "large"] }, 1);
+		await tab.wait(event => event.done === 2, beforeReorder);
+		expect(tab.events.at(-1)?.state).toBe("disk");
+
+		const beforeRemoval = tab.events.length;
+		updateSession("sizes", { ids: ["small"] }, 2);
+		await tab.wait(event => event.done === 1 && event.total === 1, beforeRemoval);
+		expect(tab.events.at(-1)?.state).toBe("ready");
 	} finally { await f.dispose(); run.mockRestore(); }
 });
 
