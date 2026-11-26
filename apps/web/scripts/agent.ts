@@ -252,7 +252,7 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 		process.on("SIGINT", stop);
 		process.on("SIGTERM", stop);
 		try {
-			const { voiceCommand } = await import("./agent-voice");
+			const { voiceCommand } = await import("../src/agent/voice");
 			return await voiceCommand(options.input, path.resolve(process.env.AGENT_FILES_ROOT ?? workspace),
 				AbortSignal.any([interrupt.signal, deadline]));
 		} catch (error) {

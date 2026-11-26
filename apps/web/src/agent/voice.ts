@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileInside } from "../src/agent/inside";
-import { parseSourceWords, type SourceWord } from "../src/media/words";
-import { Cancelled } from "../src/retrieval/jobs";
-import { runProcess, withToolScratch } from "../src/retrieval/process";
-import { commandFromSetting, type Runner } from "../src/retrieval/server";
-import { atomicWrite, renameWithRetry } from "../src/services/storage/server/files";
+import { parseSourceWords, type SourceWord } from "@/media/words";
+import { Cancelled } from "@/retrieval/jobs";
+import { runProcess, withToolScratch } from "@/retrieval/process";
+import { commandFromSetting, type Runner } from "@/retrieval/server";
+import { atomicWrite, renameWithRetry } from "@/services/storage/server/files";
+import { fileInside } from "./inside";
 
 export const MAX_VOICE_TEXT = 100_000;
 const MAX_VOICE_BYTES = 1024 * 1024 * 1024;
-const voiceName = /^[\w-]{1,64}$/;
+export const voiceName = /^[\w-]{1,64}$/;
 
 export type VoiceInput = { name: string; text?: string; textFile?: string; replace: boolean };
 

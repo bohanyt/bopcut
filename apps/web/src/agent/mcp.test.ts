@@ -63,7 +63,12 @@ test("initialize negotiates the protocol version and lists the tools, marking th
 	expect((await rpc("initialize", { protocolVersion: "1999-01-01" })).result.protocolVersion).toBe("2025-11-25");
 	expect((await rpc("ping")).result).toEqual({});
 	const { tools } = (await rpc("tools/list")).result;
-	expect(tools.map(({ name }: { name: string }) => name)).toEqual(MCP_TOOLS.map(({ name }) => name));
+	// Narration needs a text-to-speech command: without BOPENCUT_TTS the tool is not offered.
+	expect(tools.map(({ name }: { name: string }) => name)).toEqual(MCP_TOOLS.map(({ name }) => name).filter((name) => name !== "make_voice"));
+	options = { ...closedEditor, tts: "speak" };
+	expect((await rpc("tools/list")).result.tools.map(({ name }: { name: string }) => name)).toEqual(MCP_TOOLS.map(({ name }) => name));
+	expect(MCP_TOOLS.find(({ name }) => name === "make_voice")?.annotations.destructiveHint).toBe(true);
+	options = closedEditor;
 	const writers = ["submit_draft", "export_video", "get_frames", "cancel_job"];
 	for (const tool of tools) {
 		expect(tool).toMatchObject({ inputSchema: { type: "object" }, annotations: { readOnlyHint: !writers.includes(tool.name) } });
