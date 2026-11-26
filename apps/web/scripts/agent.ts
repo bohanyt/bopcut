@@ -16,6 +16,12 @@ type Command = typeof commands[number];
 const usage = `Use: bun run agent <${commands.join("|")}> [--project-id ID] [--timeout SECONDS]`;
 const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
 
+/** `--help` or `-h` anywhere, or `help` as the command: the usage is the answer, not an error. */
+export function helpText(args: string[]): string | null {
+	if (args[0] !== "help" && !args.some((arg) => arg === "--help" || arg === "-h")) return null;
+	return `${args[0] === "transcript" ? transcriptUsage : usage}\n`;
+}
+
 /** Renders report progress at most every two seconds, so a shorter stall limit would stop a working job. */
 export const minRenderTimeout = 10;
 
@@ -207,6 +213,8 @@ async function transcriptCommand(request: TranscriptRequest, timeoutMs: number) 
 }
 
 export async function main(args: string[], minRenderSeconds = minRenderTimeout) {
+	const help = helpText(args);
+	if (help) return help;
 	const options = parseArgs(args, minRenderSeconds);
 	if (options.command === "transcript") return transcriptCommand(options.request, options.timeoutMs);
 	if (options.command === "draft-check") {

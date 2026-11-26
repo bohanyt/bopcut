@@ -4,6 +4,22 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "./agent";
 
+test("--help prints the usage and exits 0; an unknown command still fails", () => {
+	const run = (...args: string[]) => {
+		const result = Bun.spawnSync([process.execPath, path.join(import.meta.dir, "agent.ts"), ...args], { stdout: "pipe", stderr: "pipe" });
+		return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
+	};
+	for (const args of [["--help"], ["-h"], ["help"], ["view", "--help"]]) {
+		const { code, out } = run(...args);
+		expect({ args, code }).toEqual({ args, code: 0 });
+		expect(out).toStartWith("Use: bun run agent <status|");
+	}
+	expect(run("transcript", "--help").out).toStartWith("Use: bun run agent transcript <url>");
+	const unknown = run("nonsense");
+	expect(unknown.code).toBe(1);
+	expect(unknown.err).toContain("Use: bun run agent <status|");
+});
+
 test("transcript CLI parses its source, language, range, timeout and project", () => {
 	expect(parseArgs(["transcript", "https://example.com/video", "--lang", "es", "--range", "1:02-1:03.5",
 		"--timeout", "12", "--project-id", "demo"])).toMatchObject({
