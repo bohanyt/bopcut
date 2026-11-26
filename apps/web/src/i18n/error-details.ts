@@ -71,6 +71,7 @@ const messageKeys = new Map<string, StaticMessageKey>([
 	["No active scene.", "timeline.noActiveScene"],
 	["No elements to put in a compound clip", "timeline.compoundEmpty"],
 	["Some selected elements were not found in the scene", "timeline.compoundSelectionMissing"],
+	["These clips cannot be grouped without changing the layer order. Include the overlapping clips or select fewer clips.", "timeline.compoundLayerConflict"],
 	["Compound clip not found", "timeline.compoundNotFound"],
 ]);
 

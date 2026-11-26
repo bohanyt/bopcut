@@ -95,6 +95,43 @@ function compoundEl(
 }
 
 describe("compound clip rules", () => {
+	const mainAndTitle = [
+		{ trackId: "t-main", elementId: "bg" },
+		{ trackId: "t-text", elementId: "title" },
+	];
+
+	test("grouping rejects three overlapping layers when the middle layer is left outside", () => {
+		const scenes = fixture();
+		const before = structuredClone(scenes);
+		expect(() => buildCompoundFromElements({ scenes, hostSceneId: "main", elements: mainAndTitle }))
+			.toThrow("These clips cannot be grouped without changing the layer order.");
+		expect(scenes).toEqual(before);
+	});
+
+	test("a compound stays above a middle layer that overlaps only its title", () => {
+		const scenes = fixture();
+		getHost(scenes).tracks.main.elements = [video("bg", 0, 1)];
+		const result = buildCompoundFromElements({ scenes, hostSceneId: "main", elements: mainAndTitle });
+		expect(getHost(result.scenes).tracks.overlay.map(({ id }) => id))
+			.toEqual([result.compound.trackId, "t-gfx"]);
+	});
+
+	test("a compound can stay on Main when only its main clip overlaps the middle layer", () => {
+		const scenes = fixture();
+		getHost(scenes).tracks.overlay[0].elements = [text("title", 5, 3)];
+		const result = buildCompoundFromElements({ scenes, hostSceneId: "main", elements: mainAndTitle });
+		expect(result.compound.trackId).toBe("t-main");
+	});
+
+	test("a hidden middle track does not block grouping visible layers", () => {
+		const scenes = fixture();
+		const middle = getHost(scenes).tracks.overlay[1];
+		if (!("hidden" in middle)) throw new Error("Expected a hideable track");
+		middle.hidden = true;
+		const result = buildCompoundFromElements({ scenes, hostSceneId: "main", elements: mainAndTitle });
+		expect(result.compound.trackId).toBe("t-main");
+	});
+
 	test("grouping never lands on a muted main track (music stays audible)", () => {
 		const scenes = fixture();
 		const host = getHost(scenes);
@@ -159,7 +196,7 @@ describe("compound clip rules", () => {
 		const scenes = fixture();
 		getHost(scenes).tracks.overlay = [
 			{ id: "A", name: "A", type: "text", hidden: false, elements: [text("a1", 0, 2)] },
-			{ id: "B", name: "B", type: "graphic", hidden: false, elements: [rect("b1", 0, 2)] },
+			{ id: "B", name: "B", type: "graphic", hidden: false, elements: [rect("b1", 0, 1)] },
 			{ id: "C", name: "C", type: "text", hidden: false, elements: [text("c1", 1, 2), text("c2", 6, 1)] },
 		];
 		const original = structuredClone(scenes);
