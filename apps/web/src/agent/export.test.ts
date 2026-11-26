@@ -378,6 +378,51 @@ async function inTemp(run: (dir: string, fs: typeof import("node:fs").promises, 
 }
 
 describe("the result file", () => {
+	test("an expired export owner cannot report an error after a takeover", () =>
+		inTemp(async (workspace, fs, path) => {
+			const claim = { rev: "race", projectId: "p", tab: "a", status: "exporting" };
+			await writeExportResult({ workspace, result: claim, now: Date.now() - CLAIM_MS });
+			await writeExportResult({ workspace, result: { ...claim, tab: "b" } });
+			const error = await handleExportResult(new Request("http://x/", {
+				method: "POST", body: JSON.stringify({ ...claim, status: "error", error: "late error" }),
+			}), workspace);
+			expect(error.status).toBe(409);
+			expect(await error.json()).toMatchObject({ claimed: true });
+			expect(JSON.parse(await fs.readFile(path.join(workspace, "export-result.json"), "utf8")))
+				.toMatchObject({ tab: "b", status: "exporting" });
+		}));
+
+	test("a stream that loses its export claim cannot publish a second file", () =>
+		inTemp(async (workspace, fs, path) => {
+			const claim = { rev: "race", projectId: "p", tab: "a", status: "exporting" };
+			const started = Promise.withResolvers<void>();
+			const finish = Promise.withResolvers<void>();
+			const stream = new ReadableStream<Uint8Array>({ async pull(controller) {
+				started.resolve();
+				await finish.promise;
+				controller.enqueue(new Uint8Array([1]));
+				controller.close();
+			} }, { highWaterMark: 0 });
+			const upload = (tab: string, body: BodyInit) => handleExportFile(new Request(
+				`http://x/?rev=race&projectId=p&tab=${tab}&name=final&format=mp4`,
+				{ method: "POST", body, duplex: "half" } as RequestInit,
+			), workspace);
+			const t0 = Date.now();
+			await writeExportResult({ workspace, result: claim, now: t0 });
+			const first = upload("a", stream);
+			await started.promise;
+			try {
+				await writeExportResult({ workspace, result: { ...claim, tab: "b" }, now: t0 + CLAIM_MS });
+				expect((await upload("a", "stale")).status).toBe(409);
+				expect((await upload("b", "winner")).status).toBe(200);
+			} finally {
+				finish.resolve();
+			}
+			expect((await first).status).toBe(409);
+			expect(await fs.readdir(path.join(workspace, "exports"))).toEqual(["final.mp4"]);
+			expect(await fs.readFile(path.join(workspace, "exports", "final.mp4"), "utf8")).toBe("winner");
+		}));
+
 	test("only the current tab can release its own revision and project", () =>
 		inTemp(async (workspace) => {
 			const write = (result: { rev: string; status: string; tab: string; projectId: string }, now?: number) =>
@@ -416,6 +461,8 @@ describe("the result file", () => {
 		inTemp(async (workspace, fs, path) => {
 			const query = (rev: string) => new URLSearchParams({ rev, projectId: "p", tab: "a", name: "final", format: "mp4", result: JSON.stringify({ width: 1080, status: "exporting", file: "x" }) });
 			const post = (rev: string) => new Request(`http://x/api/agent/export-file?${query(rev)}`, { method: "POST", body: "video" });
+			expect((await handleExportFile(post("e1"), workspace)).status).toBe(409);
+			await writeExportResult({ workspace, result: { rev: "e1", projectId: "p", tab: "a", status: "exporting" } });
 			const first = await handleExportFile(post("e1"), workspace);
 			expect(first.status).toBe(200);
 			expect(await first.json()).toEqual({ file: "exports/final.mp4", bytes: 5 });
@@ -547,7 +594,7 @@ describe("the export poller", () => {
 	};
 
 	type Log = { exports: any[]; posts: any[]; uploads: number; gets: number; result: () => Promise<any> };
-	type Server = { request: unknown; onRequest?: () => void; onClaim?: () => void; result?: Record<string, unknown>; replyLost?: boolean; duringExport?: () => void; useRenderer?: boolean };
+	type Server = { request: unknown; onRequest?: () => void; onClaim?: () => void; onRenewal?: () => void; result?: Record<string, unknown>; replyLost?: boolean; duringExport?: () => void; duringUpload?: () => Promise<void>; useRenderer?: boolean };
 	/** A fresh editor with one project, a fake export, and the real server handlers on a temporary workspace. */
 	const withServer = (server: Server, run: (log: Log) => Promise<void>) =>
 		inTemp(async (workspace, fs, path) => {
@@ -591,12 +638,16 @@ describe("the export poller", () => {
 					return new Response(JSON.stringify(server.request));
 				}
 				if (u === "/api/agent/export-result") {
-					log.posts.push(JSON.parse(String(init?.body)));
+					const post = JSON.parse(String(init?.body));
+					log.posts.push(post);
 					if (log.posts.length === 1) server.onClaim?.();
-					return handleExportResult(new Request("http://x/", { method: "POST", body: String(init?.body) }), workspace);
+					const response = await handleExportResult(new Request("http://x/", { method: "POST", body: String(init?.body) }), workspace);
+					if (post.renew && response.ok) server.onRenewal?.();
+					return response;
 				}
 				if (u.startsWith("/api/agent/export-file")) {
 					log.uploads++;
+					await server.duringUpload?.();
 					const response = await handleExportFile(new Request(`http://x${u}`, { method: "POST", body: init?.body as ArrayBuffer }), workspace);
 					if (server.replyLost) throw new TypeError("network error");
 					return response;
@@ -614,6 +665,35 @@ describe("the export poller", () => {
 				(globalThis as any).localStorage = previousStorage;
 			}
 		});
+
+	test("a folder export renews its claim during upload", async () => {
+		const uploading = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const renewed = Promise.withResolvers<void>();
+		const intervals = spyOn(globalThis, "setInterval");
+		try {
+			await withServer({ request: { rev: "renew-with-upload" }, duringUpload: () => {
+				uploading.resolve();
+				return finish.promise;
+			}, onRenewal: renewed.resolve }, async (log) => {
+				const saving = pollExport();
+				try {
+					await uploading.promise;
+					const tick = intervals.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
+					if (typeof tick !== "function") throw new Error("Expected an export heartbeat");
+					tick();
+					await renewed.promise;
+					expect(log.posts.at(-1)).toMatchObject({ status: "exporting", renew: true, tab: log.posts[0].tab });
+				} finally {
+					finish.resolve();
+					await saving;
+				}
+				expect(await log.result()).toMatchObject({ status: "done", rev: "renew-with-upload" });
+			});
+		} finally {
+			intervals.mockRestore();
+		}
+	});
 
 	test("an expired CLI answer does not block the next direct-file export", async () => {
 		await withServer({ request: { rev: "legacy-next" } }, async (log) => {

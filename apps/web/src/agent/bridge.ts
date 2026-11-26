@@ -304,8 +304,6 @@ export async function pollExport(source?: Response, transport?: RenderTransport)
 }
 
 let exporting = false;
-/** This tab, in the result file: the tab that took a request is the one that answers it. */
-const EXPORT_TAB = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}-${Math.random()}`;
 /** How long a small request to the editor's server may take (it is local; a stalled one is given up). */
 const REQUEST_WAIT_MS = 10_000;
 /** An error answer not posted yet (the server did not answer): posted again on the next poll. */
@@ -318,7 +316,7 @@ let unposted: {
 async function sendExportResult(body: Record<string, unknown>, send: RenderFetch, scoped = false): Promise<"ok" | "answered" | "claimed" | "failed"> {
 	try {
 		const response = await send("/api/agent/export-result", {
-			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, tab: EXPORT_TAB }), signal: AbortSignal.timeout(REQUEST_WAIT_MS),
+			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(REQUEST_WAIT_MS),
 		});
 		if (response.ok) return "ok";
 		if (scoped && response.status === 404) return "claimed";
@@ -377,42 +375,46 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 	const remember = () => { if (!editor.renderOnly) markAnswered(key, rev); };
 	if (!editor.renderOnly && wasAnswered(key, rev)) return;
 	const { request: send, signal: jobSignal, release, reportStage } = transport ?? renderTransport(response);
+	// A new attempt gets a fresh owner token, even when it runs in the same tab.
+	const tab = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `tab-${Date.now()}-${Math.random()}`;
+	const identity = { rev, projectId, tab };
 	const before = exportable();
 	if (!before || before.project.metadata.id !== projectId) {
-		if (jobSignal) await sendExportResult({ rev, projectId, status: "release" }, send);
+		if (jobSignal) await sendExportResult({ ...identity, status: "release" }, send);
 		return;
 	}
 	const answer = async (body: Record<string, unknown>) => {
-		unposted = { key, rev, body: { rev, projectId, ...body }, send, signal: jobSignal, release, attempts: 0 };
+		unposted = { key, rev, body: { ...identity, ...body }, send, signal: jobSignal, release, attempts: 0 };
 		await postUnposted();
 	};
 	const request = parseExportRequest(raw);
-	if (typeof request === "string") return await answer({ status: "error", error: request });
+	if (typeof request === "string") return await answer({ status: "error", ...(!jobSignal && { preflight: true }), error: request });
 	if (!request) return;
-	const reportFailure = ({ cancelled, error, missingMedia }: ExportResult) => {
+	const reportFailure = ({ cancelled, error, missingMedia }: ExportResult, preflight = false) => {
 		if (missingMedia?.length) {
 			return answer({
 				status: "error",
+				...(preflight && !jobSignal && { preflight: true }),
 				error: `${error} Restore the missing sources, pass this result's missingMedia to window.agent.retryMissingMedia() to reload stored files, then use a new rev. To export without them, send allowMissing:true with a new rev.`,
 				missingMedia,
 			});
 		}
 		const detail = cancelled ? "cancelled: the project was closed during the export" : error ?? "export failed";
-		return answer({ status: "error", error: editor.renderOnly && /graphics|encod|codec|webcodecs/i.test(detail) ? `${detail} Open the project in the editor once and retry.` : detail });
+		return answer({ status: "error", ...(preflight && !jobSignal && { preflight: true }), error: editor.renderOnly && /graphics|encod|codec|webcodecs/i.test(detail) ? `${detail} Open the project in the editor once and retry.` : detail });
 	};
 	const preflight = editor.renderer.checkExport({
 		format: request.format, allowMissing: request.allowMissing, includeAudio: request.includeAudio, scene: before.root,
 		scenes: editor.scenes.getScenes(), canvasSize: before.project.settings.canvasSize,
 	});
-	if (preflight) return await reportFailure(preflight);
+	if (preflight) return await reportFailure(preflight, true);
 	// The request is taken first (another tab may be exporting it, or it may be answered already, for example
 	// before a reload), then the editor is checked again: it may have changed meanwhile.
-	const claim = await sendExportResult({ rev, projectId, status: "exporting", progress: 0 }, send);
+	const claim = await sendExportResult({ ...identity, status: "exporting", progress: 0 }, send);
 	if (claim === "answered") return remember();
 	if (claim !== "ok") return;
 	const now = exportable();
 	if (!now || now.project.metadata.id !== projectId) {
-		await sendExportResult({ rev, projectId, status: "release" }, send);
+		await sendExportResult({ ...identity, status: "release" }, send);
 		return;
 	}
 	const { project, root } = now;
@@ -421,18 +423,20 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 	const name = request.name ?? defaultExportName(project.metadata.name);
 	const duration = calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND;
 	const started = Date.now();
-	// Progress: one post at a time, at most every 2 s, none once the export has ended. If the request was
-	// answered or taken meanwhile (another tab), this export stops.
-	let running = true;
+	// Progress also renews the claim. A timer covers stages that report no frames and the file upload.
 	const claimController = new AbortController();
+	const signal = jobSignal ? AbortSignal.any([claimController.signal, jobSignal]) : claimController.signal;
+	let latestProgress = 0;
 	let lastPost = Date.now();
 	let posting: Promise<unknown> | null = null;
-	const progress = (value: number, frame?: number) => {
+	const progress = (value: number, frame?: number, heartbeat = false) => {
+		latestProgress = value;
 		if (reportStage && frame === undefined) return;
-		if (!running || posting || Date.now() - lastPost < 2000) return;
+		if (signal.aborted || posting || (!heartbeat && Date.now() - lastPost < 2000)) return;
 		lastPost = Date.now();
 		posting = sendExportResult({
-			rev, projectId, status: "exporting", progress: Math.round(value * 1000) / 1000, ...(reportStage && { frame }),
+			...identity, status: "exporting", progress: Math.round(value * 1000) / 1000,
+			...(!jobSignal && { renew: true }), ...(reportStage && { frame }),
 		}, send)
 			.then((sent) => {
 				if (sent === "answered" || sent === "claimed") claimController.abort();
@@ -441,43 +445,47 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 				posting = null;
 			});
 	};
-	const toastId = toast.loading(getBrowserTranslator()("agentToast.exporting"), { description: getBrowserTranslator()("agentToast.exportWait") });
-	let result: ExportResult;
+	const heartbeat = jobSignal ? undefined : setInterval(() => progress(latestProgress, undefined, true), 10_000);
 	try {
-		// No wait between the checks above and this call: the export takes the timeline as it is now. It
-		// stops if the project is closed or another one opened (its media go with it).
-		result = await editor.renderer.exportProject({
-			options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
-			onProgress: ({ progress: value, frame }) => progress(value, frame),
-			onStage: reportStage,
-			signal: jobSignal ? AbortSignal.any([claimController.signal, jobSignal]) : claimController.signal,
-		});
-	} catch (error) {
-		result = { success: false, error: errorText(error) };
-	} finally {
-		running = false;
+		const toastId = toast.loading(getBrowserTranslator()("agentToast.exporting"), { description: getBrowserTranslator()("agentToast.exportWait") });
+		let result: ExportResult;
+		try {
+			// The export takes the timeline as it is now and stops when the project closes.
+			result = await editor.renderer.exportProject({
+				options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
+				onProgress: ({ progress: value, frame }) => progress(value, frame),
+				onStage: reportStage,
+				signal,
+			});
+		} catch (error) {
+			result = { success: false, error: errorText(error) };
+		} finally {
+			toast.dismiss(toastId);
+		}
 		await posting;
-		toast.dismiss(toastId);
-	}
-	if (claimController.signal.aborted || jobSignal?.aborted) return;
-	if (!result.success || !result.buffer) {
-		return await reportFailure(result);
-	}
-	// The server writes the final answer together with the file.
-	const done = {
-		format: request.format, quality: request.quality, width: settings.canvasSize.width, height: settings.canvasSize.height,
-		sceneId: root.id, includeAudio: request.includeAudio,
-		fps: fps.numerator / fps.denominator, duration: Math.round(duration * 1000) / 1000, seconds: Math.round((Date.now() - started) / 100) / 10,
-	};
-	try {
-		const query = new URLSearchParams({ rev, projectId, tab: EXPORT_TAB, name, format: request.format, result: JSON.stringify(done) });
-		const saved = await send(`/api/agent/export-file?${query}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: result.buffer });
-		const reply = (await saved.json().catch(() => ({}))) as { error?: string; answered?: boolean };
-		if (saved.ok || reply.answered) return remember();
-		return await answer({ status: "error", error: `the file could not be saved: ${reply.error ?? saved.status}` });
-	} catch (error) {
-		// If the server saved it and only its reply was lost, this error is refused (the request has its answer).
-		return await answer({ status: "error", error: `the file could not be saved: ${errorText(error)}` });
+		if (signal.aborted) return;
+		if (!result.success || !result.buffer) return await reportFailure(result);
+		// The server writes the final answer together with the file.
+		const done = {
+			format: request.format, quality: request.quality, width: settings.canvasSize.width, height: settings.canvasSize.height,
+			sceneId: root.id, includeAudio: request.includeAudio,
+			fps: fps.numerator / fps.denominator, duration: Math.round(duration * 1000) / 1000, seconds: Math.round((Date.now() - started) / 100) / 10,
+		};
+		try {
+			const query = new URLSearchParams({ ...identity, name, format: request.format, result: JSON.stringify(done) });
+			const saved = await send(`/api/agent/export-file?${query}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: result.buffer, signal });
+			const reply = (await saved.json().catch(() => ({}))) as { error?: string; answered?: boolean; claimed?: boolean };
+			if (saved.ok || reply.answered) return remember();
+			if (signal.aborted || reply.claimed) return;
+			return await answer({ status: "error", error: `the file could not be saved: ${reply.error ?? saved.status}` });
+		} catch (error) {
+			if (signal.aborted) return;
+			// If only the reply was lost, the server refuses an error that would replace its final answer.
+			return await answer({ status: "error", error: `the file could not be saved: ${errorText(error)}` });
+		}
+	} finally {
+		clearInterval(heartbeat);
+		await posting;
 	}
 }
 
