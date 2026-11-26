@@ -18,6 +18,39 @@ function surface(
 	return canvas;
 }
 
+type Surface = OffscreenCanvas | HTMLCanvasElement;
+
+/** Larger scratch surfaces are made for one draw and dropped, so the cache stays at a few megabytes. */
+const MAX_SCRATCH_PIXELS = 2048 * 2048;
+const scratch: { glyphs?: Surface; shade?: Surface } = {};
+const prepared = new WeakSet<Surface>();
+
+/**
+ * A cleared drawing area of at least width × height. Shadowed text redraws every frame, so its two
+ * surfaces are reused instead of allocated each time; only the top-left width × height is used.
+ */
+function scratchSurface(slot: "glyphs" | "shade", width: number, height: number): { canvas: Surface; ctx: TextCanvasContext | null } {
+	let canvas = scratch[slot];
+	if (!canvas || canvas.width < width || canvas.height < height) {
+		canvas = surface(Math.max(width, canvas?.width ?? 0), Math.max(height, canvas?.height ?? 0));
+		if (canvas.width * canvas.height <= MAX_SCRATCH_PIXELS) scratch[slot] = canvas;
+		else canvas = surface(width, height);
+	}
+	const ctx = canvas.getContext("2d") as TextCanvasContext | null;
+	if (ctx) {
+		// Behave like a fresh surface of exactly this size: the default state saved at first use,
+		// empty everywhere (a blur may read past the used part), and nothing drawn outside the used part.
+		if (prepared.has(canvas)) ctx.restore();
+		else prepared.add(canvas);
+		ctx.save();
+		ctx.clearRect(0, 0, canvas.width, canvas.height);
+		ctx.beginPath();
+		ctx.rect(0, 0, width, height);
+		ctx.clip();
+	}
+	return { canvas, ctx };
+}
+
 function drawGlyphs(
 	ctx: TextCanvasContext,
 	layout: MeasuredTextElement,
@@ -179,21 +212,22 @@ export function drawStyledText({
 	);
 	const width = Math.max(1, Math.ceil(rect.width * rasterScale));
 	const height = Math.max(1, Math.ceil(rect.height * rasterScale));
-	const glyphs = surface(width, height);
-	const ink = glyphs.getContext("2d") as TextCanvasContext | null;
+	const { canvas: glyphs, ctx: ink } = scratchSurface("glyphs", width, height);
 	if (!ink) return;
 	ink.scale(rasterScale, rasterScale);
 	ink.translate(-rect.left, -rect.top);
 	drawGlyphs(ink, layout, textColor, textBaseline);
-	const shade = surface(width, height);
-	const mask = shade.getContext("2d") as TextCanvasContext | null;
+	const { canvas: shade, ctx: mask } = scratchSurface("shade", width, height);
 	if (!mask) return;
 	mask.filter =
 		shadow.blur > 0 ? `blur(${shadow.blur * rasterScale}px)` : "none";
+	// Only the used part of a reused surface is copied, so the result is the same as on a fresh one.
 	mask.drawImage(
 		glyphs,
+		0, 0, width, height,
 		shadow.offsetX * rasterScale,
 		shadow.offsetY * rasterScale,
+		width, height,
 	);
 	mask.filter = "none";
 	mask.globalCompositeOperation = "source-in";
@@ -203,6 +237,7 @@ export function drawStyledText({
 	ctx.globalAlpha *= shadow.opacity;
 	ctx.drawImage(
 		shade,
+		0, 0, width, height,
 		rect.left,
 		rect.top,
 		width / rasterScale,
@@ -211,6 +246,7 @@ export function drawStyledText({
 	ctx.restore();
 	ctx.drawImage(
 		glyphs,
+		0, 0, width, height,
 		rect.left,
 		rect.top,
 		width / rasterScale,
