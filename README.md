@@ -4,7 +4,7 @@
 
 **bopcut** adalah editor video web tempat **kamu dan agen mengedit timeline yang sama**. Agen membaca sumbermu dan menyusun draf video yang kamu minta; kamu menggeser, memotong, dan menata di UI seperti CapCut; lalu agen merapikan bagian yang kamu tunjuk. Semua perubahan agen bisa di-Undo, dan editanmu tidak tertimpa.
 
-Dulu namanya **bopencut**. Repositori dan nama setting `BOPENCUT_*` masih memakai nama itu.
+Dulu namanya **bopencut**. Nama setting `BOPENCUT_*` dan beberapa nama folder internal masih memakai nama itu, dan alamat repositori lama tetap diteruskan ke sini.
 
 > bopcut adalah fork dari **OpenCut (classic)** buatan tim [OpenCut](https://github.com/opencut-app/opencut-classic), lisensi MIT (lihat [`LICENSE`](LICENSE)). Editor dasarnya sepenuhnya karya mereka. README asli OpenCut: [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
 
