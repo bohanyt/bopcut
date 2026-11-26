@@ -1,5 +1,9 @@
 import type { NextConfig } from "next";
 import { withContentCollections } from "@content-collections/next";
+import path from "node:path";
+
+const standalone = process.env.BOPENCUT_STANDALONE === "1";
+const repositoryRoot = path.resolve(__dirname, "../..");
 
 const nextConfig: NextConfig = {
 	devIndicators: false,
@@ -7,7 +11,11 @@ const nextConfig: NextConfig = {
 		removeConsole: process.env.NODE_ENV === "production",
 	},
 	reactStrictMode: true,
-	output: process.env.BOPENCUT_STANDALONE === "1" ? "standalone" : undefined,
+	...(standalone && {
+		output: "standalone",
+		outputFileTracingRoot: repositoryRoot,
+		turbopack: { root: repositoryRoot },
+	}),
 	serverExternalPackages: ["@napi-rs/canvas"],
 	images: {
 		remotePatterns: [
