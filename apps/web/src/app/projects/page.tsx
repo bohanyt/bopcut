@@ -97,6 +97,7 @@ export default function ProjectsPage() {
 
 	const isLoading = useEditor((e) => e.project.getIsLoading());
 	const isInitialized = useEditor((e) => e.project.getIsInitialized());
+	const listError = useEditor((e) => e.project.getProjectListError());
 	const projectsToDisplay = useEditor((e) =>
 		e.project.getFilteredAndSortedProjects({ searchQuery, sortOption }),
 	);
@@ -116,6 +117,8 @@ export default function ProjectsPage() {
 			<main className="mx-auto px-4 pt-2 pb-6 flex flex-col gap-4">
 				{isLoading || !isInitialized ? (
 					<ProjectsSkeleton />
+				) : listError && projectsToDisplay.length === 0 ? (
+					<ProjectListError detail={listError} />
 				) : projectsToDisplay.length === 0 ? (
 					<EmptyState />
 				) : (
@@ -960,6 +963,22 @@ function ProjectsSkeleton() {
 					</CardContent>
 				</Card>
 			))}
+		</div>
+	);
+}
+
+function ProjectListError({ detail }: { detail: string }) {
+	const { t } = useI18n();
+	const editor = useEditor();
+	return (
+		<div role="alert" className="flex flex-col items-center justify-center gap-4 py-16 text-center">
+			<h3 className="text-lg font-medium">{t("projects.listFailed")}</h3>
+			<p className="text-muted-foreground max-w-md text-sm">{t("projects.listFailedDescription")}</p>
+			<details className="text-muted-foreground max-w-md break-words text-xs">
+				<summary className="cursor-pointer">{t("common.errorDetails")}</summary>
+				<p>{localizeErrorDetail(detail, t)}</p>
+			</details>
+			<Button onClick={() => void editor.project.loadAllProjects()}>{t("common.retry")}</Button>
 		</div>
 	);
 }

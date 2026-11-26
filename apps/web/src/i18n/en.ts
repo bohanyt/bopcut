@@ -139,6 +139,8 @@ export const en = {
 	"projects.deleteProject": "Delete project",
 	"projects.duration": "Duration",
 	"projects.empty": "No projects yet",
+	"projects.listFailed": "Could not load your projects",
+	"projects.listFailedDescription": "Your projects are still on disk. Check that the editor's server is running, then try again.",
 	"projects.emptyDescription": "Start creating your first project. Import media, edit, and export your videos. All privately.",
 	"projects.enterName": "Enter a new name",
 	"projects.gridView": "Grid view",

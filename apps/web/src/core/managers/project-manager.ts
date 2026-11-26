@@ -40,6 +40,7 @@ export class ProjectManager {
 	private fpsEditRevision = 0;
 	private savedProjects: TProjectMetadata[] = [];
 	private isLoading = true;
+	private projectListError: string | null = null;
 	/**
 	 * Changes whenever another project is opened, created or closed (not when the open project's
 	 * settings change), so async work can tell it still runs in the project session it started in.
@@ -426,9 +427,12 @@ export class ProjectManager {
 			try {
 				const metadata = await storageService.loadAllProjectsMetadata();
 				this.savedProjects = metadata;
+				this.projectListError = null;
 				this.notify();
 			} catch (error) {
 				console.error("Failed to load projects:", error);
+				// Shown instead of the empty library: the projects are still on disk.
+				this.projectListError = error instanceof Error ? error.message : String(error);
 			} finally {
 				// A project still loading its media keeps the loading state (its load ends it).
 				if (this.installing === null) this.isLoading = false;
@@ -866,6 +870,11 @@ export class ProjectManager {
 
 	getIsLoading(): boolean {
 		return this.isLoading;
+	}
+
+	/** Why the project list could not be read, until a later read succeeds. */
+	getProjectListError(): string | null {
+		return this.projectListError;
 	}
 
 	getIsInitialized(): boolean {

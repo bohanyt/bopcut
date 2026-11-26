@@ -746,6 +746,17 @@ describe("media manifest cache", () => {
 	});
 });
 
+test("a project list that cannot be read reports why, until a later read works", async () => {
+	const editor = EditorCore.getInstance();
+	stub({ ensureMigrations: async () => {}, loadAllProjectsMetadata: async () => { throw new Error("The editor's server does not answer"); } });
+	await editor.project.loadAllProjects();
+	expect(editor.project.getIsInitialized()).toBe(true);
+	expect(editor.project.getProjectListError()).toBe("The editor's server does not answer");
+	stub({ loadAllProjectsMetadata: async () => [] });
+	await editor.project.loadAllProjects();
+	expect(editor.project.getProjectListError()).toBeNull();
+});
+
 describe("project command history", () => {
 	test.each([
 		["after clearing history", false],
