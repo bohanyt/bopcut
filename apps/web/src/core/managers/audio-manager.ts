@@ -344,6 +344,7 @@ export class AudioManager {
 				sourceStart: clip.trimStart,
 				...resolvePitchSourceEnd(clip.timelineElement, rate),
 				readStart: clip.trimStart + firstFrame / sampleRate * rate,
+				outputFrames: endFrame - firstFrame,
 				rate, sampleRate, signal,
 			});
 			for (let frame = firstFrame; frame < endFrame; frame += sampleRate) {

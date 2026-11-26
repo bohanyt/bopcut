@@ -543,6 +543,60 @@ test("a right extension of a legacy 2x clip keeps its audible tail", async () =>
 const pitchCases = [44_100, 48_000].flatMap((sampleRate) =>
 	[1, 2].flatMap((channels) => [0.5, 1.5, 2].map((rate) => ({ sampleRate, channels, rate }))),
 );
+
+const timingCases = [44_100, 48_000].flatMap((sampleRate) => [
+	{ sampleRate, rate: 0.5, duration: 1, fixture: "tail" },
+	{ sampleRate, rate: 0.5, duration: 0.01, fixture: "tail" },
+	{ sampleRate, rate: 0.5, duration: 1, fixture: "midpoint" },
+	{ sampleRate, rate: 2, duration: 0.1, fixture: "midpoint" },
+	{ sampleRate, rate: 4, duration: 1, fixture: "midpoint" },
+	{ sampleRate, rate: 4, duration: 0.1, fixture: "stereo attack" },
+]);
+test.each(timingCases)("pitch timing $fixture at $sampleRate Hz, $rate x and $duration s", async ({ sampleRate, rate, duration, fixture }) => {
+	const nativeRate = 48_000;
+	const { editor, tracks } = setup(uploadedClip({ duration: t(duration), retime: { rate, maintainPitch: true } }));
+	const { buffers, waitForStarts } = fakeAudio({ sampleRate });
+	const buffer = new TestAudioBuffer({ length: Math.round(nativeRate * duration * rate), sampleRate: nativeRate, numberOfChannels: 2 });
+	if (fixture === "tail") {
+		for (let channel = 0; channel < 2; channel++) buffer.getChannelData(channel).fill(0.4);
+	} else if (fixture === "midpoint") {
+		buffer.getChannelData(0)[Math.floor(buffer.length / 2)] = 0.9;
+	} else {
+		buffer.getChannelData(0)[100] = 0.9;
+		buffer.getChannelData(1)[5] = 0.8;
+	}
+	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+	editor.playback.play();
+	await waitForStarts();
+	editor.playback.pause();
+	const [mixed] = await Array.fromAsync(mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), duration: t(duration), sampleRate }));
+	expect(mixed.length).toBe(Math.round(duration * sampleRate));
+	const measured = [buffers[0], mixed].map((output) => [0, 1].map((channel) => {
+		const samples = output.getChannelData(channel);
+		let peak = 0;
+		let peakFrame = -1;
+		let lastAudible = -1;
+		for (let frame = 0; frame < samples.length; frame++) {
+			const level = Math.abs(samples[frame]);
+			if (level > 0.1) lastAudible = frame;
+			if (level > peak) { peak = level; peakFrame = frame; }
+		}
+		return { peak, peakMs: peakFrame === -1 ? null : peakFrame / sampleRate * 1000, tailGapMs: (samples.length - lastAudible - 1) / sampleRate * 1000 };
+	}));
+	for (const output of measured) {
+		if (fixture === "tail") {
+			for (const channel of output) expect(channel.tailGapMs).toBe(0);
+		} else {
+			const expected = fixture === "midpoint" ? [duration / 2 * 1000] : [100, 5].map((frame) => frame / nativeRate / rate * 1000);
+			const minimumPeaks = fixture === "midpoint" ? [0.7] : [0.7, 0.5];
+			for (const [channel, milliseconds] of expected.entries()) {
+				expect(output[channel].peak).toBeGreaterThan(minimumPeaks[channel]);
+				expect(Math.abs((output[channel].peakMs ?? Infinity) - milliseconds)).toBeLessThanOrEqual(1000 / sampleRate);
+			}
+		}
+	}
+});
+
 test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $channels channel(s), $rate x", async ({
 	sampleRate, channels, rate,
 }) => {

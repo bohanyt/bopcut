@@ -284,6 +284,7 @@ export async function* mixTimelineAudio({
 						sourceStart: clip.trim,
 						...resolvePitchSourceEnd(clip.element, clip.rate),
 						readStart: clip.trim + (from - clip.start) / sampleRate * clip.rate,
+						outputFrames: clip.end - from,
 						rate: clip.rate, sampleRate, signal,
 					});
 					pitchReaders.set(clip, read);
