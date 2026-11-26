@@ -520,7 +520,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				const lane = hit.track;
 				if ("hidden" in lane && lane.hidden) throw new Error("transition: the source is on a hidden track");
 				if ("hidden" in incoming && incoming.hidden) throw new Error("transition: the incoming clip is a hidden clip");
-				const id = incoming.agentId ?? incoming.id;
+				const partAgentId = `${incoming.agentId ?? incoming.id}~${type}`;
+				const partExists = getReachableScenes(list, rootSceneId).some((scene) =>
+					orderedTracks(scene.tracks).some((track) => track.elements.some((element) => element.agentId === partAgentId)),
+				);
+				if (partExists) throw new Error(`transition: part ${partAgentId} already exists`);
 				const tracksNow = sceneOf(hit.sceneId).tracks;
 				// The overlay position just above the clip's track (overlay index 0 = topmost).
 				const laneIndex = lane.id === tracksNow.main.id ? tracksNow.overlay.length : tracksNow.overlay.findIndex((t) => t.id === lane.id);
@@ -552,7 +556,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 					const base = Math.min(canvas.width, canvas.height);
 					let shape = {
 						...buildGraphicElement({ definitionId: "rectangle", name: type === "flash" ? "Flash" : "Dip", startTime: start as MediaTime, params: { fill: color, strokeWidth: 0, cornerRadius: 0, "transform.scaleX": canvas.width / base, "transform.scaleY": canvas.height / base } }),
-						id: generateUUID(), agentId: `${id}~${type}`, duration: length as MediaTime, trimStart: 0 as MediaTime, trimEnd: 0 as MediaTime,
+						id: generateUUID(), agentId: partAgentId, duration: length as MediaTime, trimStart: 0 as MediaTime, trimEnd: 0 as MediaTime,
 					} as TimelineElement;
 					const peak = seconds(cut - start);
 					// At the very start of the timeline it starts at full strength (a peak at 0 and a fade after it).
@@ -600,7 +604,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 						...previous,
 						humanFields: undefined,
 						id: generateUUID(),
-						agentId: `${id}~${type}`,
+						agentId: partAgentId,
 						name: `${previous.name} (${type})`,
 						startTime: cut as MediaTime,
 						duration: Math.round(duration) as MediaTime,
