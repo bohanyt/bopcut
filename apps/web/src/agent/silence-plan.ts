@@ -65,18 +65,32 @@ export function planSilenceCuts({ clips, duration, fps, options = DEFAULT_SILENC
 	}
 
 	const candidates: (Span & { kind: Kind; after?: string; before?: string })[] = [];
-	const fillersIn = (from: number, to: number) => words.filter((word) => word.filler && word.start >= from && word.end <= to).map((word) => word.text);
+	const fillerWords = (from: number, to: number) => words.filter((word) => word.filler && word.start >= from && word.end <= to);
+	const fillersIn = (from: number, to: number) => fillerWords(from, to).map((word) => word.text);
+	// The pad keeps air next to real words, but never keeps part of a filler: a filler that sits
+	// closer to a word than the pad is cut up to that word's edge.
+	const span = (from: number, to: number) => {
+		const fillers = fillerWords(from, to);
+		const start = Math.min(from + options.pad, fillers[0]?.start ?? Infinity);
+		const end = Math.max(to - options.pad, fillers.at(-1)?.end ?? -Infinity);
+		return { start: Math.max(from, start), end: Math.min(to, end), filler: fillers.length > 0 };
+	};
 	if (speech.length) {
 		const [first] = speech, last = speech.at(-1)!;
-		if (options.lead) candidates.push({ start: 0, end: first.start - options.pad, kind: "lead", before: first.first });
+		if (options.lead) {
+			const { end } = span(-options.pad, first.start);
+			candidates.push({ start: 0, end, kind: "lead", before: first.first });
+		}
 		speech.slice(1).forEach((next, index) => {
 			const previous = speech[index];
-			const filler = fillersIn(previous.end, next.start).length > 0;
+			const { start, end, filler } = span(previous.end, next.start);
 			if (!filler && next.start - previous.end < options.minGap) return;
-			candidates.push({ start: previous.end + options.pad, end: next.start - options.pad, kind: filler ? "filler" : "gap",
-				after: previous.last, before: next.first });
+			candidates.push({ start, end, kind: filler ? "filler" : "gap", after: previous.last, before: next.first });
 		});
-		if (options.tail) candidates.push({ start: last.end + options.pad, end: duration, kind: "tail", after: last.last });
+		if (options.tail) {
+			const { start } = span(last.end, duration + options.pad);
+			candidates.push({ start, end: duration, kind: "tail", after: last.last });
+		}
 	}
 
 	const blocks = unknown.map((clip) => ({ start: clip.start, end: clip.end, name: clip.name }));
