@@ -5,6 +5,7 @@ export const id = {
 	"proxies.softwareEncoder": "Izinkan pengodean perangkat lunak",
 	"proxies.preparing": "Menyiapkan {done} dari {total}",
 	"proxies.ready": "Siap",
+	"proxies.empty": "Tidak ada proksi yang tersedia",
 	"proxies.missing": "Nonaktif · FFmpeg tidak ditemukan",
 	"proxies.failed": "Berhenti · FFmpeg gagal",
 	"proxies.disk": "Ruang penyimpanan tidak cukup",

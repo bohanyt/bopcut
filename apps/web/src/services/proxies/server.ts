@@ -580,7 +580,7 @@ async function pump() {
 				}
 				if (!signal.aborted && usesJob(session, job)) {
 					session.done.add(id);
-				if (info || builds(session)) session.diskBlocked.delete(id);
+					if (info || builds(session)) session.diskBlocked.delete(id);
 					const previous = session.written.get(id);
 					if (previous && previous !== info?.key) {
 						session.written.delete(id);
@@ -609,9 +609,9 @@ async function pump() {
 					retryLater();
 					continue;
 				}
-			if (error instanceof LowDisk) session.diskBlocked.add(id);
-			else if (key) {
-				session.diskBlocked.delete(id);
+				if (error instanceof LowDisk) session.diskBlocked.add(id);
+				else if (key) {
+					session.diskBlocked.delete(id);
 					if (failures.size >= 1024) failures.delete(failures.values().next().value!);
 					failures.add(key);
 					if (!failedBefore.has(key) && ++session.failedInRow >= failureLimit) session.stopped = errorText(error);
@@ -634,7 +634,10 @@ async function pump() {
 			}
 			if (blocked.has(session)) continue;
 			session.bytes = bytes;
-			if (complete) send(session, !session.build ? "off" : session.stopped ? "failed" : !writable ? "readonly" : session.diskBlocked.size ? "disk" : "ready");
+			if (complete) {
+				const result = session.written.size ? "ready" : "empty";
+				send(session, !session.build ? "off" : session.stopped ? "failed" : !writable ? "readonly" : session.diskBlocked.size ? "disk" : result);
+			}
 		}
 	} catch (error) { console.error("Proxy preparation failed", error); }
 	finally {
@@ -667,6 +670,7 @@ export async function clearProxies() {
 			session.ids = [];
 			session.done.clear();
 			session.diskBlocked.clear();
+			session.written.clear();
 			session.bytes = 0;
 			send(session, "off");
 		}
