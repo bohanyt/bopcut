@@ -130,6 +130,7 @@ server.listen(Number(process.env.PORT), process.env.HOSTNAME);\`);`;
 		expect(await start("next")).toContain("Update skipped: The editor did not start");
 		expect(git(clone, "rev-parse", "HEAD")).toBe(next);
 		expect(await cached()).toEqual([first, next].sort());
+		await fs.symlink(data, path.join(state, "builds", first, "data-link"), process.platform === "win32" ? "junction" : "dir");
 		await fs.writeFile(path.join(web, "VERSION"), "newest");
 		const newest = commit("Next working update");
 		expect(await start("newest")).toContain("Updated bopencut");
