@@ -66,6 +66,15 @@ describe("keybinding persistence", () => {
 		expect(warnSpy).toHaveBeenCalledTimes(1);
 	});
 
+	test("keeps the current shortcuts when every saved entry is invalid", () => {
+		// The caller keeps its current (default) shortcuts on null; an empty map would leave no shortcut at all.
+		const decoded = decodePersistedKeybindingsState({
+			state: { keybindings: { "shift+bogus": "toggle-play", "ctrl+v": "not-an-action" }, isCustomized: true },
+		});
+		expect(decoded).toBeNull();
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+	});
+
 	test("returns null and warns when persisted shape is unrecognizable", () => {
 		const decoded = decodePersistedKeybindingsState({ state: "garbage" });
 		expect(decoded).toBeNull();
