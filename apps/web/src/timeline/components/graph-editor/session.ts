@@ -655,6 +655,26 @@ export function buildGraphEditorCurvePatches({
 	];
 }
 
+/**
+ * Patches for every channel of a segment. Shared-easing channels (fill color) use one curve, but
+ * each channel scales its handles by its own value span, so the curve is built per channel.
+ */
+export function buildGraphEditorSegmentPatches({
+	segment,
+	cubicBezier,
+}: {
+	segment: Pick<GraphEditorResolvedSegment, "allContexts" | "referenceSpanValue">;
+	cubicBezier: NormalizedCubicBezier;
+}): (GraphEditorCurvePatch & { context: ScalarGraphKeyframeContext })[] {
+	return segment.allContexts.flatMap((context) =>
+		(buildGraphEditorCurvePatches({
+			context,
+			cubicBezier,
+			referenceSpanValue: segment.referenceSpanValue,
+		}) ?? []).map((patch) => ({ ...patch, context })),
+	);
+}
+
 export function applyGraphEditorCurvePreview({
 	animations,
 	context,
