@@ -77,6 +77,17 @@ Dense inspection covers source spans up to six seconds or three short windows in
 
 Start with a transcript to find the relevant words or a pause. Use a range picture to check the cuts, titles, and sound around it. Use the file protocol below for drafts, changes, historical frames, and comparisons.
 
+## MCP server
+
+The editor server also answers the Model Context Protocol at `http://127.0.0.1:3000/api/mcp` (use your port). Add it to an MCP client as a Streamable HTTP server; it needs no login and answers local clients only, with the same checks as the agent CLI. The editor can stay closed. The tools reuse the CLI commands and return their results, both as text and as structured content:
+
+- `list_projects`: project IDs, names and last change, newest first.
+- `get_status`, `get_notes`, `get_selection`: as the CLI commands of the same name.
+- `read_transcript`: as `transcript-view`, with `media` for one source.
+- `plan_silence_cuts`: as `silence-plan`, with `minGap`, `pad`, `keepFillers`, `keepLead`, `tail` and `ignoreMedia` (a list).
+
+All tools only read. Problems come back as tool errors with the CLI's messages. Tools that change projects and a remote mode with a login are planned.
+
 ## Agent workspace (`apps/web/.env.local`)
 ```
 BOPENCUT_DATA=/path/to/data-folder      # Default: <repo>/workspace
