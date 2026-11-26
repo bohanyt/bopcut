@@ -110,7 +110,7 @@ export class SplitElementsCommand extends Command {
 				this.rightSideElements.push({ trackId: track.id, elementId: rightId });
 				return this.retainSide === "right"
 					? [{ ...parts.right, params: element.params }]
-					: [parts.left, parts.right];
+					: [parts.left, element.agentId ? { ...parts.right, agentId: rightId } : parts.right];
 			});
 
 			return changed ? { ...track, elements } : track;

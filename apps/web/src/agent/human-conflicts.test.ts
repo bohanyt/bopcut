@@ -249,6 +249,13 @@ test("retime, split and copies preserve the right ownership identities", () => {
 		elements: [ref],
 		splitTime: t(2),
 	});
+	const rightId = split[0].elementId;
+	expect(find(editor.scenes.getScenes(), "a")?.agentId).toBe("phrase");
+	expect(find(editor.scenes.getScenes(), rightId)?.agentId).toBe(rightId);
+	editor.command.undo();
+	expect(find(editor.scenes.getScenes(), rightId)).toBeUndefined();
+	editor.command.redo();
+	expect(find(editor.scenes.getScenes(), rightId)?.agentId).toBe(rightId);
 	expect(find(editor.scenes.getScenes(), "a")?.humanFields).toEqual([
 		"duration",
 		"params.color",
