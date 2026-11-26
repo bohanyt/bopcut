@@ -1,10 +1,13 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
 import { audio, fixture } from "@/timeline/__tests__/compound-fixtures";
-import { handleMcp, MCP_TOOLS } from "./mcp";
+import { handleCli } from "./cli-api";
+import { consumeAppliedDraft } from "./draft-store";
+import { handleMcp, MCP_TOOLS, type McpOptions } from "./mcp";
+import { renderPresence } from "./render-server";
 
 let workspace: string;
 let data: string | undefined;
@@ -32,20 +35,39 @@ afterAll(async () => {
 	await fs.rm(workspace, { recursive: true, force: true });
 });
 
+const closedEditor: McpOptions = { editorOpen: async () => false, waitMs: 0 };
+let options = closedEditor;
+afterEach(async () => {
+	options = closedEditor;
+	for (const name of ["draft.json", "draft-result.json", "drafts-applied"]) await fs.rm(path.join(workspace, name), { recursive: true, force: true });
+});
+
 const post = (body: unknown, headers: Record<string, string> = {}, url = "http://127.0.0.1:3000/api/mcp") =>
 	handleMcp(new Request(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers },
-		body: typeof body === "string" ? body : JSON.stringify(body) }), workspace);
-const rpc = async (method: string, params?: unknown) => (await post({ jsonrpc: "2.0", id: 1, method, params })).json();
-const call = async (name: string, args: Record<string, unknown> = {}) => (await rpc("tools/call", { name, arguments: args })).result;
+		body: typeof body === "string" ? body : JSON.stringify(body) }), workspace, options);
+const rpc = async (method: string, params?: unknown, url?: string) => (await post({ jsonrpc: "2.0", id: 1, method, params }, {}, url)).json();
+const call = async (name: string, args: Record<string, unknown> = {}, url?: string) => (await rpc("tools/call", { name, arguments: args }, url)).result;
+const readWorkspace = async (name: string) => JSON.parse(await fs.readFile(path.join(workspace, name), "utf8"));
+/** What the open editor does with a draft: move it to drafts-applied/, then write its result. */
+async function editorAnswers(result: Record<string, unknown>) {
+	const draft = await readWorkspace("draft.json");
+	await consumeAppliedDraft(workspace, draft.rev);
+	await fs.writeFile(path.join(workspace, "draft-result.json"), JSON.stringify({
+		rev: draft.rev, projectId: draft.projectId, appliedAt: new Date().toISOString(), ...result }));
+	return draft;
+}
 
-test("initialize negotiates the protocol version and lists the read-only tools", async () => {
+test("initialize negotiates the protocol version and lists the tools, marking those that change a project", async () => {
 	const known = await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
 	expect(known.result).toMatchObject({ protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "bopcut" } });
 	expect((await rpc("initialize", { protocolVersion: "1999-01-01" })).result.protocolVersion).toBe("2025-11-25");
 	expect((await rpc("ping")).result).toEqual({});
 	const { tools } = (await rpc("tools/list")).result;
 	expect(tools.map(({ name }: { name: string }) => name)).toEqual(MCP_TOOLS.map(({ name }) => name));
-	for (const tool of tools) expect(tool).toMatchObject({ inputSchema: { type: "object" }, annotations: { readOnlyHint: true } });
+	for (const tool of tools) {
+		expect(tool).toMatchObject({ inputSchema: { type: "object" }, annotations: { readOnlyHint: tool.name !== "submit_draft" } });
+	}
+	expect(tools.find(({ name }: { name: string }) => name === "submit_draft").annotations.destructiveHint).toBe(true);
 	const notified = await post({ jsonrpc: "2.0", method: "notifications/initialized" });
 	expect(notified.status).toBe(202);
 	const batch = await (await post([{ jsonrpc: "2.0", id: "a", method: "ping" }, { jsonrpc: "2.0", method: "notifications/initialized" }])).json();
@@ -83,4 +105,103 @@ test("only local clients reach the endpoint, with POST and valid JSON-RPC", asyn
 	expect(broken.status).toBe(400);
 	expect((await broken.json()).error.code).toBe(-32700);
 	expect((await (await post({ id: 1, method: "ping" })).json()).error.code).toBe(-32600);
+});
+
+test("submit_draft writes draft.json for the editor and says when no editor has the project open", async () => {
+	const ops = [{ op: "cut", start: 63 / 30, end: 87 / 30 }, { op: "cut", start: 0, end: 27 / 30 }];
+	const sent = await call("submit_draft", { projectId: "demo", ops, label: " Cut dead air ", basedOn: "2026-11-26T10:00:00.000Z", atomic: true });
+	expect(sent.isError).toBeUndefined();
+	const { rev } = sent.structuredContent;
+	expect(rev).toMatch(/^mcp-[\w-]+$/);
+	expect(await readWorkspace("draft.json")).toEqual({ schema: "opencut-agent-draft-1", rev, projectId: "demo",
+		label: "Cut dead air", basedOn: "2026-11-26T10:00:00.000Z", atomic: true, ops });
+	expect(sent.structuredContent).toMatchObject({ rev, projectId: "demo", answered: false, editorOpen: false });
+	expect(sent.structuredContent.message).toContain("Ask the person to open the project in the editor");
+	expect(JSON.parse(sent.content[0].text)).toEqual(sent.structuredContent);
+	const later = await call("get_draft_result", { projectId: "demo", rev, waitSeconds: 30 });
+	expect(later.structuredContent).toMatchObject({ rev, answered: false, editorOpen: false });
+});
+
+test("with the project open, submit_draft returns the editor's result, and a refused draft is a tool error", async () => {
+	let draft: Record<string, unknown> = {};
+	options = { waitMs: 5000, editorOpen: async () => {
+		draft = await editorAnswers({ applied: true, saved: true, savedAt: "2026-11-26T10:00:03.000Z", results: [{ op: "cut", ok: true }] });
+		return true;
+	} };
+	const applied = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] });
+	expect(applied.isError).toBeUndefined();
+	expect(applied.structuredContent).toMatchObject({ rev: draft.rev, answered: true, applied: true,
+		message: `Draft ${draft.rev} applied as one Undo step and was saved.`, result: { saved: true, results: [{ op: "cut", ok: true }] } });
+	expect(await fs.readdir(path.join(workspace, "drafts-applied"))).toEqual([expect.stringMatching(new RegExp(`^${draft.rev}-\\d+\\.json$`))]);
+	expect((await call("get_draft_result", { projectId: "demo", rev: draft.rev })).structuredContent).toMatchObject({ answered: true, applied: true });
+
+	options = { waitMs: 5000, editorOpen: async () => {
+		await editorAnswers({ applied: false, stale: true, error: "every op was stale; nothing was applied (re-read the snapshot and resend)" });
+		return true;
+	} };
+	const stale = await call("submit_draft", { projectId: "demo", ops: [{ op: "delete", match: { agentId: "voice" } }], basedOn: "old" });
+	expect(stale.isError).toBe(true);
+	expect(stale.structuredContent).toMatchObject({ answered: true, applied: false });
+	expect(stale.structuredContent.message).toContain("every op was stale");
+	expect(stale.structuredContent.message).toContain("Read get_status again");
+});
+
+test("an open editor that has not applied the draft yet is waited for, then reported as still waiting", async () => {
+	options = { waitMs: 0, editorOpen: async () => true };
+	const sent = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] });
+	expect(sent.structuredContent).toMatchObject({ answered: false, editorOpen: true });
+	expect(sent.structuredContent.message).toContain("has not applied after 0 s");
+	const waited = call("get_draft_result", { projectId: "demo", rev: sent.structuredContent.rev, waitSeconds: 5 });
+	await new Promise((resolve) => setTimeout(resolve, 200));
+	await editorAnswers({ applied: true, saved: false, saveError: "disk full" });
+	expect((await waited).structuredContent).toMatchObject({ answered: true, applied: true,
+		message: `Draft ${sent.structuredContent.rev} applied as one Undo step; the project is not saved yet: disk full.` });
+});
+
+test("a draft that has not applied yet is kept as superseded when a new one replaces it", async () => {
+	await fs.writeFile(path.join(workspace, "draft.json"), JSON.stringify({ schema: "opencut-agent-draft-1", rev: "older", projectId: "other", ops: [] }));
+	const sent = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] });
+	expect(sent.structuredContent.replacedDraft).toEqual({ rev: "older", projectId: "other" });
+	const [kept] = await fs.readdir(path.join(workspace, "drafts-applied"));
+	expect(kept).toMatch(/^superseded-/);
+	expect((await readWorkspace(path.join("drafts-applied", kept))).rev).toBe("older");
+	expect((await readWorkspace("draft.json")).rev).toBe(sent.structuredContent.rev);
+	const gone = await call("get_draft_result", { projectId: "demo", rev: "older" });
+	expect(gone.isError).toBe(true);
+	expect(gone.content[0].text).toContain("is not waiting in draft.json");
+	const otherProject = await call("get_draft_result", { projectId: "other", rev: sent.structuredContent.rev });
+	expect(otherProject).toMatchObject({ isError: true, content: [{ text: `Draft ${sent.structuredContent.rev} belongs to project demo.` }] });
+});
+
+test("invalid drafts are refused before anything is written", async () => {
+	const refused = async (args: Record<string, unknown>, message: string) => {
+		expect(await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 1 }], ...args }))
+			.toMatchObject({ isError: true, content: [{ text: expect.stringContaining(message) }] });
+	};
+	await refused({ ops: [] }, "Pass ops as a list");
+	await refused({ ops: [{ start: 1 }] }, "each with its \"op\"");
+	await refused({ ops: "cut" }, "Pass ops as a list");
+	await refused({ projectId: "missing" }, "Project was not found on disk");
+	await refused({ onConflict: "maybe" }, "keep or refuse");
+	await refused({ basedOn: " " }, "syncedAt");
+	await refused({ label: "" }, "label");
+	expect(await fs.readdir(workspace)).not.toContain("draft.json");
+	expect(await call("get_draft_result", { projectId: "demo", rev: "../draft" })).toMatchObject({ isError: true });
+	expect(await call("get_draft_result", { projectId: "demo", rev: "mcp-x", waitSeconds: 99 })).toMatchObject({ isError: true });
+});
+
+test("without a stub, the server asks its own agent routes whether the project is open", async () => {
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => handleCli(req, "presence", workspace) });
+	try {
+		options = { waitMs: 0 };
+		const endpoint = `http://127.0.0.1:${server.port}/api/mcp`;
+		const closed = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] }, endpoint);
+		expect(closed.structuredContent).toMatchObject({ answered: false, editorOpen: false });
+		// An editor tab of the project asks for agent requests every 2 s.
+		renderPresence(new Request("http://127.0.0.1:3000/api/agent/changes-request", { headers: { "x-bopencut-project": "demo" } }));
+		const open = await call("get_draft_result", { projectId: "demo", rev: closed.structuredContent.rev, waitSeconds: 0 }, endpoint);
+		expect(open.structuredContent).toMatchObject({ answered: false, editorOpen: true });
+	} finally {
+		server.stop(true);
+	}
 });
