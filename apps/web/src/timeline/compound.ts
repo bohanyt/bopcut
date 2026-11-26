@@ -19,6 +19,7 @@ import { buildEmptyTrack } from "@/timeline/placement/track-factory";
 import { canPlaceTimeSpansOnTrack } from "@/timeline/placement/overlap";
 import { canElementHaveAudio, isRetimableElement } from "@/timeline/element-utils";
 import { canTrackHaveAudio } from "@/timeline/track-capabilities";
+import { keepAudioFadeTiming } from "@/timeline/audio-state";
 import { cloneAnimations, splitAnimationsAtTime } from "@/animation";
 import type { ElementAnimations, ScalarChannel } from "@/animation/types";
 import { getSourceSpanAtClipTime } from "@/retime";
@@ -963,10 +964,11 @@ export function expandCompoundAudioTracks({
 						rangeEnd,
 					});
 					if (!clipped) return [];
+					const audible = keepAudioFadeTiming({ original: element, clipped });
 					return [
 						{
 							...foldCompoundAudio({
-								element: shiftElement(clipped, offset),
+								element: shiftElement(audible, offset),
 								gainDb,
 								muted: false,
 							}),
