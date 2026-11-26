@@ -256,6 +256,27 @@ test("confirming an IME composition keeps the rename dialog draft", () => {
 	}
 });
 
+test("a rename of only spaces is not confirmed, and names are trimmed", () => {
+	const inlineDialog = spyOn(DialogContent as unknown as {
+		render: (props: React.ComponentProps<typeof DialogContent>) => ReactNode;
+	}, "render").mockImplementation(({ children }) => <div>{children}</div>);
+	const confirm = mock<(name: string) => void>(() => {});
+	try {
+		render(<RenameProjectDialog isOpen projectName="Old title" onConfirm={confirm} onOpenChange={() => {}} />);
+		const input = document.querySelector("input")!;
+		act(() => input.focus());
+		typeValue(input, "   ");
+		pressKey(input, "Enter");
+		expect(confirm).not.toHaveBeenCalled();
+		typeValue(input, "  Trimmed  ");
+		pressKey(input, "Enter");
+		expect(confirm.mock.calls).toEqual([["Trimmed"]]);
+	} finally {
+		render(null);
+		inlineDialog.mockRestore();
+	}
+});
+
 test("Escape cancels a valid timecode draft without seeking", () => {
 	const seek = mock(() => {});
 	render(

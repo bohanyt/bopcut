@@ -48,7 +48,7 @@ export function RenameProjectDialog({
 						onKeyDown={(e) => {
 							if (e.key === "Enter" && !e.nativeEvent.isComposing) {
 								e.preventDefault();
-								onConfirm(name);
+								if (name.trim()) onConfirm(name.trim());
 							}
 						}}
 						placeholder={t("projects.enterName")}
@@ -66,7 +66,8 @@ export function RenameProjectDialog({
 					>
 						{t("common.cancel")}
 					</Button>
-					<Button onClick={() => onConfirm(name)}>{t("common.rename")}</Button>
+					{/* A name of only spaces would leave the card without a title. */}
+					<Button disabled={!name.trim()} onClick={() => onConfirm(name.trim())}>{t("common.rename")}</Button>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>
