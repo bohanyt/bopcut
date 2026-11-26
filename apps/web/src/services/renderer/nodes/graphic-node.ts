@@ -26,6 +26,7 @@ export class GraphicNode extends VisualNode<
 > {
 	private cachedKey: string | null = null;
 	private cachedSource: OffscreenCanvas | null = null;
+	private cachedSvg: unknown = undefined;
 
 	constructor(params: GraphicNodeParams) {
 		super(params);
@@ -48,15 +49,17 @@ export class GraphicNode extends VisualNode<
 		const definition = getGraphicDefinition({
 			definitionId: this.params.definitionId,
 		});
+		// An icon's SVG text can be kilobytes: it is compared as it is, not copied into the key on every frame.
+		const { svg, ...keyedParams } = resolvedParams;
 		const cacheKey = JSON.stringify({
 			definitionId: this.params.definitionId,
-			params: resolvedParams,
+			params: keyedParams,
 			width,
 			height,
 			logicalWidth,
 			logicalHeight,
 		});
-		if (this.cachedSource && this.cachedKey === cacheKey) {
+		if (this.cachedSource && this.cachedKey === cacheKey && this.cachedSvg === svg) {
 			return this.cachedSource;
 		}
 
@@ -74,6 +77,7 @@ export class GraphicNode extends VisualNode<
 		});
 
 		this.cachedKey = cacheKey;
+		this.cachedSvg = svg;
 		this.cachedSource = canvas;
 		return canvas;
 	}
