@@ -11,7 +11,7 @@ export function hiddenBrowserExitMessage(exit: BrowserExit | void): string {
 		? ` (${exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`} after ${(exit.afterMs / 1000).toFixed(1)} s)`
 		: "";
 	if (exit && !exit.signal && exit.code === 0 && exit.afterMs < QUICK_EXIT_MS) {
-		return `The hidden browser exited${how} before opening the page. Another process of that browser took the launch over: one using the same profile, or one that a browser policy makes take it (HeadlessModeEnabled turned off, or UserDataDir forced; see edge://policy or chrome://policy). Close other hidden browsers, set BOPENCUT_BROWSER to another Chrome or Edge, or open the project in the editor and retry.`;
+		return `The hidden browser exited${how} on its own, which it does not do while it renders. Often another process of that browser took the launch over: one already running on the same profile, or one a browser policy makes take it (HeadlessModeEnabled turned off, or UserDataDir forced; see edge://policy or chrome://policy). Close other hidden browsers, set BOPENCUT_BROWSER to another Chrome or Edge, or open the project in the editor and retry.`;
 	}
 	return `The hidden browser exited${how}. Open the project in the editor and retry. ${renderGpuWorkaround}`;
 }

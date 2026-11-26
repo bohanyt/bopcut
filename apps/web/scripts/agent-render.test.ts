@@ -196,5 +196,5 @@ test("the render stream reports how the hidden browser ended", async () => {
 		progress: () => {},
 		launch: () => ({ exited: Promise.resolve({ code: 0, signal: null, afterMs: 400 }), stop: async () => {} }),
 	});
-	await expect(run).rejects.toThrow("(exit code 0 after 0.4 s) before opening the page");
+	await expect(run).rejects.toThrow("(exit code 0 after 0.4 s) on its own");
 });
