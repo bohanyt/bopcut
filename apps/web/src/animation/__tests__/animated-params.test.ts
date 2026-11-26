@@ -81,6 +81,17 @@ describe("animated params", () => {
 			.toEqual([[0, 0.75]]);
 	});
 
+	test("keys stacked at one time jump: the later key holds at that time", () => {
+		const key = (id: string, ticks: number, value: number) => ({ id, time: mediaTime({ ticks }), value, segmentToNext: "linear" as const, tangentMode: "flat" as const });
+		const channel: ScalarAnimationChannel = { keys: [key("a", 0, 0), key("b", 0, 1), key("c", 2000, 0.3), key("d", 2000, 0.7), key("e", 8000, 0)] };
+		const valueAt = (time: number) => getScalarChannelValueAtTime({ channel, time, fallbackValue: -1 });
+		expect(valueAt(0)).toBe(1);
+		expect(valueAt(1000)).toBeCloseTo(0.65, 9);
+		expect(valueAt(2000)).toBe(0.7);
+		expect(valueAt(5000)).toBeCloseTo(0.35, 9);
+		expect(valueAt(8000)).toBe(0);
+	});
+
 	test("snaps and clamps number params", () => {
 		expect(
 			coerceParamValue({
