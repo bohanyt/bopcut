@@ -20,6 +20,17 @@ export type VideoFileData = {
 	thumbnailUrl: string | null;
 };
 
+/** The audio track's length read from the file itself, NaN when it cannot be read. */
+export function readAudioDuration({ file, signal }: { file: File; signal?: AbortSignal }): Promise<number> {
+	return withVideoInput(file, signal, async (input) => {
+		const track = await input.getPrimaryAudioTrack();
+		return track ? await track.computeDuration() : Number.NaN;
+	}).catch((error) => {
+		if (signal?.aborted) throw error;
+		return Number.NaN;
+	});
+}
+
 export async function readVideoFile({
 	file,
 	signal,

@@ -339,7 +339,9 @@ export type SniffedMedia = { ext: string; type: "image" | "video" | "audio"; mim
 const ascii = (bytes: Uint8Array, from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
 
 /** The media format of a file from its first bytes, "svg" for SVG documents, or null when unsupported. */
-export function sniffMedia(bytes: Uint8Array): SniffedMedia | "svg" | null {
+const HEIF_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"]);
+
+export function sniffMedia(bytes: Uint8Array): SniffedMedia | "svg" | "heif" | null {
 	const b = bytes;
 	if (b.length < 4) return null;
 	if (b[0] === 0x89 && ascii(b, 1, 4) === "PNG") return { ext: ".png", type: "image", mime: "image/png" };
@@ -350,6 +352,8 @@ export function sniffMedia(bytes: Uint8Array): SniffedMedia | "svg" | null {
 	if (ascii(b, 4, 8) === "ftyp") {
 		const brands = [ascii(b, 8, 12), ...Array.from({ length: 6 }, (_, i) => ascii(b, 16 + i * 4, 20 + i * 4))];
 		if (brands.some((brand) => brand === "avif" || brand === "avis")) return { ext: ".avif", type: "image", mime: "image/avif" };
+		// HEIC/HEIF photos share the MP4 box layout but browsers cannot decode them.
+		if (brands.some((brand) => HEIF_BRANDS.has(brand))) return "heif";
 		if (brands[0] === "M4A " || brands[0] === "M4B ") return { ext: ".m4a", type: "audio", mime: "audio/mp4" };
 		if (brands[0] === "qt  ") return { ext: ".mov", type: "video", mime: "video/quicktime" };
 		return { ext: ".mp4", type: "video", mime: "video/mp4" };
@@ -418,6 +422,7 @@ async function downloadWebFile(url: string, key: string, { filesRoot, fetchImpl 
 		if (bytes.length === 0) throw new RetrievalError("the link gave an empty file");
 		const kind = sniffMedia(bytes);
 		if (kind === "svg") throw new RetrievalError("SVG images are not supported; use a PNG or JPEG of it");
+		if (kind === "heif") throw new RetrievalError("HEIC/HEIF photos are not supported; use a JPEG or PNG of it");
 		if (!kind) {
 			const declared = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
 			throw new RetrievalError(`the link is not a supported image, video or sound (${declared || "unknown type"})`);

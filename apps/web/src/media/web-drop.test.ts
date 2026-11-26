@@ -84,6 +84,11 @@ describe("server fetch of a web file", () => {
 		expect(sniffMedia(new Uint8Array([...ascii("OggS"), 0, 2]))).toMatchObject({ type: "audio", mime: "audio/ogg" });
 		expect(sniffMedia(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0]))).toMatchObject({ type: "video", ext: ".webm" });
 		expect(sniffMedia(new Uint8Array(ascii("hello world")))).toBeNull();
+		const ftyp = (...brands: string[]) => new Uint8Array([0, 0, 0, 24, ...ascii("ftyp"), ...ascii(brands[0]), 0, 0, 0, 0, ...brands.slice(1).flatMap(ascii)]);
+		expect(sniffMedia(ftyp("heic", "mif1", "heic"))).toBe("heif");
+		expect(sniffMedia(ftyp("mif1", "heic"))).toBe("heif");
+		expect(sniffMedia(ftyp("avif", "mif1"))).toMatchObject({ type: "image", mime: "image/avif" });
+		expect(sniffMedia(ftyp("isom", "mp41"))).toMatchObject({ type: "video", mime: "video/mp4" });
 	});
 
 	test("links to this machine are refused, also behind a redirect", async () => {
