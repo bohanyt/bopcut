@@ -8,7 +8,8 @@ import type { ElementRef, SceneTracks, TimelineElement } from "@/timeline";
 import { generateUUID } from "@/utils/id";
 import { EditorCore } from "@/core";
 import { splitElementAt } from "@/timeline/split";
-import type { MediaTime } from "@/wasm";
+import { TICKS_PER_SECOND, type MediaTime } from "@/wasm";
+import { DEFAULT_FPS } from "@/fps/defaults";
 
 export class SplitElementsCommand extends Command {
 	private savedState: SceneTracks | null = null;
@@ -45,6 +46,8 @@ export class SplitElementsCommand extends Command {
 	execute(): CommandResult | undefined {
 		const editor = EditorCore.getInstance();
 		const before = editor.scenes.getActiveScene().tracks;
+		const fps = editor.project.getActiveOrNull()?.settings.fps ?? DEFAULT_FPS;
+		const minDuration = Math.round((TICKS_PER_SECOND * fps.denominator) / fps.numerator);
 		this.savedState = null;
 		this.rightSideElements = [];
 		let didSplit = false;
@@ -74,6 +77,12 @@ export class SplitElementsCommand extends Command {
 				) {
 					return [element];
 				}
+				const left = this.splitTime - element.startTime;
+				const right = element.duration - left;
+				if (
+					(this.retainSide !== "right" && left < minDuration) ||
+					(this.retainSide !== "left" && right < minDuration)
+				) return [element];
 
 				const rightId = this.splitIds.get(target) ?? generateUUID();
 				this.splitIds.set(target, rightId);

@@ -8,6 +8,7 @@ function fixture() {
 		id,
 		type: "graphic",
 		groupId: "g",
+		hidden: false,
 		startTime: 0,
 		duration: 100,
 		params: {
@@ -20,7 +21,7 @@ function fixture() {
 	});
 	const a = el("a", -100),
 		b = el("b", 100),
-		track = { id: "t", type: "graphic", elements: [a, b] };
+		track = { id: "t", type: "graphic", hidden: false, elements: [a, b] };
 	const tracks = {
 		overlay: [track],
 		main: { id: "m", type: "video", elements: [] },
@@ -45,7 +46,7 @@ function fixture() {
 	const timeline = {
 		getElementsWithTracks: ({ elements }: any) =>
 			elements.map((ref: any) => ({
-				track,
+				track: tracks.overlay.find(({ id }) => id === ref.trackId),
 				element: [a, b].find((e) => e.id === ref.elementId),
 			})),
 		previewElements: (v: any[]) => {
@@ -77,7 +78,8 @@ function fixture() {
 		},
 	};
 	const captured = new Set<number>();
-	const ownerDocument = Object.assign(new EventTarget(), { activeElement: null });
+	const view = new EventTarget();
+	const ownerDocument = Object.assign(new EventTarget(), { activeElement: null, defaultView: view });
 	const target = {
 		ownerDocument,
 		setPointerCapture: (pointerId: number) => { captured.add(pointerId); },
@@ -95,6 +97,8 @@ function fixture() {
 			stopPropagation() {},
 		}) as any;
 	return {
+		tracks,
+		view,
 		viewport,
 		scene,
 		timeline,
@@ -310,6 +314,59 @@ describe("preview canvas pointer ownership", () => {
 });
 
 describe("preview groups", () => {
+	test.each(["clip", "track"] as const)("canvas gestures skip a selected hidden %s", (hidden) => {
+		const f = fixture();
+		const [a, b] = f.tracks.overlay[0].elements;
+		if (hidden === "clip") b.hidden = true;
+		else {
+			f.tracks.overlay[0].elements = [a];
+			f.tracks.overlay.push({ id: "hidden", type: "graphic", hidden: true, elements: [b] });
+		}
+		f.selection.setSelected([
+			{ trackId: "t", elementId: "a" },
+			{ trackId: hidden === "track" ? "hidden" : "t", elementId: "b" },
+		]);
+		const body = createCanvasController(f);
+		const handles = createTransformController(f);
+		try {
+			body.onPointerDown(f.event(400, 500));
+			body.onPointerMove(f.event(430, 520));
+			body.onPointerUp(f.event(430, 520));
+			expect(f.updates().map((update) => update.elementId)).toEqual(["a"]);
+			handles.onCornerPointerDown({ event: f.event(450, 550), corner: "bottom-right" });
+			handles.onPointerMove({ event: f.event(500, 600) });
+			handles.onPointerUp(f.event(500, 600));
+			expect(f.updates().map((update) => update.elementId)).toEqual(["a"]);
+		} finally {
+			body.destroy();
+			handles.destroy();
+		}
+	});
+
+	test("window blur cancels captured canvas moves and transform handles", () => {
+		const f = fixture();
+		f.selection.setSelected([{ trackId: "t", elementId: "a" }]);
+		const body = createCanvasController(f);
+		const handles = createTransformController(f);
+		try {
+			body.onPointerDown(f.event(400, 500));
+			body.onPointerMove(f.event(430, 520));
+			f.view.dispatchEvent(new Event("blur"));
+			body.onPointerUp(f.event(430, 520));
+			expect(f.captured.size).toBe(0);
+			expect(f.commits()).toBe(0);
+			handles.onCornerPointerDown({ event: f.event(450, 550), corner: "bottom-right" });
+			handles.onPointerMove({ event: f.event(500, 600) });
+			f.view.dispatchEvent(new Event("blur"));
+			handles.onPointerUp(f.event(500, 600));
+			expect(handles.activeHandle).toBeNull();
+			expect(f.captured.size).toBe(0);
+			expect(f.commits()).toBe(0);
+		} finally {
+			body.destroy();
+			handles.destroy();
+		}
+	});
 	test("selects and moves members together, double-click isolates one", () => {
 		const f = fixture();
 		const c = createCanvasController(f);

@@ -46,8 +46,8 @@ export function usePreviewInteraction({
 		timeline: {
 			getElementsWithTracks: ({ elements }) =>
 				editor.timeline.getElementsWithTracks({ elements: [...elements] }),
-			previewElements: (updates) =>
-				editor.timeline.previewElements({ updates: [...updates] }),
+			previewElements: (updates, options) =>
+				editor.timeline.previewElements({ updates, ...options }),
 			commitPreview: () => editor.timeline.commitPreview(),
 			beginPreviewGesture: editor.timeline.beginPreviewGesture,
 		},

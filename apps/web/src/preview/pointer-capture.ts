@@ -19,11 +19,13 @@ export class PreviewPointerCapture {
 	): (() => void) | null {
 		if (this.isActive) return null;
 		const { ownerDocument } = currentTarget;
+		const view = ownerDocument.defaultView;
 		currentTarget.setPointerCapture(pointerId);
 		const release = () => {
 			if (this.active !== capture) return;
 			this.active = null;
 			ownerDocument.removeEventListener("lostpointercapture", handleLostCapture, true);
+			view?.removeEventListener("blur", capture.cancel);
 			if (currentTarget.hasPointerCapture(pointerId)) {
 				currentTarget.releasePointerCapture(pointerId);
 			}
@@ -44,6 +46,7 @@ export class PreviewPointerCapture {
 		this.active = capture;
 		// When a captured handle leaves the DOM, the browser dispatches loss on its document.
 		ownerDocument.addEventListener("lostpointercapture", handleLostCapture, true);
+		view?.addEventListener("blur", capture.cancel);
 		return release;
 	}
 }

@@ -19,6 +19,7 @@ import { RetimeKeyframesCommand } from "@/commands/timeline/element/keyframes/re
 import type { SelectedKeyframeRef } from "@/animation/types";
 import type { TimelineElement } from "@/timeline";
 import { beginTimelineGesture } from "@/timeline/gesture-state";
+import { listenForTimelineMouseDrag } from "./mouse-drag";
 import type { Command } from "@/commands/base-command";
 import { finishFocusedField } from "@/utils/browser";
 
@@ -140,6 +141,7 @@ export class KeyframeDragController {
 		event: ReactMouseEvent;
 		keyframes: SelectedKeyframeRef[];
 	}): void {
+		if (event.button !== 0) return;
 		event.preventDefault();
 		event.stopPropagation();
 
@@ -251,13 +253,18 @@ export class KeyframeDragController {
 	}
 
 	private activate(): void {
-		document.addEventListener("mousemove", this.handleMouseMove);
-		document.addEventListener("mouseup", this.handleMouseUp);
+		this.stopListening = listenForTimelineMouseDrag({
+			onMove: this.handleMouseMove,
+			onRelease: this.handleMouseUp,
+			onCancel: () => this.gestureOwner?.cancel(),
+		});
 	}
 
+	private stopListening?: () => void;
+
 	private deactivate(): void {
-		document.removeEventListener("mousemove", this.handleMouseMove);
-		document.removeEventListener("mouseup", this.handleMouseUp);
+		this.stopListening?.();
+		this.stopListening = undefined;
 	}
 
 	private notify(): void {

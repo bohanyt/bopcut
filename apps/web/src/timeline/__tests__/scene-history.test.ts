@@ -3,7 +3,7 @@ import type { TScene, TextElement } from "@/timeline";
 import type { TProject } from "@/project/types";
 import type { MediaAsset } from "@/media/types";
 import { collectAudioClips } from "@/media/audio";
-import { buildEffectParamPath, getChannel, getKeyframeAtTime } from "@/animation";
+import { buildEffectParamPath, getChannel, getElementKeyframes, getKeyframeAtTime } from "@/animation";
 import type { ScalarAnimationKey } from "@/animation/types";
 import { applyAnimationPresets, PRESET_PARAM } from "@/animation/presets";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
@@ -99,6 +99,90 @@ function setupSplitHistory() {
 	return { editor, tracks, main, first, second, keyAt };
 }
 
+test("removing an effect removes only its channels and Undo restores them", () => {
+	const { editor, first, main } = setupSplitHistory();
+	const effectId = editor.timeline.addClipEffect({ ...first, effectType: "blur" });
+	const otherId = editor.timeline.addClipEffect({ ...first, effectType: "blur" });
+	for (const id of [effectId, otherId]) {
+		editor.timeline.upsertEffectParamKeyframe({ ...first, effectId: id, paramKey: "intensity", time: t(1), value: 30 });
+	}
+	const before = main()[0];
+	editor.command.clear();
+	editor.timeline.removeClipEffect({ ...first, effectId });
+	const after = main()[0];
+	expect(getElementKeyframes({ animations: after.animations }).map(({ propertyPath }) => propertyPath))
+		.toEqual([buildEffectParamPath({ effectId: otherId, paramKey: "intensity" })]);
+	editor.command.undo();
+	expect(main()[0]).toEqual(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.command.redo();
+	expect(main()[0]).toEqual(after);
+});
+
+test.each([
+	{ stationary: [], followerStart: 3, stationaryStart: undefined },
+	{ stationary: [video("stationary", 3, 2)], followerStart: 5, stationaryStart: 3 },
+	{ stationary: [video("stationary", 4, 1)], followerStart: 4, stationaryStart: 3 },
+])("ripple move closes $followerStart seconds to the next clip without overlap", ({
+	stationary, followerStart, stationaryStart,
+}) => {
+	const scenes = fixture();
+	const host = getHost(scenes);
+	host.tracks.main.elements = [
+		video("lead", 0, 1), ...stationary,
+		video("moving", 5, 2), video("follower", 7, 2),
+	];
+	const editor = setup(scenes);
+	editor.command.isRippleEnabled = true;
+	const trackId = host.tracks.main.id;
+	const before = editor.scenes.getActiveScene().tracks;
+	editor.timeline.moveElements({ moves: [{
+		sourceTrackId: trackId, targetTrackId: trackId, elementId: "moving", newStartTime: t(1),
+	}] });
+	const assertPositions = () => {
+		const entries = (elements: typeof host.tracks.main.elements) =>
+			Object.fromEntries(elements.map(({ id, startTime }) => [id, startTime]));
+		const actual = entries(editor.scenes.getActiveScene().tracks.main.elements);
+		expect(actual).toEqual({
+			lead: t(0), moving: t(1), follower: t(followerStart),
+			...(stationaryStart === undefined ? {} : { stationary: t(stationaryStart) }),
+		});
+		expect(entries(getHost(editor.project.getActive().scenes).tracks.main.elements)).toEqual(actual);
+	};
+	assertPositions();
+	editor.command.undo();
+	expect(editor.scenes.getActiveScene().tracks).toEqual(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.command.redo();
+	assertPositions();
+});
+
+test("a ripple move preserves the positions of both moved clips and their spacing", () => {
+	const scenes = fixture();
+	const host = getHost(scenes);
+	host.tracks.main.elements = [
+		video("lead", 0, 1), video("first", 5, 1),
+		video("second", 8, 1), video("follower", 9, 2),
+	];
+	const editor = setup(scenes);
+	editor.command.isRippleEnabled = true;
+	const trackId = host.tracks.main.id;
+	const before = editor.scenes.getActiveScene().tracks;
+	editor.timeline.moveElements({ moves: [
+		{ sourceTrackId: trackId, targetTrackId: trackId, elementId: "first", newStartTime: t(1) },
+		{ sourceTrackId: trackId, targetTrackId: trackId, elementId: "second", newStartTime: t(4) },
+	] });
+	const tracks = () => editor.scenes.getActiveScene().tracks;
+	const after = tracks();
+	expect(Object.fromEntries(after.main.elements.map(({ id, startTime }) => [id, startTime])))
+		.toEqual({ lead: t(0), first: t(1), second: t(4), follower: t(5) });
+	editor.command.undo();
+	expect(tracks()).toEqual(before);
+	expect(editor.command.canUndo()).toBe(false);
+	editor.command.redo();
+	expect(tracks()).toEqual(after);
+});
+
 test.each([
 	{ edge: "right", reverse: false, clientX: 200, delta: 3, times: [4, 5] },
 	{ edge: "right", reverse: true, clientX: 200, delta: 3, times: [4, 5] },
@@ -141,14 +225,14 @@ test.each([
 		controller.onKeyframeMouseDown({
 			keyframes: [selectedKeyframes[0]],
 			event: {
-				clientX: 0, preventDefault() {}, stopPropagation() {}, currentTarget: { ownerDocument: doc },
+				button: 0, clientX: 0, preventDefault() {}, stopPropagation() {}, currentTarget: { ownerDocument: doc },
 			} as unknown as ReactMouseEvent,
 		});
 		const move = Object.assign(new Event("mousemove"), { clientX });
 		doc.dispatchEvent(move);
 		doc.dispatchEvent(move);
 		expect(controller.keyframeDragState.deltaTicks).toBe(t(delta));
-		doc.dispatchEvent(new Event("mouseup"));
+		doc.dispatchEvent(Object.assign(new Event("mouseup"), { button: 0 }));
 		const updated = editor.scenes.getActiveScene().tracks.main.elements[0];
 		expect(getChannel({ animations: updated.animations, propertyPath: "opacity" })?.keys)
 			.toEqual(keys.map((key, index) => ({ ...key, time: t(times[index]) })));
@@ -614,7 +698,7 @@ describe("preview gesture history boundaries", () => {
 				controller.onElementMouseDown(clip);
 				// Native blur runs after mousedown if it was not already handled.
 				if (editor.timeline.isPreviewActive()) doc.activeElement.blur();
-				doc.dispatchEvent(new Event("mouseup"));
+				doc.dispatchEvent(Object.assign(new Event("mouseup"), { button: 0 }));
 				controller.onElementClick(clip);
 				expect(main()[0].name).toBe("Pending title");
 				expect(editor.selection.getSelectedElements()).toEqual([second]);
@@ -762,7 +846,7 @@ describe("generated ids in history", () => {
 			dragSource, zoomLevel: 1, getContainerEl: () => null, getHeaderEl: () => null,
 			getTracksScrollEl: () => ({ scrollLeft: 0, scrollTop: 0, getBoundingClientRect: () => ({ left: 0, top: 0 }) }) as HTMLDivElement,
 			getActiveProjectFps: () => editor.project.getActive().settings.fps,
-			startMediaImport: () => null, getSceneTracks: tracks, getCurrentPlayheadTime: () => t(0),
+			startMediaImport: () => null, getSceneId: () => "main", getSceneTracks: tracks, getCurrentPlayheadTime: () => t(0),
 			getMediaAssets: () => [], importMediaFile: async () => null,
 			executeCommand: (command) => editor.command.execute({ command }),
 			insertElement: (args) => editor.timeline.insertElement(args), addClipEffect: () => {},

@@ -36,7 +36,7 @@ import { toast } from "sonner";
 export function useEditorActions() {
 	const editor = useEditor();
 	const { selectedElements, setElementSelection } = useElementSelection();
-	const { selectedKeyframes, clearKeyframeSelection } = useKeyframeSelection();
+	const { selectedKeyframes } = useKeyframeSelection();
 	const selectedMaskPointSelection = useEditor((e) =>
 		e.selection.getSelectedMaskPointSelection(),
 	);
@@ -319,8 +319,7 @@ export function useEditorActions() {
 					if (selectedKeyframes.length === 0) {
 						return;
 					}
-					editor.timeline.removeKeyframes({ keyframes: selectedKeyframes });
-					clearKeyframeSelection();
+					editor.timeline.removeKeyframes({ keyframes: selectedKeyframes, clearSelection: true });
 					return;
 				case "elements":
 					if (selectedElements.length === 0) {

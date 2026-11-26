@@ -185,26 +185,8 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 	};
 
 	const commitMask = ({ maskType }: { maskType: MaskType }) => {
-		if (editor.timeline.isPreviewActive()) {
-			editor.timeline.commitPreview();
-		} else {
-			editor.timeline.updateElements({
-				updates: [
-					{
-						trackId,
-						elementId: element.id,
-						patch: {
-							masks: [
-								buildDefaultMaskInstance({
-									maskType,
-									elementSize: getElementSize(),
-								}),
-							],
-						} as Partial<MaskableElement>,
-					},
-				],
-			});
-		}
+		previewMask({ maskType });
+		editor.timeline.commitPreview();
 		markCommitted();
 		setIsDropdownOpen(false);
 	};

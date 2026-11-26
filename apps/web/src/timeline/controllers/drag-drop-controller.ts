@@ -46,6 +46,7 @@ export interface DragDropConfig {
 	getTracksScrollEl: () => HTMLDivElement | null;
 	getActiveProjectFps: () => FrameRate | null;
 	startMediaImport: () => MediaImportSession | null;
+	getSceneId: () => string | null;
 	getSceneTracks: () => SceneTracks;
 	getCurrentPlayheadTime: () => MediaTime;
 	getMediaAssets: () => MediaAsset[];
@@ -263,7 +264,8 @@ export class DragDropController {
 			const coords = this.getMouseTimelineCoords({ event });
 			if (!coords) return;
 			const session = this.config.startMediaImport();
-			if (!session) return;
+			const sceneId = this.config.getSceneId();
+			if (!session || !sceneId) return;
 			if (!hasFiles) {
 				void (async () => {
 					const files: File[] = [];
@@ -277,12 +279,13 @@ export class DragDropController {
 					if (files.length < webGroups.length) {
 						toast.error(webGroups.length === 1 ? getBrowserTranslator()("media.dropFailed") : getBrowserTranslator()("media.dropManyFailed", { count: webGroups.length - files.length, total: webGroups.length }), { description: lastError ? localizeErrorDetail(lastError, getBrowserTranslator()) : undefined });
 					}
-					if (files.length) await this.executeFileDrop({ session, files, mouseX: coords.mouseX, mouseY: coords.mouseY });
+					if (files.length) await this.executeFileDrop({ session, sceneId, files, mouseX: coords.mouseX, mouseY: coords.mouseY });
 				})().catch((error) => console.error("Failed to process web drop:", error));
 				return;
 			}
 			this.executeFileDrop({
 				session,
+				sceneId,
 				files: Array.from(event.dataTransfer.files),
 				mouseX: coords.mouseX,
 				mouseY: coords.mouseY,
@@ -508,11 +511,13 @@ export class DragDropController {
 
 	private async executeFileDrop({
 		session,
+		sceneId,
 		files,
 		mouseX,
 		mouseY,
 	}: {
 		session: MediaImportSession;
+		sceneId: string;
 		files: File[];
 		mouseX: number;
 		mouseY: number;
@@ -526,11 +531,13 @@ export class DragDropController {
 				// to decide placement (reuse empty main vs new track) and that
 				// decision depends on the effects of prior inserts.
 				for (const file of files) {
-					if (session.signal.aborted) break;
+					if (session.signal.aborted || this.config.getSceneId() !== sceneId) break;
 					const createdAsset = await this.config.importMediaFile({ session, file });
 					if (session.signal.aborted) break;
-					if (!createdAsset || !this.config.getMediaAssets().some(({ id }) => id === createdAsset.id)) continue;
-					assetNames.push(createdAsset.name);
+					const imported = createdAsset && this.config.getMediaAssets().some(({ id }) => id === createdAsset.id);
+					if (imported) assetNames.push(createdAsset.name);
+					if (this.config.getSceneId() !== sceneId) break;
+					if (!imported) continue;
 
 					const duration = toElementDurationTicks({
 						seconds: createdAsset.duration,
@@ -589,6 +596,9 @@ export class DragDropController {
 					});
 				}
 
+				if (!session.signal.aborted && this.config.getSceneId() !== sceneId) {
+					toast.info(getBrowserTranslator()("media.dropSceneChanged"));
+				}
 				return { uploadedCount: assetNames.length, assetNames };
 			},
 		});
