@@ -80,6 +80,29 @@ export function activeWordIndex(
 	return words.findIndex((word) => time >= word.start && time < word.end);
 }
 
+/** Pair repeated words in order when the same words are rearranged. */
+function keepReorderedHighlights(edited: CaptionData, original: readonly CaptionWord[]): CaptionData {
+	if (edited.words.length !== original.length || original.every(word => word.highlight === undefined)) return edited;
+
+	const identity = (text: string) => matchKey(text) || text;
+	const originalByText = new Map<string, CaptionWord[]>();
+	for (let i = original.length - 1; i >= 0; i--) {
+		const word = original[i];
+		const key = identity(word.text);
+		const matches = originalByText.get(key) ?? [];
+		matches.push(word);
+		originalByText.set(key, matches);
+	}
+	const matches = edited.words.map(word => originalByText.get(identity(word.text))?.pop());
+	if (!matches.every(word => word !== undefined)) return edited;
+	for (const [index, word] of edited.words.entries()) {
+		const highlight = matches[index].highlight;
+		if (highlight === undefined) delete word.highlight;
+		else word.highlight = highlight;
+	}
+	return edited;
+}
+
 /** Keep matching words in order; evenly distribute changed runs between retained anchors. */
 export function editCaptionText(
 	caption: CaptionData,
@@ -127,7 +150,7 @@ export function editCaptionText(
 			distributed.words.forEach((word, index) => {
 				if (words[index]?.highlight) word.highlight = true;
 			});
-			return distributed;
+			return keepReorderedHighlights(distributed, old);
 		}
 		for (let k = from; k < to; k++) {
 			words[k] = {
@@ -142,10 +165,10 @@ export function editCaptionText(
 	const result = words.filter(
 		(word): word is CaptionWord => word !== undefined,
 	);
-	return {
+	return keepReorderedHighlights({
 		words: result,
 		approximate: result.some((word) => word.approximate === true),
-	};
+	}, old);
 }
 
 export function reconcileCaptionEdit(

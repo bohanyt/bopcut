@@ -121,6 +121,27 @@ describe("caption word timing", () => {
 			[1.5, 3],
 		]);
 	});
+	test("reordering caption words keeps the emphasis on a retained word", () => {
+		const source = makeCaption("one two three", 3, [
+			{ text: "one", start: 0.1, end: 0.4 },
+			{ text: "two", start: 0.65, end: 1.15, highlight: true },
+			{ text: "three", start: 1.9, end: 3 },
+		]);
+		const edited = editCaptionText(source, "three two one", 3);
+		expect(edited.approximate).toBe(true);
+		expect(edited.words.map(({ start, end }) => [start, end])).toEqual([[0, 1], [1, 2], [2, 3]]);
+		expect(edited.words.filter(word => word.highlight).map(word => word.text)).toEqual(["two"]);
+	});
+	test("reordering pairs repeated words in their original occurrence order", () => {
+		const source = makeCaption("go go now then", 4, [
+			{ text: "go", start: 0, end: 1, highlight: true },
+			{ text: "go", start: 1, end: 2, highlight: false },
+			{ text: "now", start: 2, end: 3 },
+			{ text: "then", start: 3, end: 4 },
+		]);
+		const edited = editCaptionText(source, "now then go go", 4);
+		expect(edited.words.map(word => word.highlight)).toEqual([undefined, undefined, true, false]);
+	});
 	test("repeated words match in order", () => {
 		const source = makeCaption("go go now", 3, [
 			{ text: "go", start: 0, end: 1 },
