@@ -89,6 +89,8 @@ export function decodePersistedKeybindingsState({
 			"[keybindings] Dropped invalid persisted entries:",
 			dropped,
 		);
+		// Nothing usable was saved: keep the current (default) shortcuts instead of none at all.
+		if (keybindings.size === 0) return null;
 	}
 
 	return {
