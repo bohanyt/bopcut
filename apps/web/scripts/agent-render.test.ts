@@ -48,7 +48,7 @@ test("reports only known adapter vendors and handles missing adapter information
 
 test("validates render arguments before connecting", () => {
 	expect(parseArgs(["export", "--name", "Final", "--fps", "29.97", "--allow-missing"]).request)
-		.toEqual({ name: "Final", format: "mp4", quality: "high", fps: 29.97, includeAudio: true, allowMissing: true });
+		.toEqual({ name: "Final", format: "mp4", quality: "very_high", fps: 29.97, includeAudio: true, allowMissing: true });
 	expect(() => parseArgs(["export", "--format", "avi"])).toThrow("format");
 	expect(() => parseArgs(["frames", "--compare", "{}"])).toThrow("open the editor");
 	expect(() => parseArgs(["frames", "--times", "1,-1"])).toThrow("times");
