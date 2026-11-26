@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { getKeyframeById } from "@/animation/keyframe-query";
+import { getScalarChannelValueAtTime } from "@/animation/interpolation";
 import { retimeElementKeyframes, splitAnimationsAtTime } from "@/animation/keyframes";
 import type { ScalarAnimationChannel } from "@/animation/types";
 import { mediaTime, ZERO_MEDIA_TIME } from "@/wasm";
@@ -41,6 +42,43 @@ describe("animated params", () => {
 		expect(keys(leftAnimations?.opacity).slice(0, 2)).toEqual([["a", 0], ["b", 4000]]);
 		expect(keys(leftAnimations?.opacity)).toHaveLength(3);
 		expect(keys(rightAnimations?.opacity).slice(1)).toEqual([["c", 2000], ["d", 2000]]);
+	});
+
+	test.each([2000, 10000])("splitting outside the keyed range keeps linear extrapolation at %i", (cut) => {
+		const channel: ScalarAnimationChannel = {
+			keys: [
+				{ id: "a", time: mediaTime({ ticks: 4000 }), value: 0.25, segmentToNext: "linear", tangentMode: "flat" },
+				{ id: "b", time: mediaTime({ ticks: 8000 }), value: 0.5, segmentToNext: "linear", tangentMode: "flat" },
+			],
+			extrapolation: { before: "linear", after: "linear" },
+		};
+		const { leftAnimations, rightAnimations } = splitAnimationsAtTime({
+			animations: { opacity: channel },
+			splitTime: mediaTime({ ticks: cut }),
+			boundaryIdPrefix: "split",
+		});
+		const valueAt = (channel: ScalarAnimationChannel, time: number) =>
+			getScalarChannelValueAtTime({ channel, time, fallbackValue: 0 });
+		for (const time of [0, 500, 2000, 3000, 5000, 8000, 10000, 11000, 12000]) {
+			const half = time < cut ? leftAnimations : rightAnimations;
+			const localTime = time < cut ? time : time - cut;
+			expect(valueAt(half?.opacity as ScalarAnimationChannel, localTime)).toBeCloseTo(valueAt(channel, time), 9);
+		}
+		const keyedHalf = cut === 2000 ? rightAnimations : leftAnimations;
+		expect((keyedHalf?.opacity as ScalarAnimationChannel).keys.map(({ id }) => id)).toEqual(["a", "b"]);
+	});
+
+	test("a split past the last held key adds only one key to the empty half", () => {
+		const { leftAnimations, rightAnimations } = splitAnimationsAtTime({
+			animations: { opacity: { keys: [
+				{ id: "a", time: ZERO_MEDIA_TIME, value: 0.25, segmentToNext: "linear", tangentMode: "flat" },
+				{ id: "b", time: mediaTime({ ticks: 4000 }), value: 0.75, segmentToNext: "linear", tangentMode: "flat" },
+			] } },
+			splitTime: mediaTime({ ticks: 8000 }),
+		});
+		expect((leftAnimations?.opacity as ScalarAnimationChannel).keys.map(({ id }) => id)).toEqual(["a", "b"]);
+		expect((rightAnimations?.opacity as ScalarAnimationChannel).keys.map(({ time, value }) => [time, value]))
+			.toEqual([[0, 0.75]]);
 	});
 
 	test("snaps and clamps number params", () => {
