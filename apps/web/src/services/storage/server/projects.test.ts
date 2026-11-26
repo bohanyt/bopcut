@@ -2,13 +2,13 @@ import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { GET, PUT, DELETE } from "../../../app/api/storage/[...slug]/route";
+import { GET, HEAD, POST, PUT, DELETE } from "../../../app/api/storage/[...slug]/route";
 import { StorageService } from "../service";
 import { IndexedDBAdapter } from "../indexeddb-adapter";
 import { EditorCore } from "@/core";
 import type { TProject } from "@/project/types";
 import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
-import { scene, t, text } from "@/timeline/__tests__/compound-fixtures";
+import { audio, scene, t, text } from "@/timeline/__tests__/compound-fixtures";
 
 let root: string;
 let previous: string | undefined;
@@ -259,6 +259,65 @@ test("migration existence uses file presence without parsing the saved timeline"
 		expect(await response.json()).toEqual({ exists: true });
 	} finally {
 		await route("DELETE", id);
+	}
+});
+
+test("a saved draft import stays in both bins when its last clip is removed before promotion", async () => {
+	const id = "saved-draft-media";
+	const mediaAsset = { id: "voice", name: "Voice", type: "audio" as const, file: new File(["test"], "voice.wav") };
+	const privateAsset = { ...mediaAsset, id: "private-voice" };
+	const fetchStub = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: RequestInfo | URL, init?: RequestInit) => {
+		const relative = String(url);
+		const request = new Request(`http://localhost${relative}`, init);
+		const methods: Record<string, typeof GET> = { GET, HEAD, POST, PUT, DELETE };
+		return methods[request.method](request, { params: Promise.resolve({ slug: relative.split("/").slice(3) }) });
+	}, { preconnect: fetch.preconnect }));
+	try {
+		const storage = new StorageService();
+		const tracks = {
+			main: { id: "main", name: "Main", type: "video" as const, muted: false, hidden: false, elements: [] },
+			overlay: [], audio: [],
+		};
+		const project: TProject = {
+			metadata: { id, name: "Draft", duration: t(0), createdAt: new Date(0), updatedAt: new Date(0) },
+			scenes: [scene("main", tracks)], currentSceneId: "main", version: CURRENT_PROJECT_VERSION,
+			settings: { fps: { numerator: 30, denominator: 1 }, canvasSize: { width: 1920, height: 1080 }, background: { type: "color", color: "#000000" } },
+		};
+		await storage.saveProject({ project });
+		await storage.saveMediaAsset({ projectId: id, mediaAsset, staged: true });
+		await storage.saveMediaAsset({ projectId: id, mediaAsset: privateAsset, staged: true });
+		expect(await storage.loadAllMediaAssets({ projectId: id })).toHaveLength(0);
+		const manifest = () => fetch(`${base}/${id}/media`).then((response) => response.json());
+		const hasMedia = (mediaId: string) => storage.hasStoredMediaAsset({ projectId: id, id: mediaId, signal: AbortSignal.timeout(1000) });
+		const stale = (await manifest()).find((asset: { id: string }) => asset.id === mediaAsset.id);
+		expect(stale.staged).toBe(true);
+		expect(await hasMedia(mediaAsset.id)).toBe(false);
+		const clip = { ...audio("voice-clip", 0, 1), mediaId: mediaAsset.id };
+		const committed = { ...tracks, audio: [{ id: "a", name: "Audio", type: "audio" as const, muted: false, elements: [clip] }] };
+		const rejected = await route("PUT", id, "", {
+			headers: { "if-match": "stale" }, body: JSON.stringify({ ...project, scenes: [scene("main", committed)] }),
+		});
+		expect(rejected.status).toBe(409);
+		expect(await hasMedia(mediaAsset.id)).toBe(false);
+		await storage.saveProject({ project: { ...project, scenes: [scene("main", committed)] } });
+		expect(await hasMedia(mediaAsset.id)).toBe(true);
+		const active = await manifest();
+		expect(active.find((asset: { id: string }) => asset.id === mediaAsset.id)?.staged).toBeUndefined();
+		expect(active.find((asset: { id: string }) => asset.id === privateAsset.id)?.staged).toBe(true);
+		await storage.saveProject({ project });
+		// A delayed metadata edit from a second tab may still carry the old staged flag.
+		expect((await fetch(`${base}/${id}/media/${mediaAsset.id}`, {
+			method: "POST", body: JSON.stringify({ ...stale, words: [{ text: "updated", start: 0, end: 1 }] }),
+		})).ok).toBe(true);
+		const [copy] = await EditorCore.getInstance().project.duplicateProjects({ ids: [id] });
+		const reopened = await new StorageService().loadAllMediaAssets({ projectId: id });
+		const copied = await new StorageService().loadAllMediaAssets({ projectId: copy });
+		for (const asset of [...reopened, ...copied]) if (asset.url) URL.revokeObjectURL(asset.url);
+		expect([reopened.map(({ id }) => id), copied.map(({ id }) => id)]).toEqual([[mediaAsset.id], [mediaAsset.id]]);
+		expect(reopened[0].words?.[0].text).toBe("updated");
+	} finally {
+		EditorCore.reset();
+		fetchStub.mockRestore();
 	}
 });
 
