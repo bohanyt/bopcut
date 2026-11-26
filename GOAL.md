@@ -1,4 +1,4 @@
-# bopencut goal
+# bopcut goal
 
 **From sources to finished video, with an agent doing most of the work and a human in full control on one shared timeline.**
 
@@ -25,7 +25,7 @@ These are private and are not stored in this public repository. The repository c
 
 New features are implemented only if they make one of the steps above **faster or better**. If it is unclear which step benefits, the feature is deferred.
 
-- Project-specific details (a particular scene or channel style) do not belong in this repository. bopencut contains only general capabilities: primitives, presets, and agent workflows.
+- Project-specific details (a particular scene or channel style) do not belong in this repository. bopcut contains only general capabilities: primitives, presets, and agent workflows.
 - Real scenes may be used for testing, but they are test material, not features.
 
 ## Stages

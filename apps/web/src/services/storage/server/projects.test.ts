@@ -186,7 +186,7 @@ test("refuses unsupported project versions without writing and still lists their
 		const storage = new StorageService();
 		for (const project of projects.slice(0, 4)) {
 			const { id } = project.metadata;
-			const message = id.startsWith("future") ? "made with a newer version of bopencut" : "does not have a valid version";
+			const message = id.startsWith("future") ? "made with a newer version of bopcut" : "does not have a valid version";
 			for (const readOnly of [false, true]) await expect(storage.loadProject({ id, readOnly })).rejects.toThrow(message);
 			await expect(storage.renameProject({ id, name: "Renamed" })).rejects.toThrow(message);
 			expect(await fs.readFile(projectPath(id), "utf8")).toBe(JSON.stringify(project));

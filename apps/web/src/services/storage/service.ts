@@ -38,7 +38,7 @@ function readProjectVersion(raw: unknown): number {
 		throw new ProjectVersionError("This project does not have a valid version. Open it with a compatible editor and save it again.");
 	}
 	if (version > CURRENT_PROJECT_VERSION) {
-		throw new ProjectVersionError("This project was made with a newer version of bopencut. Update bopencut to open it.");
+		throw new ProjectVersionError("This project was made with a newer version of bopcut. Update bopcut to open it.");
 	}
 	return version;
 }

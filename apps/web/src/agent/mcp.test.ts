@@ -40,7 +40,7 @@ const call = async (name: string, args: Record<string, unknown> = {}) => (await 
 
 test("initialize negotiates the protocol version and lists the read-only tools", async () => {
 	const known = await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
-	expect(known.result).toMatchObject({ protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "bopencut" } });
+	expect(known.result).toMatchObject({ protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "bopcut" } });
 	expect((await rpc("initialize", { protocolVersion: "1999-01-01" })).result.protocolVersion).toBe("2025-11-25");
 	expect((await rpc("ping")).result).toEqual({});
 	const { tools } = (await rpc("tools/list")).result;
