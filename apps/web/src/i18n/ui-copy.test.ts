@@ -3,13 +3,12 @@ import ts from "typescript";
 
 const surfaces = [
 	"components/landing/hero.tsx",
-	"components/editor/onboarding.tsx",
 	"preview/components/context-menu.tsx",
 	"preview/components/guide-popover.tsx",
 	"services/storage/components/storage-persistence-dialog.tsx",
 ];
 
-test("onboarding, preview menus and storage prompts use message keys for JSX text", async () => {
+test("the landing hero, preview menus and storage prompts use message keys for JSX text", async () => {
 	const offenders: string[] = [];
 	for (const path of surfaces) {
 		const source = await Bun.file(new URL("../" + path, import.meta.url)).text();

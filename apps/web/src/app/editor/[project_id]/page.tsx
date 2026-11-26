@@ -15,7 +15,6 @@ import { Timeline } from "@/timeline/components";
 import { EditorPreviewFraming, PreviewPanel } from "@/preview/components";
 import { EditorHeader } from "@/components/editor/editor-header";
 import { EditorProvider } from "@/components/providers/editor-provider";
-import { Onboarding } from "@/components/editor/onboarding";
 import { MigrationDialog } from "@/project/components/migration-dialog";
 import { rememberPlayhead } from "@/project/playhead-memory";
 import { usePanelStore } from "@/editor/panel-store";
@@ -55,7 +54,6 @@ export default function Editor() {
 							<EditorLayout />
 						</EditorPreviewFraming>
 					</div>
-					<Onboarding />
 					<MigrationDialog />
 					<ChangelogNotification />
 				</div>
