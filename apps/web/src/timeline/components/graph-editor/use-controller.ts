@@ -7,7 +7,7 @@ import { registerCanceller } from "@/editor/cancel-interaction";
 import type { NormalizedCubicBezier } from "@/animation/types";
 import { useKeyframeSelection } from "@/timeline/hooks/element/use-keyframe-selection";
 import {
-	applyGraphEditorCurvePreview,
+	applyGraphEditorSegmentPreview,
 	buildGraphEditorSegmentPatches,
 	resolveGraphEditorSelectionState,
 	type GraphEditorSelectionState,
@@ -106,16 +106,7 @@ export function useGraphEditorController() {
 
 			const nextAnimations = state.segments.reduce(
 				(animations, segment) =>
-					segment.allContexts.reduce(
-						(nextAnimationsForSegment, context) =>
-							applyGraphEditorCurvePreview({
-								animations: nextAnimationsForSegment,
-								context,
-								cubicBezier: nextValue,
-								referenceSpanValue: segment.referenceSpanValue,
-							}),
-						animations,
-					),
+					applyGraphEditorSegmentPreview({ animations, segment, cubicBezier: nextValue }),
 				state.element.animations,
 			);
 			editor.timeline.previewElements({

@@ -31,6 +31,7 @@ function pasteKeyframesIntoElement({
 	clipboardItems: PasteKeyframeItem[];
 }): TimelineElement {
 	let nextElement = element;
+	const pasted: { item: PasteKeyframeItem; keyframeId: string }[] = [];
 	// Keyframe times count from the start of the clip.
 	const localTime = subMediaTime({ a: time, b: element.startTime });
 
@@ -66,28 +67,32 @@ function pasteKeyframesIntoElement({
 			propertyPath: item.propertyPath,
 			time: keyframeTime,
 		});
-
-		let patchedAnimations = nextAnimations;
-		if (pastedKeyframe) {
-			for (const curvePatch of item.curvePatches) {
-				const nextPatchedAnimations = updateScalarKeyframeCurve({
-					animations: patchedAnimations,
-					propertyPath: item.propertyPath,
-					componentKey: curvePatch.componentKey,
-					keyframeId: pastedKeyframe.id,
-					patch: curvePatch.patch,
-				});
-				patchedAnimations = nextPatchedAnimations ?? patchedAnimations;
-			}
-		}
+		if (pastedKeyframe) pasted.push({ item, keyframeId: pastedKeyframe.id });
 
 		nextElement = {
 			...nextElement,
-			animations: patchedAnimations,
+			animations: nextAnimations,
 		};
 	}
 
-	return nextElement;
+	// The curves go on once every pasted keyframe is in place: a keyframe's outgoing handle is
+	// dropped while the keyframe after it is not there yet.
+	let patchedAnimations = nextElement.animations;
+	for (const { item, keyframeId } of pasted) {
+		for (const curvePatch of item.curvePatches) {
+			patchedAnimations = updateScalarKeyframeCurve({
+				animations: patchedAnimations,
+				propertyPath: item.propertyPath,
+				componentKey: curvePatch.componentKey,
+				keyframeId,
+				patch: curvePatch.patch,
+			}) ?? patchedAnimations;
+		}
+	}
+
+	return patchedAnimations === nextElement.animations
+		? nextElement
+		: { ...nextElement, animations: patchedAnimations };
 }
 
 export class PasteKeyframesCommand extends Command {

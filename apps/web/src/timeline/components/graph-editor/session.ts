@@ -195,6 +195,10 @@ function groupSelectedKeyframesByProperty({
  * used as the Y-axis scale when editing a flat segment in the graph editor.
  * Falls back to 1.0 if all surrounding segments are also flat.
  */
+function keepsItsValue(context: ScalarGraphKeyframeContext): boolean {
+	return context.nextKey !== null && Math.abs(context.nextKey.value - context.keyframe.value) <= FLAT_VALUE_EPSILON;
+}
+
 function getReferenceSpanValue({
 	context,
 }: {
@@ -330,7 +334,9 @@ function resolvePropertySelection({
 					{
 						key: "value",
 						labelKey: "graph.curve" as const,
-						context: contexts[0].context,
+						// The curve shown is read from a channel that changes over the segment: one that keeps
+						// its value only carries the curve's timing.
+						context: (contexts.find(({ context }) => !keepsItsValue(context)) ?? contexts[0]).context,
 						allContexts: contexts.map(({ context }) => context),
 					},
 				]
@@ -407,6 +413,14 @@ function resolveSegmentForOption({
 		return {
 			reason: "selected-segment-is-hold",
 			messageKey: "graph.holdSegment",
+		};
+	}
+
+	// Keyframes stacked at one time leave no segment to shape, whatever its type.
+	if (option.context.nextKey.time === option.context.keyframe.time) {
+		return {
+			reason: "selected-segment-is-flat",
+			messageKey: "graph.sameTime",
 		};
 	}
 
@@ -655,9 +669,23 @@ export function buildGraphEditorCurvePatches({
 	];
 }
 
+function withoutValueOffset({ keyframeId, patch }: GraphEditorCurvePatch): GraphEditorCurvePatch {
+	return {
+		keyframeId,
+		patch: {
+			...patch,
+			...(patch.rightHandle && { rightHandle: { ...patch.rightHandle, dv: 0 } }),
+			...(patch.leftHandle && { leftHandle: { ...patch.leftHandle, dv: 0 } }),
+		},
+	};
+}
+
 /**
  * Patches for every channel of a segment. Shared-easing channels (fill color) use one curve, but
- * each channel scales its handles by its own value span, so the curve is built per channel.
+ * each channel scales its handles by its own value span, so the curve is built per channel. A
+ * shared channel that keeps its value over the segment (the blue of a red-to-yellow fill) stays at
+ * it: the curve sets only its timing. A single channel's flat segment still takes a shaped curve,
+ * scaled by its reference span.
  */
 export function buildGraphEditorSegmentPatches({
 	segment,
@@ -666,44 +694,37 @@ export function buildGraphEditorSegmentPatches({
 	segment: Pick<GraphEditorResolvedSegment, "allContexts" | "referenceSpanValue">;
 	cubicBezier: NormalizedCubicBezier;
 }): (GraphEditorCurvePatch & { context: ScalarGraphKeyframeContext })[] {
-	return segment.allContexts.flatMap((context) =>
-		(buildGraphEditorCurvePatches({
+	return segment.allContexts.flatMap((context) => {
+		const flatOther = segment.allContexts.length > 1 && keepsItsValue(context);
+		const patches = buildGraphEditorCurvePatches({
 			context,
 			cubicBezier,
-			referenceSpanValue: segment.referenceSpanValue,
-		}) ?? []).map((patch) => ({ ...patch, context })),
-	);
+			referenceSpanValue: flatOther ? 1 : segment.referenceSpanValue,
+		}) ?? [];
+		return patches.map((patch) => ({ ...(flatOther ? withoutValueOffset(patch) : patch), context }));
+	});
 }
 
-export function applyGraphEditorCurvePreview({
+/** The preview of a curve on a segment: the same patches its commit writes. */
+export function applyGraphEditorSegmentPreview({
 	animations,
-	context,
+	segment,
 	cubicBezier,
-	referenceSpanValue,
 }: {
 	animations: ElementAnimations | undefined;
-	context: ScalarGraphKeyframeContext;
+	segment: Pick<GraphEditorResolvedSegment, "allContexts" | "referenceSpanValue">;
 	cubicBezier: NormalizedCubicBezier;
-	referenceSpanValue: number;
 }): ElementAnimations | undefined {
-	const patches = buildGraphEditorCurvePatches({
-		context,
-		cubicBezier,
-		referenceSpanValue,
-	});
-	if (!patches) {
-		return animations;
-	}
-
-	return patches.reduce<ElementAnimations | undefined>(
-		(nextAnimations, { keyframeId, patch }) =>
+	return buildGraphEditorSegmentPatches({ segment, cubicBezier }).reduce<ElementAnimations | undefined>(
+		(nextAnimations, { context, keyframeId, patch }) =>
 			updateScalarKeyframeCurve({
 				animations: nextAnimations,
 				propertyPath: context.propertyPath,
 				componentKey: context.componentKey,
 				keyframeId,
 				patch,
-			}),
+			}) ?? nextAnimations,
 		animations,
 	);
 }
+
