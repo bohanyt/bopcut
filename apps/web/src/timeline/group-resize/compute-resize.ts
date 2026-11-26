@@ -69,6 +69,15 @@ export function computeGroupResize({
 		}
 	}
 
+	// No allowed change (a bound already closes the clip in): keep it as it is rather than let the
+	// lower bound win and push it past its source or into its neighbour.
+	if (maximumDeltaTime !== null && minimumDeltaTime > maximumDeltaTime) {
+		return {
+			deltaTime: ZERO_MEDIA_TIME,
+			updates: members.map((member) => buildResizeUpdate({ member, side, deltaTime: ZERO_MEDIA_TIME })),
+		};
+	}
+
 	const clampedDeltaTime =
 		maximumDeltaTime === null
 			? maxMediaTime({ a: minimumDeltaTime, b: deltaTime })
@@ -168,7 +177,8 @@ function getMinimumAllowedDeltaTime({
 	minDuration: MediaTime;
 }): MediaTime {
 	if (side === "right") {
-		return subMediaTime({ a: minDuration, b: member.duration });
+		// A clip already shorter than a frame cannot shrink, but is not pushed to grow either.
+		return minMediaTime({ a: ZERO_MEDIA_TIME, b: subMediaTime({ a: minDuration, b: member.duration }) });
 	}
 
 	const leftNeighborFloor =
@@ -208,7 +218,7 @@ function getMaximumAllowedDeltaTime({
 	minDuration: MediaTime;
 }): MediaTime | null {
 	if (side === "left") {
-		return subMediaTime({ a: member.duration, b: minDuration });
+		return maxMediaTime({ a: ZERO_MEDIA_TIME, b: subMediaTime({ a: member.duration, b: minDuration }) });
 	}
 
 	const rightNeighborCeiling =

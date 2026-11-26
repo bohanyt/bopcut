@@ -44,6 +44,8 @@ export interface ViewportAdapter {
 	getTracksScrollEl: () => HTMLDivElement | null;
 	getTracksContainerEl: () => HTMLDivElement | null;
 	getHeaderEl: () => HTMLElement | null;
+	/** Height of a track's expanded keyframe lanes (ordered track index). */
+	getTrackExtraHeight?: (trackIndex: number) => number;
 }
 
 export interface InputAdapter {
@@ -243,6 +245,8 @@ function resolveDropTarget({
 
 	return computeDropTarget({
 		elementType: movingElement.type,
+		// A compound clip keeps to the kind of track it is on: an audio-only compound to audio tracks.
+		...(movingElement.type === "compound" && sourceTrack && { trackType: sourceTrack.type }),
 		mouseX: clientX - scrollRect.left + scrollContainer.scrollLeft,
 		mouseY: clientY - scrollRect.top + scrollContainer.scrollTop - headerHeight,
 		tracks,
@@ -255,6 +259,7 @@ function resolveDropTarget({
 		excludeElementId: movingElement.id,
 		excludeElementIds: movingElementIds,
 		verticalDragDirection,
+		getTrackExtraHeight: viewport.getTrackExtraHeight,
 	});
 }
 

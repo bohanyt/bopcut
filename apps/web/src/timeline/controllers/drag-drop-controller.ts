@@ -41,6 +41,8 @@ import type { MediaTime } from "@/wasm";
 
 export interface DragDropConfig {
 	zoomLevel: number;
+	/** Height of a track's expanded keyframe lanes (ordered track index). */
+	getTrackExtraHeight?: (trackIndex: number) => number;
 	getContainerEl: () => HTMLDivElement | null;
 	getHeaderEl: () => HTMLElement | null;
 	getTracksScrollEl: () => HTMLDivElement | null;
@@ -224,6 +226,7 @@ export class DragDropController {
 			elementDuration: duration,
 			pixelsPerSecond: BASE_TIMELINE_PIXELS_PER_SECOND,
 			zoomLevel: this.config.zoomLevel,
+			getTrackExtraHeight: this.config.getTrackExtraHeight,
 			targetElementTypes,
 			frameRate: this.config.getActiveProjectFps(),
 		});
@@ -578,6 +581,7 @@ export class DragDropController {
 						elementDuration: duration,
 						pixelsPerSecond: BASE_TIMELINE_PIXELS_PER_SECOND,
 						zoomLevel: this.config.zoomLevel,
+						getTrackExtraHeight: this.config.getTrackExtraHeight,
 						frameRate: this.config.getActiveProjectFps(),
 					});
 
