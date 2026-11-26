@@ -67,6 +67,35 @@ function preloadChunkImages({ atlas }: { atlas: FontAtlas }): void {
 	}
 }
 
+/**
+ * The faces to request for `family`: the wanted weights the font has, upright and italic. The Google Fonts
+ * CSS API refuses a request for a face the family lacks (a 700 of a one-weight display font, or any italic
+ * of a family without italics), so the atlas's style list decides. Without an atlas entry the weights are
+ * requested as given.
+ */
+export function fontFaces({ family, weights, atlas = cachedAtlas }: {
+	family: string;
+	weights: number[];
+	atlas?: FontAtlas | null;
+}): { weight: number; italic: boolean }[] {
+	const styles = atlas?.fonts[family]?.s;
+	if (!styles?.length) return weights.map((weight) => ({ weight, italic: false }));
+	const available = new Set(styles);
+	const faces = [false, true].flatMap((italic) => weights
+		.filter((weight) => available.has(`${weight}${italic ? "i" : ""}`))
+		.map((weight) => ({ weight, italic })));
+	if (faces.length) return faces;
+	// None of the wanted weights: take the family's first upright style (or its first style).
+	const fallback = styles.find((style) => !style.endsWith("i")) ?? styles[0];
+	const weight = Number.parseInt(fallback, 10);
+	return Number.isFinite(weight) ? [{ weight, italic: fallback.endsWith("i") }] : weights.map((w) => ({ weight: w, italic: false }));
+}
+
+function fontQuery(faces: { weight: number; italic: boolean }[]): string {
+	if (!faces.some(({ italic }) => italic)) return `wght@${faces.map(({ weight }) => weight).join(";")}`;
+	return `ital,wght@${faces.map(({ weight, italic }) => `${italic ? 1 : 0},${weight}`).join(";")}`;
+}
+
 /** Loads a Google font once; concurrent calls share the request, and a failed one is retried next time. */
 export function loadFullFont({
 	family,
@@ -80,7 +109,8 @@ export function loadFullFont({
 	if (running) return running;
 
 	const task = (async () => {
-		const url = `${GOOGLE_FONTS_CSS}?family=${encodeGoogleFontsFamily(family)}:wght@${weights.join(";")}&display=swap`;
+		const faces = fontFaces({ family, weights, atlas: await loadFontAtlas() });
+		const url = `${GOOGLE_FONTS_CSS}?family=${encodeGoogleFontsFamily(family)}:${fontQuery(faces)}&display=swap`;
 		const link = document.createElement("link");
 		link.rel = "stylesheet";
 		link.href = url;
@@ -94,8 +124,8 @@ export function loadFullFont({
 			return;
 		}
 		await Promise.all(
-			weights.map((weight) =>
-				document.fonts.load(`${weight} 16px "${family.replace(/"/g, '\\"')}"`),
+			faces.map(({ weight, italic }) =>
+				document.fonts.load(`${italic ? "italic " : ""}${weight} 16px "${family.replace(/"/g, '\\"')}"`),
 			),
 		);
 		fullLoaded.add(family);
