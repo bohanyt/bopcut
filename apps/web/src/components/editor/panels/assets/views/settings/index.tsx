@@ -335,6 +335,7 @@ export function SettingsView() {
 											onFocus={widthDraft.onFocus}
 											onChange={widthDraft.onChange}
 											onBlur={widthDraft.onBlur}
+											onKeyDown={widthDraft.onKeyDown}
 										/>
 										<NumberField
 											value={heightDraft.displayValue}
@@ -343,6 +344,7 @@ export function SettingsView() {
 											onFocus={heightDraft.onFocus}
 											onChange={heightDraft.onChange}
 											onBlur={heightDraft.onBlur}
+											onKeyDown={heightDraft.onKeyDown}
 										/>
 									</div>
 								)}

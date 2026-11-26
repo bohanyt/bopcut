@@ -123,6 +123,7 @@ export function SpeedTab({
 							onFocus={speedDraft.onFocus}
 							onChange={speedDraft.onChange}
 							onBlur={speedDraft.onBlur}
+			onKeyDown={speedDraft.onKeyDown}
 							onScrub={speedDraft.scrubTo}
 							onScrubEnd={speedDraft.commitScrub}
 							onScrubCancel={speedDraft.cancelScrub}

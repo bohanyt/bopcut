@@ -263,6 +263,7 @@ function NumberParamField({
 			onFocus={draft.onFocus}
 			onChange={draft.onChange}
 			onBlur={draft.onBlur}
+			onKeyDown={draft.onKeyDown}
 			onScrub={previewFromDisplay}
 			onScrubEnd={onCommit}
 			beginScrubGesture={timeline.beginPreviewGesture}

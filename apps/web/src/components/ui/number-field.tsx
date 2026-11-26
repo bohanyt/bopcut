@@ -237,8 +237,9 @@ function NumberField({
 			onKeyDown={(event) => {
 				if (event.nativeEvent.isComposing) return;
 				const shouldBlurInput = event.key === "Enter" || event.key === "Escape";
-				if (shouldBlurInput) event.currentTarget.blur();
+				// The handler sees the key before the blur, so Escape can drop the edit instead of committing it.
 				onKeyDown?.(event);
+				if (shouldBlurInput) event.currentTarget.blur();
 			}}
 			onBlur={(event) => {
 				setIsInputFocused(false);

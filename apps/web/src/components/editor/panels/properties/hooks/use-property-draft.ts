@@ -22,6 +22,7 @@ export function usePropertyDraft<T>({
 	const [draft, setDraft] = useState("");
 	const changed = useRef(false);
 	const previewed = useRef(false);
+	const cancelled = useRef(false);
 	const scrubValue = useRef<T | null>(null);
 
 	return {
@@ -41,6 +42,7 @@ export function usePropertyDraft<T>({
 		onFocus: () => {
 			changed.current = false;
 			previewed.current = false;
+			cancelled.current = false;
 			setIsEditing(true);
 			setDraft(sourceDisplay);
 			onStartEditing?.();
@@ -58,10 +60,16 @@ export function usePropertyDraft<T>({
 				onPreview(parsed);
 			}
 		},
+		/** Escape leaves the field without committing: the blur that follows drops the edit. */
+		onKeyDown: (event: React.KeyboardEvent) => {
+			if (event.key === "Escape") cancelled.current = true;
+		},
 		onBlur: (
 			event: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>,
 		) => {
-			if (changed.current) {
+			if (cancelled.current) {
+				if (previewed.current) onInvalid?.();
+			} else if (changed.current) {
 				const input = event.currentTarget.value;
 				let parsed = parse(input);
 				if (parsed === null && supportsExpressions) {
@@ -74,6 +82,7 @@ export function usePropertyDraft<T>({
 			}
 			changed.current = false;
 			previewed.current = false;
+			cancelled.current = false;
 			setIsEditing(false);
 			setDraft("");
 		},
