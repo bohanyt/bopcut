@@ -169,6 +169,7 @@ export class TimelineManager {
 			retime,
 			rippleEnabled: pushHistory && this.editor.command.isRippleEnabled,
 			boundaryIdPrefix: generateUUID(),
+			fps: this.editor.project.getActiveOrNull()?.settings.fps,
 		});
 		if (!after || before === after) {
 			this.discardPreview();
@@ -192,6 +193,7 @@ export class TimelineManager {
 			retime,
 			rippleEnabled: this.editor.command.isRippleEnabled,
 			boundaryIdPrefix: `${elementId}:retime-preview`,
+			fps: this.editor.project.getActiveOrNull()?.settings.fps,
 		});
 		if (!next || next === tracks) {
 			this.discardPreview();
