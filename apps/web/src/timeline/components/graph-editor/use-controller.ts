@@ -8,7 +8,7 @@ import type { NormalizedCubicBezier } from "@/animation/types";
 import { useKeyframeSelection } from "@/timeline/hooks/element/use-keyframe-selection";
 import {
 	applyGraphEditorCurvePreview,
-	buildGraphEditorCurvePatches,
+	buildGraphEditorSegmentPatches,
 	resolveGraphEditorSelectionState,
 	type GraphEditorSelectionState,
 } from "./session";
@@ -139,27 +139,19 @@ export function useGraphEditorController() {
 			}
 
 			editor.timeline.updateKeyframeCurves({
-				keyframes: state.segments.flatMap((segment) => {
-					const patches = buildGraphEditorCurvePatches({
-						context: segment.context,
-						cubicBezier: nextValue,
-						referenceSpanValue: segment.referenceSpanValue,
-					});
-					if (!patches) {
-						return [];
-					}
-
-					return segment.allContexts.flatMap((context) =>
-						patches.map(({ keyframeId, patch }) => ({
+				// The same per-channel patches as the preview, so a commit keeps what was shown.
+				keyframes: state.segments.flatMap((segment) =>
+					buildGraphEditorSegmentPatches({ segment, cubicBezier: nextValue }).map(
+						({ context, keyframeId, patch }) => ({
 							trackId: state.trackId,
 							elementId: state.elementId,
 							propertyPath: segment.propertyPath,
 							componentKey: context.componentKey,
 							keyframeId,
 							patch,
-						})),
-					);
-				}),
+						}),
+					),
+				),
 			});
 			hasPreviewRef.current = false;
 		},
