@@ -19,7 +19,7 @@ import {
 	getBoxMaskHandlePositions,
 	getBoxMaskRectOverlay,
 } from "@/masks/handle-positions";
-import { computeFeatherUpdate } from "@/masks/param-update";
+import { computeFeatherUpdate, computeRotationUpdate } from "@/masks/param-update";
 import {
 	setMaskLocalCenter,
 	toGlobalMaskSnapLines,
@@ -157,24 +157,7 @@ function computeTextMaskParamUpdate({
 	const pivotY = bounds.cy + startParams.centerY * bounds.height;
 
 	if (handleId.kind === "rotation") {
-		const startAngle =
-			(Math.atan2(startCanvasY - pivotY, startCanvasX - pivotX) * 180) /
-			Math.PI;
-		const currentAngle =
-			(Math.atan2(
-				startCanvasY + deltaY - pivotY,
-				startCanvasX + deltaX - pivotX,
-			) *
-				180) /
-			Math.PI;
-
-		let deltaAngle = currentAngle - startAngle;
-		if (deltaAngle > 180) deltaAngle -= 360;
-		if (deltaAngle < -180) deltaAngle += 360;
-
-		return {
-			rotation: (((startParams.rotation + deltaAngle) % 360) + 360) % 360,
-		};
+		return computeRotationUpdate({ startParams, deltaX, deltaY, startCanvasX, startCanvasY, bounds });
 	}
 
 	if (handleId.kind === "feather") {
