@@ -3,7 +3,6 @@ import { SYSTEM_FONTS } from "@/fonts/system-fonts";
 
 const GOOGLE_FONTS_CSS = "https://fonts.googleapis.com/css2";
 const FONT_ATLAS_PATH = "/fonts/font-atlas.json";
-const FONT_CHUNK_PATH_PREFIX = "/fonts/font-chunk-";
 
 const fullLoaded = new Set<string>();
 const fullLoading = new Map<string, Promise<void>>();
@@ -17,6 +16,8 @@ export function subscribeFontLoads(listener: () => void): () => void {
 
 let cachedAtlas: FontAtlas | null = null;
 let atlasFetchPromise: Promise<FontAtlas | null> | null = null;
+/** The atlas's family names by lower case, built once per atlas. */
+let atlasFamilies: { atlas: FontAtlas; names: Map<string, string> } | null = null;
 
 function encodeGoogleFontsFamily(family: string): string {
 	return family.replace(/ /g, "+");
@@ -54,8 +55,8 @@ export function loadFontAtlas(): Promise<FontAtlas | null> {
 				return null;
 			}
 			const data: FontAtlas = await response.json();
+			// The picker's sprite sheets are not fetched here: its rows load the ones they show.
 			cachedAtlas = data;
-			preloadChunkImages({ atlas: data });
 			return data;
 		})
 		.catch(() => {
@@ -66,15 +67,12 @@ export function loadFontAtlas(): Promise<FontAtlas | null> {
 	return atlasFetchPromise;
 }
 
-function preloadChunkImages({ atlas }: { atlas: FontAtlas }): void {
-	const maxChunk = Math.max(
-		...Object.values(atlas.fonts).map((entry) => entry.ch),
-	);
-	for (let i = 0; i <= maxChunk; i++) {
-		// hint browser to preload chunk images without blocking
-		const img = new Image();
-		img.src = `${FONT_CHUNK_PATH_PREFIX}${i}.avif`;
+function atlasFamilyName(atlas: FontAtlas | null, key: string): string | undefined {
+	if (!atlas) return undefined;
+	if (atlasFamilies?.atlas !== atlas) {
+		atlasFamilies = { atlas, names: new Map(Object.keys(atlas.fonts).map((name) => [familyKey(name), name])) };
 	}
+	return atlasFamilies.names.get(key);
 }
 
 /**
@@ -121,7 +119,7 @@ export function loadFullFont({
 
 	const task = (async () => {
 		const atlas = await loadFontAtlas();
-		family = Object.keys(atlas?.fonts ?? {}).find((name) => familyKey(name) === key) ?? family;
+		family = atlasFamilyName(atlas, key) ?? family;
 		const faces = fontFaces({ family, weights, atlas });
 		const url = `${GOOGLE_FONTS_CSS}?family=${encodeGoogleFontsFamily(family)}:${fontQuery(faces)}&display=swap`;
 		const link = document.createElement("link");
