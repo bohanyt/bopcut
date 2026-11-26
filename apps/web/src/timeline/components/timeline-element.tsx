@@ -882,7 +882,15 @@ function ResizeHandle({
 	);
 }
 
-function KeyframeIndicators({
+/** A keyframe's time for its accessible name: seconds on the timeline, as the ruler counts them. */
+function keyframeSeconds(time: number, locale: string): string {
+	return new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(time / TICKS_PER_SECOND);
+}
+
+/** The diamond is 14 px: the hit area around it is larger, more so on touch screens. */
+const KEYFRAME_HIT_AREA = "before:absolute before:-inset-1 before:content-[''] pointer-coarse:before:-inset-2.5";
+
+export function KeyframeIndicators({
 	indicators,
 	dragState,
 	displayedStartTime,
@@ -913,7 +921,7 @@ function KeyframeIndicators({
 		elementLeft: number;
 	}) => number;
 }) {
-	const { t } = useI18n();
+	const { t, locale } = useI18n();
 	const { isKeyframeSelected } = useKeyframeSelection();
 	const orderedKeyframes = indicators.flatMap(
 		(indicator) => indicator.keyframes,
@@ -938,7 +946,7 @@ function KeyframeIndicators({
 			<button
 				key={indicator.time}
 				type="button"
-				className="pointer-events-auto absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-grab mr-0.5"
+				className={cn("pointer-events-auto absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-grab mr-0.5", KEYFRAME_HIT_AREA)}
 				style={{ left: visualOffsetPx }}
 				onMouseDown={(event) =>
 					onKeyframeMouseDown({ event, keyframes: indicator.keyframes })
@@ -951,7 +959,11 @@ function KeyframeIndicators({
 						indicatorTime: indicator.time,
 					})
 				}
-				aria-label={t("timeline.selectKeyframe")}
+				aria-label={t("timeline.keyframesAt", {
+					count: indicator.keyframes.length,
+					time: keyframeSeconds(displayedStartTime + indicator.time, locale),
+				})}
+				aria-pressed={isIndicatorSelected}
 			>
 				<HugeiconsIcon
 					icon={KeyframeIcon}
@@ -1017,7 +1029,7 @@ function ExpandedKeyframeLanes({
 		elementLeft: number;
 	}) => number;
 }) {
-	const { t } = useI18n();
+	const { t, locale } = useI18n();
 	const { isKeyframeSelected } = useKeyframeSelection();
 
 	const orderedKeyframes = useMemo(
@@ -1086,6 +1098,7 @@ function ExpandedKeyframeLanes({
 									type="button"
 									className={cn(
 										"pointer-events-auto absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-grab",
+										KEYFRAME_HIT_AREA,
 										isBoxSelecting && "pointer-events-none",
 									)}
 									style={{ left: visualOffset }}
@@ -1105,7 +1118,11 @@ function ExpandedKeyframeLanes({
 											indicatorTime: kf.time,
 										});
 									}}
-									aria-label={t("timeline.selectKeyframe")}
+									aria-label={t("timeline.keyframeAt", {
+										property: row.labelKey ? t(row.labelKey) : row.fallbackLabel ?? row.propertyPath,
+										time: keyframeSeconds(displayedStartTime + kf.time, locale),
+									})}
+									aria-pressed={isSelected}
 								>
 									<HugeiconsIcon
 										icon={KeyframeIcon}

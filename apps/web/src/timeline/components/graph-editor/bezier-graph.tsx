@@ -1,7 +1,7 @@
 "use client";
 
 import { useI18n } from "@/i18n/provider";
-import { useLayoutEffect, useRef, useState, type PointerEvent } from "react";
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { useShiftKey } from "@/hooks/use-shift-key";
 import { useEditor } from "@/editor/use-editor";
 import type { PreviewGesture } from "@/core/managers/timeline-manager";
@@ -16,6 +16,10 @@ const GRAPH_PADDING = 12;
 const SVG_WIDTH = GRAPH_WIDTH + GRAPH_PADDING * 2;
 const SVG_HEIGHT = GRAPH_HEIGHT + GRAPH_PADDING * 2;
 const HANDLE_RADIUS = 3.5;
+/** The handle's grab area: about 32 px across at the popover's width, for fingers too. */
+const HANDLE_HIT_RADIUS = 12;
+const KEY_STEP = 0.01;
+const KEY_STEP_LARGE = 0.1;
 const ENDPOINT_RADIUS = 2;
 const SNAP_THRESHOLD = 0.06;
 const SNAP_TARGETS = [0, 1];
@@ -71,6 +75,26 @@ function curvePath({ curve }: { curve: NormalizedCubicBezier }) {
 		points.push(`${x},${y}`);
 	}
 	return `M${points.join("L")}`;
+}
+
+const roundStep = (value: number) => Math.round(value * 100) / 100;
+
+/** The curve after an arrow key on a handle (Shift for larger steps), or null for another key. */
+export function stepHandle({ value, handle, key, large }: {
+	value: NormalizedCubicBezier;
+	handle: "c1" | "c2";
+	key: string;
+	large: boolean;
+}): NormalizedCubicBezier | null {
+	const step = large ? KEY_STEP_LARGE : KEY_STEP;
+	const dx = key === "ArrowRight" ? step : key === "ArrowLeft" ? -step : 0;
+	const dy = key === "ArrowUp" ? step : key === "ArrowDown" ? -step : 0;
+	if (!dx && !dy) return null;
+	const [xIndex, yIndex] = handle === "c1" ? [0, 1] : [2, 3];
+	const next: NormalizedCubicBezier = [...value];
+	next[xIndex] = roundStep(Math.max(0, Math.min(1, value[xIndex] + dx)));
+	next[yIndex] = roundStep(Math.max(Y_CLAMP_MIN, Math.min(Y_CLAMP_MAX, value[yIndex] + dy)));
+	return next;
 }
 
 function clampHandleY({ svgY }: { svgY: number }) {
@@ -136,6 +160,18 @@ export function BezierGraph({
 		};
 	}
 
+	function onHandleKeyDown({ handle }: { handle: BezierHandle }) {
+		return (event: KeyboardEvent<SVGCircleElement>) => {
+			if (drag.current) return;
+			const next = stepHandle({ value, handle, key: event.key, large: event.shiftKey });
+			if (!next) return;
+			// The arrow keys move the handle here, not the playhead.
+			event.preventDefault();
+			event.stopPropagation();
+			onChangeEnd?.(next);
+		};
+	}
+
 	function onPointerMove({ event }: { event: PointerEvent<SVGSVGElement> }) {
 		const gesture = drag.current;
 		if (gesture?.pointerId !== event.pointerId) return;
@@ -183,7 +219,7 @@ export function BezierGraph({
 		<svg
 			ref={svgRef}
 			viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
-			className="bg-foreground/3 w-full cursor-crosshair select-none"
+			className="bg-foreground/3 w-full cursor-crosshair touch-none select-none"
 			onPointerMove={(event) => onPointerMove({ event })}
 			onPointerUp={onPointerUp}
 			onPointerCancel={onPointerCancel}
@@ -234,26 +270,37 @@ export function BezierGraph({
 				r={ENDPOINT_RADIUS}
 				className="fill-foreground/20"
 			/>
-			<circle
-				cx={c1Clamped.x}
-				cy={c1Clamped.y}
-				r={HANDLE_RADIUS}
-				className={cn(
-					"fill-primary cursor-grab",
-					activeHandle === "c1" && "cursor-grabbing",
-				)}
-				onPointerDown={onHandlePointerDown({ handle: "c1" })}
-			/>
-			<circle
-				cx={c2Clamped.x}
-				cy={c2Clamped.y}
-				r={HANDLE_RADIUS}
-				className={cn(
-					"fill-primary cursor-grab",
-					activeHandle === "c2" && "cursor-grabbing",
-				)}
-				onPointerDown={onHandlePointerDown({ handle: "c2" })}
-			/>
+			{(["c1", "c2"] as const).map((handle) => {
+				const point = handle === "c1" ? c1Clamped : c2Clamped;
+				const [x, y] = handle === "c1" ? [value[0], value[1]] : [value[2], value[3]];
+				return (
+					<g key={handle} className="group">
+						<circle
+							cx={point.x}
+							cy={point.y}
+							r={HANDLE_RADIUS}
+							className="fill-primary group-focus-within:stroke-foreground pointer-events-none"
+							strokeWidth={1.5}
+						/>
+						<circle
+							cx={point.x}
+							cy={point.y}
+							r={HANDLE_HIT_RADIUS}
+							fill="transparent"
+							tabIndex={0}
+							role="slider"
+							aria-label={t(handle === "c1" ? "graph.handleStart" : "graph.handleEnd")}
+							aria-valuemin={Y_CLAMP_MIN}
+							aria-valuemax={Y_CLAMP_MAX}
+							aria-valuenow={y}
+							aria-valuetext={`x ${roundStep(x)}, y ${roundStep(y)}`}
+							className={cn("cursor-grab outline-none", activeHandle === handle && "cursor-grabbing")}
+							onPointerDown={onHandlePointerDown({ handle })}
+							onKeyDown={onHandleKeyDown({ handle })}
+						/>
+					</g>
+				);
+			})}
 		</svg>
 	);
 }
