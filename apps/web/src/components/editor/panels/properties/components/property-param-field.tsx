@@ -90,6 +90,7 @@ function ParamInput({
 		return (
 			<NumberParamField
 				param={param}
+				label={t(param.labelKey)}
 				value={typeof value === "number" ? value : Number(value)}
 				onPreview={onPreview}
 				onCommit={onCommit}
@@ -202,11 +203,14 @@ function TextParamField({
 
 function NumberParamField({
 	param,
+	label,
 	value,
 	onPreview,
 	onCommit,
 }: {
 	param: NumberParamDefinition;
+	/** The field's accessible name: the short label shown next to it is often a single letter. */
+	label: string;
 	value: number;
 	onPreview: (value: number) => void;
 	onCommit: () => void;
@@ -252,6 +256,7 @@ function NumberParamField({
 	return (
 		<NumberField
 			icon={param.shortLabel}
+			aria-label={label}
 			value={draft.displayValue}
 			dragSensitivity="slow"
 			isDefault={value === param.default}

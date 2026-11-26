@@ -1070,6 +1070,7 @@ export const id = {
 	"text.invalidPresetList": "Daftar preset tidak valid",
 	"text.presetSaveFailed": "Preset teks gagal disimpan",
 	"captions.unsupportedFormat": "Format subtitle tidak didukung",
+	"timeline.mainSceneName": "Scene utama",
 	"timeline.cannotDeleteMain": "Scene utama tidak bisa dihapus",
 	"timeline.sceneInUse": "Scene masih digunakan oleh klip gabungan",
 	"timeline.compoundNotCreated": "Klip gabungan gagal dibuat",
