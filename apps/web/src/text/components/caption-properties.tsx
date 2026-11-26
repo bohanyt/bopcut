@@ -3,7 +3,7 @@
 import { localizeErrorDetail } from "@/i18n/error-details";
 
 import { useI18n } from "@/i18n/provider";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +31,7 @@ export function CaptionProperties({
 }) {
 	const { t } = useI18n();
 	const editor = useEditor();
+	const timingsId = useId();
 	const [presets, setPresets] = useState<TextStylePreset[]>([]);
 	const [name, setName] = useState("");
 	const [chosen, setChosen] = useState("");
@@ -159,8 +160,9 @@ export function CaptionProperties({
 					</>
 				) : (
 					<div className="flex items-center justify-between text-sm">
-						<span>{t("text.captionTimings")}</span>
+						<label htmlFor={timingsId}>{t("text.captionTimings")}</label>
 						<Switch
+							id={timingsId}
 							checked={false}
 							onCheckedChange={() =>
 								patch({

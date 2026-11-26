@@ -17,6 +17,7 @@ import { SectionField } from "@/components/section";
 import { NumberField } from "@/components/ui/number-field";
 import { Switch } from "@/components/ui/switch";
 import { ColorPicker } from "@/components/ui/color-picker";
+import { FontPicker } from "@/components/ui/font-picker";
 import {
 	Select,
 	SelectContent,
@@ -86,11 +87,13 @@ function ParamInput({
 }) {
 	const { t } = useI18n();
 	const { timeline } = useEditor();
+	// The label beside a field is not tied to it: each control carries its own name.
+	const label = t(param.labelKey);
 	if (param.type === "number") {
 		return (
 			<NumberParamField
 				param={param}
-				label={t(param.labelKey)}
+				label={label}
 				value={typeof value === "number" ? value : Number(value)}
 				onPreview={onPreview}
 				onCommit={onCommit}
@@ -101,6 +104,7 @@ function ParamInput({
 	if (param.type === "boolean") {
 		return (
 			<Switch
+				aria-label={label}
 				checked={Boolean(value)}
 				onCheckedChange={(checked) => {
 					onPreview(checked);
@@ -119,7 +123,7 @@ function ParamInput({
 					onCommit();
 				}}
 			>
-				<SelectTrigger className="w-full">
+				<SelectTrigger className="w-full" aria-label={label}>
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent>
@@ -136,6 +140,7 @@ function ParamInput({
 	if (param.type === "color") {
 		return (
 			<ColorPicker
+				label={label}
 				beginDragGesture={timeline.beginPreviewGesture}
 				value={String(value).replace(/^#/, "").toUpperCase()}
 				onChange={(color) => onPreview(`#${color}`)}
@@ -147,10 +152,24 @@ function ParamInput({
 		);
 	}
 
-	if (param.type === "text" || param.type === "font") {
+	if (param.type === "font") {
+		return (
+			<FontPicker
+				label={label}
+				defaultValue={String(value)}
+				onValueChange={(family) => {
+					onPreview(family);
+					onCommit();
+				}}
+			/>
+		);
+	}
+
+	if (param.type === "text") {
 		return (
 			<TextParamField
-				multiline={param.type === "text"}
+				label={label}
+				multiline
 				value={String(value)}
 				onPreview={onPreview}
 				onCommit={onCommit}
@@ -163,11 +182,13 @@ function ParamInput({
 
 /** `value` is the committed text: what is typed is kept here until it is committed. */
 function TextParamField({
+	label,
 	multiline,
 	value,
 	onPreview,
 	onCommit,
 }: {
+	label: string;
 	multiline: boolean;
 	value: string;
 	onPreview: (value: string) => void;
@@ -181,6 +202,7 @@ function TextParamField({
 	useEffect(() => () => unmount.current(), [unmount]);
 
 	const field = {
+		"aria-label": label,
 		value: draft ?? value,
 		onChange: ({ currentTarget }: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
 			setDraft(currentTarget.value);
