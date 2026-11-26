@@ -65,6 +65,48 @@ afterEach(() => {
 });
 
 describe("compound clip commands", () => {
+	test("breaking apart moves notes to an editable frame and preserves them through Undo and Redo", () => {
+		const editor = setup();
+		const { compound, sceneId } = editor.timeline.createCompound({ elements: refs });
+		const host = { id: "host", time: t(2), note: "Host" };
+		const note = { id: "nested", time: t(1.01), duration: t(1), note: "Nested", elementIds: ["box", "missing"] };
+		editor.scenes.setScenes({ scenes: editor.scenes.getScenes().map((s) => ({
+			...s, bookmarks: s.id === sceneId ? [note] : [host],
+		})) });
+
+		editor.timeline.ungroupCompound(compound);
+		const moved = [host, { ...note, time: t(2 + 1 / 30), elementIds: ["box"] }];
+		expect(editor.scenes.getActiveScene().bookmarks).toEqual(moved);
+		editor.command.undo();
+		expect(editor.scenes.getActiveScene().bookmarks).toEqual([host]);
+		expect(editor.scenes.getScenes().find((s) => s.id === sceneId)?.bookmarks).toEqual([note]);
+		editor.command.redo();
+		expect(editor.scenes.getActiveScene().bookmarks).toEqual(moved);
+	});
+
+	test.each([false, true])("split compound notes move with their containing piece (right first: %s)", (rightFirst) => {
+		const editor = setup();
+		const { compound, sceneId } = editor.timeline.createCompound({ elements: refs });
+		const notes = [
+			{ id: "left", time: t(0.5), note: "Left", elementIds: ["box"] },
+			{ id: "right", time: t(2), note: "Right", elementIds: ["box"] },
+		];
+		editor.scenes.setScenes({ scenes: editor.scenes.getScenes().map((s) => s.id === sceneId ? { ...s, bookmarks: notes } : s) });
+		const [right] = editor.timeline.splitElements({ elements: [compound], splitTime: t(3) });
+		const [first, second] = rightFirst ? [right, compound] : [compound, right];
+		const firstNote = notes[rightFirst ? 1 : 0];
+		const restored = editor.timeline.ungroupCompound(first);
+		const moved = editor.scenes.getActiveScene().bookmarks;
+		expect(moved).toHaveLength(1);
+		expect(moved[0]).toMatchObject({ id: firstNote.id, time: t(1 + (rightFirst ? 2 : 0.5)) });
+		expect(restored.map((r) => r.elementId)).toContain(moved[0].elementIds?.[0]!);
+		expect(moved[0].elementIds).not.toEqual(["box"]);
+		editor.timeline.ungroupCompound(second);
+		expect(editor.scenes.getActiveScene().bookmarks.map(({ id, time }) => [id, time])).toEqual([
+			["left", t(1.5)], ["right", t(3)],
+		]);
+	});
+
 	test("editor API: one Undo reverts create, Redo replays it, ripple does not shift neighbours", () => {
 		const original = fixture();
 		const editor = setup(original);
