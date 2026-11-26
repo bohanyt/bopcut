@@ -42,6 +42,8 @@ export class AudioManager {
 	private lastIsPlaying = false;
 	private lastVolume = 1;
 	private unsubscribers: Array<() => void> = [];
+	private heardTracks: unknown = null;
+	private heardScenes: unknown = null;
 
 	constructor(private editor: EditorCore) {
 		this.lastVolume = this.editor.playback.getOutputVolume();
@@ -49,7 +51,7 @@ export class AudioManager {
 		this.unsubscribers.push(
 			this.editor.playback.subscribe(this.handlePlaybackChange),
 			this.editor.timeline.subscribe(this.handleTimelineChange),
-			this.editor.media.subscribe(this.handleTimelineChange),
+			this.editor.media.subscribe(this.handleMediaChange),
 			this.editor.playback.onSeek(this.handleSeek),
 			this.editor.playback.onUpdate(this.handlePlaybackUpdate),
 		);
@@ -98,7 +100,20 @@ export class AudioManager {
 		}
 	};
 
+	/**
+	 * Playback reads the saved scene tracks, not the preview overlay. A preview change (a drag in
+	 * progress) leaves them as they are, so the sound has nothing to restart for.
+	 */
 	private handleTimelineChange = (): void => {
+		const tracks = this.editor.scenes.getActiveSceneOrNull()?.tracks ?? null;
+		const scenes = this.editor.scenes.getScenes();
+		if (tracks !== null && tracks === this.heardTracks && scenes === this.heardScenes) return;
+		this.heardTracks = tracks;
+		this.heardScenes = scenes;
+		this.handleMediaChange();
+	};
+
+	private handleMediaChange = (): void => {
 		this.disposeSinks();
 
 		if (this.editor.playback.getIsPlaying() && !this.editor.playback.getIsScrubbing()) {
@@ -190,6 +205,9 @@ export class AudioManager {
 	private async startPlayback(): Promise<void> {
 		this.stopPlayback({ suspend: false });
 		const scene = this.editor.scenes.getActiveSceneOrNull();
+		// The sound is built from these: a notification that leaves them as they are changes nothing.
+		this.heardTracks = scene?.tracks ?? null;
+		this.heardScenes = this.editor.scenes.getScenes();
 		if (!scene || this.editor.timeline.getTotalDuration() <= 0 || this.editor.playback.getIsScrubbing()) {
 			this.suspendAudioContext();
 			return;
