@@ -344,6 +344,8 @@ type Session = {
 	retry?: number;
 	done: Set<string>; revisions: Map<string, number>; disk: boolean; bytes: number; written: Map<string, string>;
 	sequence: number; readerChecked?: number; readerPending: boolean;
+	/** Consecutive tool failures stop this session until it is reopened. */
+	failedInRow: number; stopped?: string;
 };
 type Job = { session: Session; id: string; revision: number; source?: Source; controller: AbortController };
 const sessions = new Map<string, Session>();
@@ -359,16 +361,13 @@ let initialized: string | undefined;
 let wiping = false;
 let idle: PromiseWithResolvers<void> | undefined;
 let capabilities: EncoderCapabilities | undefined;
-/** Sources in a row that the tools failed on. Preparation stops at the limit, until a project is opened or the setting is changed. */
-let failedInRow = 0;
 const failureLimit = 3;
 const checkLimit = 60_000;
-let stopped: string | undefined;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isPaused = () => pauses.size > 0 || [...sessions.values()].some(entry => entry.paused);
 function send(session: Session, state: ProxyUpdate["state"], details?: Partial<ProxyUpdate>) {
-	const error = state === "failed" ? stopped ?? capabilities?.error : undefined;
+	const error = state === "failed" ? session.stopped ?? capabilities?.error : undefined;
 	session.send({ state, bytes: session.bytes, done: session.done.size, total: session.ids.length, ...(error && { error }), ...details });
 }
 const errorText = (error: unknown) => {
@@ -418,21 +417,19 @@ export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" 
 		session.done.clear();
 	}
 	for (const id of session.done) if (!session.ids.includes(id) || replaced.includes(id)) session.done.delete(id);
-	if ((!session.build || stopped) && session.ids.some(id => !session.done.has(id))) session.readerChecked = undefined;
+	if ((!session.build || session.stopped) && session.ids.some(id => !session.done.has(id))) session.readerChecked = undefined;
 	for (const id of replaced) session.revisions.set(id, (session.revisions.get(id) ?? 0) + 1);
 	for (const id of session.written.keys()) if (!session.ids.includes(id) || replaced.includes(id)) session.written.delete(id);
 	session.disk = false;
 	void keepNeededJob();
 	void pump();
 }
-export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "disk" | "bytes" | "written" | "sequence" | "readerChecked" | "readerPending">) {
-	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>(), sequence: 0, readerPending: false };
+export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "disk" | "bytes" | "written" | "sequence" | "readerChecked" | "readerPending" | "failedInRow" | "stopped">) {
+	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>(), sequence: 0, readerPending: false, failedInRow: 0 };
 	sessions.set(id, entry);
 	// Tools that failed are tried again when a project is opened or the setting is changed, not on their own.
 	if (entry.build) {
 		if (!capabilities?.encoders?.length) capabilities = undefined;
-		failedInRow = 0;
-		stopped = undefined;
 		if (entry.retry && !usedRetries.has(entry.retry)) {
 			usedRetries.add(entry.retry);
 			for (const key of failures) failedBefore.add(key);
@@ -513,7 +510,7 @@ async function pump() {
 	if (running) { needsPump = true; return; }
 	const readerDue = (session: Session) => session.readerChecked === undefined || session.readerPending;
 	if (![...sessions.values()].some(readerDue)) {
-		for (const session of sessions.values()) send(session, !session.build ? "off" : stopped ? "failed" : "readonly");
+		for (const session of sessions.values()) send(session, !session.build ? "off" : session.stopped ? "failed" : "readonly");
 		return;
 	}
 	running = true;
@@ -540,14 +537,14 @@ async function pump() {
 			}
 		}
 		if (writable) for (const session of sessions.values()) {
-			if (!session.build || stopped) continue;
+			if (!session.build || session.stopped) continue;
 			if (session.readerChecked !== undefined) session.done.clear();
 			session.readerChecked = undefined;
 			session.readerPending = false;
 		}
 		const blocked = new Set<Session>();
-		const builds = (session: Session) => writable && session.build && !stopped;
-		const progress = (session: Session) => !session.build ? "off" : stopped ? "failed" : writable ? "preparing" : "readonly";
+		const builds = (session: Session) => writable && session.build && !session.stopped;
+		const progress = (session: Session) => !session.build ? "off" : session.stopped ? "failed" : writable ? "preparing" : "readonly";
 		while (!wiping && !isPaused()) {
 			const entry = [...sessions.entries()].find(([, session]) => !blocked.has(session) &&
 				(builds(session) || readerDue(session)) &&
@@ -576,7 +573,7 @@ async function pump() {
 					if (!failures.has(source.key)) {
 						send(session, "preparing");
 						info = await prepare(dir, source, session.software, encoders, cuda, signal);
-						failedInRow = 0;
+						session.failedInRow = 0;
 					}
 				}
 				if (!signal.aborted && usesJob(session, job)) {
@@ -613,7 +610,7 @@ async function pump() {
 				else if (key) {
 					if (failures.size >= 1024) failures.delete(failures.values().next().value!);
 					failures.add(key);
-					if (!failedBefore.has(key) && ++failedInRow >= failureLimit) stopped = errorText(error);
+					if (!failedBefore.has(key) && ++session.failedInRow >= failureLimit) session.stopped = errorText(error);
 				}
 				session.done.add(id);
 			} finally {
@@ -633,7 +630,7 @@ async function pump() {
 			}
 			if (blocked.has(session)) continue;
 			session.bytes = bytes;
-			if (complete) send(session, !session.build ? "off" : stopped ? "failed" : !writable ? "readonly" : session.disk ? "disk" : "ready");
+			if (complete) send(session, !session.build ? "off" : session.stopped ? "failed" : !writable ? "readonly" : session.disk ? "disk" : "ready");
 		}
 	} catch (error) { console.error("Proxy preparation failed", error); }
 	finally {

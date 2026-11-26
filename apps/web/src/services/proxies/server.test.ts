@@ -193,28 +193,32 @@ test("reorders pending assets, cleans interrupted jobs and aborts when the tab c
 	}
 });
 
-async function fixture(ids: string[], budget = "8000000000") {
+async function fixture(ids: string[], budget = "8000000000", moreProjects: Record<string, string[]> = {}) {
 	const root = await fs.mkdtemp(path.join(tmpdir(), "proxy-session-"));
 	const cache = path.join(root, "proxies");
-	const project = path.join(root, "projects", "fixture");
-	const media = path.join(project, "media");
-	const metadata = path.join(media, "_metadata");
+	const projects = path.join(root, "projects");
+	const media = path.join(projects, "fixture", "media");
+	const seeded = Object.entries({ fixture: ids, ...moreProjects });
 	const env = { BOPENCUT_DATA: root, BOPENCUT_PROXY_FREE_BYTES: "0", BOPENCUT_PROXY_LIMIT_BYTES: budget };
 	const previous = Object.keys(env).map(key => [key, process.env[key]] as const);
 	Object.assign(process.env, env);
-	await fs.mkdir(metadata, { recursive: true });
 	await fs.mkdir(cache);
-	for (const id of ids) {
-		await fs.writeFile(path.join(media, id + ".mp4"), id);
-		await fs.writeFile(path.join(metadata, id + ".json"), JSON.stringify({ type: "video", diskFile: id + ".mp4" }));
+	for (const [name, sources] of seeded) {
+		const folder = path.join(projects, name, "media");
+		const metadata = path.join(folder, "_metadata");
+		await fs.mkdir(metadata, { recursive: true });
+		for (const id of sources) {
+			await fs.writeFile(path.join(folder, id + ".mp4"), id);
+			await fs.writeFile(path.join(metadata, id + ".json"), JSON.stringify({ type: "video", diskFile: id + ".mp4" }));
+		}
 	}
 	const close: (() => void)[] = [];
 	return {
 		cache, media,
-		tab(id: string, ids: string[], paused = false, build = true, retry?: number) {
+		tab(id: string, ids: string[], paused = false, build = true, retry?: number, project = "fixture") {
 			const events: ProxyUpdate[] = [];
 			let changed = Promise.withResolvers<void>();
-			const end = openSession(id, { project: "fixture", ids, paused, software: false, build, retry, send(event) {
+			const end = openSession(id, { project, ids, paused, software: false, build, retry, send(event) {
 				events.push(event);
 				changed.resolve();
 				changed = Promise.withResolvers<void>();
@@ -230,11 +234,16 @@ async function fixture(ids: string[], budget = "8000000000") {
 			for (const [key, value] of previous) {
 				if (value === undefined) delete process.env[key]; else process.env[key] = value;
 			}
-			for (const dir of [cache, metadata, media]) {
+			const mediaFolders = seeded.flatMap(([name]) => {
+				const project = path.join(projects, name);
+				const folder = path.join(project, "media");
+				return [path.join(folder, "_metadata"), folder, project];
+			});
+			for (const dir of [cache, ...mediaFolders]) {
 				for (const file of await fs.readdir(dir)) await fs.rm(path.join(dir, file), { force: true });
 				await fs.rmdir(dir);
 			}
-			for (const dir of [project, path.dirname(project), root]) await fs.rmdir(dir);
+			for (const dir of [projects, root]) await fs.rmdir(dir);
 		},
 	};
 }
@@ -325,6 +334,29 @@ test("preparation stops after three failed sources and says why", async () => {
 		const reopened = f.tab("reopened", ids, false, true, 1);
 		await reopened.wait(event => event.done === 5 && event.state !== "failed");
 		expect(probed).toHaveLength(8);
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
+test("three failed encodes stop only the session that hit the limit", async () => {
+	const ids = ["broken-one", "broken-two", "broken-three", "broken-four"];
+	const f = await fixture(ids, undefined, { healthy: ["good"] });
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-show_frames")) return videoProbe(3, path.basename(args.at(-1)!).startsWith(".job-"));
+		if (args.includes("-fs")) {
+			const source = path.basename(args[args.indexOf("-i") + 1]);
+			if (source !== "good.mp4") throw new Error("Could not encode this clip");
+			await fs.writeFile(args.at(-1)!, "proxy");
+		}
+		return toolResult();
+	});
+	try {
+		const healthy = f.tab("healthy-tab", ["good"], false, true, undefined, "healthy");
+		const failing = f.tab("failing-tab", ids);
+		await failing.wait(event => event.state === "failed" && event.done === ids.length);
+		expect(failing.events.at(-1)?.error).toBe("No working proxy encoder");
+		expect(healthy.events.flatMap(event => event.media ?? []).map(({ id }) => id)).toEqual(["good"]);
+		expect(healthy.events.at(-1)?.state).toBe("ready");
 	} finally { await f.dispose(); run.mockRestore(); }
 });
 
