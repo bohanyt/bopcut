@@ -556,7 +556,16 @@ export class ProjectManager {
 		}
 	}
 
-	async duplicateProjects({ ids }: { ids: string[] }): Promise<string[]> {
+	private duplicateQueue: Promise<unknown> = Promise.resolve();
+
+	/** Duplicates run one after another, so a second duplicate sees the first's "(1)" and picks "(2)". */
+	duplicateProjects({ ids }: { ids: string[] }): Promise<string[]> {
+		const run = this.duplicateQueue.then(() => this.duplicateNow({ ids }), () => this.duplicateNow({ ids }));
+		this.duplicateQueue = run.catch(() => {});
+		return run;
+	}
+
+	private async duplicateNow({ ids }: { ids: string[] }): Promise<string[]> {
 		const uniqueIds = Array.from(new Set(ids));
 		if (uniqueIds.length === 0) return [];
 
