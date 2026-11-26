@@ -183,23 +183,25 @@ const deriveRules: ElementUpdateRule[] = [
 	},
 ];
 
+/**
+ * Keys after a left-edge trim or extension (the patch keeps the right edge): they stay with the footage,
+ * by the requested edge move. The main track can still move the clip to its start afterwards.
+ */
 export function animationsAfterLeftTrim({
 	element,
 	patch,
-	startTime = patch.startTime,
 	boundaryIdPrefix,
 }: {
 	element: TimelineElement;
 	patch: Partial<TimelineElement>;
-	startTime?: TimelineElement["startTime"];
 	boundaryIdPrefix?: string;
 }): TimelineElement["animations"] {
-	if (!element.animations || startTime === undefined || startTime === element.startTime ||
-		patch.trimStart === undefined || patch.startTime === undefined || patch.duration === undefined ||
+	if (!element.animations || patch.startTime === undefined || patch.startTime === element.startTime ||
+		patch.trimStart === undefined || patch.duration === undefined ||
 		patch.startTime + patch.duration !== element.startTime + element.duration) {
 		return element.animations;
 	}
-	const splitTime = subMediaTime({ a: startTime, b: element.startTime });
+	const splitTime = subMediaTime({ a: patch.startTime, b: element.startTime });
 	return splitAnimationsAtTime({
 		animations: element.animations,
 		splitTime,
@@ -209,6 +211,23 @@ export function animationsAfterLeftTrim({
 }
 
 const enforceRules: ElementUpdateRule[] = [
+	{
+		triggers: ["duration"],
+		apply: ({ element, originalElement, patch, context }) => ({
+			element: {
+				...element,
+				animations: clampAnimationsToDuration({
+					animations: Object.hasOwn(patch, "animations") ? element.animations : animationsAfterLeftTrim({
+						element: originalElement,
+						patch,
+						boundaryIdPrefix: context.boundaryIdPrefix,
+					}),
+					duration: element.duration,
+					boundaryIdPrefix: context.boundaryIdPrefix,
+				}),
+			},
+		}),
+	},
 	{
 		triggers: ["startTime"],
 		apply: ({ element, context }) => {
@@ -244,24 +263,6 @@ const enforceRules: ElementUpdateRule[] = [
 				},
 			};
 		},
-	},
-	{
-		triggers: ["duration"],
-		apply: ({ element, originalElement, patch, context }) => ({
-			element: {
-				...element,
-				animations: clampAnimationsToDuration({
-					animations: Object.hasOwn(patch, "animations") ? element.animations : animationsAfterLeftTrim({
-						element: originalElement,
-						patch,
-						startTime: element.startTime,
-						boundaryIdPrefix: context.boundaryIdPrefix,
-					}),
-					duration: element.duration,
-					boundaryIdPrefix: context.boundaryIdPrefix,
-				}),
-			},
-		}),
 	},
 ];
 

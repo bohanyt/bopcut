@@ -77,3 +77,42 @@ test.each([
 	editor.command.redo();
 	expect(tracks()).toEqual(after);
 });
+
+test.each([0, 2])("left trim of the earliest main clip at %ps keeps keys on the footage", (start) => {
+	// Nothing before the clip: the main track moves it to zero after the trim.
+	const scenes = fixture();
+	const host = getHost(scenes);
+	const key = (id: string, time: number, value: number) =>
+		({ id, time: t(time), value, segmentToNext: "linear" as const, tangentMode: "flat" as const });
+	const clip: VideoElement = {
+		...video("only", start, 5),
+		sourceDuration: t(10),
+		animations: { opacity: { keys: [key("a", 0, 0), key("b", 3, 0.75), key("c", 4.5, 1)] } },
+	};
+	host.tracks.main.elements = [clip];
+	const editor = EditorCore.createRenderOnly();
+	const date = new Date(0);
+	editor.project.setActiveProject({ project: {
+		metadata: { id: "p", name: "Project", duration: t(7), createdAt: date, updatedAt: date },
+		currentSceneId: host.id, scenes, version: 1,
+		settings: { fps, canvasSize: { width: 1920, height: 1080 }, background: { type: "color", color: "#000000" } },
+	} });
+	editor.scenes.setScenes({ scenes, activeSceneId: host.id });
+	editor.command.isRippleEnabled = false;
+	const members = buildResizeMembers({
+		tracks: editor.scenes.getActiveScene().tracks,
+		selectedElements: [{ trackId: host.tracks.main.id, elementId: clip.id }],
+	});
+	const { updates } = computeGroupResize({ members, side: "left", deltaTime: t(1), fps });
+	editor.timeline.updateElements({ updates });
+
+	const after = editor.scenes.getActiveScene().tracks.main.elements[0];
+	expect(after.startTime).toBe(t(0));
+	expect(after.duration).toBe(t(4));
+	expect(after.trimStart).toBe(t(1));
+	const at = (id: string) => getKeyframeById({ animations: after.animations, propertyPath: "opacity", keyframeId: id })?.time;
+	expect(at("a")).toBeUndefined();
+	expect(at("b")).toBe(t(2));
+	expect(at("c")).toBe(t(3.5));
+	expect(getKeyframeAtTime({ animations: after.animations, propertyPath: "opacity", time: t(0) })?.value).toBeCloseTo(0.25);
+});

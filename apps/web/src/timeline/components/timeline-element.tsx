@@ -303,8 +303,8 @@ export const TimelineElement = memo(function TimelineElement({
 	});
 	const baseTrackHeight = getTrackHeight({ type: track.type });
 	const elementKeyframes = useMemo(
-		() => getElementKeyframes({ animations: element.animations }),
-		[element.animations],
+		() => getElementKeyframes({ animations: displayElement.animations }),
+		[displayElement.animations],
 	);
 
 	const renderContent = (
@@ -378,6 +378,7 @@ export const TimelineElement = memo(function TimelineElement({
 					{elementKeyframes.length > 0 ? (
 						<TimelineElementKeyframes
 							element={element}
+							animations={displayElement.animations}
 							elementKeyframes={elementKeyframes}
 							trackId={track.id}
 							zoomLevel={zoomLevel}
@@ -410,6 +411,7 @@ export const TimelineElement = memo(function TimelineElement({
 
 function TimelineElementKeyframes({
 	element,
+	animations,
 	elementKeyframes,
 	trackId,
 	zoomLevel,
@@ -422,6 +424,8 @@ function TimelineElementKeyframes({
 	renderContent,
 }: {
 	element: TimelineElementType;
+	/** The keys as shown now (a trim being dragged keeps them on the footage). */
+	animations: TimelineElementType["animations"];
 	elementKeyframes: ElementKeyframe[];
 	trackId: string;
 	zoomLevel: number;
@@ -458,8 +462,8 @@ function TimelineElementKeyframes({
 
 	const expandedRows = useMemo(
 		() =>
-			isExpanded ? getExpandedRows({ animations: element.animations }) : [],
-		[isExpanded, element.animations],
+			isExpanded ? getExpandedRows({ animations }) : [],
+		[isExpanded, animations],
 	);
 
 	const {
