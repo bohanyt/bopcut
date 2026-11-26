@@ -66,6 +66,14 @@ export interface DragDropConfig {
 	}) => void;
 }
 
+function sameDropTarget(a: DropTarget | null, b: DropTarget | null): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return a.trackIndex === b.trackIndex && a.isNewTrack === b.isNewTrack && a.insertPosition === b.insertPosition &&
+		a.xPosition === b.xPosition && a.targetElement?.elementId === b.targetElement?.elementId &&
+		a.targetElement?.trackId === b.targetElement?.trackId;
+}
+
 export interface DragDropConfigRef {
 	readonly current: DragDropConfig;
 }
@@ -306,6 +314,10 @@ export class DragDropController {
 		dropTarget: DropTarget | null;
 		elementType: ElementType | null;
 	}): void {
+		// dragover fires many times a second while the pointer rests; re-render only on a change.
+		const current = this.state;
+		if (current.kind === "over" && current.elementType === state.elementType &&
+			sameDropTarget(current.dropTarget, state.dropTarget)) return;
 		this.state = { kind: "over", ...state };
 		this.notify();
 	}
