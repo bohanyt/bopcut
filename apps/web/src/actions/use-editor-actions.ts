@@ -16,6 +16,7 @@ import {
 	mediaTime,
 	mediaTimeFromSeconds,
 	minMediaTime,
+	roundFrameTime,
 	subMediaTime,
 	TICKS_PER_SECOND,
 	ZERO_MEDIA_TIME,
@@ -72,8 +73,12 @@ export function useEditorActions() {
 		return activateScope({ entry: timelineScope });
 	}, [hasTimelineSelection, timelineScope]);
 
+	// Keyboard moves land on the project's frame grid: whole seconds are not whole frames at
+	// 29.97 fps, and a split at the playhead must stay on a frame. The end of the timeline stays reachable.
 	const navigate = ({ time }: { time: MediaTime }) => {
-		editor.playback.seek({ time });
+		const end = editor.timeline.getTotalDuration();
+		const onGrid = roundFrameTime({ time, fps: editor.project.getActive().settings.fps });
+		editor.playback.seek({ time: time >= end ? end : minMediaTime({ a: end, b: maxMediaTime({ a: ZERO_MEDIA_TIME, b: onGrid }) }) });
 		editor.playback.revealPlayhead();
 	};
 

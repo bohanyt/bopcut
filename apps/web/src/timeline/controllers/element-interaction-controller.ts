@@ -485,9 +485,11 @@ export class ElementInteractionController {
 	private snapResult({
 		frameSnappedTime,
 		group,
+		fps,
 	}: {
 		frameSnappedTime: MediaTime;
 		group: MoveGroup;
+		fps: FrameRate;
 	}): { snappedTime: MediaTime; snapPoint: SnapPoint | null } {
 		const { snap, input, scene, viewport, playback } = this.deps;
 
@@ -503,8 +505,10 @@ export class ElementInteractionController {
 			zoomLevel: viewport.getZoomLevel(),
 		});
 
+		// An end that snaps to a point leaves the start off the frame grid when the clip is not a whole
+		// number of frames long: keep the start on the grid, the end then lands within half a frame.
 		return {
-			snappedTime: result.snappedAnchorStartTime,
+			snappedTime: maxMediaTime({ a: ZERO_MEDIA_TIME, b: roundFrameTime({ time: result.snappedAnchorStartTime, fps }) }),
 			snapPoint: result.snapPoint,
 		};
 	}
@@ -628,6 +632,7 @@ export class ElementInteractionController {
 		const { snappedTime, snapPoint } = this.snapResult({
 			frameSnappedTime,
 			group: moveGroup,
+			fps,
 		});
 
 		// Ensure the anchor is selected before we render the drag — covers the
@@ -696,6 +701,7 @@ export class ElementInteractionController {
 		const { snappedTime, snapPoint } = this.snapResult({
 			frameSnappedTime,
 			group: drag.moveGroup,
+			fps,
 		});
 
 		drag.currentTime = snappedTime;
