@@ -383,10 +383,13 @@ export class KeyframeDragController {
 			a: snappedAbsolute,
 			b: this.session.anchorTimelineTime,
 		});
-		this.session.deltaTicks = Math.max(
+		const deltaTicks = Math.max(
 			this.session.minDeltaTicks,
 			Math.min(this.session.maxDeltaTicks, snappedDelta),
 		);
+		// Most pointer moves land on the same frame: nothing to draw again.
+		if (deltaTicks === this.session.deltaTicks) return;
+		this.session.deltaTicks = deltaTicks;
 		this.notify();
 	}
 
@@ -398,16 +401,13 @@ export class KeyframeDragController {
 
 		if (this.session.kind !== "active") return;
 
-		const { selectedKeyframes, element } = this.config;
+		// The keyframes that moved during the drag: the selection, or the one grabbed with a modifier
+		// held (which does not select it).
 		const { keyframeRefs, deltaTicks } = this.session;
-		const draggingIds = new Set(keyframeRefs.map((r) => r.keyframeId));
-		const draggingRefs = selectedKeyframes.filter(
-			(kf) => kf.elementId === element.id && draggingIds.has(kf.keyframeId),
-		);
 
 		this.finishSession();
-		if (draggingRefs.length > 0 && deltaTicks !== 0) {
-			this.commitDrag({ keyframeRefs: draggingRefs, deltaTicks });
+		if (keyframeRefs.length > 0 && deltaTicks !== 0) {
+			this.commitDrag({ keyframeRefs, deltaTicks });
 		}
 
 	}
