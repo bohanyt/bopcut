@@ -1,6 +1,9 @@
 import { withoutPresetSide } from "@/animation/presets";
+import type { FrameRate } from "opencut-wasm";
+import { DEFAULT_FPS } from "@/fps/defaults";
 import type {
 	AudioTrack,
+	Bookmark,
 	CompoundElement,
 	ElementRef,
 	OverlayTrack,
@@ -24,7 +27,7 @@ import {
 	getBuiltInElementParams,
 } from "@/params/registry";
 import { generateUUID } from "@/utils/id";
-import { type MediaTime, roundMediaTime, ZERO_MEDIA_TIME } from "@/wasm";
+import { type MediaTime, roundFrameTime, roundMediaTime, TICKS_PER_SECOND, ZERO_MEDIA_TIME } from "@/wasm";
 
 // Compound clips: an element that references a nested scene (kind: "compound").
 // All rules (track type, cycles, create/ungroup, audio flattening) live here so the
@@ -574,10 +577,12 @@ export function ungroupCompoundElement({
 	scenes,
 	hostSceneId,
 	ref,
+	fps = DEFAULT_FPS,
 }: {
 	scenes: TScene[];
 	hostSceneId: string;
 	ref: ElementRef;
+	fps?: FrameRate;
 }): { scenes: TScene[]; elements: ElementRef[] } {
 	const host = findScene(scenes, hostSceneId);
 	if (!host) throw new Error(`Scene not found: ${hostSceneId}`);
@@ -632,6 +637,7 @@ export function ungroupCompoundElement({
 	);
 	const usedTrackIds = new Set(getOrderedTracks(nextTracks).map((track) => track.id));
 	const restored: ElementRef[] = [];
+	const restoredIds = new Map<string, string>();
 
 	const prepareElements = (track: TimelineTrack): TimelineElement[] =>
 		track.elements.flatMap((element) => {
@@ -640,6 +646,7 @@ export function ungroupCompoundElement({
 			// Shared content (or an id clash) gets fresh ids so no scene ends up with duplicates.
 			const id = keepNested || usedElementIds.has(element.id) ? generateUUID() : element.id;
 			usedElementIds.add(id);
+			restoredIds.set(element.id, id);
 			return [foldCompoundAudio({ element: { ...shiftElement(clipped, offset), id }, gainDb, muted })];
 		});
 	const mergeInto = (target: TimelineTrack, elements: TimelineElement[]) => {
@@ -705,13 +712,56 @@ export function ungroupCompoundElement({
 		section.splice(at, 0, track);
 	}
 
+	const bookmarks = [...host.bookmarks];
+	const remainingNotes: Bookmark[] = [];
+	if (nested.bookmarks.length) {
+		const siblings = keepNested ? remainingScenes.flatMap((scene) =>
+			getOrderedTracks(scene.tracks).flatMap((track) => track.elements.filter(
+				(element) => isCompoundElement(element) && element.sceneId === nested.id,
+			)),
+		) : [];
+		const occupied = new Set(bookmarks.map((note) => note.time));
+		const ids = new Set(bookmarks.map((note) => note.id));
+		const frame = TICKS_PER_SECOND * fps.denominator / fps.numerator;
+		const mapTime = (time: number) => roundFrameTime({
+			time: roundMediaTime({ time: Math.max(rangeStart, Math.min(rangeEnd, time)) + offset }),
+			fps,
+		});
+		for (const bookmark of nested.bookmarks) {
+			// Keep a shared note in the source while another instance still shows its start.
+			if (keepNested && (bookmark.time < rangeStart || bookmark.time >= rangeEnd || siblings.some(
+				(clip) => bookmark.time >= clip.trimStart && bookmark.time < clip.trimStart + clip.duration,
+			))) {
+				remainingNotes.push(bookmark);
+				continue;
+			}
+			const { id, duration, elementIds, ...note } = bookmark;
+			const mapped = mapTime(bookmark.time);
+			let time = mapped;
+			while (occupied.has(time)) time = roundFrameTime({ time: roundMediaTime({ time: time + frame }), fps });
+			occupied.add(time);
+			const noteId = id && ids.has(id) ? generateUUID() : id;
+			ids.add(noteId);
+			const span = duration === undefined ? 0 : mapTime(bookmark.time + duration) - mapped;
+			bookmarks.push({
+				...note,
+				time,
+				...(noteId ? { id: noteId } : {}),
+				...(span > 0 ? { duration: roundMediaTime({ time: span }) } : {}),
+				...(elementIds ? { elementIds: elementIds.flatMap((id) => restoredIds.get(id) ?? []) } : {}),
+			});
+		}
+		bookmarks.sort((a, b) => a.time - b.time);
+	}
 	const nextScenes = scenes
 		.filter((scene) => keepNested || scene.id !== nested.id)
-		.map((scene) =>
-			scene.id === hostSceneId
-				? { ...scene, tracks: nextTracks, updatedAt: new Date() }
-				: scene,
-		);
+		.map((scene) => {
+			if (scene.id === hostSceneId) return { ...scene, tracks: nextTracks, bookmarks, updatedAt: new Date() };
+			if (scene.id === nested.id && remainingNotes.length !== nested.bookmarks.length) {
+				return { ...scene, bookmarks: remainingNotes, updatedAt: new Date() };
+			}
+			return scene;
+		});
 	return { scenes: nextScenes, elements: restored };
 }
 

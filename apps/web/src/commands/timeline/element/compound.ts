@@ -101,6 +101,7 @@ export class UngroupCompoundCommand extends ScenesChangeCommand {
 			scenes,
 			hostSceneId,
 			ref: this.ref,
+			fps: EditorCore.getInstance().project.getActiveOrNull()?.settings.fps,
 		});
 		this.selection = result.elements;
 		return result.scenes;
