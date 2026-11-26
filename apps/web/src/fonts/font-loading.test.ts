@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { EditorCore } from "@/core";
 import { fixture, getHost, text } from "@/timeline/__tests__/compound-fixtures";
-import { clearFontAtlasCache, fontFaces, loadFullFont, subscribeFontLoads } from "./google-fonts";
+import { clearFontAtlasCache, forgetLoadedFonts, fontFaces, loadFullFont, subscribeFontLoads } from "./google-fonts";
 
 class FakeLink extends EventTarget {
 	rel = "";
@@ -17,6 +17,7 @@ const original = Object.getOwnPropertyDescriptor(globalThis, "document");
 beforeEach(() => {
 	links = [];
 	clearFontAtlasCache();
+	forgetLoadedFonts();
 	const document = {
 		createElement: () => {
 			const link = new FakeLink();
@@ -32,6 +33,7 @@ beforeEach(() => {
 afterEach(() => {
 	EditorCore.reset();
 	clearFontAtlasCache();
+	forgetLoadedFonts();
 	if (original) Object.defineProperty(globalThis, "document", original);
 	else Reflect.deleteProperty(globalThis, "document");
 });
@@ -118,4 +120,18 @@ test("a one-weight font is requested without the weight it lacks", async () => {
 		if (fetch) Object.defineProperty(globalThis, "fetch", fetch);
 		Reflect.deleteProperty(globalThis, "Image");
 	}
+});
+
+test("one request per family whatever its casing, and an atlas retry keeps loaded fonts", async () => {
+	const first = loadFullFont({ family: "Roboto" });
+	const second = loadFullFont({ family: "roboto" });
+	await settle();
+	expect(links).toHaveLength(1);
+	links[0].dispatchEvent(new Event("load"));
+	await Promise.all([first, second]);
+
+	clearFontAtlasCache();
+	await loadFullFont({ family: "Roboto" });
+	await settle();
+	expect(links).toHaveLength(1);
 });

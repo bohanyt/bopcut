@@ -26,11 +26,21 @@ export function getCachedFontAtlas(): FontAtlas | null {
 	return cachedAtlas;
 }
 
+/** Forgets the atlas so it is fetched again (the picker's Retry); fonts already loaded stay loaded. */
 export function clearFontAtlasCache(): void {
 	cachedAtlas = null;
 	atlasFetchPromise = null;
+}
+
+/** Forgets which fonts were loaded (tests). */
+export function forgetLoadedFonts(): void {
 	fullLoaded.clear();
 	fullLoading.clear();
+}
+
+/** CSS matches family names without regard to case: one request per family, with the atlas's spelling. */
+function familyKey(family: string): string {
+	return family.toLowerCase();
 }
 
 export function loadFontAtlas(): Promise<FontAtlas | null> {
@@ -104,12 +114,15 @@ export function loadFullFont({
 	family: string;
 	weights?: number[];
 }): Promise<void> {
-	if (fullLoaded.has(family)) return Promise.resolve();
-	const running = fullLoading.get(family);
+	const key = familyKey(family);
+	if (fullLoaded.has(key)) return Promise.resolve();
+	const running = fullLoading.get(key);
 	if (running) return running;
 
 	const task = (async () => {
-		const faces = fontFaces({ family, weights, atlas: await loadFontAtlas() });
+		const atlas = await loadFontAtlas();
+		family = Object.keys(atlas?.fonts ?? {}).find((name) => familyKey(name) === key) ?? family;
+		const faces = fontFaces({ family, weights, atlas });
 		const url = `${GOOGLE_FONTS_CSS}?family=${encodeGoogleFontsFamily(family)}:${fontQuery(faces)}&display=swap`;
 		const link = document.createElement("link");
 		link.rel = "stylesheet";
@@ -128,12 +141,12 @@ export function loadFullFont({
 				document.fonts.load(`${italic ? "italic " : ""}${weight} 16px "${family.replace(/"/g, '\\"')}"`),
 			),
 		);
-		fullLoaded.add(family);
+		fullLoaded.add(key);
 		for (const listener of [...loadListeners]) listener();
 	})().finally(() => {
-		if (fullLoading.get(family) === task) fullLoading.delete(family);
+		if (fullLoading.get(key) === task) fullLoading.delete(key);
 	});
-	fullLoading.set(family, task);
+	fullLoading.set(key, task);
 	return task;
 }
 
