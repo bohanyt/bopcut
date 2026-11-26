@@ -7,6 +7,8 @@ import type { MediaTime } from "@/wasm";
 
 export class MoveBookmarkCommand extends Command {
 	private savedScenes: TScene[] | null = null;
+	/** The scenes this command produced, so Redo restores them even when the bookmark object it addressed was replaced. */
+	private appliedScenes: TScene[] | null = null;
 
 	constructor({
 		fromTime,
@@ -63,6 +65,14 @@ export class MoveBookmarkCommand extends Command {
 		});
 
 		editor.scenes.setScenes({ scenes: updatedScenes });
+		this.appliedScenes = updatedScenes;
+	}
+
+	redo(): CommandResult | undefined {
+		// Redo follows the undo of this command, so the timeline is as it was when this command first ran.
+		if (!this.appliedScenes) return this.execute();
+		EditorCore.getInstance().scenes.setScenes({ scenes: this.appliedScenes });
+		return undefined;
 	}
 
 	undo(): void {

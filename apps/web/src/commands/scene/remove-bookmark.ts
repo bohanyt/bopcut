@@ -10,6 +10,8 @@ import { type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 
 export class RemoveBookmarkCommand extends Command {
 	private savedScenes: TScene[] | null = null;
+	/** The scenes this command produced, so Redo restores them even when the bookmark object it addressed was replaced. */
+	private appliedScenes: TScene[] | null = null;
 	private frameTime: MediaTime = ZERO_MEDIA_TIME;
 
 	constructor(private time: MediaTime, private bookmark?: Bookmark) {
@@ -50,6 +52,14 @@ export class RemoveBookmarkCommand extends Command {
 		});
 
 		editor.scenes.setScenes({ scenes: updatedScenes });
+		this.appliedScenes = updatedScenes;
+	}
+
+	redo(): CommandResult | undefined {
+		// Redo follows the undo of this command, so the timeline is as it was when this command first ran.
+		if (!this.appliedScenes) return this.execute();
+		EditorCore.getInstance().scenes.setScenes({ scenes: this.appliedScenes });
+		return undefined;
 	}
 
 	undo(): void {

@@ -80,6 +80,25 @@ afterEach(() => {
 	EditorCore.reset();
 });
 
+test("redo of note edits restores the notes they made, also after earlier notes were recreated", async () => {
+	const editor = setup();
+	const notes = () => editor.scenes.getActiveScene().bookmarks;
+	const plain = { time: t(1), note: "plain" };
+	editor.scenes.setScenes({ scenes: editor.scenes.getScenes().map((scene) => ({ ...scene, bookmarks: [plain] })) });
+	await editor.scenes.updateBookmark({ time: plain.time, bookmark: plain, updates: { note: "edited", duration: t(2) } });
+	await editor.timeline.toggleTrackMute({ trackId: editor.scenes.getActiveScene().tracks.main.id });
+	const edited = notes()[0];
+	await editor.scenes.moveBookmark({ fromTime: edited.time, toTime: t(3), bookmark: edited });
+	await editor.scenes.updateBookmark({ time: t(3), bookmark: notes()[0], updates: { note: "again" } });
+	await editor.scenes.toggleBookmark({ time: t(5) });
+	await editor.scenes.removeBookmark({ time: t(3), bookmark: notes()[0] });
+	const after = editor.scenes.getScenes();
+	while (editor.command.canUndo()) editor.command.undo();
+	expect(notes()).toEqual([plain]);
+	while (editor.command.canRedo()) editor.command.redo();
+	expect(editor.scenes.getScenes()).toEqual(after);
+});
+
 function setupSplitHistory() {
 	const scenes = fixture();
 	const host = getHost(scenes);
