@@ -215,10 +215,10 @@ async function fixture(ids: string[], budget = "8000000000", moreProjects: Recor
 	const close: (() => void)[] = [];
 	return {
 		cache, media,
-		tab(id: string, ids: string[], paused = false, build = true, retry?: number, project = "fixture") {
+		tab(id: string, ids: string[], paused = false, build = true, options: { retry?: number; project?: string; software?: boolean } = {}) {
 			const events: ProxyUpdate[] = [];
 			let changed = Promise.withResolvers<void>();
-			const end = openSession(id, { project, ids, paused, software: false, build, retry, send(event) {
+			const end = openSession(id, { project: "fixture", ids, paused, software: false, build, ...options, send(event) {
 				events.push(event);
 				changed.resolve();
 				changed = Promise.withResolvers<void>();
@@ -328,10 +328,10 @@ test("preparation stops after three failed sources and says why", async () => {
 		await again.wait(event => event.done === 5 && event.state !== "failed");
 		expect(probed).toEqual(["a", "b", "c", "d"]);
 		// Asking to try again also takes the failed ones, which do not stop it a second time.
-		const retried = f.tab("retried", ids, false, true, 1);
+		const retried = f.tab("retried", ids, false, true, { retry: 1 });
 		await retried.wait(event => event.done === 5 && event.state !== "failed");
 		expect(probed.slice(4)).toEqual(["a", "b", "c", "d"]);
-		const reopened = f.tab("reopened", ids, false, true, 1);
+		const reopened = f.tab("reopened", ids, false, true, { retry: 1 });
 		await reopened.wait(event => event.done === 5 && event.state !== "failed");
 		expect(probed).toHaveLength(8);
 	} finally { await f.dispose(); run.mockRestore(); }
@@ -351,12 +351,48 @@ test("three failed encodes stop only the session that hit the limit", async () =
 		return toolResult();
 	});
 	try {
-		const healthy = f.tab("healthy-tab", ["good"], false, true, undefined, "healthy");
+		const healthy = f.tab("healthy-tab", ["good"], false, true, { project: "healthy" });
 		const failing = f.tab("failing-tab", ids);
 		await failing.wait(event => event.state === "failed" && event.done === ids.length);
 		expect(failing.events.at(-1)?.error).toBe("No working proxy encoder");
 		expect(healthy.events.flatMap(event => event.media ?? []).map(({ id }) => id)).toEqual(["good"]);
 		expect(healthy.events.at(-1)?.state).toBe("ready");
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
+test("enabling software encoding retries a source that failed with hardware only", async () => {
+	const ids = ["software-only"];
+	const f = await fixture(ids);
+	const tried: string[] = [];
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc h264_videotoolbox");
+		if (args.includes("-show_frames")) return videoProbe(3, path.basename(args.at(-1)!).startsWith(".job-"));
+		if (args.includes("-fs")) {
+			const encoder = args[args.indexOf("-c:v") + 1];
+			tried.push(encoder);
+			if (encoder !== "libx264") throw new Error("Hardware encoder rejected the source");
+			await fs.writeFile(args.at(-1)!, "proxy");
+		}
+		return toolResult();
+	});
+	try {
+		const hardware = f.tab("hardware", ids);
+		await hardware.wait(event => event.done === 1);
+		expect(tried.length).toBeGreaterThan(0);
+		expect(tried).not.toContain("libx264");
+		expect(hardware.events.some(event => event.media)).toBe(false);
+		hardware.end();
+
+		const attempts = tried.length;
+		const reopened = f.tab("hardware-reopened", ids);
+		await reopened.wait(event => event.done === 1);
+		expect(tried).toHaveLength(attempts);
+		reopened.end();
+
+		const software = f.tab("software", ids, false, true, { software: true });
+		await software.wait(event => event.done === 1);
+		expect(tried).toContain("libx264");
+		expect(software.events.some(event => event.media?.id === "software-only")).toBe(true);
 	} finally { await f.dispose(); run.mockRestore(); }
 });
 
