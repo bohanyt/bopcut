@@ -58,18 +58,44 @@ function legacyDuration(project: SerializedProject): number {
 	return duration;
 }
 
+function* storedMediaRefs(project: unknown): Generator<string> {
+	if (!isRecord(project)) return;
+	const scenes = Array.isArray(project.scenes) ? project.scenes : [project];
+	for (const scene of scenes) {
+		if (!isRecord(scene) || !isRecord(scene.tracks)) continue;
+		for (const track of Object.values(scene.tracks).flat()) {
+			if (!isRecord(track) || !Array.isArray(track.elements)) continue;
+			for (const element of track.elements) {
+				if (isRecord(element) && typeof element.mediaId === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(element.mediaId)) {
+					yield element.mediaId;
+				}
+			}
+		}
+	}
+}
+
+export async function readProjectMediaRefs(id: string): Promise<Set<string>> {
+	return new Set(storedMediaRefs(await readJson(projectFile(id))));
+}
+
 /** Check the saved timeline under the same lock as project writes. */
 export async function projectUsesMedia(id: string, mediaId: string): Promise<boolean> {
-	const project: unknown = await readJson(projectFile(id));
-	if (!isRecord(project)) return false;
-	const scenes = Array.isArray(project.scenes) ? project.scenes : [project];
-	return scenes.some((scene) => {
-		if (!isRecord(scene) || !isRecord(scene.tracks)) return false;
-		return Object.values(scene.tracks).flat().some((track) =>
-			isRecord(track) && Array.isArray(track.elements) &&
-			track.elements.some((element) => isRecord(element) && element.mediaId === mediaId),
-		);
-	});
+	for (const savedId of storedMediaRefs(await readJson(projectFile(id)))) {
+		if (savedId === mediaId) return true;
+	}
+	return false;
+}
+
+async function preserveMediaEligibility(id: string, current: SerializedProject, next: SerializedProject) {
+	const retained = new Set(storedMediaRefs(next));
+	for (const mediaId of new Set(storedMediaRefs(current))) {
+		if (retained.has(mediaId)) continue;
+		const file = path.join(projectDir(id), "media", "_metadata", `${mediaId}.json`);
+		const media = await readJson(file);
+		if (media?.staged !== true) continue;
+		delete media.staged;
+		await atomicWrite(file, JSON.stringify(media));
+	}
 }
 
 function stamp(stat: Stats) {
@@ -145,6 +171,8 @@ export async function writeProject(id: string, value: SerializedProject, current
 	project.metadata.thumbnail = storedThumbnail(value.metadata.thumbnail);
 	// Preserve inline view state written by older versions until it is superseded by navigation.json.
 	project.timelineViewState ??= current?.timelineViewState;
+	// A committed reference makes staged media eligible. Preserve that fact before removing its last reference.
+	if (current) await preserveMediaEligibility(id, current, project);
 	await atomicWrite(projectFile(id), JSON.stringify(project));
 	const stat = await statFile(projectFile(id)).catch((error) => {
 		console.error(`Could not check project summary (${id}):`, error);

@@ -17,6 +17,7 @@ import {
 	projectFile,
 	projectUsesMedia,
 	readProject,
+	readProjectMediaRefs,
 	readProjectSummary,
 	readProjectThumbnail,
 	writeProject,
@@ -197,14 +198,23 @@ async function handle(
 				const dir = path.join(projectDir(id), "media", "_metadata");
 				const files = (await names(dir)).filter((name) => /^[a-zA-Z0-9_-]{1,128}\.json$/.test(name));
 				const manifest = [];
+				let committedRefs: Promise<Set<string>> | undefined;
 				for (let index = 0; index < files.length; index += 32) {
 					const batch = await Promise.all(files.slice(index, index + 32).map(async (name) => {
-						const metadata = await readJson(path.join(dir, name)).catch((error) => {
+						const file = path.join(dir, name);
+						let metadata = await readJson(file).catch((error) => {
 							console.error(`Unreadable media metadata ${name}:`, error);
 							return null;
 						});
+						const mediaId = name.slice(0, -5);
+						if (metadata?.staged === true) {
+							committedRefs ??= readProjectMediaRefs(id).catch(() => new Set<string>());
+							if ((await committedRefs).has(mediaId)) delete metadata.staged;
+							// The last reference may have been removed while we read the project. Re-read its metadata.
+							else metadata = await readJson(file).catch(() => null);
+						}
 						if (typeof metadata?.name !== "string" || typeof metadata.type !== "string") return null;
-						metadata.thumbnailUrl = await resolveMediaThumbnailReference(id, name.slice(0, -5), metadata);
+						metadata.thumbnailUrl = await resolveMediaThumbnailReference(id, mediaId, metadata);
 						return metadata;
 					}));
 					for (const metadata of batch) if (metadata) manifest.push(metadata);
@@ -233,7 +243,7 @@ async function handle(
 				if (method === "HEAD") {
 					const dir = path.join(projectDir(id), "media");
 					const metadata = await readJson(path.join(dir, "_metadata", `${mediaId}.json`));
-					if (!metadata || metadata.staged || typeof metadata.name !== "string" ||
+					if (!metadata || (metadata.staged && !await projectUsesMedia(id, mediaId)) || typeof metadata.name !== "string" ||
 						typeof metadata.type !== "string" ||
 						!new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(metadata.diskFile) ||
 						!(await statFile(path.join(dir, metadata.diskFile)))) {
@@ -265,7 +275,11 @@ async function handle(
 						const file = path.join(dir, `${mediaId}.json`);
 						const old = await readJson(file);
 						if (!old) return new Response(null, { status: 400 });
-						for (const field of Object.keys(mediaEditorFields)) old[field] = metadata[field];
+						const firstMetadata = typeof old.name !== "string";
+						for (const field of Object.keys(mediaEditorFields)) {
+							// The first metadata write may stage an upload. Later writes can only clear the flag.
+							if (field !== "staged" || firstMetadata || metadata.staged !== true) old[field] = metadata[field];
+						}
 						if (metadata.thumbnailUrl === null) delete old.thumbnailUrl;
 						else if (isEmbeddedMediaThumbnail(metadata.thumbnailUrl)) old.thumbnailUrl = metadata.thumbnailUrl;
 						await atomicWrite(file, JSON.stringify(old));
