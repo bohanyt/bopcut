@@ -3,7 +3,9 @@
 import { localizeErrorDetail } from "@/i18n/error-details";
 
 import { useI18n } from "@/i18n/provider";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -82,30 +84,65 @@ export function SoundsView() {
 	);
 }
 
-function SoundEffectsView() {
+/** Plays one sound preview at a time; a preview that cannot play says so. */
+function useSoundPreview() {
 	const { t } = useI18n();
-	const {
-		topSoundEffects,
-		isLoading,
-		searchQuery,
-		setSearchQuery,
-		scrollPosition,
-		setScrollPosition,
-		loadSavedSounds,
-		showCommercialOnly,
-		toggleCommercialFilter,
-		hasLoaded,
-		setTopSoundEffects,
-		setLoading,
-		setError,
-		setHasLoaded,
-		setCurrentPage,
-		setHasNextPage,
-		setTotalCount,
-	} = useSoundsStore();
+	const [playingId, setPlayingId] = useState<number | null>(null);
+	const player = useRef<HTMLAudioElement | null>(null);
+	// Leaving the tab stops the preview.
+	useEffect(() => () => player.current?.pause(), []);
+
+	const toggle = ({ sound }: { sound: SoundEffect }) => {
+		player.current?.pause();
+		if (playingId === sound.id) {
+			player.current = null;
+			setPlayingId(null);
+			return;
+		}
+		if (!sound.previewUrl) {
+			player.current = null;
+			setPlayingId(null);
+			toast.error(t("sounds.playFailed", { name: sound.name }));
+			return;
+		}
+		const audio = new Audio(sound.previewUrl);
+		const stopped = () => {
+			if (player.current !== audio) return false;
+			player.current = null;
+			setPlayingId(null);
+			return true;
+		};
+		const failed = () => {
+			if (stopped()) toast.error(t("sounds.playFailed", { name: sound.name }), { id: `sound-preview-${sound.id}` });
+		};
+		audio.addEventListener("ended", stopped);
+		audio.addEventListener("error", failed);
+		audio.play().catch(failed);
+		player.current = audio;
+		setPlayingId(sound.id);
+	};
+	return { playingId, toggle };
+}
+
+export function SoundEffectsView() {
+	const { t } = useI18n();
+	// Only what is shown: a store update elsewhere (a saved sound, a search page) leaves this list alone.
+	const { topSoundEffects, isLoading, loadError, searchQuery, showCommercialOnly, hasLoaded } = useSoundsStore(
+		useShallow((state) => ({
+			topSoundEffects: state.topSoundEffects,
+			isLoading: state.isLoading,
+			loadError: state.error,
+			searchQuery: state.searchQuery,
+			showCommercialOnly: state.showCommercialOnly,
+			hasLoaded: state.hasLoaded,
+		})),
+	);
+	const { setSearchQuery, toggleCommercialFilter, loadSavedSounds } = useSoundsStore.getState();
 	const {
 		results: searchResults,
 		isLoading: isSearching,
+		error: searchError,
+		retry: retrySearch,
 		loadMore,
 		hasNextPage,
 		isLoadingMore,
@@ -113,16 +150,28 @@ function SoundEffectsView() {
 		query: searchQuery,
 		commercialOnly: showCommercialOnly,
 	});
+	const [loadAttempt, setLoadAttempt] = useState(0);
+	const { playingId, toggle: playSound } = useSoundPreview();
 
-	const [playingId, setPlayingId] = useState<number | null>(null);
-	const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(
-		null,
-	);
+	const displayedSounds = searchQuery ? searchResults : topSoundEffects;
+	const failure = searchQuery
+		? searchError && !isSearching
+			? displayedSounds.length === 0
+				? { message: t("sounds.searchFailed"), retry: retrySearch }
+				: { message: t("sounds.loadMoreFailed"), retry: loadMore }
+			: null
+		: loadError && !isLoading && topSoundEffects.length === 0
+			? { message: t("sounds.loadFailed"), retry: () => setLoadAttempt((count) => count + 1) }
+			: searchError && topSoundEffects.length > 0
+				? { message: t("sounds.loadMoreFailed"), retry: loadMore }
+				: null;
 
 	const { scrollAreaRef, handleScroll } = useInfiniteScroll({
 		onLoadMore: loadMore,
 		hasMore: hasNextPage,
 		isLoading: isLoadingMore || isSearching,
+		// After a failed page, the Retry button loads it: scrolling would retry it on every event.
+		enabled: !failure,
 	});
 
 	useEffect(() => {
@@ -135,12 +184,13 @@ function SoundEffectsView() {
 		}
 
 		let shouldIgnore = false;
+		const store = useSoundsStore.getState();
 
 		const fetchTopSounds = async () => {
 			try {
 				if (!shouldIgnore) {
-					setLoading({ loading: true });
-					setError({ error: null });
+					store.setLoading({ loading: true });
+					store.setError({ error: null });
 				}
 
 				const response = await fetch(
@@ -153,24 +203,24 @@ function SoundEffectsView() {
 					}
 
 					const data = await response.json();
-					setTopSoundEffects({ sounds: data.results });
-					setHasLoaded({ loaded: true });
+					store.setTopSoundEffects({ sounds: data.results });
+					store.setHasLoaded({ loaded: true });
 
-					setCurrentPage({ page: 1 });
-					setHasNextPage({ hasNext: !!data.next });
-					setTotalCount({ count: data.count });
+					store.setCurrentPage({ page: 1 });
+					store.setHasNextPage({ hasNext: !!data.next });
+					store.setTotalCount({ count: data.count });
 				}
 			} catch (error) {
 				if (!shouldIgnore) {
 					console.error("Failed to fetch top sounds:", error);
-					setError({
+					store.setError({
 						error:
 							error instanceof Error ? error.message : "Failed to load sounds",
 					});
 				}
 			} finally {
 				if (!shouldIgnore) {
-					setLoading({ loading: false });
+					store.setLoading({ loading: false });
 				}
 			}
 		};
@@ -181,66 +231,25 @@ function SoundEffectsView() {
 			shouldIgnore = true;
 			clearTimeout(timeoutId);
 		};
-	}, [
-		hasLoaded,
-		setTopSoundEffects,
-		setLoading,
-		setError,
-		setHasLoaded,
-		setCurrentPage,
-		setHasNextPage,
-		setTotalCount,
-	]);
+	}, [hasLoaded, loadAttempt]);
 
+	// The scroll position is kept for the next time the tab opens. It is written once, when the tab
+	// closes: a store write on every scroll event re-rendered the whole list.
+	const scrollTop = useRef(useSoundsStore.getState().scrollPosition);
 	useEffect(() => {
-		if (!scrollAreaRef.current || scrollPosition <= 0) {
-			return;
-		}
-
-		const restoreScrollPosition = () => {
-			scrollAreaRef.current?.scrollTo({ top: scrollPosition });
+		const restoreTo = scrollTop.current;
+		const timeoutId = restoreTo > 0
+			? setTimeout(() => scrollAreaRef.current?.scrollTo({ top: restoreTo }), 100)
+			: undefined;
+		return () => {
+			clearTimeout(timeoutId);
+			useSoundsStore.getState().setScrollPosition({ position: scrollTop.current });
 		};
+	}, [scrollAreaRef]);
 
-		const timeoutId = setTimeout(restoreScrollPosition, 100, {});
-
-		return () => clearTimeout(timeoutId);
-	}, [scrollPosition, scrollAreaRef]);
-
-	const handleScrollWithPosition = ({
-		currentTarget,
-	}: React.UIEvent<HTMLDivElement>) => {
-		const { scrollTop } = currentTarget;
-		setScrollPosition({ position: scrollTop });
-		handleScroll({ currentTarget } as React.UIEvent<HTMLDivElement>);
-	};
-
-	const displayedSounds = searchQuery ? searchResults : topSoundEffects;
-
-	const playSound = ({ sound }: { sound: SoundEffect }) => {
-		if (playingId === sound.id) {
-			audioElement?.pause();
-			setPlayingId(null);
-			return;
-		}
-
-		audioElement?.pause();
-
-		if (sound.previewUrl) {
-			const audio = new Audio(sound.previewUrl);
-			audio.addEventListener("ended", () => {
-				setPlayingId(null);
-			});
-			audio.addEventListener("error", () => {
-				setPlayingId(null);
-			});
-			audio.play().catch((error) => {
-				console.error("Failed to play sound preview:", error);
-				setPlayingId(null);
-			});
-
-			setAudioElement(audio);
-			setPlayingId(sound.id);
-		}
+	const handleScrollWithPosition = (event: React.UIEvent<HTMLDivElement>) => {
+		scrollTop.current = event.currentTarget.scrollTop;
+		handleScroll(event);
 	};
 
 	return (
@@ -248,6 +257,7 @@ function SoundEffectsView() {
 			<div className="flex items-center gap-3">
 				<Input
 					placeholder={t("sounds.searchEffects")}
+					aria-label={t("sounds.searchEffects")}
 					className="w-full"
 					containerClassName="w-full"
 					value={searchQuery}
@@ -263,6 +273,8 @@ function SoundEffectsView() {
 							variant="text"
 							size="icon"
 							className={cn(showCommercialOnly && "text-primary")}
+							aria-label={t("sounds.licenseFilter")}
+							title={t("sounds.licenseFilter")}
 						>
 							<HugeiconsIcon icon={FilterMailIcon} />
 						</Button>
@@ -306,7 +318,15 @@ function SoundEffectsView() {
 								onPlay={playSound}
 							/>
 						))}
-						{!isLoading && !isSearching && displayedSounds.length === 0 && (
+						{failure && (
+							<div role="alert" className="flex flex-col items-start gap-2 text-sm">
+								<p className="text-destructive">{failure.message}</p>
+								<Button variant="outline" size="sm" onClick={() => failure.retry()}>
+									{t("common.retry")}
+								</Button>
+							</div>
+						)}
+						{!failure && !isLoading && !isSearching && displayedSounds.length === 0 && (
 							<div className="text-muted-foreground text-sm">
 								{searchQuery ? t("sounds.noMatches") : t("sounds.empty")}
 							</div>
@@ -323,53 +343,23 @@ function SoundEffectsView() {
 	);
 }
 
-function SavedSoundsView() {
+export function SavedSoundsView() {
 	const { t } = useI18n();
-	const {
-		savedSounds,
-		isLoadingSavedSounds,
-		savedSoundsError,
-		loadSavedSounds,
-		clearSavedSounds,
-	} = useSoundsStore();
-
-	const [playingId, setPlayingId] = useState<number | null>(null);
-	const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(
-		null,
+	const { savedSounds, isLoadingSavedSounds, savedSoundsError } = useSoundsStore(
+		useShallow((state) => ({
+			savedSounds: state.savedSounds,
+			isLoadingSavedSounds: state.isLoadingSavedSounds,
+			savedSoundsError: state.savedSoundsError,
+		})),
 	);
+	const { loadSavedSounds, clearSavedSounds } = useSoundsStore.getState();
+	const { playingId, toggle: playSound } = useSoundPreview();
 
 	const [showClearDialog, setShowClearDialog] = useState(false);
 
 	useEffect(() => {
 		loadSavedSounds();
 	}, [loadSavedSounds]);
-
-	const playSound = ({ sound }: { sound: SoundEffect }) => {
-		if (playingId === sound.id) {
-			audioElement?.pause();
-			setPlayingId(null);
-			return;
-		}
-
-		audioElement?.pause();
-
-		if (sound.previewUrl) {
-			const audio = new Audio(sound.previewUrl);
-			audio.addEventListener("ended", () => {
-				setPlayingId(null);
-			});
-			audio.addEventListener("error", () => {
-				setPlayingId(null);
-			});
-			audio.play().catch((error) => {
-				console.error("Failed to play sound preview:", error);
-				setPlayingId(null);
-			});
-
-			setAudioElement(audio);
-			setPlayingId(sound.id);
-		}
-	};
 
 	const convertToSoundEffect = ({
 		savedSound,
@@ -464,10 +454,7 @@ function SavedSoundsView() {
 							</Button>
 							<Button
 								variant="destructive"
-								onClick={async ({
-									stopPropagation,
-								}: React.MouseEvent<HTMLButtonElement>) => {
-									stopPropagation();
+								onClick={async () => {
 									await clearSavedSounds();
 									setShowClearDialog(false);
 								}}
@@ -503,28 +490,31 @@ interface AudioItemProps {
 	onPlay: ({ sound }: { sound: SoundEffect }) => void;
 }
 
-function AudioItem({ sound, isPlaying, onPlay }: AudioItemProps) {
+export function AudioItem({ sound, isPlaying, onPlay }: AudioItemProps) {
 	const { t } = useI18n();
-	const { addSoundToTimeline, isSoundSaved, toggleSavedSound } =
-		useSoundsStore();
-	const isSaved = isSoundSaved({ soundId: sound.id });
+	// Re-renders only when this sound is saved or unsaved.
+	const isSaved = useSoundsStore((state) => state.savedSounds.some(({ id }) => id === sound.id));
+	const [isAdding, setAdding] = useState(false);
 
 	const handleClick = () => {
 		onPlay({ sound });
 	};
 
-	const handleSaveClick = ({
-		stopPropagation,
-	}: React.MouseEvent<HTMLButtonElement>) => {
-		stopPropagation();
-		toggleSavedSound({ soundEffect: sound });
+	// The buttons sit beside the play button, not inside it: there is no click to stop.
+	const handleSaveClick = () => {
+		useSoundsStore.getState().toggleSavedSound({ soundEffect: sound });
 	};
 
-	const handleAddToTimeline = async ({
-		stopPropagation,
-	}: React.MouseEvent<HTMLButtonElement>) => {
-		stopPropagation();
-		await addSoundToTimeline({ sound });
+	const handleAddToTimeline = async () => {
+		if (isAdding) return;
+		setAdding(true);
+		try {
+			if (await useSoundsStore.getState().addSoundToTimeline({ sound })) {
+				toast(t("sounds.added", { name: sound.name }));
+			}
+		} finally {
+			setAdding(false);
+		}
 	};
 
 	return (
@@ -555,9 +545,11 @@ function AudioItem({ sound, isPlaying, onPlay }: AudioItemProps) {
 				<Button
 					variant="text"
 					size="icon"
-					className="text-muted-foreground hover:text-foreground w-auto !opacity-100"
+					className={cn("text-muted-foreground hover:text-foreground w-auto !opacity-100", isAdding && "animate-pulse")}
 					onClick={handleAddToTimeline}
-					title={t("sounds.addToTimeline")}
+					disabled={isAdding}
+					title={t("sounds.addAtPlayhead")}
+					aria-label={t("sounds.addNamedAtPlayhead", { name: sound.name })}
 				>
 					<HugeiconsIcon icon={PlusSignIcon} />
 				</Button>
@@ -571,6 +563,8 @@ function AudioItem({ sound, isPlaying, onPlay }: AudioItemProps) {
 					}`}
 					onClick={handleSaveClick}
 					title={isSaved ? t("sounds.removeSaved") : t("sounds.saveSound")}
+					aria-label={isSaved ? t("sounds.removeNamedSaved", { name: sound.name }) : t("sounds.saveNamed", { name: sound.name })}
+					aria-pressed={isSaved}
 				>
 					<HugeiconsIcon
 						icon={FavouriteIcon}
