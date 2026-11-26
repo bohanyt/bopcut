@@ -5,7 +5,6 @@ import {
 	type CommandResult,
 } from "@/commands/base-command";
 import { EditorCore } from "@/core";
-import { mediaIdsInScenes } from "@/core/managers/media-manager";
 import type { MediaAsset } from "@/media/types";
 import { buildWaveformSourceKey } from "@/media/waveform-summary";
 import { waveformCache } from "@/services/waveform-cache/service";
@@ -99,15 +98,17 @@ export class RemoveMediaAssetCommand extends Command {
 	}
 
 	private async deleteFromStorage(editor: EditorCore, removedAsset: MediaAsset): Promise<void> {
+		editor.media.markBinChanged(this.assetId);
 		const session = editor.save.getCurrent();
 		if (editor.save.isRunning() && session?.projectId === this.projectId && session.isDirty()) {
+			// The saved timeline may still use the asset: send the delete once the edits are on disk.
+			// The server refuses it while the saved project still uses the asset.
 			const removal = new AbortController();
 			this.pendingRemoval = removal;
-			// The saved timeline may still use the asset even when the editor has no clips left.
-			const written = await session.whenSaved();
+			const written = await session.whenSaved(undefined, removal.signal);
 			if (removal.signal.aborted) return;
 			this.pendingRemoval = null;
-			if (!written || mediaIdsInScenes(written.scenes).has(this.assetId)) return;
+			if (!written) return;
 		}
 		await editor.media.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: null, removedAsset });
 	}
@@ -130,13 +131,12 @@ export class RemoveMediaAssetCommand extends Command {
 			restoredBin.splice(this.removedIndex, 0, restoredAsset);
 			editor.media.setAssets({ assets: restoredBin });
 
-			if (!pending) {
-				editor.media
-					.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: restoredAsset })
-					.catch((error) => {
-						console.error("Failed to restore media item on undo:", error);
-					});
-			}
+			const restored = pending
+				? editor.media.restoreUnsentRemoval({ projectId: this.projectId, asset: restoredAsset })
+				: editor.media.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: restoredAsset });
+			restored.catch((error) => {
+				console.error("Failed to restore media item on undo:", error);
+			});
 		}
 
 		if (this.savedScenes) {

@@ -130,8 +130,7 @@ export class MediaManager {
 		asset: MediaAsset | null;
 		removedAsset?: MediaAsset;
 	}): Promise<void> {
-		const publication = this.pendingPublications.get(id);
-		if (publication) publication.binChanged = true;
+		this.markBinChanged(id);
 		let writes = this.binWrites.get(projectId);
 		if (!writes) this.binWrites.set(projectId, writes = new Map());
 		const projectWrites = writes;
@@ -168,6 +167,20 @@ export class MediaManager {
 		projectWrites.set(id, { asset, done, started: started?.promise });
 		if (this.loadingBinChanges?.projectId === projectId) this.loadingBinChanges.changes.set(id, asset);
 		return done;
+	}
+
+	/** A bin change of `id` is decided (its write may follow later): a late import response must not republish it. */
+	markBinChanged(id: string): void {
+		const publication = this.pendingPublications.get(id);
+		if (publication) publication.binChanged = true;
+	}
+
+	/** Undo of a removal whose delete was never sent: uploads only if another tab removed the bytes meanwhile. */
+	async restoreUnsentRemoval({ projectId, asset }: { projectId: string; asset: MediaAsset }): Promise<void> {
+		const stored = await storageService.hasStoredMediaAsset({
+			projectId, id: asset.id, signal: AbortSignal.timeout(10_000),
+		}).catch(() => false);
+		if (!stored && this.assets.includes(asset)) await this.persistBinChange({ projectId, id: asset.id, asset });
 	}
 
 	async settleBinWrites(projectId: string): Promise<void> {

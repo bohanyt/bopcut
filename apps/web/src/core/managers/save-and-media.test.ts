@@ -206,8 +206,9 @@ describe("removing used media", () => {
 		expect(await editor.save.flush()).toBe(true);
 		const remove = mock(async () => {});
 		const restore = mock(async () => {});
-		stub({ deleteMediaAsset: remove, saveMediaAsset: restore });
-		return { editor, disk, remove, restore };
+		const stored = mock(async () => true);
+		stub({ deleteMediaAsset: remove, saveMediaAsset: restore, hasStoredMediaAsset: stored });
+		return { editor, disk, remove, restore, stored };
 	}
 
 	test("undo before the write keeps the bytes, and a second removal waits again", async () => {
@@ -230,6 +231,44 @@ describe("removing used media", () => {
 		expect(restore).not.toHaveBeenCalled();
 		writing.open();
 		expect(await saved).toBe(true);
+		await until(() => remove.mock.calls.length === 1);
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
+	});
+
+	test("undo before the write uploads again when another tab deleted the bytes", async () => {
+		const { editor, remove, restore, stored } = await setup();
+		stored.mockImplementation(async () => false);
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		editor.command.undo();
+		await until(() => restore.mock.calls.length === 1);
+		expect(remove).not.toHaveBeenCalled();
+		expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["first", "second"]);
+	});
+
+	test("undo drops the waiting removal", async () => {
+		const { editor } = await setup();
+		const session = editor.save.getCurrent()!;
+		const waiters = () => (session as unknown as { savedWaiters: unknown[] }).savedWaiters.length;
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		expect(waiters()).toBe(1);
+		editor.command.undo();
+		expect(waiters()).toBe(0);
+	});
+
+	test("a navigation write after the clip's deletion still sends the delete", async () => {
+		const { editor, disk, remove } = await setup();
+		const { main } = editor.scenes.getActiveScene().tracks;
+		const first = main.elements.find((clip) => "mediaId" in clip && clip.mediaId === "first")!;
+		editor.timeline.deleteElements({ elements: [{ trackId: main.id, elementId: first.id }] });
+		expect(await editor.save.flush()).toBe(true);
+		const writes = disk.writes.length;
+		editor.save.markNavigationDirty();
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		expect(remove).not.toHaveBeenCalled();
+		// Only the navigation record is written: the project file is the one saved after the deletion.
+		expect(await editor.save.getCurrent()!.settle()).toBe(true);
+		expect(disk.writes).toHaveLength(writes);
+		expect(disk.viewWrites.length).toBeGreaterThan(0);
 		await until(() => remove.mock.calls.length === 1);
 		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
 	});
@@ -664,6 +703,8 @@ describe("project command history", () => {
 		stub({
 			deleteMediaAsset: deleteMedia,
 			saveMediaAsset: saveMedia,
+			// The delete waited for A's save and was never sent: the bytes are still stored.
+			hasStoredMediaAsset: async () => true,
 			loadAllMediaAssets: async () => [bAsset],
 		});
 
