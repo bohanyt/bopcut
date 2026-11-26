@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Canvas, createCanvas, GlobalFonts } from "@napi-rs/canvas";
-import { drawStyledText } from "@/text/draw-styled";
+import { drawStyledText, releaseTextScratch } from "@/text/draw-styled";
 import { measureTextElement } from "@/text/measure-element";
 import type { TextElement } from "@/timeline";
 import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
@@ -19,8 +19,11 @@ beforeAll(() => {
 		}
 	}
 	Object.defineProperty(globalThis, "OffscreenCanvas", { configurable: true, writable: true, value: CountingCanvas });
+	// Other test files in the same run may have drawn shadowed text with another canvas.
+	releaseTextScratch();
 });
 afterAll(() => {
+	releaseTextScratch();
 	if (previous) Object.defineProperty(globalThis, "OffscreenCanvas", previous);
 	else Reflect.deleteProperty(globalThis, "OffscreenCanvas");
 });

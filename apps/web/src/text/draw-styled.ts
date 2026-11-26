@@ -25,6 +25,12 @@ const MAX_SCRATCH_PIXELS = 2048 * 2048;
 const scratch: { glyphs?: Surface; shade?: Surface } = {};
 const prepared = new WeakSet<Surface>();
 
+/** Drops the kept scratch surfaces (they are made again on the next shadowed text). */
+export function releaseTextScratch(): void {
+	scratch.glyphs = undefined;
+	scratch.shade = undefined;
+}
+
 /**
  * A cleared drawing area of at least width × height. Shadowed text redraws every frame, so its two
  * surfaces are reused instead of allocated each time; only the top-left width × height is used.
