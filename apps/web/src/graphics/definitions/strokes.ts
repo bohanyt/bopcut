@@ -142,6 +142,49 @@ export function subpathProgress(lengths: number[], progress: number): number[] {
 	});
 }
 
+/**
+ * A path's measurements stay the same while only how much of it is drawn changes: they are kept per
+ * path text, for the paths drawn last.
+ */
+const MEASURED_PATHS_KEPT = 32;
+const measuredPaths = new Map<string, { paths: Array<{ d: string; length: number }>; box?: [number, number, number, number] }>();
+
+function measured(d: string) {
+	let entry = measuredPaths.get(d);
+	if (entry) {
+		// The most recently used is kept longest.
+		measuredPaths.delete(d);
+	} else {
+		entry = { paths: measurePath(d) };
+		if (measuredPaths.size >= MEASURED_PATHS_KEPT) {
+			measuredPaths.delete(measuredPaths.keys().next().value as string);
+		}
+	}
+	measuredPaths.set(d, entry);
+	return entry;
+}
+
+/** The path's own bounds, for a path without a view box. This lays out the page once. */
+function pathBox(d: string): [number, number, number, number] {
+	const svgPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+	svgPath.setAttribute("d", d);
+	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
+	svg.appendChild(svgPath);
+	document.body.appendChild(svg);
+	try {
+		const bounds = svgPath.getBBox();
+		return [
+			bounds.x - (bounds.width ? 0 : 0.5),
+			bounds.y - (bounds.height ? 0 : 0.5),
+			bounds.width || 1,
+			bounds.height || 1,
+		];
+	} finally {
+		svg.remove();
+	}
+}
+
 function measurePath(d: string) {
 	const parts = splitSubpaths(d);
 	const paths: Array<{ d: string; length: number }> = [];
@@ -234,33 +277,12 @@ export const pathGraphicDefinition: GraphicDefinition = {
 		if (typeof document === "undefined") return;
 		const d = String(params.d ?? "");
 		try {
-			const paths = measurePath(d);
-			const svgPath = document.createElementNS(
-				"http://www.w3.org/2000/svg",
-				"path",
-			);
-			svgPath.setAttribute("d", d);
+			const geometry = measured(d);
+			const { paths } = geometry;
 			let box = parseViewBox(String(params.viewBox ?? ""));
 			if (!box) {
-				const svg = document.createElementNS(
-					"http://www.w3.org/2000/svg",
-					"svg",
-				);
-				svg.style.cssText =
-					"position:absolute;visibility:hidden;pointer-events:none";
-				svg.appendChild(svgPath);
-				document.body.appendChild(svg);
-				try {
-					const bounds = svgPath.getBBox();
-					box = [
-						bounds.x - (bounds.width ? 0 : 0.5),
-						bounds.y - (bounds.height ? 0 : 0.5),
-						bounds.width || 1,
-						bounds.height || 1,
-					];
-				} finally {
-					svg.remove();
-				}
+				geometry.box ??= pathBox(d);
+				box = geometry.box;
 			}
 			const visible = subpathProgress(
 				paths.map((path) => path.length),
