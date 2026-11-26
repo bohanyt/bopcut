@@ -9,8 +9,12 @@ import { relocateVisualCompounds, syncCompoundDurations } from "@/timeline/compo
 import { loadIcon } from "@/stickers/providers/iconify";
 import { generateUUID } from "@/utils/id";
 import { floatToFrameRate } from "@/fps/utils";
+import { releaseMediaAssetUrls } from "@/media/url-release";
+import { buildNewProject } from "@/project/create";
 import type { TProjectSettings } from "@/project/types";
-import { type AgentAsset, type AgentElement, type LoadedMedia, buildAgentElement, checkAgentDuration, checkAgentTrim, createAgentTrack, loadAgentAsset } from "./elements";
+import { storageService } from "@/services/storage/service";
+import { getProjectDurationFromScenes } from "@/timeline/scenes";
+import { type AgentAsset, type AgentElement, type LoadedMedia, buildAgentElement, checkAgentDuration, checkAgentTrim, createAgentTrack, prepareBundleAsset } from "./elements";
 import { type BuildContext, applyAgentKeyframes, buildAgentCompound, walkAgentElements } from "./compound-content";
 import { loadTextPresets } from "@/text/presets";
 import { checkAgentCaption, resolveCaptionPreset } from "./captions";
@@ -77,7 +81,7 @@ export function buildBundleScenes({ bundle, media, sceneId }: { bundle: Bundle; 
 }
 
 export async function importAgentBundle({ onStatus }: { onStatus: (text: string) => void }): Promise<string> {
-	const editor = EditorCore.getInstance();
+	const signal = EditorCore.getInstance().project.getSessionSignal();
 	const bundle: Bundle = await (await fetch("/api/agent/bundle", { cache: "no-store" })).json();
 	// Captions, trims, durations and asset keys are checked first: a bad bundle fails before a project is created.
 	let presets: ReturnType<typeof loadTextPresets> | undefined;
@@ -88,41 +92,53 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 		checkAgentDuration(e);
 	}
 	checkBundleAssetKeys(bundle);
-	const projectId = await editor.project.createNewProject({ name: bundle.name });
-	const session = editor.media.startImport();
-	if (!session || session.projectId !== projectId) throw new Error("The bundle's project is no longer open");
-	// Apply the bundle's canvas before anything is placed on it.
-	const settings = bundleProjectSettings(bundle);
-	if (settings?.canvasSize) await editor.project.updateSettings({ settings: { canvasSize: settings.canvasSize, canvasSizeMode: settings.canvasSizeMode }, pushHistory: false });
+	const project = buildNewProject({ name: bundle.name });
+	const projectId = project.metadata.id;
+	const settings = { ...project.settings, ...bundleProjectSettings(bundle) };
 	const media = new Map<string, LoadedMedia>();
-
-	let done = 0;
-	for (const a of bundle.assets) {
-		onStatus(getBrowserTranslator()("agentImport.asset", { done: ++done, total: bundle.assets.length, name: a.name }));
-		media.set(a.key, await loadAgentAsset({ session, asset: a }));
+	let storageTouched = false;
+	try {
+		for (const [index, asset] of bundle.assets.entries()) {
+			onStatus(getBrowserTranslator()("agentImport.asset", { done: index + 1, total: bundle.assets.length, name: asset.name }));
+			const { mediaAsset, loaded } = await prepareBundleAsset({ asset, signal });
+			try {
+				signal.throwIfAborted();
+				storageTouched = true;
+				await storageService.saveMediaAsset({ projectId, mediaAsset });
+				media.set(asset.key, loaded);
+			} finally {
+				releaseMediaAssetUrls(mediaAsset);
+			}
+		}
+		for (const e of walkAgentElements([...(bundle.main ?? []), ...(bundle.audio ?? []), ...(bundle.overlay ?? []).flatMap((t) => t.elements ?? [])])) {
+			signal.throwIfAborted();
+			if (e.icon) e.icon.svg = await loadIcon(e.icon.name);
+		}
+		signal.throwIfAborted();
+		onStatus(getBrowserTranslator()("agentImport.timeline"));
+		const [main] = project.scenes;
+		const built = buildBundleScenes({ bundle: { ...bundle, ...settings.canvasSize }, media, sceneId: main.id });
+		const scenes = syncCompoundDurations(relocateVisualCompounds([{ ...main, tracks: built.tracks }, ...built.scenes]));
+		storageTouched = true;
+		await storageService.saveProject({ project: {
+			...project,
+			settings,
+			scenes,
+			metadata: { ...project.metadata, duration: getProjectDurationFromScenes({ scenes }), updatedAt: new Date() },
+		} });
+	} catch (error) {
+		if (storageTouched) {
+			try {
+				await storageService.deleteProject({ id: projectId });
+			} catch (cleanupError) {
+				const message = (value: unknown) => value instanceof Error ? value.message : String(value);
+				throw new Error(getBrowserTranslator()("agentImport.cleanupFailed", {
+					error: message(error), cleanup: message(cleanupError),
+				}), { cause: error });
+			}
+		}
+		throw error;
 	}
-
-	for (const e of walkAgentElements([...(bundle.main ?? []), ...(bundle.audio ?? []), ...(bundle.overlay ?? []).flatMap((t) => t.elements ?? [])])) {
-		session.signal.throwIfAborted();
-		if (e.icon) e.icon.svg = await loadIcon(e.icon.name);
-	}
-
-	session.signal.throwIfAborted();
-	if (settings?.fps) await editor.project.updateSettings({ settings: { fps: settings.fps }, pushHistory: false });
-
-	session.signal.throwIfAborted();
-	onStatus(getBrowserTranslator()("agentImport.timeline"));
-	const main = editor.scenes.getActiveScene();
-	// Elements are sized for the canvas the project really has (an invalid bundle size keeps the default).
-	const canvas = editor.project.getActive().settings.canvasSize;
-	const built = buildBundleScenes({ bundle: { ...bundle, width: canvas.width, height: canvas.height }, media, sceneId: main.id });
-	const scenes = syncCompoundDurations(relocateVisualCompounds([
-		...editor.scenes.getScenes().map((scene) => (scene.id === main.id ? { ...scene, tracks: built.tracks } : scene)),
-		...built.scenes,
-	]));
-	editor.scenes.setScenes({ scenes, activeSceneId: main.id });
-	editor.timeline.updateTracks(editor.scenes.getActiveScene().tracks);
-	await editor.project.saveCurrentProject();
 	onStatus(getBrowserTranslator()("agentImport.done", { count: bundle.assets.length }));
 	return projectId;
 }
