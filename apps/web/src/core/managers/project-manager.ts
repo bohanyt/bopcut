@@ -37,7 +37,8 @@ export interface MigrationState {
 
 export class ProjectManager {
 	private active: TProject | null = null;
-	private fpsEditRevision = 0;
+	/** Identifies the explicit frame-rate edit currently applied by history. */
+	private fpsEditRevision: symbol | undefined;
 	private savedProjects: TProjectMetadata[] = [];
 	private isLoading = true;
 	/**
@@ -722,12 +723,12 @@ export class ProjectManager {
 		command.execute();
 	}
 
-	getFpsEditRevision(): number {
+	getFpsEditRevision(): symbol | undefined {
 		return this.fpsEditRevision;
 	}
 
-	markFpsEdited(): void {
-		this.fpsEditRevision++;
+	setFpsEditRevision(revision: symbol | undefined): void {
+		this.fpsEditRevision = revision;
 	}
 
 	ratchetFpsForImportedMedia({
@@ -903,6 +904,7 @@ export class ProjectManager {
 		const previous = this.sessionController;
 		this.session++;
 		this.sessionController = new AbortController();
+		this.fpsEditRevision = undefined;
 		this.cancelExport();
 		this.resetExportState();
 		this.editor.command.clear();

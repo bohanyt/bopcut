@@ -77,9 +77,17 @@ function Shortcuts() {
 	return null;
 }
 
-test("a paste keeps the explicit frame rate selected during its media probe", async () => {
+test.each([
+	["keeps an explicit frame rate chosen during the probe", "edit", 24],
+	["auto-raises after that frame rate edit is undone", "undo", 60],
+	["keeps a frame rate edit redone during the probe", "redo", 24],
+	["keeps a new explicit choice of the original frame rate", "reselect", 30],
+	["auto-raises when Undo and Redo restore the starting edit", "restore", 60],
+] as const)("a paste %s", async (_description, change, expectedNumerator) => {
 	main();
 	start();
+	const chosen = { numerator: 24, denominator: 1 };
+	if (change === "restore") await editor.project.updateSettings({ settings: { fps: chosen } });
 	const probing = Promise.withResolvers<void>();
 	const finish = Promise.withResolvers<void>();
 	const inserted = Promise.withResolvers<void>();
@@ -104,19 +112,24 @@ test("a paste keeps the explicit frame rate selected during its media probe", as
 	transfer.items.add(new dom.File(["test video"], "clip.mp4", { type: "video/mp4" }));
 	dom.dispatchEvent(new dom.ClipboardEvent("paste", { clipboardData: transfer, cancelable: true }));
 	await probing.promise;
-	const chosen = { numerator: 24, denominator: 1 };
-	await act(async () => editor.project.updateSettings({ settings: { fps: chosen } }));
+	await act(async () => {
+		if (change !== "restore") await editor.project.updateSettings({ settings: { fps: chosen } });
+		if (change === "undo" || change === "redo" || change === "restore") editor.command.undo();
+		if (change === "redo" || change === "restore") editor.command.redo();
+		if (change === "reselect") await editor.project.updateSettings({ settings: { fps } });
+	});
 	finish.resolve();
 	await inserted.promise;
-	expect(editor.project.getActive().settings.fps).toEqual(chosen);
+	const expectedFps = { numerator: expectedNumerator, denominator: 1 };
+	expect(editor.project.getActive().settings.fps).toEqual(expectedFps);
 	await act(async () => editor.command.undo());
 	await editor.media.settleBinWrites("p");
 	expect(tracks().main.elements).toHaveLength(0);
-	expect(editor.project.getActive().settings.fps).toEqual(chosen);
+	expect(editor.project.getActive().settings.fps).toEqual(expectedFps);
 	await act(async () => editor.command.redo());
 	await editor.media.settleBinWrites("p");
 	expect(tracks().main.elements).toHaveLength(1);
-	expect(editor.project.getActive().settings.fps).toEqual(chosen);
+	expect(editor.project.getActive().settings.fps).toEqual(expectedFps);
 });
 
 test("undoing an unrelated project setting keeps an FPS change from a later import", async () => {
