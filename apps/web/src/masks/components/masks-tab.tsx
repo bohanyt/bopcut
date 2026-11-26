@@ -18,6 +18,7 @@ import {
 	ArrowExpandIcon,
 	Delete02Icon,
 	FeatherIcon,
+	NodeRemoveIcon,
 	PlusSignIcon,
 	RotateClockwiseIcon,
 	TextFontIcon,
@@ -287,12 +288,36 @@ function MaskItem({
 	const { t } = useI18n();
 	const editor = useEditor();
 	const definition = getMaskDefinition(mask.type);
+	// Points of this freeform mask selected in the preview. The Delete key removes them; so does a button, for touch.
+	const selectedPoints = useEditor((e) => {
+		const selection = e.selection.getSelectedMaskPointSelection();
+		return selection?.trackId === trackId && selection.elementId === elementId && selection.maskId === mask.id
+			? selection.pointIds
+			: null;
+	});
 
 	return (
 		<Section sectionKey={`mask-item:${elementId}:${mask.id}`} showTopBorder={false}>
 			<SectionHeader
 				trailing={
 					<div className="flex items-center gap-1">
+						{selectedPoints && (
+							<Button
+								variant="ghost"
+								size="icon"
+								aria-label={t("properties.removeMaskPoints")}
+								onClick={() =>
+									editor.timeline.deleteFreeformPathMaskPoints({
+										trackId,
+										elementId,
+										maskId: mask.id,
+										pointIds: selectedPoints,
+									})
+								}
+							>
+								<HugeiconsIcon icon={NodeRemoveIcon} />
+							</Button>
+						)}
 						<Button
 							variant="ghost"
 							size="icon"

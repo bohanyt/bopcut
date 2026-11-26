@@ -501,6 +501,7 @@ export const id = {
 
 	"properties.addEffectsHint": "Tambahkan efek ke layer ini dari panel Aset.",
 	"properties.addMask": "Tambah mask",
+	"properties.addStroke": "Tambah garis tepi",
 	"properties.animation": "Animasi",
 	"properties.animationHint": "Animasi ditambahkan di atas keyframe klip. Pada klip pendek, animasi masuk dan keluar dipersingkat agar muat.",
 	"properties.animationIn": "Masuk",
@@ -537,6 +538,8 @@ export const id = {
 	"properties.moveEffectUp": "Naikkan {name}",
 	"properties.removeEffect": "Hapus {name}",
 	"properties.removeMask": "Hapus mask {name}",
+	"properties.removeMaskPoints": "Hapus titik yang dipilih",
+	"properties.removeStroke": "Hapus garis tepi",
 	"properties.selected": "{count} elemen dipilih.",
 	"properties.spacing": "Jarak",
 	"properties.speed": "Kecepatan",

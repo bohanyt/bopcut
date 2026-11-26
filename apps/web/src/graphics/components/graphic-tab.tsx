@@ -22,6 +22,7 @@ import {
 } from "@/components/section";
 import { PropertyParamField } from "@/components/editor/panels/properties/components/property-param-field";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { cn } from "@/utils/ui";
@@ -135,19 +136,27 @@ function StrokeSection({
 		>
 			<SectionHeader
 				trailing={
-					<Button
-						variant="ghost"
-						size="icon"
-						onClick={(event) => {
-							event.stopPropagation();
-							toggleStroke();
-						}}
-					>
-						<HugeiconsIcon
-							icon={isStrokeEnabled ? MinusSignIcon : PlusSignIcon}
-							strokeWidth={1}
-						/>
-					</Button>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								variant="ghost"
+								size="icon"
+								aria-label={t(isStrokeEnabled ? "properties.removeStroke" : "properties.addStroke")}
+								onClick={(event) => {
+									event.stopPropagation();
+									toggleStroke();
+								}}
+							>
+								<HugeiconsIcon
+									icon={isStrokeEnabled ? MinusSignIcon : PlusSignIcon}
+									strokeWidth={1}
+								/>
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent>
+							{t(isStrokeEnabled ? "properties.removeStroke" : "properties.addStroke")}
+						</TooltipContent>
+					</Tooltip>
 				}
 			>
 				<SectionTitle>{t("properties.stroke")}</SectionTitle>

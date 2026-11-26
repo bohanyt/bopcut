@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from "
 import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
-import type { MaskType } from "@/masks/types";
+import type { Mask, MaskType } from "@/masks/types";
 import type { VideoElement } from "@/timeline";
 import { fixture, getHost, t, video } from "@/timeline/__tests__/compound-fixtures";
 
@@ -34,12 +34,12 @@ const originals = Object.keys(globals).map((key) => [key, Object.getOwnPropertyD
 let root: Root;
 let editor: ReturnType<typeof EditorCore.getInstance>;
 
-async function show(maskType: MaskType) {
+async function show(maskType: MaskType, change: (mask: Mask) => Mask = (mask) => mask) {
 	EditorCore.reset();
 	editor = EditorCore.getInstance();
 	editor.save.stop();
 	const scenes = fixture();
-	const clip = { ...video("clip", 0, 4), masks: [buildDefaultMaskInstance({ maskType, elementSize: { width: 1920, height: 1080 } })] } as VideoElement;
+	const clip = { ...video("clip", 0, 4), masks: [change(buildDefaultMaskInstance({ maskType, elementSize: { width: 1920, height: 1080 } }))] } as VideoElement;
 	getHost(scenes).tracks.main.elements = [clip];
 	editor.project.setActiveProject({
 		project: {
@@ -124,4 +124,31 @@ test("Escape in a text mask's content drops what was typed, without an Undo step
 	await fire(field, new dom.FocusEvent("focusout", { bubbles: true }) as never);
 	expect(content()).toBe("Hello");
 	expect(editor.command.canUndo()).toBe(true);
+});
+
+test("points selected on a freeform mask can be deleted with a button, as with the Delete key", async () => {
+	const path = ["a", "b", "c", "d", "e"].map((id, index) => ({ id, x: index * 0.1, y: (index % 2) * 0.1, inX: 0, inY: 0, outX: 0, outY: 0 }));
+	await show("freeform", (mask) => ({ ...mask, params: { ...mask.params, path, closed: true } }) as Mask);
+	const pointIds = () => (masks()[0].params as { path: { id: string }[] }).path.map((point) => point.id);
+	const button = () => dom.document.querySelector("button[aria-label='Delete selected points']") as unknown as HTMLButtonElement | null;
+	expect(button()).toBeNull();
+
+	const maskId = masks()[0].id;
+	await act(async () => {
+		editor.selection.setSelectedMaskPoints({ selection: { trackId: "t-main", elementId: "clip", maskId, pointIds: ["b", "d"] } });
+	});
+	expect(button()).not.toBeNull();
+	await fire(button()!, new dom.MouseEvent("click", { bubbles: true }));
+	expect(pointIds()).toEqual(["a", "c", "e"]);
+	expect(editor.selection.getSelectedMaskPointSelection()).toBeNull();
+	expect(button()).toBeNull();
+
+	await act(async () => { editor.command.undo(); });
+	expect(pointIds()).toEqual(["a", "b", "c", "d", "e"]);
+
+	// Points of another mask do not show the button here.
+	await act(async () => {
+		editor.selection.setSelectedMaskPoints({ selection: { trackId: "t-main", elementId: "clip", maskId: "other", pointIds: ["b"] } });
+	});
+	expect(button()).toBeNull();
 });
