@@ -8,6 +8,7 @@ import { useEditorActions } from "@/actions/use-editor-actions";
 import { useKeybindingsListener } from "@/actions/use-keybindings";
 import { fixture, getHost, scene, t, video } from "@/timeline/__tests__/compound-fixtures";
 import { BASE_TIMELINE_PIXELS_PER_SECOND as pps } from "@/timeline/scale";
+import { useTimelineResize } from "@/timeline/hooks/use-timeline-resize";
 import { DragDropController, type DragDropConfig } from "@/timeline/controllers/drag-drop-controller";
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
 import { parseSubtitleFile } from "@/subtitles/parse";
@@ -75,6 +76,49 @@ function Shortcuts() {
 async function press(key: string) {
 	await act(async () => document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
 }
+
+test.each([false, true])("left trim previews the first Main clip anchored at zero with ripple %s", async (ripple) => {
+	const clip = video("first", 0, 2);
+	clip.animations = { opacity: { keys: [
+		{ id: "surviving", time: t(1.5), value: 0.5, segmentToNext: "linear", tangentMode: "flat" },
+	] } };
+	const next = video("next", 2, 2);
+	main(clip, next);
+	start();
+	editor.command.isRippleEnabled = ripple;
+	const before = tracks();
+	function TrimHandle() {
+		const { handleResizeStart } = useTimelineResize({ zoomLevel: 1 });
+		return <button onMouseDown={(event) => handleResizeStart({
+			event, element: clip, track: before.main, side: "left",
+		})}>Trim</button>;
+	}
+	await act(async () => { root.render(<TrimHandle />); });
+	await act(async () => {
+		document.querySelector("button")!.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+		document.dispatchEvent(new window.MouseEvent("mousemove", { clientX: pps }));
+	});
+	const preview = editor.timeline.getPreviewTracks()!;
+	expect(tracks()).toBe(before);
+	expect(editor.command.canUndo()).toBe(false);
+	await act(async () => { document.dispatchEvent(new window.MouseEvent("mouseup", { clientX: pps })); });
+	const after = tracks();
+	const trimmed = (state: typeof before) => {
+		const { startTime, duration, trimStart, animations } = state.main.elements[0];
+		const key = getKeyframeById({ animations, propertyPath: "opacity", keyframeId: "surviving" });
+		return [startTime, duration, trimStart, key?.time];
+	};
+	expect(trimmed(preview)).toEqual(trimmed(after));
+	expect(trimmed(after)).toEqual([t(0), t(1), t(1), t(0.5)]);
+	expect(preview.main.elements[1]).toEqual(after.main.elements[1]);
+	expect(after.main.elements[1]).toEqual({ ...next, startTime: t(ripple ? 1 : 2) });
+	await act(async () => editor.command.undo());
+	expect(tracks()).toEqual(before);
+	expect(editor.command.canUndo()).toBe(false);
+	await act(async () => editor.command.redo());
+	expect(tracks()).toEqual(after);
+});
+
 test.each(["w", "s", "e", "q"])("%s preserves the one-frame minimum for an off-grid subtitle", async (key) => {
 	main();
 	start();

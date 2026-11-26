@@ -187,7 +187,7 @@ const deriveRules: ElementUpdateRule[] = [
  * Keys after a left-edge trim or extension (the patch keeps the right edge): they stay with the footage,
  * by the requested edge move. The main track can still move the clip to its start afterwards.
  */
-export function animationsAfterLeftTrim({
+function animationsAfterLeftTrim({
 	element,
 	patch,
 	boundaryIdPrefix,

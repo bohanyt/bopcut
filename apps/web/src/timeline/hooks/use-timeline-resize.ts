@@ -10,8 +10,7 @@ import {
 } from "@/timeline/controllers/resize-controller";
 import type { ResizeSide } from "@/timeline/group-resize";
 import type { SnapPoint } from "@/timeline/snapping";
-import type { ElementRef, TimelineElement } from "@/timeline";
-import { animationsAfterLeftTrim } from "@/timeline/update-pipeline";
+import type { ElementRef } from "@/timeline";
 
 const NO_RESIZE_PINS: readonly ElementRef[] = [];
 
@@ -41,28 +40,8 @@ export function useTimelineResize({
 		selectedElements,
 		discardPreview: () => editor.timeline.discardPreview(),
 		beginPreviewGesture: editor.timeline.beginPreviewGesture,
-		previewElements: (updates) =>
-			editor.timeline.previewElements({
-				updates: updates.map(({ trackId, elementId, patch }) => {
-					const element = editor.timeline.getTrackById({ trackId })?.elements.find(({ id }) => id === elementId);
-					return {
-						trackId,
-						elementId,
-						updates: element?.animations ? {
-							...patch,
-							animations: animationsAfterLeftTrim({ element, patch, boundaryIdPrefix: `trim-preview:${elementId}` }),
-						} : patch,
-					};
-				}),
-			}),
-		commitElements: (updates) =>
-			editor.timeline.updateElements({
-				updates: updates.map(({ trackId, elementId, patch }) => ({
-					trackId,
-					elementId,
-					patch: patch as Partial<TimelineElement>,
-				})),
-			}),
+		previewElements: (updates) => editor.timeline.previewElementUpdates({ updates }),
+		commitElements: (updates) => editor.timeline.updateElements({ updates }),
 		onSnapPointChange,
 		getWords: ({ trackId, elementId }) => {
 			const tracks = editor.scenes.getActiveScene().tracks;
