@@ -533,6 +533,8 @@ export const id = {
 	"properties.oneMask": "Saat ini hanya satu mask per klip. Untuk memakai mask lain, duplikat klip lalu terapkan mask yang berbeda pada tiap salinan.",
 	"properties.openEffects": "Buka efek",
 	"properties.position": "Posisi",
+	"properties.moveEffectDown": "Turunkan {name}",
+	"properties.moveEffectUp": "Naikkan {name}",
 	"properties.removeEffect": "Hapus {name}",
 	"properties.removeMask": "Hapus mask {name}",
 	"properties.selected": "{count} elemen dipilih.",

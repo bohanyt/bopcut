@@ -19,6 +19,8 @@ import { PropertyParamField } from "@/components/editor/panels/properties/compon
 import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+	ArrowDown01Icon,
+	ArrowUp01Icon,
 	Delete02Icon,
 	ViewIcon,
 	ViewOffSlashIcon,
@@ -143,6 +145,15 @@ export function ClipEffectsTab({
 		setDropIndex(null);
 	};
 
+	/** Moves an effect one place: the buttons for it work without dragging (touch, keyboard). */
+	const move = ({ fromIndex, toIndex }: { fromIndex: number; toIndex: number }) =>
+		editor.timeline.reorderClipEffects({
+			trackId,
+			elementId: element.id,
+			fromIndex,
+			toIndex,
+		});
+
 	return (
 		<div className="flex flex-col h-full">
 			<div className="border-b px-3.5 h-11 shrink-0 flex items-center">
@@ -196,6 +207,17 @@ export function ClipEffectsTab({
 											effectId: effect.id,
 										})
 									}
+									move={
+										effects.length > 1
+											? {
+													up: index > 0 ? () => move({ fromIndex: index, toIndex: index - 1 }) : undefined,
+													down:
+														index < effects.length - 1
+															? () => move({ fromIndex: index, toIndex: index + 1 })
+															: undefined,
+												}
+											: undefined
+									}
 								/>
 							</li>
 						);
@@ -241,6 +263,7 @@ function EffectSection({
 	onCommit,
 	onToggle,
 	onRemove,
+	move,
 }: {
 	effect: Effect;
 	renderParams: ParamValues;
@@ -248,6 +271,8 @@ function EffectSection({
 	onCommit: () => void;
 	onToggle?: () => void;
 	onRemove?: () => void;
+	/** Shown when the clip has more than one effect; a direction is missing at the end of the list. */
+	move?: { up?: () => void; down?: () => void };
 }) {
 	const { t } = useI18n();
 	const definition = effectsRegistry.get(effect.type);
@@ -262,6 +287,28 @@ function EffectSection({
 				trailing={
 					onToggle && (
 						<div className="flex items-center gap-1">
+							{move && (
+								<>
+									<Button
+										variant="ghost"
+										size="icon"
+										aria-label={t("properties.moveEffectUp", { name: t(definition.nameKey) })}
+										disabled={!move.up}
+										onClick={move.up}
+									>
+										<HugeiconsIcon icon={ArrowUp01Icon} />
+									</Button>
+									<Button
+										variant="ghost"
+										size="icon"
+										aria-label={t("properties.moveEffectDown", { name: t(definition.nameKey) })}
+										disabled={!move.down}
+										onClick={move.down}
+									>
+										<HugeiconsIcon icon={ArrowDown01Icon} />
+									</Button>
+								</>
+							)}
 							<Button
 								variant={effect.enabled ? "secondary" : "ghost"}
 								size="icon"

@@ -531,6 +531,8 @@ export const en = {
 	"properties.oneMask": "Only one mask is supported right now. If you need more, duplicate the clip and apply a different mask to each copy.",
 	"properties.openEffects": "Open effects",
 	"properties.position": "Position",
+	"properties.moveEffectDown": "Move {name} down",
+	"properties.moveEffectUp": "Move {name} up",
 	"properties.removeEffect": "Remove {name}",
 	"properties.removeMask": "Remove {name} mask",
 	"properties.selected": "{count} elements selected.",
