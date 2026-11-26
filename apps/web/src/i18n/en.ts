@@ -825,6 +825,8 @@ export const en = {
 	"media.unsupportedType": "Unsupported file type: {name}",
 	"media.fileStorageFull": "Not enough browser storage for {name}",
 	"media.audioUnavailable": "Audio unavailable in {name}",
+	"media.hdrAsSdr": "{name} is HDR video",
+	"media.hdrAsSdrDetail": "The editor shows and exports it as standard (SDR) video, so bright parts and colors can look different from your phone.",
 	"media.audioUnavailableDetail": "The video can be used without its soundtrack. Convert the audio to AAC if you need it.",
 	"media.videoProcessFailed": "Could not process video",
 	"media.processFileFailed": "Couldn't process {name}",

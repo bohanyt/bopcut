@@ -62,7 +62,9 @@ test.each([
 	}
 });
 
-test.each(["usable", "unsupported", "corrupt", "absent"] as const)("video import with %s audio retains the original and measured FPS without a thumbnail", async (audio) => {
+test.each(["usable", "unsupported", "corrupt", "absent", "hdr"] as const)("video import with %s audio retains the original and measured FPS without a thumbnail", async (kind) => {
+	// "hdr": usable audio in an HLG video, which gets a notice that it is shown as SDR.
+	const audio = kind === "hdr" ? "usable" : kind;
 	const file = new File(["video"], "footage.mkv", { type: "application/octet-stream" });
 	const fps = 30_000 / 1_001;
 	const videoTrack: InputVideoTrack = Object.create(InputVideoTrack.prototype, {
@@ -73,6 +75,7 @@ test.each(["usable", "unsupported", "corrupt", "absent"] as const)("video import
 		getFirstTimestamp: { value: async () => 2 },
 		computeDuration: { value: async () => 3 },
 		computePacketStats: { value: async () => ({ averagePacketRate: fps }) },
+		getColorSpace: { value: async () => ({ transfer: kind === "hdr" ? "hlg" : "bt709" }) },
 	});
 	const audioTrack: InputAudioTrack = Object.create(InputAudioTrack.prototype, {
 		canDecode: { value: async () => audio !== "unsupported" },
@@ -113,7 +116,8 @@ test.each(["usable", "unsupported", "corrupt", "absent"] as const)("video import
 			expect(closeFrame).toHaveBeenCalledTimes(1);
 			expect(closeAudio).toHaveBeenCalledTimes(audio === "usable" ? 1 : 0);
 			expect(returnAudio).toHaveBeenCalledTimes(audio === "usable" || audio === "corrupt" ? 1 : 0);
-			expect(warn).toHaveBeenCalledTimes(audio === "unsupported" || audio === "corrupt" ? 1 : 0);
+			expect(warn).toHaveBeenCalledTimes(audio === "unsupported" || audio === "corrupt" || kind === "hdr" ? 1 : 0);
+			if (kind === "hdr") expect(warn.mock.calls[0][0]).toContain("HDR");
 		} finally {
 			if (imported) releaseMediaAssetUrls(imported);
 		}

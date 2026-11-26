@@ -827,6 +827,8 @@ export const id = {
 	"media.unsupportedType": "Jenis file tidak didukung: {name}",
 	"media.fileStorageFull": "Penyimpanan browser tidak cukup untuk {name}",
 	"media.audioUnavailable": "Audio tidak tersedia di {name}",
+	"media.hdrAsSdr": "{name} adalah video HDR",
+	"media.hdrAsSdrDetail": "Editor menampilkan dan mengekspornya sebagai video standar (SDR), jadi bagian terang dan warnanya bisa terlihat beda dari di HP.",
 	"media.audioUnavailableDetail": "Video bisa digunakan tanpa audio. Jika perlu audionya, ubah ke AAC.",
 	"media.videoProcessFailed": "Video gagal diproses",
 	"media.processFileFailed": "{name} gagal diproses",
