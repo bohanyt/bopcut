@@ -1,4 +1,5 @@
 # Inherited from OpenCut; not needed to run bopencut locally.
+# Ports are published on 127.0.0.1 only: the agent and storage routes trust every request that reaches them.
 services:
   db:
     image: postgres:17
@@ -10,7 +11,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U opencut"]
       interval: 30s
@@ -22,7 +23,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -33,7 +34,7 @@ services:
   serverless-redis-http:
     image: hiett/serverless-redis-http:latest
     ports:
-      - "8079:80"
+      - "127.0.0.1:8079:80"
     environment:
       SRH_MODE: env
       SRH_TOKEN: example_token
@@ -59,7 +60,7 @@ services:
         - MARBLE_WORKSPACE_KEY=${MARBLE_WORKSPACE_KEY:-build-placeholder}
     restart: unless-stopped
     ports:
-      - "3100:3000"
+      - "127.0.0.1:3100:3000"
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://opencut:opencut@db:5432/opencut

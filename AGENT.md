@@ -28,7 +28,7 @@ bun run agent review --project-id ID --file exports/out.mp4
 
 `status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. A chosen project (`--project-id`) answers from its own snapshot, or from the last synced one when that is the same project. Reads stay inside the agent workspace: a link that leads out of it is refused. Read the preference files directly (see *Preferences*).
 
-The agent routes trust every request that reaches the server, so keep the server on `127.0.0.1` (as in *Running* above) and never expose its port to a network.
+The agent routes trust every request that reaches the server, so keep the server on `127.0.0.1` (as in *Running* above) and never expose its port to a network. `bun run dev`, `bun run start`, the local launcher and `docker-compose.yml` all listen on `127.0.0.1` only; a plain `next dev` without `-H 127.0.0.1` listens on every network interface.
 
 Status and notes default to the last project that synced. Use `--project-id ID` to choose a project or filter the selection. Use `--url` or `BOPENCUT_URL` to change the server origin from `http://127.0.0.1:3000`. The command writes JSON to stdout and errors to stderr. Use `--timeout SECONDS` to change the 30-second request limit.
 
