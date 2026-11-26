@@ -219,6 +219,31 @@ test("a range job can hydrate the project without waiting for project-wide fonts
 	expect(loadFonts).not.toHaveBeenCalled();
 });
 
+test("switching projects posts the last completed edit before the debounce expires", async () => {
+	const { editor, open } = setup();
+	const posts: unknown[] = [];
+	const globals = {
+		window: {},
+		setInterval: () => 0,
+		fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (input === "/api/agent/edits") posts.push(JSON.parse(String(init?.body)));
+			return Response.json({});
+		},
+	};
+	for (const [key, value] of Object.entries(globals)) {
+		const original = Object.getOwnPropertyDescriptor(globalThis, key);
+		Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+		cleanups.push(() => original ? Object.defineProperty(globalThis, key, original) : Reflect.deleteProperty(globalThis, key));
+	}
+
+	installAgentBridge();
+	editor.timeline.updateElements({ updates: [{ trackId: "track-a", elementId: "clip-a", patch: { duration: T(1) } }] });
+	expect(posts).toEqual([]);
+	open("other");
+	await Bun.sleep(900);
+	expect(posts).toEqual([[expect.objectContaining({ projectId: "p", elementId: "clip-a", field: "duration", from: 2, to: 1 })]]);
+});
+
 const ready = () => ({ ready: true, missingMedia: [] });
 
 test("CLI frame capture finishes while its progress response is delayed", async () => {

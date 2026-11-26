@@ -188,6 +188,16 @@ export function installAgentBridge() {
 	editLogger = createEditLogger(editSnapshot, () => editor.timeline.isPreviewActive(), (lines) => {
 		fetch("/api/agent/edits", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lines) }).catch(() => {});
 	});
+	let loggedSession: AbortSignal | undefined;
+	const watchEditSession = () => {
+		const session = editor.project.getSessionSignal();
+		if (session === loggedSession) return;
+		loggedSession = session;
+		// The old signal aborts before the project and its scenes are replaced.
+		session.addEventListener("abort", () => editLogger?.flush(), { once: true });
+	};
+	watchEditSession();
+	editor.project.subscribe(watchEditSession);
 	const sync = () => {
 		clearTimeout(timer);
 		timer = setTimeout(() => {
