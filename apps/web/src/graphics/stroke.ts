@@ -77,6 +77,9 @@ export function applyAlignedStroke({
 			return;
 		}
 
+		// The temporary canvas has the context's pixels: the path is drawn on it with the context's
+		// transform (a preview below full quality scales it), and copied back pixel for pixel.
+		strokeCtx.setTransform(ctx.getTransform());
 		applyStroke({
 			ctx: strokeCtx,
 			path,
@@ -89,7 +92,10 @@ export function applyAlignedStroke({
 		strokeCtx.globalCompositeOperation = "destination-out";
 		strokeCtx.fill(path);
 
+		ctx.save();
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.drawImage(strokeCanvas, 0, 0);
+		ctx.restore();
 		return;
 	}
 

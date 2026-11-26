@@ -1,6 +1,6 @@
 import type { ParamDefinition } from "@/params";
 import { applyAlignedStroke } from "../stroke";
-import { STROKE_ALIGN_PARAM, type GraphicStrokeAlign } from "./shared";
+import { STROKE_ALIGN_PARAM, strokeInset, type GraphicStrokeAlign } from "./shared";
 import type { GraphicDefinition } from "../types";
 
 interface Point {
@@ -176,7 +176,7 @@ export const polygonGraphicDefinition: GraphicDefinition = {
 		const strokeWidth = Math.max(0, Number(params.strokeWidth ?? 0));
 		const strokeAlign = (params.strokeAlign ?? "center") as GraphicStrokeAlign;
 		const sides = Math.max(3, Math.min(12, Math.round(Number(params.sides ?? 5))));
-		const inset = strokeAlign === "center" ? strokeWidth / 2 : 0;
+		const inset = strokeInset({ strokeAlign, strokeWidth });
 		const radius = Math.max(1, Math.min(width, height) / 2 - inset);
 		const maxCornerRadius = radius * Math.sin(Math.PI / sides);
 		const cornerRadiusPercent = Math.max(0, Number(params.cornerRadius ?? 0));
