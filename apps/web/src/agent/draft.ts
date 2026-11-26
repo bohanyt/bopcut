@@ -550,9 +550,11 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				if (type === "flash" || type === "dip") {
 					const color = op.color ?? (type === "flash" ? "#ffffff" : "#000000");
 					if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error("transition color must be like #ffffff");
-					// Centred on the cut (from the start of the timeline at most).
-					const start = Math.max(0, wholeFrames(cut - duration / 2));
-					const length = Math.round(Math.max(frameTicks, cut + duration / 2 - start));
+					// Centred on the cut, on whole frames: of an odd number of frames the extra one comes before
+					// the cut. At the start of the timeline only the part after the cut is left.
+					const from = wholeFrames(cut - duration / 2);
+					const start = Math.max(0, from);
+					const length = Math.round(Math.max(frameTicks, from + duration - start));
 					const base = Math.min(canvas.width, canvas.height);
 					let shape = {
 						...buildGraphicElement({ definitionId: "rectangle", name: type === "flash" ? "Flash" : "Dip", startTime: start as MediaTime, params: { fill: color, strokeWidth: 0, cornerRadius: 0, "transform.scaleX": canvas.width / base, "transform.scaleY": canvas.height / base } }),

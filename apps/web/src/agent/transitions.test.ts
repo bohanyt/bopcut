@@ -73,6 +73,22 @@ describe("transitions", () => {
 		expect(keys(flash, "opacity")).toEqual([[0, 0], [0.2, 1], [0.4, 0]]);
 	});
 
+	test("flash and dip of an odd number of frames stay on whole frames, also at the start of the timeline", () => {
+		const frame = TICKS_PER_SECOND / 30;
+		for (const type of ["flash", "dip"] as const) {
+			// The default half second is 15 frames at 30 fps.
+			const out = run(pair(), [{ op: "transition", match: { agentId: "B" }, type }]);
+			expect(out.results[0]).toMatchObject({ ok: true, duration: 0.5 });
+			const shape = out.scenes[0].tracks.overlay.at(-1)!.elements[0];
+			expect([shape.startTime / frame, shape.duration / frame]).toEqual([52, 15]);
+			expect(keys(shape, "opacity")).toEqual([[0, 0], [s(8 * frame), 1], [0.5, 0]]);
+		}
+		const first = run(scenesWith([video("B", 0, 2)]), [{ op: "transition", match: { agentId: "B" }, type: "flash" }]);
+		const shape = first.scenes[0].tracks.overlay.at(-1)!.elements[0];
+		expect([shape.startTime, shape.duration / frame]).toEqual([0, 7]);
+		expect(keys(shape, "opacity")).toEqual([[0, 1], [s(7 * frame), 0]]);
+	});
+
 	test("dip is black by default; colours are checked", () => {
 		const out = run(pair(), [{ op: "transition", match: { agentId: "B" }, type: "dip" }]);
 		expect(out.scenes[0].tracks.overlay.at(-1)!.elements[0].params.fill).toBe("#000000");
