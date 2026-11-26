@@ -141,6 +141,8 @@ export const id = {
 	"projects.deleteProject": "Hapus proyek",
 	"projects.duration": "Durasi",
 	"projects.empty": "Belum ada proyek",
+	"projects.listFailed": "Daftar proyek gagal dimuat",
+	"projects.listFailedDescription": "Proyekmu tetap ada di disk. Pastikan server editor berjalan, lalu coba lagi.",
 	"projects.emptyDescription": "Buat proyek pertamamu. Impor media, edit, dan ekspor video secara privat.",
 	"projects.enterName": "Masukkan nama baru",
 	"projects.gridView": "Tampilan kisi",
