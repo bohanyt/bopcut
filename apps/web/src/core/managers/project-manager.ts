@@ -37,6 +37,7 @@ export interface MigrationState {
 
 export class ProjectManager {
 	private active: TProject | null = null;
+	private fpsEditRevision = 0;
 	private savedProjects: TProjectMetadata[] = [];
 	private isLoading = true;
 	/**
@@ -703,13 +704,21 @@ export class ProjectManager {
 	}): Promise<void> {
 		if (!this.active) return;
 
-		const command = new UpdateProjectSettingsCommand(settings, settingsBeforePreview);
+		const command = new UpdateProjectSettingsCommand(settings, settingsBeforePreview, pushHistory);
 		if (pushHistory) {
 			this.editor.command.execute({ command });
 			return;
 		}
 
 		command.execute();
+	}
+
+	getFpsEditRevision(): number {
+		return this.fpsEditRevision;
+	}
+
+	markFpsEdited(): void {
+		this.fpsEditRevision++;
 	}
 
 	ratchetFpsForImportedMedia({

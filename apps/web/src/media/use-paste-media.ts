@@ -34,6 +34,7 @@ export function usePasteMedia() {
 
 			const session = editor.media.startImport();
 			if (!session) return;
+			const fpsEditRevision = editor.project.getFpsEditRevision();
 
 			let files = extractMediaFilesFromClipboard({
 				clipboardData: event.clipboardData,
@@ -67,9 +68,11 @@ export function usePasteMedia() {
 
 						for (const file of files) {
 							if (session.signal.aborted) break;
-							const asset = await editor.media.importFile({ session, file });
+							const asset = await editor.media.importFile({ session, file, ratchetFps: false });
 							if (session.signal.aborted) break;
 							if (!asset || !editor.media.getAssets().some(({ id }) => id === asset.id)) continue;
+							const adjustFps = editor.project.getFpsEditRevision() === fpsEditRevision;
+							if (adjustFps) editor.project.ratchetFpsForImportedMedia({ importedAssets: [asset] });
 							const duration =
 								asset.duration != null
 									? mediaTimeFromSeconds({ seconds: asset.duration })
@@ -91,8 +94,11 @@ export function usePasteMedia() {
 							const insertCmd = new InsertElementCommand({
 								element,
 								placement: { mode: "auto", trackType },
+								initializeFps: adjustFps,
 							});
-							const addMedia = new AddMediaAssetCommand({ projectId: session.projectId, assetId: asset.id });
+							const addMedia = new AddMediaAssetCommand({
+								projectId: session.projectId, assetId: asset.id, ratchetFps: adjustFps,
+							});
 							editor.command.execute({ command: new BatchCommand([addMedia, insertCmd]) });
 							assetNames.push(asset.name);
 						}
