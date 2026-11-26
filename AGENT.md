@@ -101,11 +101,12 @@ AGENT_WORKSPACE=/path/to/workspace      # Default: <repo>/workspace
 AGENT_FILES_ROOT=/path/to/asset-root    # Default: AGENT_WORKSPACE
 BOPENCUT_TTS="/path/to/tts-command"     # Optional, for `agent voice`
 ```
-`BOPENCUT_DATA` is the parent of the `projects/` directory. Open and switch projects from the Projects page. `BOPENCUT_DATA` is read on each request; restart the server after changing `AGENT_WORKSPACE` or `AGENT_FILES_ROOT`. Keep private data outside the repository.
+`BOPENCUT_DATA` is the parent of the `projects/` directory. Open and switch projects from the home page (`/`). `BOPENCUT_DATA` is read on each request; restart the server after changing `AGENT_WORKSPACE` or `AGENT_FILES_ROOT`. Keep private data outside the repository.
 
 | File in AGENT_WORKSPACE | Direction | Contents |
 |---|---|---|
-| `bundle/bundle.json` | agent → editor | complete draft; open **/agent** → *Import draft* = new project |
+| `bundle/bundle.json` | agent → editor | complete draft; the home page's **From the agent** tab (or **/agent**) imports it as a new project. The tab lists it until that version is imported, and also shows a `draft.json` no editor has answered yet, with a link to its project |
+| `bundle-imported.json` | editor → agent | `{rev, projectId, importedAt}`: the version of `bundle.json` imported last (`rev` = SHA-256 of the file, also sent as the `x-bopencut-bundle-rev` header of `GET /api/agent/bundle`) and the project it became |
 | `project.json`, `sync/<projectId>.json` | editor → agent | current timeline after each edit (0.8 s debounce), including the content of every compound clip (see *Compound clips for agents*); characters other than letters, digits and `-` are left out of the sync file name |
 | `draft.json` | agent → editor | per-item operations; applied in ~2 s as **one Undo step** |
 | `draft-result.json` | editor → agent | result per operation (items deleted by the human are skipped) |

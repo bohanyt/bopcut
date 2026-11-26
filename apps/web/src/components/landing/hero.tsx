@@ -30,7 +30,7 @@ export function Hero() {
 				</p>
 
 				<div className="mt-8 flex justify-center gap-8">
-					<Link href="/projects">
+					<Link href="/">
 						<Button type="submit" size="lg" className="h-11 text-base">
 							{t("landing.tryBeta")}
 							<ArrowRight className="ml-0.5" />

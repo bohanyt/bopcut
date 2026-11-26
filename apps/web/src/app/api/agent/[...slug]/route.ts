@@ -18,6 +18,7 @@ import { handleExportFile, handleExportResult, readTextLimited } from "@/agent/e
 import { handleCli } from "@/agent/cli-api";
 import { inside as resolveInsideRoot } from "@/agent/inside";
 import { renderPresence, renderRequest, renderWorker } from "@/agent/render-server";
+import { bundleResponse, markBundleImported, readInbox } from "@/agent/inbox";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 const FILES_ROOT = path.resolve(process.env.AGENT_FILES_ROOT ?? WORKSPACE);
@@ -40,7 +41,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 	if (slug[0] === "cli" && slug[1] === "render" && slug.length === 2) return renderWorker(req, WORKSPACE);
 	if (slug[0] === "cli" && slug.length === 2) return handleCli(req, slug[1], WORKSPACE);
 	try {
-		if (slug[0] === "bundle") return json(await fs.readFile(path.join(WORKSPACE, "bundle", "bundle.json")));
+		if (slug[0] === "bundle") return await bundleResponse(WORKSPACE);
+		// The bundle not imported yet and the draft no editor answered yet, for the home page.
+		if (slug[0] === "inbox") return Response.json(await readInbox(WORKSPACE), { headers: { "Cache-Control": "no-store" } });
 		if (slug[0] === "file") {
 			const full = inside(new URL(req.url).searchParams.get("p") ?? "");
 			return new Response(new Uint8Array(await fs.readFile(full)), { headers: { "Content-Type": TYPES[path.extname(full).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-store", "Cross-Origin-Resource-Policy": "same-origin" } });
@@ -136,6 +139,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		await writeAtomic(path.join(WORKSPACE, "selection.json"), JSON.stringify(selection, null, 1));
 		return Response.json({ ok: true });
 	}
+	if (slug[0] === "bundle-imported") return markBundleImported(req, WORKSPACE);
 	if (slug[0] === "applied") {
 		const result = await req.json();
 		// A draft is applied once: move it aside so a project opened later does not apply it again.

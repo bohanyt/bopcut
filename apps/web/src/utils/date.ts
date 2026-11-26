@@ -7,3 +7,8 @@ export function formatDate({ date, locale = "en" }: { date: Date; locale?: Local
 		year: "numeric",
 	});
 }
+
+/** A date with its time, for things made today as often as last week. */
+export function formatDateTime({ date, locale = "en" }: { date: Date; locale?: Locale }): string {
+	return date.toLocaleString(locale === "id" ? "id-ID" : "en-US", { dateStyle: "medium", timeStyle: "short" });
+}

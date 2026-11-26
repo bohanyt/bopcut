@@ -5,28 +5,11 @@ import { localizeErrorDetail } from "@/i18n/error-details";
 import { useI18n } from "@/i18n/provider";
 
 // Open /agent to load an agent draft (AGENT_WORKSPACE/bundle) as a new OpenCut project.
-import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { importAgentBundle } from "@/agent/importer";
+import { useBundleImport } from "@/agent/use-bundle-import";
 
 export default function AgentImport() {
 	const { t } = useI18n();
-	const router = useRouter();
-	const [status, setStatus] = useState("");
-	const [errorDetail, setErrorDetail] = useState<string | null>(null);
-	const [busy, setBusy] = useState(false);
-	const run = async () => {
-		setBusy(true);
-		setErrorDetail(null);
-		try {
-			const id = await importAgentBundle({ onStatus: setStatus });
-			router.push(`/editor/${id}`);
-		} catch (error) {
-			setStatus("");
-			setErrorDetail(error instanceof Error ? error.message : String(error));
-			setBusy(false);
-		}
-	};
+	const { run, status, errorDetail, busy } = useBundleImport();
 	return (
 		<div className="bg-background flex h-screen w-screen flex-col items-center justify-center gap-4">
 			<h1 className="text-2xl font-semibold">{t("agentImport.title")}</h1>

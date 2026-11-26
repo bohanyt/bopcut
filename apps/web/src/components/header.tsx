@@ -130,7 +130,7 @@ export function Header() {
 								40k+
 							</Button>
 						</Link>
-						<Link href="/projects">
+						<Link href="/">
 							<Button className="text-sm">
 								{t("header.projects")}
 								<ArrowRight className="size-4" />

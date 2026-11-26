@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from "bun:test";
-import { useProjectsStore } from "./store";
+import { useProjectsStore } from "./projects-store";
 
 const allProjectIds = ["a", "b", "c"];
 
