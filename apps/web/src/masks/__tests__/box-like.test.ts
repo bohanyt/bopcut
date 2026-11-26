@@ -29,6 +29,17 @@ test("edge and corner handles resize along the rotated mask's own axes", () => {
 	expect(drag({ kind: "edge", side: "top" }, square(90), [750, 500], [40, 0]).height).toBeCloseTo(0.58, 5);
 	// The bottom-right corner of a quarter-turned mask points down-left; dragging that way grows it.
 	const corner = drag({ kind: "corner", corner: { x: "right", y: "bottom" } }, square(90), [250, 750], [-20, 20]);
-	expect(corner.width).toBeCloseTo(0.52, 5);
+	expect(corner.width).toBeCloseTo(0.54, 5);
 	expect(corner.height).toBeCloseTo(corner.width!, 5);
+});
+
+test("a corner handle follows the pointer: the corner ends where it is dropped", () => {
+	const corner = { kind: "corner", corner: { x: "right", y: "bottom" } } as const;
+	// The 0.5 mask's corner is 250 px from the center on each axis; 20 px further out is 270 px.
+	const grown = drag(corner, square(0), [750, 750], [20, 20]);
+	expect(grown.width).toBeCloseTo(0.54, 5);
+	expect(grown.height).toBeCloseTo(0.54, 5);
+	// Twice as far from the center is twice the size; dropped on the center, it is as small as it gets.
+	expect(drag(corner, square(0), [750, 750], [250, 250]).width).toBeCloseTo(1, 5);
+	expect(drag(corner, square(0), [750, 750], [-250, -250]).width).toBeCloseTo(0.01, 5);
 });

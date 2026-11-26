@@ -395,6 +395,7 @@ function MaskParamsFields({
 							<MaskNumberField
 								className="flex-1"
 								icon="X"
+								label={t("params.positionX")}
 								param={getNumberParamDefinition({
 									definition,
 									key: "centerX",
@@ -409,6 +410,7 @@ function MaskParamsFields({
 							<MaskNumberField
 								className="flex-1"
 								icon="Y"
+								label={t("params.positionY")}
 								param={getNumberParamDefinition({
 									definition,
 									key: "centerY",
@@ -567,6 +569,7 @@ function MaskParamsFields({
 						<ColorPicker
 							beginDragGesture={timeline.beginPreviewGesture}
 							className=""
+							label={t("params.strokeColor")}
 							value={mask.params.strokeColor.replace(/^#/, "").toUpperCase()}
 							onChange={(color) => previewStrokeColor(`#${color}`)}
 							onChangeEnd={(color) => {
@@ -583,7 +586,7 @@ function MaskParamsFields({
 								onCommit();
 							}}
 						>
-							<SelectTrigger className="w-full">
+							<SelectTrigger className="w-full" aria-label={t("params.strokeAlign")}>
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
@@ -649,6 +652,12 @@ function TextMaskFields({
 			pendingPreview.current = timeline.getPreviewTracks();
 		},
 		onCommit: () => commitContent.current(),
+		// Escape: the typed text is dropped with its preview.
+		onInvalid: () => {
+			const preview = pendingPreview.current;
+			pendingPreview.current = null;
+			if (preview && timeline.getPreviewTracks() === preview) timeline.discardPreview();
+		},
 		supportsExpressions: false,
 	});
 
@@ -659,15 +668,18 @@ function TextMaskFields({
 		<>
 			<SectionField label={t("params.content")}>
 				<Textarea
+					aria-label={t("params.content")}
 					value={content.displayValue}
 					className="min-h-20"
 					onFocus={content.onFocus}
 					onChange={content.onChange}
+					onKeyDown={content.onKeyDown}
 					onBlur={content.onBlur}
 				/>
 			</SectionField>
 			<SectionField label={t("properties.font")}>
 				<FontPicker
+					label={t("properties.font")}
 					defaultValue={mask.params.fontFamily}
 					onValueChange={(value) => {
 						previewParam("fontFamily")(value);
@@ -678,6 +690,7 @@ function TextMaskFields({
 			<SectionField label={t("common.size")}>
 				<MaskNumberField
 					icon={<HugeiconsIcon icon={TextFontIcon} />}
+					label={t("params.fontSize")}
 					param={fontSizeParam}
 					value={mask.params.fontSize}
 					onPreview={previewNumberParam("fontSize")}
@@ -743,6 +756,7 @@ function MaskNumberField({
 	onPreview,
 	onCommit,
 	icon,
+	label,
 	className,
 }: {
 	param: NumberParamDefinition;
@@ -750,8 +764,11 @@ function MaskNumberField({
 	onPreview: (value: number) => void;
 	onCommit: () => void;
 	icon?: React.ReactNode;
+	/** The field's accessible name, when the param's own label is too short (X, Size). */
+	label?: string;
 	className?: string;
 }) {
+	const { t } = useI18n();
 	const { timeline } = useEditor();
 	const isPercent = param.unit === "percent";
 	const percentMax = param.max ?? 100;
@@ -797,6 +814,7 @@ function MaskNumberField({
 		<NumberField
 			className={className}
 			icon={icon}
+			aria-label={label ?? t(param.labelKey)}
 			value={draft.displayValue}
 			dragSensitivity="slow"
 			onFocus={draft.onFocus}
