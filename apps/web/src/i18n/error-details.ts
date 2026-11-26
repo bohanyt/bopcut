@@ -31,6 +31,7 @@ const messageKeys = new Map<string, StaticMessageKey>([
 	["Invalid preset list", "text.invalidPresetList"],
 	["Could not save text preset", "text.presetSaveFailed"],
 	["Unsupported subtitle format", "captions.unsupportedFormat"],
+	["Ignored unsupported ASS style features such as outline, shadow, rotation, or scaling.", "captions.assStylesIgnored"],
 	["Cannot delete main scene", "timeline.cannotDeleteMain"],
 	["Scene is used by a compound clip", "timeline.sceneInUse"],
 	["Compound clip was not created", "timeline.compoundNotCreated"],
@@ -108,6 +109,18 @@ export function localizeErrorDetail(detail: string, t: ReturnType<typeof createT
 	}
 	if ((match = /^Failed to fetch: (\d+)$/.exec(detail))) {
 		return t("network.fetchFailed", { status: match[1] });
+	}
+	if ((match = /^Stripped unsupported ASS inline override tags from (\d+) subtitle cue\(s\)\.$/.exec(detail))) {
+		return t("captions.assTagsStripped", { count: match[1] });
+	}
+	if ((match = /^Ignored ASS event effects in (\d+) subtitle cue\(s\)\.$/.exec(detail))) {
+		return t("captions.assEffectsIgnored", { count: match[1] });
+	}
+	if ((match = /^Fell back to default subtitle styling for (\d+) cue\(s\) that referenced missing ASS styles\.$/.exec(detail))) {
+		return t("captions.assMissingStyles", { count: match[1] });
+	}
+	if ((match = /^Ignored (\d+) non-dialogue ASS event\(s\)\.$/.exec(detail))) {
+		return t("captions.assEventsSkipped", { count: match[1] });
 	}
 	if ((match = /^(.+) was not found\. Install it or set ([A-Z0-9_]+)\.$/.exec(detail))) {
 		return t("retrieval.toolMissing", { tool: match[1], setting: match[2] });
