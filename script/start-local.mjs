@@ -113,6 +113,85 @@ function within(root, target) {
 	return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
+function isAlive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return error.code !== "ESRCH";
+	}
+}
+
+async function removeEmptyDirectory(directory) {
+	try {
+		await fs.rmdir(directory);
+	} catch (error) {
+		if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
+	}
+}
+
+async function lockStartup(state) {
+	const lock = path.join(state, "starting");
+	const claim = await fs.mkdtemp(path.join(state, "starting-"));
+	const owner = `owner-${process.pid}-${path.basename(claim)}`;
+	try {
+		await fs.writeFile(path.join(claim, owner), "");
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				await fs.rename(claim, lock);
+				return async () => {
+					await fs.unlink(path.join(lock, owner));
+					await removeEmptyDirectory(lock);
+				};
+			} catch (error) {
+				if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code)) throw error;
+			}
+			const entries = await fs.readdir(lock).catch((error) => {
+				if (error.code !== "ENOENT") throw error;
+				return [];
+			});
+			for (const name of entries) {
+				const pid = /^owner-([1-9]\d*)-starting-[\w-]+$/.exec(name)?.[1];
+				if (!pid || isAlive(Number(pid))) throw new Error("Another local editor is running or starting");
+				// Each claim has a unique marker. A stale claim can never unlink a newer owner.
+				await fs.unlink(path.join(lock, name)).catch((error) => { if (error.code !== "ENOENT") throw error; });
+			}
+			await removeEmptyDirectory(lock);
+		}
+		throw new Error("Could not lock the local editor");
+	} finally {
+		await fs.unlink(path.join(claim, owner)).catch((error) => { if (error.code !== "ENOENT") throw error; });
+		await removeEmptyDirectory(claim);
+	}
+}
+
+async function deleteBuild(directory) {
+	for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+		const file = path.join(directory, entry.name);
+		if (entry.isDirectory()) await deleteBuild(file);
+		else await fs.unlink(file);
+	}
+	await fs.rmdir(directory);
+}
+
+async function pruneBuilds(state, current, previous) {
+	const directory = path.join(state, "builds");
+	const previousFile = path.join(state, "previous-build");
+	try {
+		const expected = path.join(await fs.realpath(path.dirname(state)), path.basename(state), "builds");
+		if (await fs.realpath(directory) !== expected) throw new Error("The build cache path has changed");
+		if (previous) await fs.writeFile(previousFile, previous);
+		else previous = await fs.readFile(previousFile, "utf8").catch(() => "");
+		for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+			const name = entry.name;
+			if (!entry.isDirectory() || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(name) || name === current || name === previous) continue;
+			await deleteBuild(path.join(directory, name));
+		}
+	} catch (error) {
+		console.warn(`Could not clean the local build cache: ${error.message}`);
+	}
+}
+
 async function copyTracedAliases(directory, source, output) {
 	if (!await exists(directory)) return;
 	for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
@@ -215,13 +294,7 @@ async function main() {
 	}
 	const state = path.join(git(["rev-parse", "--absolute-git-dir"]), "bopencut-local");
 	await fs.mkdir(state, { recursive: true });
-	const lock = path.join(state, "starting");
-	try {
-		await fs.mkdir(lock);
-	} catch (error) {
-		if (error.code === "EEXIST") throw new Error("Another local editor start is in progress");
-		throw error;
-	}
+	const release = await lockStartup(state);
 	let running;
 	try {
 		const current = git(["rev-parse", "HEAD"]);
@@ -265,12 +338,15 @@ async function main() {
 		if (!running) {
 			if (await listening()) throw new Error(`Port ${port} is in use`);
 			running = await startServer(await buildCommit(state, current));
+			await pruneBuilds(state, current);
+		} else {
+			await pruneBuilds(state, next, current);
 		}
 		console.log(`Open http://${host}:${port}/projects`);
+		return await running.done;
 	} finally {
-		await fs.rmdir(lock);
+		await release();
 	}
-	return running.done;
 }
 
 function stop() {

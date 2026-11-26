@@ -62,6 +62,9 @@ server.listen(Number(process.env.PORT), process.env.HOSTNAME);\`);`;
 	};
 	const first = commit("First editor");
 	git(root, "clone", origin, clone);
+	const state = path.join(clone, ".git", "bopencut-local");
+	const lock = path.join(state, "starting");
+	const cached = async () => (await fs.readdir(path.join(state, "builds"))).sort();
 	const port = await freePort();
 	const url = `http://127.0.0.1:${port}`;
 	async function start(label: string, ...flags: string[]) {
@@ -85,7 +88,19 @@ server.listen(Number(process.env.PORT), process.env.HOSTNAME);\`);`;
 		return log;
 	}
 	try {
+		await fs.mkdir(lock, { recursive: true });
+		const holder = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+		try {
+			await fs.writeFile(path.join(lock, `owner-${holder.pid}-starting-test`), "");
+			const blocked = Bun.spawnSync([process.execPath, "--no-env-file", "script/start-local.mjs", `--port=${port}`, "--no-update"], { cwd: clone });
+			expect(blocked.exitCode).toBe(1);
+			expect(blocked.stderr.toString()).toContain("Another local editor");
+		} finally {
+			holder.kill("SIGKILL");
+			await holder.exited;
+		}
 		await start("first", "--no-update");
+		expect(await cached()).toEqual([first]);
 		await fs.writeFile(path.join(web, "VERSION"), "next");
 		const next = commit("Editor update");
 		expect(await start("first", "--no-update")).not.toContain("Updated bopencut");
@@ -97,7 +112,8 @@ server.listen(Number(process.env.PORT), process.env.HOSTNAME);\`);`;
 		await fs.unlink(localEdit);
 		expect(await start("next")).toContain("Updated bopencut");
 		expect(git(clone, "rev-parse", "HEAD")).toBe(next);
-		expect(await fs.readFile(path.join(clone, ".git", "bopencut-local", "installed-commit"), "utf8")).toBe(first);
+		expect(await fs.readFile(path.join(state, "installed-commit"), "utf8")).toBe(first);
+		expect(await cached()).toEqual([first, next].sort());
 		await fs.writeFile(path.join(web, "VERSION"), "broken");
 		const broken = commit("Broken editor update");
 		expect(await start("next")).toContain("Update skipped: Editor build failed");
@@ -113,6 +129,15 @@ server.listen(Number(process.env.PORT), process.env.HOSTNAME);\`);`;
 		const badServer = commit("Broken runtime update");
 		expect(await start("next")).toContain("Update skipped: The editor did not start");
 		expect(git(clone, "rev-parse", "HEAD")).toBe(next);
+		expect(await cached()).toEqual([first, next].sort());
+		await fs.writeFile(path.join(web, "VERSION"), "newest");
+		const newest = commit("Next working update");
+		expect(await start("newest")).toContain("Updated bopencut");
+		expect(git(clone, "rev-parse", "HEAD")).toBe(newest);
+		expect(await cached()).toEqual([next, newest].sort());
+		await fs.mkdir(lock);
+		await start("newest", "--no-update");
+		expect(await cached()).toEqual([next, newest].sort());
 		const log = (await fs.readFile(path.join(root, ".bopencut-updates.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 		expect(log).toMatchObject([
 			{ old: first, next, result: "skipped: the checkout has local changes" },
@@ -120,6 +145,7 @@ server.listen(Number(process.env.PORT), process.env.HOSTNAME);\`);`;
 			{ old: next, next: broken, result: "skipped: Editor build failed" },
 			{ old: next, next: badLockfile, result: "skipped: Dependency installation failed" },
 			{ old: next, next: badServer, result: "skipped: The editor did not start" },
+			{ old: next, next: newest, result: "updated" },
 		]);
 		expect(await fs.readdir(data)).toEqual(["original.txt"]);
 		expect(await fs.readFile(path.join(data, "original.txt"), "utf8")).toBe("keep this file");
