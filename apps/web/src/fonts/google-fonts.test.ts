@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { clearFontAtlasCache, loadFontAtlas } from "./google-fonts";
+import { clearFontAtlasCache, forgetLoadedFonts, loadFontAtlas } from "./google-fonts";
 
 const originals = {
 	fetch: Object.getOwnPropertyDescriptor(globalThis, "fetch"),
@@ -11,6 +11,7 @@ let respond: () => Response | Promise<Response>;
 beforeEach(() => {
 	requests = 0;
 	clearFontAtlasCache();
+	forgetLoadedFonts();
 	const replacements = { fetch: async () => { requests++; return respond(); }, Image: class { src = ""; } };
 	for (const [key, value] of Object.entries(replacements)) {
 		Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
@@ -19,6 +20,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	clearFontAtlasCache();
+	forgetLoadedFonts();
 	for (const [key, descriptor] of Object.entries(originals)) {
 		if (descriptor) Object.defineProperty(globalThis, key, descriptor);
 		else Reflect.deleteProperty(globalThis, key);
