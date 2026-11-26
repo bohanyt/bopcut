@@ -98,7 +98,7 @@ export class RemoveMediaAssetCommand extends Command {
 	}
 
 	private async deleteFromStorage(editor: EditorCore, removedAsset: MediaAsset): Promise<void> {
-		editor.media.markBinChanged(this.assetId);
+		editor.media.markBinChanged({ projectId: this.projectId, id: this.assetId, asset: null });
 		const session = editor.save.getCurrent();
 		if (editor.save.isRunning() && session?.projectId === this.projectId && session.isDirty()) {
 			// The saved timeline may still use the asset: send the delete once the edits are on disk.
@@ -131,10 +131,7 @@ export class RemoveMediaAssetCommand extends Command {
 			restoredBin.splice(this.removedIndex, 0, restoredAsset);
 			editor.media.setAssets({ assets: restoredBin });
 
-			const restored = pending
-				? editor.media.restoreUnsentRemoval({ projectId: this.projectId, asset: restoredAsset })
-				: editor.media.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: restoredAsset });
-			restored.catch((error) => {
+			editor.media.persistBinChange({ projectId: this.projectId, id: this.assetId, asset: restoredAsset, ifMissing: !!pending }).catch((error) => {
 				console.error("Failed to restore media item on undo:", error);
 			});
 		}

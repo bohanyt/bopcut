@@ -178,12 +178,16 @@ export class SaveSession {
 	whenSaved(revision = this.revision, signal?: AbortSignal): Promise<TProject | null> {
 		if (this.savedRevision >= revision || this.detached || signal?.aborted) return Promise.resolve(null);
 		return new Promise((resolve) => {
-			const waiter = { revision, resolve };
-			this.savedWaiters.push(waiter);
-			signal?.addEventListener("abort", () => {
+			const onAbort = () => {
 				this.savedWaiters = this.savedWaiters.filter((other) => other !== waiter);
 				resolve(null);
-			}, { once: true });
+			};
+			const waiter = { revision, resolve: (written: TProject | null) => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve(written);
+			} };
+			this.savedWaiters.push(waiter);
+			signal?.addEventListener("abort", onAbort, { once: true });
 		});
 	}
 

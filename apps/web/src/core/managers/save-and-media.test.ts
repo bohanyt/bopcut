@@ -245,6 +245,48 @@ describe("removing used media", () => {
 		expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["first", "second"]);
 	});
 
+	test("undo before the write restores deleted bytes after a project switch", async () => {
+		const { editor, restore, stored } = await setup();
+		const checking = gate();
+		stored.mockImplementation(async () => {
+			await checking.promise;
+			return false;
+		});
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		editor.command.undo();
+		await editor.project.loadProject({ id: "b" });
+		checking.open();
+		await until(() => restore.mock.calls.length === 1);
+		expect(restore).toHaveBeenCalledWith(expect.objectContaining({ projectId: "a", mediaAsset: expect.objectContaining({ id: "first" }) }));
+	});
+
+	test("a removal while the project media reloads stays removed", async () => {
+		const { editor } = await setup();
+		const assets = editor.media.getAssets();
+		const loading = gate();
+		stub({ loadAllMediaAssets: async () => {
+			await loading.promise;
+			return assets.map((item) => ({ ...item }));
+		} });
+		const reload = editor.media.loadProjectMedia({ projectId: "a" });
+		editor.media.removeMediaAsset({ projectId: "a", id: "first" });
+		loading.open();
+		await reload;
+		expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["second"]);
+	});
+
+	test("a saved waiter lets go of its signal", async () => {
+		const { editor } = await setup();
+		const session = editor.save.getCurrent()!;
+		const controller = new AbortController();
+		const release = spyOn(controller.signal, "removeEventListener");
+		editor.save.markNavigationDirty();
+		const saved = session.whenSaved(undefined, controller.signal);
+		expect(await session.settle()).toBe(true);
+		expect(await saved).not.toBeNull();
+		expect(release).toHaveBeenCalledWith("abort", expect.any(Function));
+	});
+
 	test("undo drops the waiting removal", async () => {
 		const { editor } = await setup();
 		const session = editor.save.getCurrent()!;
