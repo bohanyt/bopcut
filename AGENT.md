@@ -85,8 +85,10 @@ The editor server also answers the Model Context Protocol at `http://127.0.0.1:3
 - `get_status`, `get_notes`, `get_selection`: as the CLI commands of the same name.
 - `read_transcript`: as `transcript-view`, with `media` for one source.
 - `plan_silence_cuts`: as `silence-plan`, with `minGap`, `pad`, `keepFillers`, `keepLead`, `tail` and `ignoreMedia` (a list).
+- `submit_draft`: changes a project. Pass `projectId` and the draft's `ops`, with `label`, `basedOn`, `atomic` and `onConflict` as in `draft.json` (see the file protocol below). The server writes `draft.json` with a new `rev` and the `projectId`, and the open editor applies it as one Undo step. The tool waits up to 15 s for the result. A draft in `draft.json` that had not applied yet is moved to `drafts-applied/superseded-*.json` and named in `replacedDraft`.
+- `get_draft_result`: the editor's result for a `rev`: `applied`, `message`, and the whole `draft-result.json` entry with `saved` and the result per op. It waits up to `waitSeconds` (default 15, at most 50) while the project is open.
 
-All tools only read. Problems come back as tool errors with the CLI's messages. Tools that change projects and a remote mode with a login are planned.
+Drafts apply only while the project is open in an editor tab. When no tab of the project has answered in the last few seconds, the draft tools say so (`editorOpen:false`) instead of waiting, and the draft stays in `draft.json` until the project is opened. `submit_draft` is marked as a tool that changes the project (`readOnlyHint:false`), so clients ask the person before running it; the other tools only read. Problems come back as tool errors with the CLI's messages, and so does a draft the editor did not apply. Export, frame and voice tools, and a remote mode with a login, are planned.
 
 ## Agent workspace (`apps/web/.env.local`)
 ```

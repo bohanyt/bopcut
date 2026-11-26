@@ -3,7 +3,7 @@ import path from "node:path";
 import { projectDir, readJson } from "@/services/storage/server/files";
 import { fileInside } from "./inside";
 import { isForeignOrigin } from "./origin";
-import { isCliRenderRunning, startRender } from "./render-server";
+import { isCliRenderRunning, isProjectOpen, startRender } from "./render-server";
 import { reserveEditorActivity, reserveReview } from "./review-activity";
 import { readSilencePlan, readTranscriptView } from "./transcript-view-server";
 import { DEFAULT_SILENCE_OPTIONS } from "./silence-plan";
@@ -36,6 +36,10 @@ export async function handleCli(req: Request, action: string, workspace: string)
 	const requested = url.searchParams.get("projectId");
 	if (requested !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(requested)) {
 		return json({ error: "Pass a valid --project-id or open a project in the editor." }, 400);
+	}
+	if (action === "presence" && req.method === "GET") {
+		if (!requested) return json({ error: "Pass a projectId." }, 400);
+		return json({ projectId: requested, open: isProjectOpen(requested) });
 	}
 	try {
 		if (action === "review" && req.method === "POST") {

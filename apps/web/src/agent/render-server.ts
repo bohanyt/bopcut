@@ -38,6 +38,9 @@ export const isCliRenderRunning = () => reserved;
 const requestBody = (req: Request, signal: AbortSignal) =>
 	new Response(req.body?.pipeThrough(new TransformStream(), { signal }), { headers: req.headers });
 
+/** Whether an editor tab of the project asked for agent requests in the last few seconds (it asks every 2 s). */
+export const isProjectOpen = (projectId: string) => Date.now() - (presence.get(projectId) ?? -Infinity) < presenceMs;
+
 export function renderPresence(req: Request) {
 	const job = active;
 	const projectId = req.headers.get("x-bopencut-project");

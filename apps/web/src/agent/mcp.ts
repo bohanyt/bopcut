@@ -3,6 +3,7 @@ import path from "node:path";
 import { dataRoot } from "@/services/storage/server/files";
 import { readProjectSummary } from "@/services/storage/server/projects";
 import { handleCli } from "./cli-api";
+import { type DraftContext, draftResult, MAX_DRAFT_OPS, MAX_DRAFT_WAIT_SECONDS, submitDraft } from "./mcp-drafts";
 import { isForeignOrigin } from "./origin";
 
 /**
@@ -14,7 +15,8 @@ const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 const SERVER_INFO = { name: "bopcut", title: "bopcut video editor", version: "0.1.0" };
 const INSTRUCTIONS = "Tools for a local bopcut editor: list projects, then read a project's status, notes, " +
 	"selection and timeline transcript, and plan dead-air cuts. Times are seconds on the root timeline. " +
-	"The plans return draft ops; this server does not change projects yet.";
+	"Change a project with submit_draft: its ops apply in the open editor as one Undo step, which the person can undo. " +
+	"Put the snapshot's syncedAt from get_status in basedOn, so ops on clips the person changed since are refused.";
 
 type JsonRpcId = string | number | null;
 type JsonRpcMessage = { jsonrpc?: unknown; id?: JsonRpcId; method?: unknown; params?: unknown };
@@ -23,6 +25,8 @@ type Args = Record<string, unknown>;
 
 const projectId = { type: "string", description: "Project ID from list_projects." };
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+/** Clients ask the person before a tool that changes a project. Draft assets can come from links. */
+const changesProject = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
 
 export const MCP_TOOLS = [
 	{
@@ -75,10 +79,67 @@ export const MCP_TOOLS = [
 		},
 		annotations: readOnly,
 	},
+	{
+		name: "submit_draft", title: "Send a draft",
+		description: "Changes a project: the editor applies the ops in order as one Undo step and selects what changed. " +
+			"The ops are those of draft.json in the bopcut agent guide (AGENT.md), such as set, delete, add, cut, animate and note; " +
+			"the ops of plan_silence_cuts go in as they are. Drafts apply only while the project is open in the editor. " +
+			"Waits a few seconds for the result; get_draft_result reads it later.",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["projectId", "ops"],
+			properties: {
+				projectId,
+				ops: {
+					type: "array", minItems: 1, maxItems: MAX_DRAFT_OPS, description: "Draft ops, applied in order.",
+					items: { type: "object", required: ["op"], properties: { op: { type: "string" } } },
+				},
+				label: { type: "string", maxLength: 200, description: "Short name the editor shows when the draft applies, such as Cut dead air." },
+				basedOn: { type: "string", description: "The syncedAt of the get_status snapshot the ops were planned from. Ops on clips the person changed since are refused." },
+				atomic: { type: "boolean", description: "Apply every op or none." },
+				onConflict: { type: "string", enum: ["keep", "refuse"], description: "keep: leave the fields the person changed since basedOn and apply the rest." },
+			},
+		},
+		annotations: changesProject,
+	},
+	{
+		name: "get_draft_result", title: "Draft result",
+		description: "Whether a draft from submit_draft applied and was saved, with the editor's result for each op, or why it is still waiting. " +
+			"Waits for the result while the project is open in the editor.",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["projectId", "rev"],
+			properties: {
+				projectId,
+				rev: { type: "string", description: "The rev that submit_draft returned." },
+				waitSeconds: { type: "number", minimum: 0, maximum: MAX_DRAFT_WAIT_SECONDS, description: "Longest wait for the open editor (default 15)." },
+			},
+		},
+		annotations: readOnly,
+	},
 ] as const;
 
 const text = (value: string, extra: Partial<ToolResult> = {}): ToolResult => ({ content: [{ type: "text", text: value }], ...extra });
 const failure = (message: string) => text(message, { isError: true });
+const structured = ({ value, isError }: { value: Record<string, unknown>; isError?: boolean }) =>
+	text(JSON.stringify(value), { structuredContent: value, ...(isError && { isError }) });
+
+/** How long submit_draft waits for the open editor to apply a draft (it looks every 2 s). */
+const DRAFT_WAIT_MS = 15_000;
+export type McpOptions = Partial<Pick<DraftContext, "editorOpen" | "waitMs">>;
+
+/**
+ * The open tabs are known to the agent routes, so they are asked over HTTP, as the CLI asks them,
+ * whichever module copy this route has.
+ */
+async function askEditorOpen(origin: string, projectId: string, signal: AbortSignal) {
+	const url = new URL("/api/agent/cli/presence", origin);
+	url.searchParams.set("projectId", projectId);
+	try {
+		const response = await fetch(url, { cache: "no-store", redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]) });
+		return (await response.json())?.open === true;
+	} catch {
+		return false;
+	}
+}
 
 async function cli(action: string, query: Record<string, string>, workspace: string, signal: AbortSignal): Promise<ToolResult> {
 	const url = new URL(`http://127.0.0.1/api/agent/cli/${action}`);
@@ -120,7 +181,8 @@ function requireProject(args: Args): string {
 	return id;
 }
 
-async function callTool(name: string, args: Args, workspace: string, signal: AbortSignal): Promise<ToolResult> {
+async function callTool(name: string, args: Args, context: DraftContext): Promise<ToolResult> {
+	const { workspace, signal } = context;
 	switch (name) {
 		case "list_projects": return listProjects();
 		case "get_status": return cli("status", { projectId: requireProject(args) }, workspace, signal);
@@ -153,6 +215,8 @@ async function callTool(name: string, args: Args, workspace: string, signal: Abo
 			}
 			return cli("silence-plan", query, workspace, signal);
 		}
+		case "submit_draft": return structured(await submitDraft(args, requireProject(args), context));
+		case "get_draft_result": return structured(await draftResult(args, requireProject(args), context));
 		default: throw new UnknownTool(name);
 	}
 }
@@ -163,7 +227,7 @@ function rpcError(id: JsonRpcId, code: number, message: string) {
 	return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-async function answer(message: JsonRpcMessage, workspace: string, signal: AbortSignal) {
+async function answer(message: JsonRpcMessage, context: DraftContext) {
 	const id = message.id ?? null;
 	if (message.jsonrpc !== "2.0" || typeof message.method !== "string") return rpcError(id, -32600, "Invalid request");
 	const params = (message.params && typeof message.params === "object" ? message.params : {}) as Args;
@@ -183,7 +247,7 @@ async function answer(message: JsonRpcMessage, workspace: string, signal: AbortS
 			const args = (params.arguments && typeof params.arguments === "object" ? params.arguments : {}) as Args;
 			if (typeof name !== "string") return rpcError(id, -32602, "Pass the tool name.");
 			try {
-				return { jsonrpc: "2.0", id, result: await callTool(name, args, workspace, signal) };
+				return { jsonrpc: "2.0", id, result: await callTool(name, args, context) };
 			} catch (error) {
 				if (error instanceof UnknownTool) return rpcError(id, -32602, `Unknown tool: ${name}`);
 				return { jsonrpc: "2.0", id, result: failure(error instanceof Error ? error.message : String(error)) };
@@ -195,7 +259,7 @@ async function answer(message: JsonRpcMessage, workspace: string, signal: AbortS
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
 
-export async function handleMcp(req: Request, workspace: string): Promise<Response> {
+export async function handleMcp(req: Request, workspace: string, options: McpOptions = {}): Promise<Response> {
 	const url = new URL(req.url);
 	// Local clients only, and never a web page of another origin (DNS rebinding), as for the agent CLI.
 	if (!["localhost", "127.0.0.1"].includes(url.hostname) || isForeignOrigin(req) || req.headers.get("sec-fetch-site") === "cross-site") {
@@ -215,7 +279,11 @@ export async function handleMcp(req: Request, workspace: string): Promise<Respon
 	// Notifications and responses from the client need no answer.
 	const requests = messages.filter((message) => message.id !== undefined && message.method !== undefined);
 	if (!requests.length) return new Response(null, { status: 202 });
+	const context: DraftContext = {
+		workspace, signal: req.signal, waitMs: options.waitMs ?? DRAFT_WAIT_MS,
+		editorOpen: options.editorOpen ?? ((projectId) => askEditorOpen(url.origin, projectId, req.signal)),
+	};
 	const answers = [];
-	for (const message of requests) answers.push(await answer(message, workspace, req.signal));
+	for (const message of requests) answers.push(await answer(message, context));
 	return json(Array.isArray(body) ? answers : answers[0]);
 }
