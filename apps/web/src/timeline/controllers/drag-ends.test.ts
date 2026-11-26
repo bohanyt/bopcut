@@ -5,7 +5,6 @@ import { fixture, getHost, t, video } from "@/timeline/__tests__/compound-fixtur
 import { BASE_TIMELINE_PIXELS_PER_SECOND as pps } from "@/timeline/scale";
 import { ElementInteractionController, type ElementInteractionDeps } from "./element-interaction-controller";
 import { ResizeController, type ResizeConfig } from "./resize-controller";
-import type { TimelineElement } from "@/timeline";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 const fps = { numerator: 30, denominator: 1 };
@@ -102,16 +101,8 @@ function resizer() {
 		selectedElements: [],
 		beginPreviewGesture: editor.timeline.beginPreviewGesture,
 		discardPreview: () => editor.timeline.discardPreview(),
-		previewElements: (updates) => editor.timeline.previewElements({
-			updates: updates.map(({ trackId, elementId, patch }) => ({
-				trackId, elementId, updates: patch as Partial<TimelineElement>,
-			})),
-		}),
-		commitElements: (updates) => editor.timeline.updateElements({
-			updates: updates.map(({ trackId, elementId, patch }) => ({
-				trackId, elementId, patch: patch as Partial<TimelineElement>,
-			})),
-		}),
+		previewElements: (updates) => editor.timeline.previewElementUpdates({ updates }),
+		commitElements: (updates) => editor.timeline.updateElements({ updates }),
 	};
 	const controller = new ResizeController({ configRef: { current: config } });
 	destroyController = () => controller.destroy();
