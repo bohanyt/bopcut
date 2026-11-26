@@ -41,12 +41,12 @@ function setup({ empty = false } = {}) {
 afterEach(() => EditorCore.reset());
 
 test("Shift+R is added to stored shortcuts only when unbound", () => {
+	// Later versions add other keys: only Shift+R and the user's own keys are checked here.
+	const migrated = (state: unknown) => (runMigrations({ state, fromVersion: 8 }) as { keybindings: Record<string, string> }).keybindings;
 	const state = { isCustomized: true, keybindings: { space: "toggle-play" } };
-	expect(runMigrations({ state, fromVersion: 8 })).toEqual({
-		...state, keybindings: { ...state.keybindings, "shift+r": "record-voice-over" },
-	});
+	expect(migrated(state)).toMatchObject({ space: "toggle-play", "shift+r": "record-voice-over" });
 	const custom = { ...state, keybindings: { ...state.keybindings, "shift+r": "undo" } };
-	expect(runMigrations({ state: custom, fromVersion: 8 })).toEqual(custom);
+	expect(migrated(custom)).toMatchObject({ space: "toggle-play", "shift+r": "undo" });
 });
 
 test("a full disk is reported as a storage capacity error", () => {

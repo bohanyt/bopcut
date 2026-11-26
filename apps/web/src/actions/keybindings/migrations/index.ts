@@ -6,6 +6,7 @@ import { v6ToV7 } from "./v6-to-v7";
 import { v7ToV8 } from "./v7-to-v8";
 import { v8ToV9 } from "./v8-to-v9";
 import { v9ToV10 } from "./v9-to-v10";
+import { v10ToV11 } from "./v10-to-v11";
 
 type MigrationFn = ({ state }: { state: unknown }) => unknown;
 
@@ -18,9 +19,10 @@ const migrations: Record<number, MigrationFn> = {
 	7: v7ToV8,
 	8: v8ToV9,
 	9: v9ToV10,
+	10: v10ToV11,
 };
 
-export const CURRENT_VERSION = 10;
+export const CURRENT_VERSION = 11;
 
 export function runMigrations({
 	state,
