@@ -22,6 +22,11 @@ const SECOND_MULTIPLIERS = [
 ] as const;
 
 /**
+ * sub-second tick intervals for whole-second labels when frames do not divide a second.
+ */
+const SUB_SECOND_TICKS = [0.1, 0.2, 0.25, 0.5] as const;
+
+/**
  * minimum pixel spacing between labels to keep them readable
  */
 const MIN_LABEL_SPACING_PX = 120;
@@ -107,21 +112,34 @@ function ensureTickDividesLabel({
 	pixelsPerSecond: number;
 	fps: number;
 }): number {
-	const labelFrames = Math.round(labelIntervalSeconds * fps);
-	const tickFrames = Math.round(tickIntervalSeconds * fps);
+	// Compare in seconds: at 29.97 fps five frames do not divide a whole second, so ticks drawn at the
+	// real frame interval would never reach the next second's label.
+	const divides = (tick: number) => {
+		const ratio = labelIntervalSeconds / tick;
+		return Math.abs(ratio - Math.round(ratio)) < 1e-6;
+	};
 
 	// if tick already divides label evenly, we're good
-	if (labelFrames % tickFrames === 0) {
+	if (divides(tickIntervalSeconds)) {
 		return tickIntervalSeconds;
 	}
 
 	// find the smallest tick interval that divides the label interval and has adequate spacing
 	for (const candidateFrames of TICK_FRAME_INTERVALS) {
-		if (labelFrames % candidateFrames === 0) {
+		if (divides(candidateFrames / fps)) {
 			const candidateSpacing = pixelsPerFrame * candidateFrames;
 			// accept if spacing meets minimum threshold
 			if (candidateSpacing >= MIN_TICK_SPACING_PX) {
 				return candidateFrames / fps;
+			}
+		}
+	}
+
+	// at 23.976, 29.97 and 59.94 fps no frame interval divides a whole second: split it evenly instead
+	if (labelIntervalSeconds >= 1) {
+		for (const candidateSeconds of SUB_SECOND_TICKS) {
+			if (divides(candidateSeconds) && pixelsPerSecond * candidateSeconds >= MIN_TICK_SPACING_PX) {
+				return candidateSeconds;
 			}
 		}
 	}
@@ -190,10 +208,10 @@ export function shouldShowLabel({
 }
 
 /**
- * formats a ruler tick label.
+ * formats a ruler tick label on the project's frame grid.
  *
- * - on second boundaries: "MM:SS" (e.g., "00:00", "01:30")
- * - between seconds: "Xf" (e.g., "5f", "15f")
+ * - a whole second, or the first frame after one: "MM:SS" (e.g., "00:00", "01:30")
+ * - other frames: "Xf", counted from that first frame (e.g., "5f", "15f")
  */
 export function formatRulerLabel({
 	timeInSeconds,
@@ -202,46 +220,21 @@ export function formatRulerLabel({
 	timeInSeconds: number;
 	fps: FrameRate;
 }): string {
-	if (isSecondBoundary({ timeInSeconds })) {
-		return formatTimestamp({ timeInSeconds });
-	}
-
-	const frameWithinSecond = getFrameWithinSecond({ timeInSeconds, fps: frameRateToFloat(fps) });
-	return `${frameWithinSecond}f`;
-}
-
-/**
- * checks if a time falls exactly on a second boundary.
- */
-function isSecondBoundary({
-	timeInSeconds,
-}: {
-	timeInSeconds: number;
-}): boolean {
-	const epsilon = 0.0001;
-	const remainder = timeInSeconds % 1;
-	return remainder < epsilon || remainder > 1 - epsilon;
-}
-
-/**
- * gets the frame number within the current second.
- */
-function getFrameWithinSecond({
-	timeInSeconds,
-	fps,
-}: {
-	timeInSeconds: number;
-	fps: number;
-}): number {
-	const fractionalPart = timeInSeconds % 1;
-	return Math.round(fractionalPart * fps);
+	// Whole-second ticks sit on their second even where it falls inside a frame (29.97 fps).
+	const nearestSecond = Math.round(timeInSeconds);
+	if (Math.abs(timeInSeconds - nearestSecond) < 1e-7) return formatTimestamp({ totalSeconds: nearestSecond });
+	const { numerator, denominator } = fps;
+	const frame = Math.round((timeInSeconds * numerator) / denominator);
+	// Integer math: the frame just before a second is never within a tolerance of it.
+	const second = Math.floor((frame * denominator) / numerator);
+	const frameWithinSecond = frame - Math.ceil((second * numerator) / denominator);
+	return frameWithinSecond === 0 ? formatTimestamp({ totalSeconds: second }) : `${frameWithinSecond}f`;
 }
 
 /**
  * formats a timestamp as MM:SS or H:MM:SS when >= 1 hour.
  */
-function formatTimestamp({ timeInSeconds }: { timeInSeconds: number }): string {
-	const totalSeconds = Math.round(timeInSeconds);
+function formatTimestamp({ totalSeconds }: { totalSeconds: number }): string {
 	const hours = Math.floor(totalSeconds / 3600);
 	const minutes = Math.floor((totalSeconds % 3600) / 60);
 	const seconds = totalSeconds % 60;
