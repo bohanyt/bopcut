@@ -4,7 +4,7 @@
 
 **bopcut** is a web video editor where **you and an agent edit the same timeline**. The agent reads your sources and drafts the video you ask for. You move, trim, and arrange clips in an interface like CapCut, then ask the agent to refine the parts you point out. You can undo every agent change, and your edits are preserved.
 
-It used to be called **bopencut**. The repository and the `BOPENCUT_*` settings still use that name.
+It used to be called **bopencut**. The `BOPENCUT_*` settings and a few internal folder names still use that name, and the old repository address redirects here.
 
 > bopcut is a fork of **OpenCut (classic)** by the [OpenCut](https://github.com/opencut-app/opencut-classic) team under the MIT license (see [`LICENSE`](LICENSE)). The underlying editor is entirely their work. The original OpenCut README is at [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
 

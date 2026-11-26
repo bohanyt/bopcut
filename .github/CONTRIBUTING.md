@@ -1,6 +1,6 @@
 # Contributing
 
-bopencut is a personal project developed in stages according to [GOAL.md](../GOAL.md). Issues and suggestions are welcome; external PRs may not be accepted if they do not align with the stages.
+bopcut is a personal project developed in stages according to [GOAL.md](../GOAL.md). Issues and suggestions are welcome; external PRs may not be accepted if they do not align with the stages.
 
 Rules for every change:
 - One stage or fix = one branch + one PR to `main`.
