@@ -77,7 +77,7 @@ function PresetSide({
 		<>
 			<SectionField label={side === "in" ? t("properties.animationIn") : t("properties.animationOut")}>
 				<Select value={type} onValueChange={(next) => apply(next)}>
-					<SelectTrigger className="w-full">
+					<SelectTrigger className="w-full" aria-label={side === "in" ? t("properties.animationIn") : t("properties.animationOut")}>
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>

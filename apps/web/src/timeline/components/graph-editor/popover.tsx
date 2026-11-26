@@ -19,7 +19,7 @@ import {
 	BUILTIN_PRESETS,
 	PRESET_MATCH_TOLERANCE,
 } from "./easing-presets";
-import { removePreset, restorePreset, savePreset, useCustomPresets } from "./custom-presets-store";
+import { customPresetLabel, removePreset, restorePreset, savePreset, useCustomPresets } from "./custom-presets-store";
 import { toast } from "sonner";
 import { BezierGraph, BEZIER_GRAPH_MIN_HEIGHT } from "./bezier-graph";
 
@@ -158,16 +158,16 @@ export function GraphEditorPopover({
 								<PresetItem
 									key={preset.id}
 									value={preset.value}
-									label={preset.label}
+									label={customPresetLabel(preset.label, t)}
 									isActive={activePresetId === preset.id}
 									disabled={!canEdit}
 									onSelect={() => onCommitValue?.(preset.value)}
-									deleteLabel={t("graph.deletePreset", { name: preset.label })}
+									deleteLabel={t("graph.deletePreset", { name: customPresetLabel(preset.label, t) })}
 									onDelete={() => {
 										// Presets live outside the project history, so the toast carries the Undo.
 										const removed = removePreset({ id: preset.id });
 										if (!removed) return;
-										toast(t("graph.presetDeleted", { name: preset.label }), {
+										toast(t("graph.presetDeleted", { name: customPresetLabel(preset.label, t) }), {
 											action: { label: t("shortcuts.action.undo"), onClick: () => restorePreset(removed) },
 										});
 									}}

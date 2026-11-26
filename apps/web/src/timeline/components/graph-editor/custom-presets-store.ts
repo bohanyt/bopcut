@@ -79,14 +79,24 @@ export function useCustomPresets(): EasingPreset[] {
 	return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
+const CUSTOM_LABEL = /^Custom (\d+)$/;
+
+/** A saved preset's name as shown: the stored "Custom N" is shown in the UI language. */
+export function customPresetLabel(label: string, t: (key: "graph.customPreset", values: { number: string }) => string): string {
+	const match = CUSTOM_LABEL.exec(label);
+	return match ? t("graph.customPreset", { number: match[1] }) : label;
+}
+
 export function savePreset({ value }: { value: NormalizedCubicBezier }): void {
 	const current = getSnapshot();
+	// The next number after the highest one: a deleted preset's number is not given twice.
+	const next = Math.max(0, ...current.map(({ label }) => Number(CUSTOM_LABEL.exec(label)?.[1] ?? 0))) + 1;
 	writeToStorage({
 		presets: [
 			...current,
 			{
 				id: generateUUID(),
-				label: `Custom ${current.length + 1}`,
+				label: `Custom ${next}`,
 				value,
 				isCustom: true,
 			},
