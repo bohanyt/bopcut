@@ -106,6 +106,40 @@ afterEach(async () => {
 	EditorCore.reset();
 });
 
+describe("shortcut recording", () => {
+	test("a conflicting key ends recording, so editor shortcuts keep working", async () => {
+		// The Radix dialog does not render in happy-dom; this test is about what the dialog does with keys.
+		const plain = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
+		// Module mocks last for the whole test process: the real dialog is put back at the end.
+		const realDialog = { ...(await import("@/components/ui/dialog")) };
+		mock.module("@/components/ui/dialog", () => ({
+			Dialog: ({ open, children }: { open: boolean; children?: React.ReactNode }) => (open ? <div>{children}</div> : null),
+			DialogBody: plain, DialogContent: plain, DialogFooter: plain, DialogHeader: plain, DialogTitle: plain,
+		}));
+		const { ShortcutsDialog } = await import("./components/shortcuts-dialog");
+		const { useKeybindingsStore } = await import("./keybindings-store");
+		const { createRoot } = await import("react-dom/client");
+		const dialogRoot = createRoot(dom.document.body.appendChild(dom.document.createElement("div")) as never);
+		await act(async () => { dialogRoot.render(<ShortcutsDialog isOpen onOpenChange={() => {}} />); });
+		try {
+			const chips = [...dom.document.querySelectorAll("button[title]")] as unknown as HTMLButtonElement[];
+			const chip = chips.find((button) => button.textContent?.trim().toLowerCase() === "w");
+			if (!chip) throw new Error("Expected the W chip");
+			await act(async () => { chip.click(); });
+			expect(useKeybindingsStore.getState().isRecording).toBe(true);
+			// S already splits: recording W's action on it is a conflict.
+			await press("s");
+			expect(useKeybindingsStore.getState().isRecording).toBe(false);
+		} finally {
+			await act(async () => { dialogRoot.unmount(); });
+			mock.module("@/components/ui/dialog", () => realDialog);
+		}
+		expect(useKeybindingsStore.getState().isRecording).toBe(false);
+		await press("s");
+		expect(clips().bg).toEqual([[0, 1], [1, 4]]);
+	});
+});
+
 describe("split shortcuts", () => {
 	test.each(["q", "w", "e"])("%s does nothing without a selection or beside the selected clip", async (key) => {
 		await press(key);
