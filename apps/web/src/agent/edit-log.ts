@@ -90,6 +90,7 @@ export function createEditLogger(capture: () => EditSnapshot | null, preview: ()
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let suppressed = false;
 	const settle = () => {
+		timer = undefined;
 		if (suppressed) return;
 		if (preview()) { timer = setTimeout(settle, 800); return; }
 		const current = capture();
@@ -98,6 +99,7 @@ export function createEditLogger(capture: () => EditSnapshot | null, preview: ()
 	};
 	return {
 		changed() { if (!suppressed) { clearTimeout(timer); timer = setTimeout(settle, 800); } },
+		flush() { if (timer !== undefined) { clearTimeout(timer); settle(); } },
 		agent(action: () => void) { clearTimeout(timer); settle(); suppressed = true; try { action(); } finally { baseline = capture(); suppressed = false; } },
 	};
 }
