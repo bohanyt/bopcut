@@ -104,10 +104,11 @@ export function CaptionProperties({
 					{t("common.save")}
 				</Button>
 			</div>
-			<div className="flex gap-2">
+			{/* In a narrow panel the button moves under the select instead of cutting its text off. */}
+			<div className="flex flex-wrap gap-2">
 				<select
 					aria-label={t("text.preset")}
-					className="bg-background min-w-0 flex-1 rounded border px-2 text-sm"
+					className="bg-background h-7 min-w-40 flex-1 rounded border px-2 text-sm"
 					value={chosen}
 					onChange={(event) => setChosen(event.target.value)}
 				>

@@ -34,7 +34,7 @@ export function PanelView({
 			{...rest}
 		>
 			{!hideHeader && (
-				<div className={cn("bg-background h-11 shrink-0 pl-3 pr-2 flex items-center justify-between border-b", headerClassName)}>
+				<div className={cn("@container bg-background h-11 shrink-0 pl-3 pr-2 flex items-center justify-between border-b", headerClassName)}>
 					{title && (
 						<span className="text-muted-foreground text-sm">{title}</span>
 					)}

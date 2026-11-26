@@ -426,12 +426,29 @@ function MediaTypePlaceholder({
 	label,
 	duration,
 	variant,
+	compact = false,
 }: {
 	icon: IconSvgElement;
 	label: string;
 	duration?: number;
 	variant: "muted" | "bordered";
+	/** The list view's 24px thumbnail: the icon only, the name is next to it. */
+	compact?: boolean;
 }) {
+	if (compact) {
+		return (
+			<div
+				className={cn(
+					"text-muted-foreground flex size-full items-center justify-center rounded",
+					variant === "muted" ? "bg-muted/30" : "border",
+				)}
+				title={label}
+			>
+				<HugeiconsIcon icon={icon} className="size-4" aria-hidden />
+				<span className="sr-only">{label}</span>
+			</div>
+		);
+	}
 	const iconClassName = cn("size-6", variant === "bordered" && "mb-1");
 
 	return (
@@ -533,6 +550,7 @@ function MediaPreviewContent({ item, thumbnailUrl, variant }: {
 				label={t("assets.video")}
 				duration={item.duration}
 				variant="muted"
+				compact={variant === "compact"}
 			/>
 		);
 	}
@@ -544,12 +562,13 @@ function MediaPreviewContent({ item, thumbnailUrl, variant }: {
 				label={t("common.audio")}
 				duration={item.duration}
 				variant="bordered"
+				compact={variant === "compact"}
 			/>
 		);
 	}
 
 	return (
-		<MediaTypePlaceholder icon={Image02Icon} label={t("assets.unknown")} variant="muted" />
+		<MediaTypePlaceholder icon={Image02Icon} label={t("assets.unknown")} variant="muted" compact={variant === "compact"} />
 	);
 }
 
@@ -686,9 +705,11 @@ function MediaActions({
 				disabled={isProcessing}
 				size="sm"
 				className="items-center justify-center gap-1.5"
+				title={t("assets.import")}
 			>
 				<HugeiconsIcon icon={CloudUploadIcon} />
-				{t("assets.import")}
+				{/* A narrow panel keeps the icon only, so the button is never cut off at the edge. */}
+				<span className="@max-[18rem]:sr-only">{t("assets.import")}</span>
 			</Button>
 		</div>
 	);
