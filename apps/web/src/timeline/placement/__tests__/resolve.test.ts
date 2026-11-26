@@ -17,7 +17,7 @@ import { resolveTrackPlacement } from "@/timeline/placement";
 import { buildMoveGroup, resolveGroupMove } from "@/timeline/group-move";
 import { computeDropTarget } from "@/timeline/components/drop-target";
 import { getTrackHeight } from "@/timeline/components/track-layout";
-import { mediaTime, ZERO_MEDIA_TIME } from "@/wasm";
+import { mediaTime, ZERO_MEDIA_TIME, TICKS_PER_SECOND } from "@/wasm";
 
 function buildTransform(): Transform {
 	return {
@@ -344,6 +344,13 @@ describe("resolveTrackPlacement", () => {
 		expect(computeDropTarget({ tracks, elementType: "video", mouseX: 0, mouseY: getTrackHeight({ type: "video" }),
 			playheadTime: ZERO_MEDIA_TIME, isExternalDrop: true, elementDuration: mediaTime({ ticks: 1000 }), pixelsPerSecond: 100, zoomLevel: 1,
 		})).toMatchObject({ trackIndex: 1, isNewTrack: true });
+	});
+	test("an external file lands at the pointer, not at the playhead", () => {
+		const tracks = buildSceneTracks({ overlay: [buildTrack({ id: "upper", type: "video" })] });
+		// 500 px at 100 px per second is 5 s; the playhead is at 0.
+		expect(computeDropTarget({ tracks, elementType: "video", mouseX: 500, mouseY: 10,
+			playheadTime: ZERO_MEDIA_TIME, isExternalDrop: true, elementDuration: mediaTime({ ticks: 1000 }), pixelsPerSecond: 100, zoomLevel: 1,
+		}).xPosition).toBe(mediaTime({ ticks: 5 * TICKS_PER_SECOND }));
 	});
 	test("explicit returns the requested compatible track", () => {
 		const tracks = buildSceneTracks({

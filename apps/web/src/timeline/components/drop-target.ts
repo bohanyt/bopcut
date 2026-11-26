@@ -109,7 +109,6 @@ export function computeDropTarget({
 	mouseX,
 	mouseY,
 	tracks,
-	playheadTime,
 	isExternalDrop,
 	elementDuration,
 	pixelsPerSecond,
@@ -122,17 +121,16 @@ export function computeDropTarget({
 	targetElementTypes,
 }: ComputeDropTargetParams): DropTarget {
 	const orderedTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
+	// Files dropped from outside land where the pointer is, like clips dragged inside the editor.
 	const rawPosition =
 		startTimeOverride !== undefined
 			? startTimeOverride
-			: isExternalDrop
-				? playheadTime
-				: mediaTime({
-						ticks: Math.round(
-							Math.max(0, mouseX / (pixelsPerSecond * zoomLevel)) *
-								TICKS_PER_SECOND,
-						),
-					});
+			: mediaTime({
+					ticks: Math.round(
+						Math.max(0, mouseX / (pixelsPerSecond * zoomLevel)) *
+							TICKS_PER_SECOND,
+					),
+				});
 	const xPosition = frameRate ? roundFrameTime({ time: rawPosition, fps: frameRate }) : rawPosition;
 
 	if (orderedTracks.length === 0) {
