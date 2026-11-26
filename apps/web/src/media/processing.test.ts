@@ -348,3 +348,40 @@ test("disposing a completed probe closes the decoder while its packet read is pe
 		prefetch.mockRestore();
 	}
 });
+
+test.each([
+	["reads the length from the file", 2.5, 2.5],
+	["is refused without a readable length", Number.NaN, null],
+] as const)("audio whose element reports an infinite duration %s", async (_, fileDuration, expected) => {
+	const original = Object.getOwnPropertyDescriptor(globalThis, "document");
+	const element = {
+		duration: Number.POSITIVE_INFINITY,
+		onloadedmetadata: null as (() => void) | null,
+		onerror: null as (() => void) | null,
+		removeAttribute: () => {},
+		load() {
+			queueMicrotask(() => this.onloadedmetadata?.());
+		},
+		set src(_value: string) {},
+	};
+	Object.defineProperty(globalThis, "document", { value: { createElement: () => element }, configurable: true, writable: true });
+	const track: InputAudioTrack = Object.create(InputAudioTrack.prototype, {
+		computeDuration: { value: async () => fileDuration },
+	});
+	const stubs = [
+		allowStorage(),
+		spyOn(Input.prototype, "getPrimaryAudioTrack").mockResolvedValue(track),
+		spyOn(toast, "error").mockImplementation(() => ""),
+		spyOn(console, "error").mockImplementation(() => {}),
+	];
+	try {
+		const file = new File(["opus"], "voice.webm", { type: "audio/webm" });
+		const imported = await processMediaFile({ file, signal: new AbortController().signal });
+		if (imported) releaseMediaAssetUrls(imported);
+		expect(imported?.duration ?? null).toBe(expected);
+	} finally {
+		for (const stub of stubs) stub.mockRestore();
+		if (original) Object.defineProperty(globalThis, "document", original);
+		else Reflect.deleteProperty(globalThis, "document");
+	}
+});

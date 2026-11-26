@@ -5,7 +5,7 @@ import { GIF_SOURCE_FPS_HEADER, GIF_VARIABLE_DELAY_HEADER, getMediaTypeFromFile,
 import { formatStorageBytes } from "@/services/storage/quota";
 import { storageService } from "@/services/storage/service";
 import type { MediaAsset } from "@/media/types";
-import { readVideoFile } from "./mediabunny";
+import { readAudioDuration, readVideoFile } from "./mediabunny";
 import { renderThumbnailDataUrl } from "./thumbnail";
 import { releaseMediaAssetUrls } from "./url-release";
 
@@ -114,7 +114,6 @@ export async function processMediaFile({
 		}
 	}
 	const fileType = getMediaTypeFromFile({ file });
-	const inferredType = hasGenericMediaMimeType(original);
 
 	if (!fileType) {
 		toast.error(getBrowserTranslator()("media.unsupportedType", { name: file.name }));
@@ -184,7 +183,9 @@ export async function processMediaFile({
 		} else if (fileType === "audio") {
 			url = URL.createObjectURL(file);
 			duration = await getAudioDuration({ url, signal });
-			if (inferredType && (!Number.isFinite(duration) || duration <= 0)) {
+			// A stream without a duration header (WebM/Opus, Ogg, some MP3s) reports Infinity: read the file.
+			if (!Number.isFinite(duration) || duration <= 0) duration = await readAudioDuration({ file, signal });
+			if (!Number.isFinite(duration) || duration <= 0) {
 				throw new Error("The file does not have a finite audio duration");
 			}
 		}
