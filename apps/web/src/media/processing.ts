@@ -167,6 +167,11 @@ export async function processMediaFile({
 				hasAudio = videoData.hasAudio;
 				thumbnailUrl = videoData.thumbnailUrl ?? undefined;
 
+				if (videoData.hdr) {
+					toast.warning(getBrowserTranslator()("media.hdrAsSdr", { name: file.name }), {
+						description: getBrowserTranslator()("media.hdrAsSdrDetail"),
+					});
+				}
 				if (videoData.audioUnavailable) {
 					toast.warning(getBrowserTranslator()("media.audioUnavailable", { name: file.name }), {
 						description: getBrowserTranslator()("media.audioUnavailableDetail"),

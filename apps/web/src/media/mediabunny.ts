@@ -17,6 +17,8 @@ export type VideoFileData = {
 	fps: number;
 	hasAudio: boolean;
 	audioUnavailable: boolean;
+	/** HDR (PQ or HLG): the editor shows and exports it as 8-bit SDR, so colors can look different. */
+	hdr: boolean;
 	thumbnailUrl: string | null;
 };
 
@@ -36,6 +38,9 @@ export async function readVideoFile({
 		}
 		await checkPacketTail(videoTrack, signal);
 		const packetStats = await videoTrack.computePacketStats(100);
+		// Color metadata only feeds a notice: a file without readable metadata imports as before.
+		// The DOM type lists only SDR curves; Mediabunny also reports "pq" and "hlg".
+		const transfer: string | null | undefined = await Promise.resolve().then(() => videoTrack.getColorSpace()).then(({ transfer }) => transfer, () => null);
 		const { displayWidth: width, displayHeight: height } = videoTrack;
 		const thumbnailUrl = await firstFrameThumbnail(videoTrack, signal);
 		const audio = await readVideoAudio(input, signal);
@@ -47,6 +52,7 @@ export async function readVideoFile({
 			fps: packetStats.averagePacketRate,
 			hasAudio: audio.duration > 0,
 			audioUnavailable: audio.unavailable,
+			hdr: transfer === "pq" || transfer === "hlg",
 			thumbnailUrl,
 		};
 	});
