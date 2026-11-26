@@ -1,6 +1,26 @@
 import { expect, test } from "bun:test";
 import { createSelectionWriter } from "./selection-writer";
 
+test("selection retries a transient failure without another editor notification", async () => {
+	const first = Promise.withResolvers<void>();
+	const sent: string[] = [];
+	const writer = createSelectionWriter({
+		isScrubbing: () => false,
+		readBody: () => "same selection",
+		send: async (body) => {
+			sent.push(body);
+			if (sent.length === 1) {
+				first.resolve();
+				throw new Error("Temporary failure");
+			}
+		},
+	});
+	writer.schedule();
+	await first.promise;
+	await Bun.sleep(750);
+	expect(sent).toEqual(["same selection", "same selection"]);
+});
+
 test("selection waits for the scrub to settle before sending", async () => {
 	let isScrubbing = false;
 	let body = "before scrub";
