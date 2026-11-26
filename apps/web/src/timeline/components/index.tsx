@@ -661,6 +661,7 @@ function TrackLabelsPanel({
 	hasHorizontalScrollbar: boolean;
 	getTrackExpansionHeight: (trackIndex: number) => number;
 }) {
+	const { t } = useI18n();
 	const editor = useEditor();
 	const scene = useEditor((e) => e.scenes.getActiveSceneOrNull());
 	const tracks = useMemo<TimelineTrack[]>(
@@ -724,6 +725,7 @@ function TrackLabelsPanel({
 											{canTrackHaveAudio(track) && (
 												<TrackToggleIcon
 													isOff={track.muted}
+													label={t(track.muted ? "timeline.unmuteTrack" : "timeline.muteTrack")}
 													icons={{
 														on: VolumeHighIcon,
 														off: VolumeOffIcon,
@@ -738,6 +740,7 @@ function TrackLabelsPanel({
 											{canTrackBeHidden(track) && (
 												<TrackToggleIcon
 													isOff={track.hidden}
+													label={t(track.hidden ? "timeline.showTrack" : "timeline.hideTrack")}
 													icons={{
 														on: ViewIcon,
 														off: ViewOffSlashIcon,
@@ -958,9 +961,10 @@ function TrackIcon({ track }: { track: TimelineTrack }) {
 	return <>{TRACK_ICONS[track.type]}</>;
 }
 
-function TrackToggleIcon({
+export function TrackToggleIcon({
 	isOff,
 	icons,
+	label,
 	onClick,
 }: {
 	isOff: boolean;
@@ -968,24 +972,23 @@ function TrackToggleIcon({
 		on: IconSvgElement;
 		off: IconSvgElement;
 	};
+	label: string;
 	onClick: () => void;
 }) {
+	// A real button: named for screen readers, reachable by keyboard, and a hit area larger than the icon.
 	return (
-		<>
-			{isOff ? (
-				<HugeiconsIcon
-					icon={icons.off}
-					className="text-destructive size-4 cursor-pointer"
-					onClick={onClick}
-				/>
-			) : (
-				<HugeiconsIcon
-					icon={icons.on}
-					className="text-muted-foreground size-4 cursor-pointer"
-					onClick={onClick}
-				/>
-			)}
-		</>
+		<button
+			type="button"
+			aria-label={label}
+			title={label}
+			className="relative flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm outline-none before:absolute before:-inset-1 before:content-[''] focus-visible:ring-2 focus-visible:ring-ring"
+			onClick={onClick}
+		>
+			<HugeiconsIcon
+				icon={isOff ? icons.off : icons.on}
+				className={isOff ? "text-destructive size-4" : "text-muted-foreground size-4"}
+			/>
+		</button>
 	);
 }
 

@@ -392,6 +392,8 @@ export const id = {
 	"graph.notEditable": "Keyframe yang dipilih tidak bisa diedit sebagai segmen grafik.",
 	"graph.open": "Buka editor grafik",
 	"graph.pop": "Memantul",
+	"graph.deletePreset": "Hapus preset {name}",
+	"graph.presetDeleted": "Preset {name} dihapus",
 	"graph.presets": "Preset",
 	"graph.sameElement": "Keyframe yang dipilih harus berada di elemen yang sama.",
 	"graph.sameTime": "Segmen dengan dua keyframe pada waktu yang sama tidak bisa diedit.",

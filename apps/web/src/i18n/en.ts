@@ -390,6 +390,8 @@ export const en = {
 	"graph.notEditable": "The selected keyframe is not editable as a graph segment.",
 	"graph.open": "Open graph editor",
 	"graph.pop": "Pop",
+	"graph.deletePreset": "Delete preset {name}",
+	"graph.presetDeleted": "Preset {name} deleted",
 	"graph.presets": "Presets",
 	"graph.sameElement": "Selected keyframes must be on the same element.",
 	"graph.sameTime": "Cannot edit a segment where both keyframes are at the same time.",
