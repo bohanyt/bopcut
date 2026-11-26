@@ -146,16 +146,25 @@ async function handle(
 				});
 			if (s.length === 2 && method === "DELETE")
 				return await withProjectLock(id, async () => {
+					// The marker comes first, so a stop right after the move still refuses late uploads; a failed
+					// move puts the previous marker back, because nothing was deleted.
+					const previousMarker = await fs.readFile(marker(id), "utf8").catch(() => null);
 					await atomicWrite(marker(id), JSON.stringify({ deleted: true }));
 					// Moved out of the projects in one step first: if that fails (a file is held open), nothing of
 					// the project is removed, so a failed delete never leaves a timeline without its media.
 					const trash = path.join(dataRoot(), "trash", `${id}-${Date.now()}`);
-					await fs.mkdir(path.dirname(trash), { recursive: true });
 					try {
+						await fs.mkdir(path.dirname(trash), { recursive: true });
 						await fs.rename(projectDir(id), trash);
 					} catch (error) {
 						// Already gone is fine.
-						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+							await (previousMarker === null
+								? fs.rm(marker(id), { force: true })
+								: atomicWrite(marker(id), previousMarker)
+							).catch((restoreError) => console.error("Could not restore the migration marker:", restoreError));
+							throw error;
+						}
 					}
 					// What cannot be removed now stays in the trash folder (the project is gone either way) and is
 					// tried again on the next delete, with anything else left there.
