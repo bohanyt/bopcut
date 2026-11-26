@@ -7,6 +7,15 @@ import { parseEnv } from "node:util";
 export type BrowserExit = { code?: number | null; signal?: string | null; error?: string; afterMs: number };
 export type RunningBrowser = { exited: Promise<BrowserExit | void>; stop(): Promise<void> };
 
+/** The first file of that name in a PATH folder. The editor server runs without Bun's own lookup. */
+function onPath(name: string) {
+	for (const folder of (process.env.PATH ?? "").split(path.delimiter)) {
+		const file = folder && path.join(folder, name);
+		if (file && existsSync(file)) return file;
+	}
+	return "";
+}
+
 function findBrowser() {
 	const configured = process.env.BOPENCUT_BROWSER;
 	const programs = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA].filter((value): value is string => !!value);
@@ -17,7 +26,7 @@ function findBrowser() {
 	const candidates = configured ? [configured] : process.platform === "win32" ? windows : [
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-		...["google-chrome", "microsoft-edge", "chromium", "chromium-browser"].map((name) => Bun.which(name) ?? ""),
+		...["google-chrome", "microsoft-edge", "chromium", "chromium-browser"].map(onPath),
 	];
 	const browser = candidates.find((file) => file && existsSync(file));
 	if (!browser) throw new Error("No installed Chrome or Edge was found. Set BOPENCUT_BROWSER to its executable or open the project in the editor.");
@@ -53,10 +62,14 @@ function startBrowser(args: string[]): RunningBrowser {
 	};
 }
 
+/**
+ * Starts the hidden browser that renders for the agent CLI and the MCP server. The CLI passes its
+ * `.env.local` as envFile; the editor server has already loaded that file into its environment.
+ */
 export function launchBrowser(url: string, profile: string, {
 	start = startBrowser,
 	env = process.env,
-	envFile = env === process.env ? path.resolve(import.meta.dir, "../.env.local") : undefined,
+	envFile,
 }: {
 	start?: typeof startBrowser;
 	env?: Record<string, string | undefined>;

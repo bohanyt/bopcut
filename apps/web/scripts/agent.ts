@@ -5,10 +5,11 @@ import type { PictureOptions } from "../src/agent/draft-check-pictures";
 import { parseExportRequest } from "../src/agent/export";
 import { parseFrameInput } from "../src/agent/render-input";
 import { parseRangeInput } from "../src/agent/range-view";
+import { launchBrowser } from "../src/agent/hidden-browser";
+import { renderFailed, runRender } from "../src/agent/render-client";
 import { renderTimeoutMessage, waitingForRender } from "../src/agent/render-timeout";
 import { captionLanguage, getTranscript, type TranscriptRequest } from "../src/retrieval/transcript";
 import { isHttpUrl, parseTime } from "../src/retrieval/time";
-import { runRender } from "./agent-render";
 import { loadEnvLocal } from "./retrieval-cli";
 
 const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check", "voice", "silence-plan"] as const;
@@ -318,7 +319,9 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 		});
 		if (deadline && response.ok) {
 			clearTimeout(deadline);
-			return await runRender(response, { signal: interrupt.signal, timeoutMs });
+			const envFile = path.resolve(import.meta.dir, "../.env.local");
+			return await runRender(response, { signal: interrupt.signal, timeoutMs,
+				launch: (url, profile) => launchBrowser(url, profile, { envFile }) });
 		}
 		if (response.ok && (command === "transcript-view" || (options.narration && !options.narration.json))) return await response.text();
 		const body = await response.json().catch(() => null);
@@ -334,9 +337,7 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 	}
 }
 
-export function renderFailed(command: string, result: Record<string, unknown>) {
-	return !!result.error || result.status === "error" || (command === "frames" && Array.isArray(result.files) && !result.files.length && Array.isArray(result.errors) && result.errors.length > 0);
-}
+export { renderFailed };
 
 if (import.meta.main) {
 	try {
