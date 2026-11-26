@@ -3,12 +3,13 @@ import { EditorCore } from "@/core";
 import type { TProject, TProjectSettings } from "@/project/types";
 
 export class UpdateProjectSettingsCommand extends Command {
-	private savedSettings: TProjectSettings | null = null;
+	private savedSettings: Partial<TProjectSettings> | null = null;
 	private savedUpdatedAt: Date | null = null;
 
 	constructor(
 		private updates: Partial<TProjectSettings>,
 		private settingsBeforePreview?: Partial<TProjectSettings>,
+		private readonly explicitEdit = false,
 	) {
 		super();
 	}
@@ -18,9 +19,12 @@ export class UpdateProjectSettingsCommand extends Command {
 		const activeProject = editor.project.getActive();
 		if (!activeProject) return;
 
-		this.savedSettings = this.settingsBeforePreview
+		const before = this.settingsBeforePreview
 			? { ...activeProject.settings, ...this.settingsBeforePreview }
 			: activeProject.settings;
+		this.savedSettings = Object.fromEntries(
+			(Object.keys(this.updates) as (keyof TProjectSettings)[]).map((key) => [key, before[key]]),
+		);
 		this.settingsBeforePreview = undefined;
 		this.savedUpdatedAt = activeProject.metadata.updatedAt;
 
@@ -30,6 +34,7 @@ export class UpdateProjectSettingsCommand extends Command {
 			metadata: { ...activeProject.metadata, updatedAt: new Date() },
 		};
 
+		if (this.explicitEdit && this.updates.fps) editor.project.markFpsEdited();
 		editor.project.setActiveProject({ project: updatedProject });
 		editor.save.markDirty();
 	}
@@ -42,10 +47,11 @@ export class UpdateProjectSettingsCommand extends Command {
 
 		const updatedProject: TProject = {
 			...activeProject,
-			settings: this.savedSettings,
+			settings: { ...activeProject.settings, ...this.savedSettings },
 			metadata: { ...activeProject.metadata, updatedAt: this.savedUpdatedAt },
 		};
 
+		if (this.explicitEdit && this.updates.fps) editor.project.markFpsEdited();
 		editor.project.setActiveProject({ project: updatedProject });
 		editor.save.markDirty();
 	}

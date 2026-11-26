@@ -9,13 +9,15 @@ export class AddMediaAssetCommand extends Command {
 	private readonly removal: RemoveMediaAssetCommand;
 	private removed = false;
 
-	constructor({ projectId, assetId }: { projectId: string; assetId: string }) {
+	constructor({ projectId, assetId, ratchetFps = true }: { projectId: string; assetId: string; ratchetFps?: boolean }) {
 		super();
 		this.assetId = assetId;
+		this.ratchetFps = ratchetFps;
 		this.removal = new RemoveMediaAssetCommand({ projectId, assetId });
 	}
 
 	private readonly assetId: string;
+	private readonly ratchetFps: boolean;
 
 	execute(): undefined {
 		return undefined;
@@ -32,7 +34,7 @@ export class AddMediaAssetCommand extends Command {
 		const editor = EditorCore.getInstance();
 		if (this.removed) this.removal.undo();
 		const asset = editor.media.getAssets().find(({ id }) => id === this.assetId);
-		if (asset) editor.project.ratchetFpsForImportedMedia({ importedAssets: [asset] });
+		if (asset && this.ratchetFps) editor.project.ratchetFpsForImportedMedia({ importedAssets: [asset] });
 		return undefined;
 	}
 }

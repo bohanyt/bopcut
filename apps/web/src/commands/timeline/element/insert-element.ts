@@ -39,6 +39,7 @@ type InsertElementPlacement =
 export interface InsertElementParams {
 	element: CreateTimelineElement;
 	placement: InsertElementPlacement;
+	initializeFps?: boolean;
 }
 
 export class InsertElementCommand extends Command {
@@ -52,15 +53,17 @@ export class InsertElementCommand extends Command {
 	/** Id for a track this insertion creates, fixed so redo recreates the same track. */
 	private readonly newTrackId = generateUUID();
 
-	constructor({ element, placement }: InsertElementParams) {
+	constructor({ element, placement, initializeFps = true }: InsertElementParams) {
 		super();
 		this.elementId = generateUUID();
 		this.element = element;
 		this.placement = placement;
+		this.initializeFps = initializeFps;
 	}
 
 	private element: CreateTimelineElement;
 	private placement: InsertElementPlacement;
+	private readonly initializeFps: boolean;
 
 	execute(): CommandResult | undefined {
 		this.cancelCanvasSizing?.();
@@ -123,7 +126,7 @@ export class InsertElementCommand extends Command {
 			const sourceFps = asset?.type === "video" && asset.fps !== undefined
 				? importedVideoProjectRate(asset.fps)
 				: null;
-			if (sourceFps && shouldInitializeFps({
+			if (this.initializeFps && sourceFps && shouldInitializeFps({
 				current: fps, source: sourceFps, mediaAssets, hasVariableGifDelay: asset?.hasVariableGifDelay,
 			})) {
 				this.savedSettings = { ...(this.savedSettings ?? {}), fps };

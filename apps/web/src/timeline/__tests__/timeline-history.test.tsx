@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
@@ -13,6 +13,9 @@ import { DragDropController, type DragDropConfig } from "@/timeline/controllers/
 import { insertCaptionChunksAsTextTrack } from "@/subtitles/insert";
 import { parseSubtitleFile } from "@/subtitles/parse";
 import type { MediaAsset } from "@/media/types";
+import * as mediaProcessing from "@/media/processing";
+import { usePasteMedia } from "@/media/use-paste-media";
+import { storageService } from "@/services/storage/service";
 import type { DragEvent as ReactDragEvent } from "react";
 
 const fps = { numerator: 30, denominator: 1 };
@@ -73,6 +76,59 @@ function Shortcuts() {
 	useKeybindingsListener();
 	return null;
 }
+
+test("a paste keeps the explicit frame rate selected during its media probe", async () => {
+	main();
+	start();
+	const probing = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	const inserted = Promise.withResolvers<void>();
+	const process = spyOn(mediaProcessing, "processMediaFile").mockImplementation(async ({ file }) => {
+		probing.resolve();
+		await finish.promise;
+		return { file: new File(["test video"], file.name), name: file.name, type: "video", fps: 60, duration: 2 };
+	});
+	const save = spyOn(storageService, "saveMediaAsset").mockResolvedValue();
+	const remove = spyOn(storageService, "deleteMediaAsset").mockResolvedValue();
+	const stored = spyOn(storageService, "hasStoredMediaAsset").mockResolvedValue(false);
+	const unsubscribe = editor.timeline.subscribe(() => {
+		if (tracks().main.elements.length) inserted.resolve();
+	});
+	cleanup.push(() => { finish.resolve(); unsubscribe(); process.mockRestore(); save.mockRestore(); remove.mockRestore(); stored.mockRestore(); });
+	function PasteMedia() {
+		usePasteMedia();
+		return null;
+	}
+	await act(async () => { root.render(<PasteMedia />); });
+	const transfer = new dom.DataTransfer();
+	transfer.items.add(new dom.File(["test video"], "clip.mp4", { type: "video/mp4" }));
+	dom.dispatchEvent(new dom.ClipboardEvent("paste", { clipboardData: transfer, cancelable: true }));
+	await probing.promise;
+	const chosen = { numerator: 24, denominator: 1 };
+	await act(async () => editor.project.updateSettings({ settings: { fps: chosen } }));
+	finish.resolve();
+	await inserted.promise;
+	expect(editor.project.getActive().settings.fps).toEqual(chosen);
+	await act(async () => editor.command.undo());
+	await editor.media.settleBinWrites("p");
+	expect(tracks().main.elements).toHaveLength(0);
+	expect(editor.project.getActive().settings.fps).toEqual(chosen);
+	await act(async () => editor.command.redo());
+	await editor.media.settleBinWrites("p");
+	expect(tracks().main.elements).toHaveLength(1);
+	expect(editor.project.getActive().settings.fps).toEqual(chosen);
+});
+
+test("undoing an unrelated project setting keeps an FPS change from a later import", async () => {
+	start();
+	await editor.project.updateSettings({ settings: { background: { type: "color", color: "#ffffff" } } });
+	editor.project.ratchetFpsForImportedMedia({ importedAssets: [{ type: "video", fps: 60 }] });
+	editor.command.undo();
+	expect(editor.project.getActive().settings).toMatchObject({
+		background: { type: "color", color: "#000000" }, fps: { numerator: 60, denominator: 1 },
+	});
+});
+
 async function press(key: string) {
 	await act(async () => document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
 }
