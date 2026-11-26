@@ -1106,6 +1106,11 @@ export const en = {
 	"agentToast.historyScenesGone": "Cannot {action} the agent draft: {count} scenes it changed no longer exist",
 	"timeline.sceneDeleteFailed": "Failed to delete scene",
 	"sounds.added": "Added {name}",
+	"sounds.searchFailed": "Search failed",
+	"sounds.loadMoreFailed": "Could not load more sounds",
+	"sounds.licenseFilter": "License filter",
+	"sounds.saveNamed": "Save {name}",
+	"sounds.removeNamedSaved": "Remove {name} from saved",
 
 	"media.loadOneFailed": "1 media file could not be loaded",
 	"projects.notFoundMany": "Projects not found",

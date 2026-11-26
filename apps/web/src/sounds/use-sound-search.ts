@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useSoundsStore } from "@/sounds/sounds-store";
 import type { SoundEffect } from "@/sounds/types";
 
@@ -23,15 +24,19 @@ export function useSoundSearch({
 	query: string;
 	commercialOnly: boolean;
 }) {
+	// Only what is shown: the store also keeps unrelated state (the saved sounds, the scroll position).
+	const { searchResults, isSearching, searchError, lastSearchQuery, currentPage, hasNextPage, isLoadingMore, totalCount } =
+		useSoundsStore(useShallow((state) => ({
+			searchResults: state.searchResults,
+			isSearching: state.isSearching,
+			searchError: state.searchError,
+			lastSearchQuery: state.lastSearchQuery,
+			currentPage: state.currentPage,
+			hasNextPage: state.hasNextPage,
+			isLoadingMore: state.isLoadingMore,
+			totalCount: state.totalCount,
+		})));
 	const {
-		searchResults,
-		isSearching,
-		searchError,
-		lastSearchQuery,
-		currentPage,
-		hasNextPage,
-		isLoadingMore,
-		totalCount,
 		setSearchResults,
 		setSearching,
 		setSearchError,
@@ -41,13 +46,15 @@ export function useSoundSearch({
 		setTotalCount,
 		setLoadingMore,
 		resetPagination,
-	} = useSoundsStore();
+	} = useSoundsStore.getState();
+	const [attempt, setAttempt] = useState(0);
 
 	const loadMore = async () => {
 		if (isLoadingMore || !hasNextPage) return;
 
 		try {
 			setLoadingMore({ loading: true });
+			setSearchError({ error: null });
 			const nextPage = currentPage + 1;
 
 			const searchParams = new URLSearchParams({
@@ -86,7 +93,8 @@ export function useSoundSearch({
 			return;
 		}
 
-		if (query === lastSearchQuery && searchResults.length > 0) {
+		// Already searched (returning to the tab); a failed search leaves lastSearchQuery behind.
+		if (query === lastSearchQuery) {
 			return;
 		}
 
@@ -111,11 +119,14 @@ export function useSoundSearch({
 						setTotalCount({ count: data.count });
 						setCurrentPage({ page: 1 });
 					} else {
+						// The results of the previous query are not results for this one.
+						setSearchResults({ results: [] });
 						setSearchError({ error: `Search failed: ${response.status}` });
 					}
 				}
 			} catch (err) {
 				if (!ignore) {
+					setSearchResults({ results: [] });
 					setSearchError({
 						error: err instanceof Error ? err.message : "Search failed",
 					});
@@ -133,8 +144,8 @@ export function useSoundSearch({
 		};
 	}, [
 		query,
+		attempt,
 		lastSearchQuery,
-		searchResults.length,
 		setSearchResults,
 		setSearching,
 		setSearchError,
@@ -149,6 +160,8 @@ export function useSoundSearch({
 		results: searchResults,
 		isLoading: isSearching,
 		error: searchError,
+		/** Runs the failed search again. */
+		retry: () => setAttempt((count) => count + 1),
 		loadMore,
 		hasNextPage,
 		isLoadingMore,
