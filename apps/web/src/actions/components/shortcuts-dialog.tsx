@@ -1,7 +1,7 @@
 "use client";
 
 import { useI18n } from "@/i18n/provider";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
 	type KeyboardShortcut,
@@ -64,7 +64,9 @@ export function ShortcutsDialog({
 							action: t(`shortcuts.action.${conflict.existingAction}`),
 						}),
 					);
+					// Recording ends here too: while it is on, every editor shortcut is ignored.
 					setRecordingShortcut(null);
+					setIsRecording(false);
 					return;
 				}
 
@@ -112,8 +114,21 @@ export function ShortcutsDialog({
 		setIsRecording(true);
 	};
 
+	// Closing or leaving the dialog never leaves the editor's shortcuts switched off.
+	const stopRecording = useCallback(() => {
+		setRecordingShortcut(null);
+		setIsRecording(false);
+	}, [setIsRecording]);
+	useEffect(() => stopRecording, [stopRecording]);
+
 	return (
-		<Dialog open={isOpen} onOpenChange={onOpenChange}>
+		<Dialog
+			open={isOpen}
+			onOpenChange={(open) => {
+				if (!open) stopRecording();
+				onOpenChange(open);
+			}}
+		>
 			<DialogContent className="flex max-h-[80vh] max-w-2xl flex-col p-0">
 				<DialogHeader>
 					<DialogTitle>{t("shortcuts.title")}</DialogTitle>
