@@ -1,4 +1,4 @@
-import { clampAnimationsToDuration } from "@/animation";
+import { clampAnimationsToDuration, splitAnimationsAtTime } from "@/animation";
 import {
 	clampRetimeRate,
 	getSourceSpanAtClipTime,
@@ -12,7 +12,7 @@ import {
 	updateTrackInSceneTracks,
 } from "@/timeline/track-element-update";
 import { rippleShiftElements } from "@/ripple";
-import { ZERO_MEDIA_TIME, roundMediaTime } from "@/wasm";
+import { ZERO_MEDIA_TIME, roundMediaTime, subMediaTime } from "@/wasm";
 import { reconcileCaptionEdit } from "@/text/caption";
 
 type ElementUpdateField = keyof TimelineElement | string;
@@ -183,14 +183,45 @@ const deriveRules: ElementUpdateRule[] = [
 	},
 ];
 
+/**
+ * Keys after a left-edge trim or extension (the patch keeps the right edge): they stay with the footage,
+ * by the requested edge move. The main track can still move the clip to its start afterwards.
+ */
+export function animationsAfterLeftTrim({
+	element,
+	patch,
+	boundaryIdPrefix,
+}: {
+	element: TimelineElement;
+	patch: Partial<TimelineElement>;
+	boundaryIdPrefix?: string;
+}): TimelineElement["animations"] {
+	if (!element.animations || patch.startTime === undefined || patch.startTime === element.startTime ||
+		patch.trimStart === undefined || patch.duration === undefined ||
+		patch.startTime + patch.duration !== element.startTime + element.duration) {
+		return element.animations;
+	}
+	const splitTime = subMediaTime({ a: patch.startTime, b: element.startTime });
+	return splitAnimationsAtTime({
+		animations: element.animations,
+		splitTime,
+		shouldIncludeSplitBoundary: splitTime > ZERO_MEDIA_TIME,
+		boundaryIdPrefix,
+	}).rightAnimations;
+}
+
 const enforceRules: ElementUpdateRule[] = [
 	{
 		triggers: ["duration"],
-		apply: ({ element, context }) => ({
+		apply: ({ element, originalElement, patch, context }) => ({
 			element: {
 				...element,
 				animations: clampAnimationsToDuration({
-					animations: element.animations,
+					animations: Object.hasOwn(patch, "animations") ? element.animations : animationsAfterLeftTrim({
+						element: originalElement,
+						patch,
+						boundaryIdPrefix: context.boundaryIdPrefix,
+					}),
 					duration: element.duration,
 					boundaryIdPrefix: context.boundaryIdPrefix,
 				}),
