@@ -1316,6 +1316,47 @@ export function removeElementKeyframe({
 	});
 }
 
+/**
+ * Every key moved to `factor` times its clip time, with curve handles scaled alike: a speed change keeps
+ * keys on the same footage (from rate r1 to r2 the factor is r1 / r2).
+ */
+export function scaleAnimationTimes({
+	animations,
+	factor,
+}: {
+	animations: ElementAnimations | undefined;
+	factor: number;
+}): ElementAnimations | undefined {
+	if (!animations || factor === 1 || !Number.isFinite(factor) || factor <= 0) return animations;
+	const scale = (time: MediaTime) => roundMediaTime({ time: time * factor });
+	const scaleChannel = (channel: AnimationChannel | undefined): AnimationChannel | undefined => {
+		if (!channel) return channel;
+		if (isScalarChannel(channel)) {
+			return normalizeScalarChannel({ channel: { ...channel, keys: channel.keys.map((key) => ({
+				...key,
+				time: scale(key.time),
+				...(key.leftHandle && { leftHandle: { ...key.leftHandle, dt: scale(key.leftHandle.dt) } }),
+				...(key.rightHandle && { rightHandle: { ...key.rightHandle, dt: scale(key.rightHandle.dt) } }),
+			})) } });
+		}
+		return normalizeDiscreteChannel({ channel: { ...channel, keys: channel.keys.map((key) => ({ ...key, time: scale(key.time) })) } });
+	};
+	const nextAnimations = cloneAnimationsState({ animations });
+	for (const [propertyPath, data] of Object.entries(animations)) {
+		if (!isAnimationStorageKey({ key: propertyPath })) continue;
+		if (isLeafChannelData(data)) {
+			nextAnimations[propertyPath] = scaleChannel(data);
+		} else if (isCompositeChannelData(data)) {
+			let nextData: ChannelData | undefined = data;
+			for (const [componentKey, channel] of Object.entries(data)) {
+				nextData = setChannelInData({ data: nextData, componentKey, channel: scaleChannel(channel) });
+			}
+			nextAnimations[propertyPath] = nextData;
+		}
+	}
+	return toAnimation({ animations: nextAnimations });
+}
+
 export function retimeElementKeyframes({
 	animations,
 	propertyPath,

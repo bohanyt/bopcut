@@ -1,4 +1,4 @@
-import { clampAnimationsToDuration, splitAnimationsAtTime } from "@/animation";
+import { clampAnimationsToDuration, scaleAnimationTimes, splitAnimationsAtTime } from "@/animation";
 import {
 	clampRetimeRate,
 	getSourceSpanAtClipTime,
@@ -171,13 +171,20 @@ const deriveRules: ElementUpdateRule[] = [
 				}),
 			});
 
+			// Keys stay on the same footage: from rate r1 to r2 each key time scales by r1 / r2.
+			const previousRate = isRetimableElement(originalElement) ? originalElement.retime?.rate ?? 1 : 1;
+			const animations = Object.hasOwn(patch, "animations")
+				? element.animations
+				: scaleAnimationTimes({ animations: element.animations, factor: previousRate / (nextRetime?.rate ?? 1) });
+
 			return {
 				element: {
 					...element,
 					retime: nextRetime,
 					duration: nextDuration,
+					animations,
 				},
-				changedFields: ["retime", "duration"],
+				changedFields: ["retime", "duration", "animations"],
 			};
 		},
 	},
@@ -213,20 +220,25 @@ function animationsAfterLeftTrim({
 const enforceRules: ElementUpdateRule[] = [
 	{
 		triggers: ["duration"],
-		apply: ({ element, originalElement, patch, context }) => ({
-			element: {
-				...element,
-				animations: clampAnimationsToDuration({
-					animations: Object.hasOwn(patch, "animations") ? element.animations : animationsAfterLeftTrim({
-						element: originalElement,
-						patch,
+		apply: ({ element, originalElement, patch, context }) => {
+			const leftTrimmed = Object.hasOwn(patch, "animations") ? undefined : animationsAfterLeftTrim({
+				element: originalElement,
+				patch,
+				boundaryIdPrefix: context.boundaryIdPrefix,
+			});
+			// Keys an earlier rule already moved (a speed change) are kept unless this is a left trim.
+			const animations = leftTrimmed === undefined || leftTrimmed === originalElement.animations ? element.animations : leftTrimmed;
+			return {
+				element: {
+					...element,
+					animations: clampAnimationsToDuration({
+						animations,
+						duration: element.duration,
 						boundaryIdPrefix: context.boundaryIdPrefix,
 					}),
-					duration: element.duration,
-					boundaryIdPrefix: context.boundaryIdPrefix,
-				}),
-			},
-		}),
+				},
+			};
+		},
 	},
 	{
 		triggers: ["startTime"],
