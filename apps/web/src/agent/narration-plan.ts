@@ -106,6 +106,9 @@ export function planNarration({
 			: Math.min(word.end, original.to) - Math.max(word.start, original.from) > WORD_TOLERANCE + eps;
 	})
 		.map((word) => ({ ...word, start: Math.max(word.start, original.from), end: Math.min(word.end, original.to) })));
+	if (local.length === 0) {
+		throw new Error("The old narration clip plays no transcribed words. Widen its trim or transcribe the played part first.");
+	}
 	newWords = narrationWords(newWords);
 	const { matches, limited } = alignNarration(local, newWords, check);
 	const origin = seconds(narration.startTime);
