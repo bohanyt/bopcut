@@ -29,6 +29,7 @@ import { getReachableScenes, getRootScene, selectionInScene } from "./scene-grap
 import { s, buildAllEditItems, buildEditItems, buildSceneSnapshot } from "./snapshot";
 import { boundSelectionPayload, NO_SELECTION } from "./selection-payload";
 import { mediaIdsInScenes } from "@/core/managers/media-manager";
+import { floatToFrameRate } from "@/fps/utils";
 import type { SaveSession } from "@/core/managers/save-manager";
 import type { TProject } from "@/project/types";
 import { loadTextPresets } from "@/text/presets";
@@ -422,7 +423,8 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 	}
 	const { project, root } = now;
 	const settings = project.settings;
-	const fps = request.fps ? { numerator: Math.round(request.fps * 1000), denominator: 1000 } : settings.fps;
+	// The same frame grid a project with that rate uses (29.97 is 30000/1001, not 29970/1000).
+	const fps = request.fps ? floatToFrameRate(request.fps) : settings.fps;
 	const name = request.name ?? defaultExportName(project.metadata.name);
 	const duration = calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND;
 	const started = Date.now();
