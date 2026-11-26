@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { useI18n } from "@/i18n/provider";
 import { toast } from "sonner";
 import { useEditor } from "@/editor/use-editor";
@@ -68,6 +69,7 @@ export function SpeedTab({
 }) {
 	const { t } = useI18n();
 	const editor = useEditor();
+	const pitchId = useId();
 	const rate = clampRetimeRate({
 		rate: element.retime?.rate ?? DEFAULT_RETIME_RATE,
 	});
@@ -113,6 +115,7 @@ export function SpeedTab({
 					<SectionField label={t("properties.speed")}>
 						<NumberField
 							icon={<HugeiconsIcon icon={DashboardSpeed02Icon} />}
+							aria-label={t("properties.speed")}
 							value={speedDraft.displayValue}
 							suffix="x"
 							scrubRanges={[
@@ -123,7 +126,7 @@ export function SpeedTab({
 							onFocus={speedDraft.onFocus}
 							onChange={speedDraft.onChange}
 							onBlur={speedDraft.onBlur}
-			onKeyDown={speedDraft.onKeyDown}
+							onKeyDown={speedDraft.onKeyDown}
 							onScrub={speedDraft.scrubTo}
 							onScrubEnd={speedDraft.commitScrub}
 							onScrubCancel={speedDraft.cancelScrub}
@@ -135,8 +138,9 @@ export function SpeedTab({
 						/>
 					</SectionField>
 					<div className="flex items-center justify-between">
-						<span className="text-sm">{t("properties.changePitch")}</span>
+						<label htmlFor={pitchId} className="text-sm">{t("properties.changePitch")}</label>
 						<Switch
+							id={pitchId}
 							checked={!maintainPitch}
 							disabled={!isPitchPreserveAvailable}
 							onCheckedChange={(checked) =>

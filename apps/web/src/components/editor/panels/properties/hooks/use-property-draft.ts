@@ -29,7 +29,8 @@ export function usePropertyDraft<T>({
 		displayValue: isEditing ? draft : sourceDisplay,
 		scrubTo: (value: number) => {
 			const parsed = parse(String(value));
-			if (parsed === null) return;
+			// Pointer moves arrive faster than the snapped value changes: preview each value once.
+			if (parsed === null || Object.is(parsed, scrubValue.current)) return;
 			scrubValue.current = parsed;
 			onPreview?.(parsed);
 		},
