@@ -4,6 +4,7 @@ import { animateAgentElement } from "./animate";
 import { EditorCore } from "@/core";
 import type { MediaImportSession } from "@/core/managers/media-manager";
 import type { MediaAsset } from "@/media/types";
+import { processMediaFile } from "@/media/processing";
 import { buildElementFromMedia, buildEffectElement, buildGraphicElement, buildTextElement } from "@/timeline/element-utils";
 import { mediaTimeFromSeconds, TICKS_PER_SECOND } from "@/wasm";
 import { getGraphicDefinition } from "@/graphics";
@@ -148,7 +149,16 @@ const loadedMedia = (asset: AgentAsset, media: MediaAsset, read: Awaited<ReturnT
 	...(read.music ? { music: read.music } : {}),
 });
 
-/** Load an asset for the bundle or stage a new asset privately for the draft that requested it. */
+/** Prepare a bundle asset before the new project is opened. The caller owns its URLs. */
+export async function prepareBundleAsset({ asset, signal }: { asset: AgentAsset; signal: AbortSignal }) {
+	const read = await readAgentAsset(asset, signal);
+	const processed = await processMediaFile({ file: read.file, signal });
+	if (!processed) throw new Error(`Failed to save asset: ${read.filePath}: media could not be imported`);
+	const mediaAsset = { ...processed, id: generateUUID(), name: read.name, words: read.words };
+	return { mediaAsset, loaded: loadedMedia(asset, mediaAsset, read) };
+}
+
+/** Load an asset for the draft that requested it. */
 export async function loadAgentAsset({ session, asset, stagedIds }: {
 	session: MediaImportSession;
 	asset: AgentAsset;

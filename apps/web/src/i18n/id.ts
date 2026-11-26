@@ -1025,6 +1025,7 @@ export const id = {
 	"media.fileSize": "Ukuran file {size}.",
 	"media.storageAvailable": "Ukuran file {size}, sementara ruang aman yang tersedia di browser hanya {available}.",
 	"agentImport.failed": "Draf gagal diimpor. Periksa bundel lalu coba lagi.",
+	"agentImport.cleanupFailed": "{error} Hasil impor yang gagal tidak dapat dibersihkan: {cleanup}",
 	"agentImport.asset": "Memuat aset {done}/{total}: {name}",
 	"agentImport.timeline": "Menyusun timeline…",
 	"agentImport.done": "Selesai · {count} aset · membuka editor…",

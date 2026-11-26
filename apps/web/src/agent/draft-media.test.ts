@@ -154,10 +154,12 @@ describe("draft imports stay private until commit", () => {
 
 	test("a bundle keeps the video when its audio codec is unsupported", async () => {
 		const editor = setup();
+		const before = editor.project.getActive();
 		restoreProcessing();
 		restoreProcessing = () => {};
 		const backend = fakeBackend();
-		const writes = projectWrites({});
+		const save = spyOn(storageService, "saveProject").mockResolvedValue();
+		const upload = spyOn(storageService, "saveMediaAsset");
 		const close = mock(() => {});
 		const warn = spyOn(toast, "warning");
 		const videoTrack: InputVideoTrack = Object.create(InputVideoTrack.prototype, {
@@ -183,21 +185,64 @@ describe("draft imports stay private until commit", () => {
 		const fetchBackend = fetch;
 		globalThis.fetch = (async (url, init) => {
 			if (String(url) === "/api/agent/bundle") return Response.json({
-				name: "Bundle", width: 16, height: 16,
+				name: "Bundle", width: 16, height: 16, fps: 25,
 				assets: [{ key: "clip", name: "Clip", path: "clip.mp4", type: "video" }],
 				main: [{ agent_id: "picture", name: "Picture", asset: "clip", start: 0, sourceAudio: true }],
 			});
 			if (String(url).startsWith("/api/agent/file")) return new Response(new Blob(["video"], { type: "video/mp4" }));
 			return fetchBackend(url, init);
 		}) as typeof fetch;
-		restore = () => { for (const stub of stubs) stub.mockRestore(); writes.restore(); backend.restore(); };
-		await importAgentBundle({ onStatus: () => {} });
-		const [asset] = editor.media.getAssets();
-		expect(asset).toMatchObject({ name: "Clip", type: "video", hasAudio: false, duration: 2 });
-		expect(backend.state.saved).toEqual([asset.id]);
-		expect(editor.scenes.getActiveScene().tracks.main.elements).toMatchObject([{ type: "video", mediaId: asset.id, duration: T(2) }]);
+		restore = () => { for (const stub of stubs) stub.mockRestore(); upload.mockRestore(); save.mockRestore(); backend.restore(); };
+		const id = await importAgentBundle({ onStatus: () => {} });
+		expect(editor.project.getActive()).toBe(before);
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(upload).toHaveBeenCalledTimes(1);
+		const [{ project }] = save.mock.calls[0];
+		const [{ projectId, mediaAsset }] = upload.mock.calls[0];
+		expect(id).toBe(projectId);
+		expect(project.metadata).toMatchObject({ id, duration: T(2) });
+		expect(project.settings).toMatchObject({ canvasSize: { width: 16, height: 16 }, fps: { numerator: 25, denominator: 1 } });
+		expect(mediaAsset).toMatchObject({ name: "Clip", type: "video", hasAudio: false, duration: 2 });
+		expect(backend.state.saved).toEqual([mediaAsset.id]);
+		expect(project.scenes[0].tracks.main.elements).toMatchObject([{ type: "video", mediaId: mediaAsset.id, duration: T(2) }]);
 		expect(warn).toHaveBeenCalledWith("Audio unavailable in clip.mp4", expect.anything());
 		expect(close).toHaveBeenCalledTimes(1);
+	});
+
+	test.each(["missing file", "invalid timeline", "failed save"] as const)("bundle import rolls back after %s without replacing the open project", async (failure) => {
+		const editor = setup();
+		const before = editor.project.getActive();
+		const backend = fakeBackend({ missing: new Set(["bad.png"]) });
+		const persisted = new Map<string, TProject>();
+		const save = spyOn(storageService, "saveProject").mockImplementation(async ({ project }) => {
+			if (failure === "failed save" && project.scenes.flatMap(all).length) throw new Error("Disk full");
+			persisted.set(project.metadata.id, project);
+		});
+		const remove = spyOn(storageService, "deleteProject").mockImplementation(async ({ id }) => {
+			persisted.delete(id);
+		});
+		const flush = spyOn(editor.project, "saveCurrentProject").mockResolvedValue(false);
+		const fetchBackend = fetch;
+		globalThis.fetch = (async (url, init) => {
+			if (String(url) !== "/api/agent/bundle") return fetchBackend(url, init);
+			const assets = [{ key: "ok", name: "OK", path: "ok.png", type: "image" }];
+			if (failure === "missing file") assets.push({ key: "bad", name: "Bad", path: "bad.png", type: "image" });
+			return Response.json({
+				name: "Bundle", width: 16, height: 16, assets,
+				main: [{ agent_id: "picture", name: "Picture", asset: failure === "invalid timeline" ? "bad" : "ok", start: 0, duration: 1 }],
+			});
+		}) as typeof fetch;
+		restore = () => { save.mockRestore(); remove.mockRestore(); flush.mockRestore(); backend.restore(); };
+		const status = mock((_text: string) => {});
+		const error = { "missing file": "Cannot read asset", "invalid timeline": "Asset missing", "failed save": "Disk full" }[failure];
+		await expect(importAgentBundle({ onStatus: status })).rejects.toThrow(error);
+		expect(editor.project.getActive()).toBe(before);
+		expect(backend.state.saved).toHaveLength(1);
+		expect(remove).toHaveBeenCalledTimes(1);
+		const projectId = remove.mock.calls[0][0].id;
+		expect(projectId).not.toBe(before.metadata.id);
+		expect(persisted.size).toBe(0);
+		expect(status.mock.calls.some(([message]) => message.startsWith("Done"))).toBe(false);
 	});
 
 	test("a failing draft's rollback never deletes media another edit already uses", async () => {

@@ -1023,6 +1023,7 @@ export const en = {
 	"media.fileSize": "File size is {size}.",
 	"media.storageAvailable": "File size is {size}, but only {available} is safely available in browser storage.",
 	"agentImport.failed": "Could not import the draft. Check the bundle and try again.",
+	"agentImport.cleanupFailed": "{error} The failed import could not be cleaned up: {cleanup}",
 	"agentImport.asset": "Loading asset {done}/{total}: {name}",
 	"agentImport.timeline": "Building timeline…",
 	"agentImport.done": "Done · {count} assets · opening editor…",

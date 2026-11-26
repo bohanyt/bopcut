@@ -15,13 +15,11 @@ import { storageService } from "@/services/storage/service";
 import { toast } from "sonner";
 import { generateUUID } from "@/utils/id";
 import { UpdateProjectSettingsCommand } from "@/commands/project";
-import { DEFAULT_BACKGROUND_COLOR } from "@/background/color";
-import { DEFAULT_CANVAS_SIZE, previewCanvasSize } from "@/canvas/sizes";
-import { DEFAULT_FPS } from "@/fps/defaults";
-import { buildDefaultScene, getProjectDurationFromScenes } from "@/timeline/scenes";
+import { previewCanvasSize } from "@/canvas/sizes";
+import { buildNewProject } from "@/project/create";
+import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import { buildScene } from "@/services/renderer/scene-builder";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
-import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
 import { loadFonts } from "@/fonts/google-fonts";
 import { DEFAULTS } from "@/timeline/defaults";
 import { getElementFontFamilies } from "@/timeline/element-utils";
@@ -110,30 +108,7 @@ export class ProjectManager {
 	async createNewProject({ name }: { name: string }): Promise<string> {
 		const take = this.editor.voiceOver.finishForNavigation();
 		if (take) await take;
-		const mainScene = buildDefaultScene({ name: "Main scene", isMain: true });
-		const newProject: TProject = {
-			metadata: {
-				id: generateUUID(),
-				name,
-				duration: getProjectDurationFromScenes({ scenes: [mainScene] }),
-				createdAt: new Date(),
-				updatedAt: new Date(),
-			},
-			scenes: [mainScene],
-			currentSceneId: mainScene.id,
-			settings: {
-				fps: DEFAULT_FPS,
-				canvasSize: DEFAULT_CANVAS_SIZE,
-				canvasSizeMode: "preset",
-				lastCustomCanvasSize: null,
-				originalCanvasSize: null,
-				background: {
-					type: "color",
-					color: DEFAULT_BACKGROUND_COLOR,
-				},
-			},
-			version: CURRENT_PROJECT_VERSION,
-		};
+		const newProject = buildNewProject({ name });
 
 		this.advanceSession();
 		this.supersedeLoads();
