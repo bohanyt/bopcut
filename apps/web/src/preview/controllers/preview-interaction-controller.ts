@@ -254,6 +254,7 @@ export class PreviewInteractionController {
 		this.onPointerMove = this.onPointerMove.bind(this);
 		this.onPointerUp = this.onPointerUp.bind(this);
 		this.commitTextEdit = this.commitTextEdit.bind(this);
+		this.cancelTextEdit = this.cancelTextEdit.bind(this);
 		this.previewTextEdit = this.previewTextEdit.bind(this);
 		this.handlePlaybackChange = this.handlePlaybackChange.bind(this);
 
@@ -316,6 +317,16 @@ export class PreviewInteractionController {
 		this.deps.timeline.previewElements([
 			{ trackId, elementId, updates: { params: { content } } },
 		]);
+	}
+
+	/** Escape: the typed text is discarded and nothing reaches the history. */
+	cancelTextEdit(): void {
+		if (!this.editingTextState) return;
+		this.editingTextState = null;
+		this.gestureOwner?.cancel();
+		this.gestureOwner = null;
+		this.endPointerGesture();
+		this.notify();
 	}
 
 	commitTextEdit(): void {
@@ -528,6 +539,10 @@ export class PreviewInteractionController {
 			this.finishGesture();
 			return;
 		}
+		// Snapping moves the first element and keeps the dragged element's size: put that one first.
+		const leader = draggableElements.findIndex(({ trackId, elementId }) =>
+			trackId === dragTarget.trackId && elementId === dragTarget.elementId);
+		if (leader > 0) draggableElements.unshift(...draggableElements.splice(leader, 1));
 
 		if (pending.selectedHit === null) {
 			this.deps.selection.setSelected(dragSelection);

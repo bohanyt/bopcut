@@ -89,8 +89,11 @@ export function snapPosition({
 	const rotRad = (rotation * Math.PI) / 180;
 	const cosR = Math.abs(Math.cos(rotRad));
 	const sinR = Math.abs(Math.sin(rotRad));
-	const halfWidth = (elementSize.width * cosR + elementSize.height * sinR) / 2;
-	const halfHeight = (elementSize.width * sinR + elementSize.height * cosR) / 2;
+	// A flipped element has a negative width or height; its bounding box uses the size.
+	const width = Math.abs(elementSize.width);
+	const height = Math.abs(elementSize.height);
+	const halfWidth = (width * cosR + height * sinR) / 2;
+	const halfHeight = (width * sinR + height * cosR) / 2;
 	const activeLines: SnapLine[] = [];
 
 	type AxisSnapCandidate = {
@@ -215,8 +218,10 @@ export function snapScale({
 	const rotRad = (rotation * Math.PI) / 180;
 	const cosR = Math.abs(Math.cos(rotRad));
 	const sinR = Math.abs(Math.sin(rotRad));
-	const aabbBaseHalfW = (baseWidth * cosR + baseHeight * sinR) / 2;
-	const aabbBaseHalfH = (baseWidth * sinR + baseHeight * cosR) / 2;
+	// Sizes, not signed extents: a flipped side would cancel the other one in the rotated box.
+	const aabbBaseHalfW = (Math.abs(baseWidth) * cosR + Math.abs(baseHeight) * sinR) / 2;
+	const aabbBaseHalfH = (Math.abs(baseWidth) * sinR + Math.abs(baseHeight) * cosR) / 2;
+	const SIZE_EPSILON = 1e-6;
 
 	const leftEdge = position.x - aabbBaseHalfW * proposedScale;
 	const rightEdge = position.x + aabbBaseHalfW * proposedScale;
@@ -241,7 +246,7 @@ export function snapScale({
 		{ position: right, line: { type: "vertical" as const, position: right } },
 	];
 
-	for (const target of verticalTargets) {
+	for (const target of aabbBaseHalfW > SIZE_EPSILON ? verticalTargets : []) {
 		const distanceLeft = Math.abs(leftEdge - target.position);
 		if (distanceLeft <= snapThreshold.x) {
 			const scale = (position.x - target.position) / aabbBaseHalfW;
@@ -280,7 +285,7 @@ export function snapScale({
 		},
 	];
 
-	for (const target of horizontalTargets) {
+	for (const target of aabbBaseHalfH > SIZE_EPSILON ? horizontalTargets : []) {
 		const distanceTop = Math.abs(topEdge - target.position);
 		if (distanceTop <= snapThreshold.y) {
 			const scale = (position.y - target.position) / aabbBaseHalfH;
@@ -371,7 +376,24 @@ export interface AxisSnapResult {
 	activeLines: SnapLine[];
 }
 
-export function snapScaleAxes({
+/**
+ * Snaps the scale of each axis so an edge of the rotated bounding box meets a canvas line. A flipped
+ * axis (negative scale) snaps by its size and keeps its sign.
+ */
+export function snapScaleAxes(args: Parameters<typeof snapScaleAxisSizes>[0]): { x: AxisSnapResult; y: AxisSnapResult } {
+	const signX = Math.sign(args.proposedScaleX) || 1;
+	const signY = Math.sign(args.proposedScaleY) || 1;
+	const { x, y } = snapScaleAxisSizes({
+		...args,
+		proposedScaleX: Math.abs(args.proposedScaleX),
+		proposedScaleY: Math.abs(args.proposedScaleY),
+		baseWidth: Math.abs(args.baseWidth),
+		baseHeight: Math.abs(args.baseHeight),
+	});
+	return { x: { ...x, snappedScale: x.snappedScale * signX }, y: { ...y, snappedScale: y.snappedScale * signY } };
+}
+
+function snapScaleAxisSizes({
 	proposedScaleX,
 	proposedScaleY,
 	position,

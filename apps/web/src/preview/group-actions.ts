@@ -34,3 +34,20 @@ export function changeGroup(editor: EditorCore, ungroup: boolean): void {
 		})),
 	});
 }
+
+type ShortcutKeyEvent = Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "repeat"> & {
+	target: EventTarget | null;
+};
+
+/**
+ * Ctrl/Cmd+G groups and Ctrl/Cmd+Shift+G ungroups: once per press (a held key repeats keydown), and
+ * not while a dialog, menu or popover is open, a shortcut is being recorded, or a text field has focus.
+ */
+export function groupShortcutAction(event: ShortcutKeyEvent, state: { overlayDepth: number; isRecording: boolean }):
+	"group" | "ungroup" | null {
+	if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "g") return null;
+	const target = event.target as HTMLElement | null;
+	if (target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName ?? "")) return null;
+	if (event.repeat || state.overlayDepth > 0 || state.isRecording) return null;
+	return event.shiftKey ? "ungroup" : "group";
+}
