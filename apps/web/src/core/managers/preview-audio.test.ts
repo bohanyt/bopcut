@@ -540,9 +540,10 @@ test("a right extension of a legacy 2x clip keeps its audible tail", async () =>
 	expect(blocks[0].getChannelData(0)).toEqual(buffers[0].getChannelData(0));
 });
 
-const pitchCases = [44_100, 48_000].flatMap((sampleRate) =>
-	[1, 2].flatMap((channels) => [0.5, 1.5, 2].map((rate) => ({ sampleRate, channels, rate }))),
-);
+const pitchCases = [44_100, 48_000].flatMap((sampleRate) => [
+	...[1, 2].flatMap((channels) => [0.5, 1.5, 2].map((rate) => ({ sampleRate, channels, rate, frequency: 300 }))),
+	{ sampleRate, channels: 1, rate: 4, frequency: 45 },
+]);
 
 const timingCases = [44_100, 48_000].flatMap((sampleRate) => [
 	{ sampleRate, rate: 0.5, duration: 1, fixture: "tail" },
@@ -551,9 +552,13 @@ const timingCases = [44_100, 48_000].flatMap((sampleRate) => [
 	{ sampleRate, rate: 2, duration: 0.1, fixture: "midpoint" },
 	{ sampleRate, rate: 4, duration: 1, fixture: "midpoint" },
 	{ sampleRate, rate: 4, duration: 0.1, fixture: "stereo attack" },
+	{ sampleRate, rate: 4, duration: 0.1, fixture: "overlapping attacks" },
+	{ sampleRate, rate: 4, duration: 0.1, fixture: "overlapping attacks after seek" },
 ]);
 test.each(timingCases)("pitch timing $fixture at $sampleRate Hz, $rate x and $duration s", async ({ sampleRate, rate, duration, fixture }) => {
 	const nativeRate = 48_000;
+	const overlap = fixture.startsWith("overlapping attacks");
+	const seek = fixture.endsWith("after seek") ? 0.05 : 0;
 	const { editor, tracks } = setup(uploadedClip({ duration: t(duration), retime: { rate, maintainPitch: true } }));
 	const { buffers, waitForStarts } = fakeAudio({ sampleRate });
 	const buffer = new TestAudioBuffer({ length: Math.round(nativeRate * duration * rate), sampleRate: nativeRate, numberOfChannels: 2 });
@@ -564,13 +569,36 @@ test.each(timingCases)("pitch timing $fixture at $sampleRate Hz, $rate x and $du
 	} else {
 		buffer.getChannelData(0)[100] = 0.9;
 		buffer.getChannelData(1)[5] = 0.8;
+		if (overlap) {
+			buffer.getChannelData(0)[5] = 0.8;
+			buffer.getChannelData(1)[buffer.length - 100] = 0.9;
+			buffer.getChannelData(1)[buffer.length - 5] = 0.8;
+		}
 	}
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
+	if (seek) editor.playback.seek({ time: t(seek) });
 	editor.playback.play();
 	await waitForStarts();
 	editor.playback.pause();
-	const [mixed] = await Array.fromAsync(mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), duration: t(duration), sampleRate }));
-	expect(mixed.length).toBe(Math.round(duration * sampleRate));
+	const [mixed] = await Array.fromAsync(mixTimelineAudio({ tracks, mediaAssets: editor.media.getAssets(), rangeStart: t(seek), duration: t(duration), sampleRate }));
+	expect(mixed.length).toBe(Math.round((duration - seek) * sampleRate));
+	if (overlap) {
+		const expected = [[5, 100], [5, buffer.length - 100, buffer.length - 5]];
+		for (const output of [buffers[0], mixed]) {
+			for (const [channel, frames] of expected.entries()) {
+				const expectedPeaks = frames.map((frame) => (frame / nativeRate / rate - seek) * sampleRate).filter((frame) => frame >= 0);
+				const samples = output.getChannelData(channel);
+				const attacks = Array.from(samples.entries()).filter(([i, value]) =>
+					value > 0.45 && value > (samples[i - 1] ?? 0) && value > (samples[i + 1] ?? 0),
+				).map(([i]) => i);
+				expect(attacks).toHaveLength(expectedPeaks.length);
+				for (const [i, frame] of expectedPeaks.entries()) {
+					expect(Math.abs(attacks[i] - frame)).toBeLessThanOrEqual(1);
+				}
+			}
+		}
+		return;
+	}
 	const measured = [buffers[0], mixed].map((output) => [0, 1].map((channel) => {
 		const samples = output.getChannelData(channel);
 		let peak = 0;
@@ -597,8 +625,8 @@ test.each(timingCases)("pitch timing $fixture at $sampleRate Hz, $rate x and $du
 	}
 });
 
-test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $channels channel(s), $rate x", async ({
-	sampleRate, channels, rate,
+test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $channels channel(s), $rate x, $frequency Hz tone", async ({
+	sampleRate, channels, rate, frequency,
 }) => {
 	const nativeRate = sampleRate === 44_100 ? 48_000 : 44_100;
 	const duration = 1.2;
@@ -606,11 +634,11 @@ test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $chan
 		duration: t(duration), trimStart: t(0.25001), retime: { rate, maintainPitch: true },
 	}));
 	const { buffers, starts, waitForStarts } = fakeAudio({ sampleRate });
-	const buffer = new TestAudioBuffer({ length: 3 * nativeRate, sampleRate: nativeRate, numberOfChannels: channels });
+	const buffer = new TestAudioBuffer({ length: Math.ceil(0.3 + duration * rate) * nativeRate, sampleRate: nativeRate, numberOfChannels: channels });
 	for (let channel = 0; channel < channels; channel++) {
 		const samples = buffer.getChannelData(channel);
 		for (let frame = 0; frame < samples.length; frame++) {
-			samples[frame] = 0.5 * Math.sin(2 * Math.PI * (300 + channel * 100) * frame / nativeRate);
+			samples[frame] = 0.5 * Math.sin(2 * Math.PI * (frequency + channel * 100) * frame / nativeRate);
 		}
 	}
 	stubDecoder(async function* () { yield { buffer, timestamp: 0, duration: buffer.duration }; });
@@ -637,8 +665,8 @@ test.each(pitchCases)("retimed preview and export match at $sampleRate Hz, $chan
 		for (let frame = sampleRate / 10 + 1; frame <= sampleRate * 0.4; frame++) {
 			if (samples[frame - 1] <= 0 && samples[frame] > 0) crossings++;
 		}
-		const frequency = channels === 2 && channel === 1 ? 400 : 300;
-		expect(Math.abs(crossings - frequency * 0.3)).toBeLessThanOrEqual(2);
+		const expectedFrequency = frequency + (channels === 2 && channel === 1 ? 100 : 0);
+		expect(Math.abs(crossings - expectedFrequency * 0.3)).toBeLessThanOrEqual(2);
 	}
 });
 

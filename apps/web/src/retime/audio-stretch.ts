@@ -8,6 +8,7 @@ const SEARCH_SECONDS = 0.007;
 const BASS_SEARCH_SECONDS = 0.027;
 const MATCH_RADIUS_SECONDS = 0.004;
 const ATTACK_GUARD_SECONDS = 0.003;
+const ATTACK_GAP_SECONDS = 0.0004;
 const MAX_ATTACK_SECONDS = 0.0025;
 const ATTACK_SILENCE = 0.0005;
 
@@ -19,30 +20,38 @@ interface Attack {
 
 /** Keep brief attacks separated by silence out of the overlapping grains. */
 function takeIsolatedAttacks(
-	samples: Float32Array, guard: number, maxLength: number,
+	samples: Float32Array, guard: number, gap: number, maxLength: number,
 ): Attack[] {
 	const attacks: Attack[] = [];
 	let start = -1;
 	let last = -1;
-	let peak = 0;
-	let peakLevel = 0;
 	for (let i = 0; i <= samples.length; i++) {
 		if (i - last >= guard && start >= 0) {
-			if (start >= guard && last - start < maxLength) {
-				attacks.push({ start, peak, samples: samples.slice(start, last + 1) });
-				samples.fill(0, start, last + 1);
+			if (start >= guard && last - start < maxLength + guard) {
+				// A short gap can separate distinct attacks inside the same quiet region.
+				let first = start;
+				let end = start;
+				let peak = start;
+				for (let frame = start + 1; frame <= last + 1; frame++) {
+					const audible = frame <= last && Math.abs(samples[frame]) > ATTACK_SILENCE;
+					if (frame > last || (audible && frame - end >= gap)) {
+						if (end - first < maxLength) {
+							attacks.push({ start: first, peak, samples: samples.slice(first, end + 1) });
+							samples.fill(0, first, end + 1);
+						}
+						first = peak = frame;
+					}
+					if (!audible) continue;
+					end = frame;
+					if (Math.abs(samples[frame]) > Math.abs(samples[peak])) peak = frame;
+				}
 			}
 			start = -1;
-			peakLevel = 0;
 		}
 		const level = i < samples.length ? Math.abs(samples[i]) : 0;
 		if (level > ATTACK_SILENCE) {
 			if (start < 0) start = i;
 			last = i;
-			if (level > peakLevel) {
-				peak = i;
-				peakLevel = level;
-			}
 		}
 	}
 	return attacks;
@@ -151,6 +160,7 @@ export function createPitchReader({
 	const bassRadius = Math.ceil(BASS_SEARCH_SECONDS * sampleRate);
 	const matchRadius = Math.ceil(MATCH_RADIUS_SECONDS * sampleRate);
 	const attackGuard = Math.ceil(ATTACK_GUARD_SECONDS * sampleRate);
+	const attackGap = Math.ceil(ATTACK_GAP_SECONDS * sampleRate);
 	const maxAttackLength = Math.ceil(MAX_ATTACK_SECONDS * sampleRate);
 	// Classify each candidate with enough context to see both sides of an attack.
 	const attackMargin = attackGuard + maxAttackLength;
@@ -222,8 +232,8 @@ export function createPitchReader({
 			inputRight[i - pcmStart] = stereo[1];
 		}
 		attacks = [
-			takeIsolatedAttacks(inputLeft, attackGuard, maxAttackLength),
-			takeIsolatedAttacks(inputRight, attackGuard, maxAttackLength),
+			takeIsolatedAttacks(inputLeft, attackGuard, attackGap, maxAttackLength),
+			takeIsolatedAttacks(inputRight, attackGuard, attackGap, maxAttackLength),
 		];
 	};
 
