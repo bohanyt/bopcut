@@ -3,6 +3,7 @@ import ts from "typescript";
 
 const surfaces = [
 	"components/landing/hero.tsx",
+	"home/accounts-tab.tsx",
 	"home/agent-tab.tsx",
 	"home/home-page.tsx",
 	"preview/components/context-menu.tsx",

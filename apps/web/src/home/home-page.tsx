@@ -8,10 +8,11 @@ import { useEditor } from "@/editor/use-editor";
 import { LanguageSwitch } from "@/i18n/language-switch";
 import { useI18n } from "@/i18n/provider";
 import { MigrationDialog } from "@/project/components/migration-dialog";
+import { AccountsTab } from "./accounts-tab";
 import { AgentTab } from "./agent-tab";
 import { NewProjectButton, ProjectsSearchBar, ProjectsTab, ProjectsViewModes } from "./projects-tab";
 
-const TABS = ["projects", "agent"] as const;
+const TABS = ["projects", "agent", "accounts"] as const;
 export type HomeTab = (typeof TABS)[number];
 
 /** The tab a link asks for (`/?tab=agent`); Projects otherwise. */
@@ -91,6 +92,7 @@ export function HomePage() {
 										</span>
 									)}
 								</TabsTrigger>
+								<TabsTrigger value="accounts" className="h-9 px-3">{t("home.accountsTab")}</TabsTrigger>
 							</TabsList>
 							{projects && <ProjectsViewModes />}
 						</div>
@@ -108,6 +110,9 @@ export function HomePage() {
 				</TabsContent>
 				<TabsContent forceMount value="agent" hidden={tab !== "agent"}>
 					<AgentTab inbox={inbox} failed={failed} onRetry={() => void refresh()} />
+				</TabsContent>
+				<TabsContent forceMount value="accounts" hidden={tab !== "accounts"}>
+					<AccountsTab active={tab === "accounts"} />
 				</TabsContent>
 			</Tabs>
 		</div>

@@ -63,6 +63,7 @@ Use the **EN / ID** button in the header to choose English or Bahasa Indonesia. 
 | Data | Default location | Override in `apps/web/.env.local` |
 | --- | --- | --- |
 | Projects and media | `<repo>/workspace/projects/` | `BOPENCUT_DATA` |
+| Choices from the home page's Accounts tab | `<repo>/workspace/accounts.json` | `BOPENCUT_DATA` |
 | Agent workspace (sync files, drafts, frames, edit logs) | `<repo>/workspace/` | `AGENT_WORKSPACE` |
 | Asset root the agent may read | Same as `AGENT_WORKSPACE` | `AGENT_FILES_ROOT` |
 

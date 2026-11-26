@@ -19,6 +19,7 @@ import { handleCli } from "@/agent/cli-api";
 import { inside as resolveInsideRoot } from "@/agent/inside";
 import { renderPresence, renderRequest, renderWorker } from "@/agent/render-server";
 import { bundleResponse, markBundleImported, readInbox } from "@/agent/inbox";
+import { handleAccounts } from "@/accounts/server";
 
 const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), "..", "..", "workspace"));
 const FILES_ROOT = path.resolve(process.env.AGENT_FILES_ROOT ?? WORKSPACE);
@@ -40,6 +41,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 	const { slug } = await params;
 	if (slug[0] === "cli" && slug[1] === "render" && slug.length === 2) return renderWorker(req, WORKSPACE);
 	if (slug[0] === "cli" && slug.length === 2) return handleCli(req, slug[1], WORKSPACE);
+	if (slug[0] === "accounts" && slug.length <= 2) return handleAccounts(req, slug[1], FILES_ROOT);
 	try {
 		if (slug[0] === "bundle") return await bundleResponse(WORKSPACE);
 		// The bundle not imported yet and the draft no editor answered yet, for the home page.
@@ -140,6 +142,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 		return Response.json({ ok: true });
 	}
 	if (slug[0] === "bundle-imported") return markBundleImported(req, WORKSPACE);
+	if (slug[0] === "accounts" && slug.length <= 2) return handleAccounts(req, slug[1], FILES_ROOT);
 	if (slug[0] === "applied") {
 		const result = await req.json();
 		// A draft is applied once: move it aside so a project opened later does not apply it again.

@@ -4,6 +4,7 @@ import { runProcess, runYtDlpProcess } from "./process";
 import { Cancelled, cacheTargets, checkCancelled, publishMedia, reusePublished, sharedJob, withScratch } from "./jobs";
 import { existsSync } from "node:fs";
 import { RetrievalError } from "./server-errors";
+import { cookiesFromBrowser } from "@/accounts/store";
 import { assertPublicUrl, fetchPublic, readCapped } from "./net";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -45,7 +46,8 @@ function positiveInt(value: string | undefined, fallback: number): number {
 /**
  * Tools from the environment:
  * BOPENCUT_YTDLP (default `yt-dlp`), BOPENCUT_FFMPEG (default `ffmpeg`),
- * BOPENCUT_YTDLP_COOKIES_FROM_BROWSER (e.g. `firefox`), BOPENCUT_VIDEO_ENCODER (default `libx264`;
+ * BOPENCUT_YTDLP_COOKIES_FROM_BROWSER (e.g. `firefox`; the browser chosen on the home page's Accounts tab
+ * comes first), BOPENCUT_VIDEO_ENCODER (default `libx264`;
  * e.g. `h264_nvenc`, `h264_qsv`, `h264_amf`, `h264_videotoolbox`), BOPENCUT_RETRIEVE_HEIGHT (default 1080),
  * BOPENCUT_RETRIEVE_MAX_SECONDS (default 1800).
  */
@@ -67,7 +69,7 @@ export function toolsFromEnv(env: Record<string, string | undefined> = process.e
 	return {
 		ytdlp: commandFromSetting(env.BOPENCUT_YTDLP, "yt-dlp", fileExists),
 		ffmpeg: commandFromSetting(env.BOPENCUT_FFMPEG, "ffmpeg", fileExists),
-		cookiesFromBrowser: env.BOPENCUT_YTDLP_COOKIES_FROM_BROWSER?.trim() || undefined,
+		cookiesFromBrowser: cookiesFromBrowser(env),
 		videoEncoder: env.BOPENCUT_VIDEO_ENCODER?.trim() || "libx264",
 		defaultHeight: positiveInt(env.BOPENCUT_RETRIEVE_HEIGHT, 1080),
 		maxSectionSeconds: positiveInt(env.BOPENCUT_RETRIEVE_MAX_SECONDS, 1800),
