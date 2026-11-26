@@ -1,6 +1,7 @@
 // Exports for agents: `export-request.json` asks the open editor to export the timeline into the
 // workspace's `exports/` folder; progress and the result go to `export-result.json`.
 import { EXPORT_FORMAT_VALUES, EXPORT_QUALITY_VALUES, type ExportFormat, type ExportQuality } from "@/export";
+import { DEFAULT_EXPORT_OPTIONS } from "@/export/defaults";
 
 export type ExportRequest = {
 	rev: string;
@@ -25,7 +26,7 @@ export function parseExportRequest(value: unknown): ExportRequest | string | nul
 	if (typeof raw.rev !== "string" || !REV.test(raw.rev)) return null;
 	const format = raw.format ?? "mp4";
 	if (!EXPORT_FORMAT_VALUES.includes(format as ExportFormat)) return `format must be one of ${EXPORT_FORMAT_VALUES.join(", ")}`;
-	const quality = raw.quality ?? "high";
+	const quality = raw.quality ?? DEFAULT_EXPORT_OPTIONS.quality;
 	if (!EXPORT_QUALITY_VALUES.includes(quality as ExportQuality)) return `quality must be one of ${EXPORT_QUALITY_VALUES.join(", ")}`;
 	if (raw.fps !== undefined && (typeof raw.fps !== "number" || !Number.isFinite(raw.fps) || raw.fps < 1 || raw.fps > 240)) return "fps must be 1 to 240";
 	if (raw.name !== undefined && (typeof raw.name !== "string" || !safeName(raw.name))) return "name must have letters or digits (no folders)";
