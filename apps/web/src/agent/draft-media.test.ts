@@ -1200,6 +1200,48 @@ describe("media import lifecycle", () => {
 		}
 	});
 
+	test("a removal waiting for the timeline save keeps a late import response from republishing", async () => {
+		const editor = setup();
+		const project = editor.project.getActive();
+		const started = gate();
+		const finish = gate();
+		let onDisk: MediaAsset | undefined;
+		const save = spyOn(storageService, "saveMediaAsset").mockImplementation(async ({ mediaAsset }) => {
+			onDisk = mediaAsset;
+			started.open();
+			await finish.promise;
+		});
+		const remove = spyOn(storageService, "deleteMediaAsset").mockImplementation(async () => { onDisk = undefined; });
+		const present = spyOn(storageService, "hasStoredMediaAsset").mockImplementation(async () => !!onDisk);
+		const load = spyOn(storageService, "loadAllMediaAssets").mockImplementation(async () =>
+			onDisk ? [asset("m-old"), { ...onDisk, url: "/stored.mp4" }] : [asset("m-old")],
+		);
+		const projects = projectWrites({ wait: () => finish.promise });
+		restore = () => { save.mockRestore(); remove.mockRestore(); present.mockRestore(); load.mockRestore(); projects.restore(); };
+		editor.save.start();
+		const importing = editor.media.importFile({ session: editor.media.startImport()!, file: new File(["movie"], "movie.mp4", { type: "video/mp4" }) });
+		await started.promise;
+		editor.project.closeProject();
+		editor.project.setActiveProject({ project });
+		editor.scenes.setScenes({ scenes: project.scenes, activeSceneId: "main" });
+		const reopening = editor.media.loadProjectMedia({ projectId: "p" });
+		try {
+			expect(await Promise.race([reopening.then(() => true), Bun.sleep(100).then(() => false)])).toBe(true);
+			const opened = editor.media.getAssets();
+			expect(opened.map(({ name }) => name)).toEqual(["m-old", "movie.mp4"]);
+			editor.save.markNavigationDirty();
+			editor.media.removeMediaAsset({ projectId: "p", id: opened[1].id });
+			expect(remove).not.toHaveBeenCalled();
+			finish.open();
+			expect(await importing).toBeNull();
+			expect(editor.media.getAssets().map(({ name }) => name)).toEqual(["m-old"]);
+		} finally {
+			finish.open();
+			await Promise.all([reopening, importing]);
+			await editor.media.settleBinWrites("p");
+		}
+	});
+
 	test("project deletion proceeds while a media response is pending", async () => {
 		const editor = setup();
 		const started = gate();
@@ -1321,11 +1363,14 @@ describe("media import lifecycle", () => {
 	test("undo restores the removed item alongside a later import", async () => {
 		const editor = setup();
 		const backend = fakeBackend();
+		const projects = projectWrites();
+		editor.save.start();
 		const deleting = gate();
 		const deletes = spyOn(storageService, "deleteMediaAsset").mockImplementation(async () => deleting.promise);
-		restore = () => { deletes.mockRestore(); backend.restore(); };
+		restore = () => { deletes.mockRestore(); backend.restore(); projects.restore(); };
 		const session = editor.media.startImport()!;
 		editor.media.removeMediaAsset({ projectId: "p", id: "m-old" });
+		expect(await editor.save.flush()).toBe(true);
 		deleting.open();
 		const later = await editor.media.importFile({ session, file: new File(["later"], "later.png") });
 		expect(later).not.toBeNull();
@@ -1335,6 +1380,7 @@ describe("media import lifecycle", () => {
 		expect(backend.state.saved).toEqual([later!.id, "m-old"]);
 
 		editor.command.redo();
+		expect(await editor.save.flush()).toBe(true);
 		editor.command.undo();
 		await editor.media.settleBinWrites("p");
 		expect(backend.state.saved).toEqual([later!.id, "m-old", "m-old"]);

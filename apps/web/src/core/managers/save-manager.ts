@@ -172,11 +172,23 @@ export class SaveSession {
 	/**
 	 * Resolves with the project as written by the first successful write that contains `revision`
 	 * (whenever that is; it can hold later edits too, such as an undo). Null if the session is discarded,
-	 * or if `revision` was already on disk when this was called (call it right after the edit).
+	 * or if `revision` was already on disk when this was called (call it right after the edit). Aborting
+	 * `signal` resolves null and drops the waiter.
 	 */
-	whenSaved(revision = this.revision): Promise<TProject | null> {
-		if (this.savedRevision >= revision || this.detached) return Promise.resolve(null);
-		return new Promise((resolve) => this.savedWaiters.push({ revision, resolve }));
+	whenSaved(revision = this.revision, signal?: AbortSignal): Promise<TProject | null> {
+		if (this.savedRevision >= revision || this.detached || signal?.aborted) return Promise.resolve(null);
+		return new Promise((resolve) => {
+			const onAbort = () => {
+				this.savedWaiters = this.savedWaiters.filter((other) => other !== waiter);
+				resolve(null);
+			};
+			const waiter = { revision, resolve: (written: TProject | null) => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve(written);
+			} };
+			this.savedWaiters.push(waiter);
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
 	}
 
 	/** Stops writes (the project is being deleted); resolves once the write in progress, if any, is done. */

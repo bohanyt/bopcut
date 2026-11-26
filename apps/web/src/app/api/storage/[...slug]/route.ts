@@ -15,6 +15,7 @@ import {
 } from "@/services/storage/server/files";
 import {
 	projectFile,
+	projectUsesMedia,
 	readProject,
 	readProjectSummary,
 	readProjectThumbnail,
@@ -278,6 +279,8 @@ async function handle(
 				}
 				if (method === "DELETE")
 					return await withProjectLock(id, async () => {
+						if (await projectUsesMedia(id, mediaId))
+							return Response.json({ error: "The saved project still uses this media" }, { status: 409 });
 						await removeMedia(id, mediaId);
 						return Response.json({ ok: true });
 					});

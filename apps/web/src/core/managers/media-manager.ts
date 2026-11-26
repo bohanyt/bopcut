@@ -124,21 +124,22 @@ export class MediaManager {
 			this.editor.project.canImportMedia(projectId);
 	}
 
-	persistBinChange({ projectId, id, asset, removedAsset }: {
+	persistBinChange({ projectId, id, asset, removedAsset, ifMissing = false }: {
 		projectId: string;
 		id: string;
 		asset: MediaAsset | null;
 		removedAsset?: MediaAsset;
+		/** Upload `asset` only if its bytes are not stored (Undo of a removal whose delete was never sent). */
+		ifMissing?: boolean;
 	}): Promise<void> {
-		const publication = this.pendingPublications.get(id);
-		if (publication) publication.binChanged = true;
+		this.markBinChanged({ projectId, id, asset });
 		let writes = this.binWrites.get(projectId);
 		if (!writes) this.binWrites.set(projectId, writes = new Map());
 		const projectWrites = writes;
 		const reference = parseMediaThumbnailReference((asset ?? removedAsset)?.thumbnailUrl);
 		const pending = projectWrites.get(id);
 		const previous = pending?.started;
-		const started = reference || previous ? Promise.withResolvers<void>() : undefined;
+		const started = reference || previous || ifMissing ? Promise.withResolvers<void>() : undefined;
 		const send = () => {
 			try {
 				return asset
@@ -158,16 +159,34 @@ export class MediaManager {
 		};
 		// Capture a projected thumbnail before its metadata disappears. A later history action
 		// only waits for the earlier request to be sent, even if its response is delayed.
-		const write = () => reference && removedAsset
-			? storageService.captureRemovedThumbnail(removedAsset, pending?.asset?.file === removedAsset.file).then(send, send)
-			: send();
-		const done = (previous ? previous.then(write) : write()).finally(() => {
+		const write = (): Promise<void> => {
+			if (asset && ifMissing) {
+				// Another tab may have removed the bytes meanwhile. Later writes wait for this check, and a
+				// later write (a Redo) replaces the upload.
+				return storageService.hasStoredMediaAsset({ projectId, id, signal: AbortSignal.timeout(10_000) })
+					.catch(() => false)
+					.then((stored) => stored || projectWrites.get(id)?.done !== done ? started?.resolve() : send());
+			}
+			return reference && removedAsset
+				? storageService.captureRemovedThumbnail(removedAsset, pending?.asset?.file === removedAsset.file).then(send, send)
+				: send();
+		};
+		const done: Promise<void> = (previous ? previous.then(write) : write()).finally(() => {
 			if (projectWrites.get(id)?.done === done) projectWrites.delete(id);
 			if (!projectWrites.size && this.binWrites.get(projectId) === projectWrites) this.binWrites.delete(projectId);
 		});
 		projectWrites.set(id, { asset, done, started: started?.promise });
-		if (this.loadingBinChanges?.projectId === projectId) this.loadingBinChanges.changes.set(id, asset);
 		return done;
+	}
+
+	/**
+	 * A bin change of `id` is decided, though its write may follow later: a late import response must not
+	 * republish it, and a project media load still running must not bring back the old entry.
+	 */
+	markBinChanged({ projectId, id, asset }: { projectId: string; id: string; asset: MediaAsset | null }): void {
+		const publication = this.pendingPublications.get(id);
+		if (publication) publication.binChanged = true;
+		if (this.loadingBinChanges?.projectId === projectId) this.loadingBinChanges.changes.set(id, asset);
 	}
 
 	async settleBinWrites(projectId: string): Promise<void> {
