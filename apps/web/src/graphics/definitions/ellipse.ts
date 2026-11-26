@@ -1,6 +1,6 @@
 import type { ParamDefinition } from "@/params";
 import { applyAlignedStroke } from "../stroke";
-import { STROKE_ALIGN_PARAM, type GraphicStrokeAlign } from "./shared";
+import { STROKE_ALIGN_PARAM, strokeInset, type GraphicStrokeAlign } from "./shared";
 import type { GraphicDefinition } from "../types";
 
 interface EllipseParams {
@@ -49,7 +49,7 @@ export const ellipseGraphicDefinition: GraphicDefinition = {
 		const stroke = String(params.stroke ?? "#000000");
 		const strokeWidth = Math.max(0, Number(params.strokeWidth ?? 0));
 		const strokeAlign = (params.strokeAlign ?? "center") as GraphicStrokeAlign;
-		const inset = strokeAlign === "center" ? strokeWidth / 2 : 0;
+		const inset = strokeInset({ strokeAlign, strokeWidth });
 		const centerX = width / 2;
 		const centerY = height / 2;
 		const radiusX = Math.max(1, width / 2 - inset);

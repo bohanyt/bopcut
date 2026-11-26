@@ -1,6 +1,6 @@
 import type { ParamDefinition } from "@/params";
 import { applyAlignedStroke } from "../stroke";
-import { STROKE_ALIGN_PARAM, type GraphicStrokeAlign } from "./shared";
+import { STROKE_ALIGN_PARAM, strokeInset, type GraphicStrokeAlign } from "./shared";
 import type { GraphicDefinition } from "../types";
 
 interface StarParams {
@@ -73,7 +73,7 @@ export const starGraphicDefinition: GraphicDefinition = {
 		const strokeAlign = (params.strokeAlign ?? "center") as GraphicStrokeAlign;
 		const points = Math.max(3, Math.min(12, Math.round(Number(params.points ?? 5))));
 		const depth = Math.max(1, Math.min(99, Number(params.depth ?? 45))) / 100;
-		const inset = strokeAlign === "center" ? strokeWidth / 2 : 0;
+		const inset = strokeInset({ strokeAlign, strokeWidth });
 		const outerRadius = Math.max(1, Math.min(width, height) / 2 - inset);
 		const innerRadius = outerRadius * depth;
 		const centerX = width / 2;
