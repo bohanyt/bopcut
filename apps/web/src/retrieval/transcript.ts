@@ -47,6 +47,8 @@ function chooseTracks(info: Metadata, language?: string) {
 		.sort((a, b) => rank(a) - rank(b));
 }
 
+const MAX_CAPTION_BYTES = 32 * 1024 * 1024;
+
 function readCaptionTrack(
 	info: Metadata, track: Track, duration: number | undefined, deps: Deps, signal: AbortSignal | undefined,
 	run: (args: string[], signal: AbortSignal) => Promise<string>,
@@ -64,7 +66,10 @@ function readCaptionTrack(
 			if (format.url) await assertPublicUrl(format.url, deps.env, undefined, activeSignal);
 			await run(flags, activeSignal);
 			const file = path.join(scratch, `captions.${key}.${format.ext}`);
-			if ((await fs.stat(file)).size > 32 * 1024 * 1024) return;
+			if ((await fs.stat(file)).size > MAX_CAPTION_BYTES) {
+				// Said in the final message, so the caller knows why this track gave nothing.
+				return { cues: [], warnings: [`The ${origin === "creator" ? "creator" : "automatic"} captions in ${track.language} are larger than 32 MB and were not read.`] };
+			}
 			return parseCaptions(await fs.readFile(file, "utf8"), format.ext, origin === "auto", duration);
 		} catch (error) {
 			checkCancelled(activeSignal, "captions");
