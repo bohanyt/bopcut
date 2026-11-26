@@ -159,37 +159,60 @@ export async function withProjectLock<T>(
 	}
 }
 
-export async function saveMedia(
-	id: string,
-	mediaId: string,
-	metadata: any,
-	body: ReadableStream<Uint8Array>,
-): Promise<string | undefined> {
-	const dir = path.join(projectDir(id), "media");
+type ReceivedMedia = {
+	dir: string;
+	fileName: string;
+	file: string;
+	metaFile: string;
+	/** The streamed bytes, or null when the file was already stored and the body was not read. */
+	temp: string | null;
+};
+
+function mediaPaths(id: string, mediaId: string, metadata: any): Omit<ReceivedMedia, "temp"> {
 	safeId(mediaId);
 	if (
-		metadata.id !== mediaId ||
+		metadata?.id !== mediaId ||
 		typeof metadata.fileName !== "string" ||
 		typeof metadata.fileType !== "string"
 	)
 		throw new Error("Invalid metadata");
-	await fs.mkdir(dir, { recursive: true });
+	const dir = path.join(projectDir(id), "media");
 	const ext = path.extname(metadata.fileName).toLowerCase();
 	const suffix = /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : ".bin";
 	const fileName = `${mediaId}${suffix}`;
-	const file = path.join(dir, fileName);
-	const metaFile = path.join(dir, "_metadata", `${mediaId}.json`);
-	const old = await readJson(metaFile);
-	if (old) {
-		const diskFile = old.diskFile;
-		if (typeof diskFile === "string" && new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(diskFile)) {
-			if (await statFile(path.join(dir, diskFile))) return;
-		}
-		// A repeat upload can repair missing bytes without replacing the saved metadata.
-		if (diskFile !== fileName || (old.fileType && old.fileType !== metadata.fileType))
-			throw new Error("Upload does not match the saved media");
+	return { dir, fileName, file: path.join(dir, fileName), metaFile: path.join(dir, "_metadata", `${mediaId}.json`) };
+}
+
+/** True when the media is already stored. Throws when an upload under this ID does not match it. */
+async function isMediaStored(paths: Omit<ReceivedMedia, "temp">, mediaId: string, metadata: any, old: any): Promise<boolean> {
+	if (!old) return false;
+	const diskFile = old.diskFile;
+	if (typeof diskFile === "string" && new RegExp(`^${mediaId}\\.[a-z0-9]{1,10}$`).test(diskFile)) {
+		if (await statFile(path.join(paths.dir, diskFile))) return true;
 	}
-	const temp = path.join(dir, `${mediaId}.${randomUUID()}.tmp`);
+	// A repeat upload can repair missing bytes without replacing the saved metadata.
+	if (diskFile !== paths.fileName || (old.fileType && old.fileType !== metadata.fileType))
+		throw new Error("Upload does not match the saved media");
+	return false;
+}
+
+/**
+ * Streams an upload to a temporary file outside the project folder, without the project lock, so a
+ * large or stalled upload does not hold up the project's saves. A file that is already stored is
+ * not read again. Pass the result to commitMedia under the lock, then to discardReceivedMedia.
+ */
+export async function receiveMedia(
+	id: string,
+	mediaId: string,
+	metadata: any,
+	body: ReadableStream<Uint8Array>,
+): Promise<ReceivedMedia> {
+	const paths = mediaPaths(id, mediaId, metadata);
+	if (await isMediaStored(paths, mediaId, metadata, await readJson(paths.metaFile))) return { ...paths, temp: null };
+	// Same volume as the projects, so the commit is a rename; never inside a project that may be deleted meanwhile.
+	const uploads = path.join(dataRoot(), "uploads");
+	await fs.mkdir(uploads, { recursive: true });
+	const temp = path.join(uploads, `${safeId(id)}.${mediaId}.${randomUUID()}.tmp`);
 	try {
 		await pipeline(
 			Readable.fromWeb(
@@ -197,24 +220,60 @@ export async function saveMedia(
 			),
 			createWriteStream(temp, { flags: "wx" }),
 		);
-		await renameWithRetry(temp, file);
-		if (!old) {
-			try {
-				await atomicWrite(
-					metaFile,
-					JSON.stringify({ ...metadata, diskFile: fileName }),
-				);
-			} catch (error) {
-				// Without metadata the file is unreachable: do not leave it behind.
-				await fs.rm(file, { force: true });
-				throw error;
-			}
-		}
-		await removeRepairedThumbnail(id, mediaId);
-		const stat = await statFile(file);
-		return stat ? mediaRevision(stat) : undefined;
-	} finally {
+	} catch (error) {
 		await fs.rm(temp, { force: true });
+		throw error;
+	}
+	return { ...paths, temp };
+}
+
+/** Moves a received upload into the project and writes its metadata. Run it under the project lock. */
+export async function commitMedia(
+	id: string,
+	mediaId: string,
+	metadata: any,
+	received: ReceivedMedia,
+): Promise<string | undefined> {
+	const { dir, fileName, file, metaFile, temp } = received;
+	const old = await readJson(metaFile);
+	if (await isMediaStored(received, mediaId, metadata, old)) return;
+	// The stored file was removed while this request skipped its body: the client sends it again.
+	if (!temp) throw new Error("Upload does not match the saved media");
+	await fs.mkdir(path.dirname(metaFile), { recursive: true });
+	await renameWithRetry(temp, file);
+	if (!old) {
+		try {
+			await atomicWrite(
+				metaFile,
+				JSON.stringify({ ...metadata, diskFile: fileName }),
+			);
+		} catch (error) {
+			// Without metadata the file is unreachable: do not leave it behind.
+			await fs.rm(file, { force: true });
+			throw error;
+		}
+	}
+	await removeRepairedThumbnail(id, mediaId);
+	const stat = await statFile(path.join(dir, fileName));
+	return stat ? mediaRevision(stat) : undefined;
+}
+
+export async function discardReceivedMedia(received: ReceivedMedia): Promise<void> {
+	if (received.temp) await fs.rm(received.temp, { force: true });
+}
+
+/** Receive and commit in one step, for callers that already hold the project lock or need no lock. */
+export async function saveMedia(
+	id: string,
+	mediaId: string,
+	metadata: any,
+	body: ReadableStream<Uint8Array>,
+): Promise<string | undefined> {
+	const received = await receiveMedia(id, mediaId, metadata, body);
+	try {
+		return await commitMedia(id, mediaId, metadata, received);
+	} finally {
+		await discardReceivedMedia(received);
 	}
 }
 
