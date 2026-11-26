@@ -36,6 +36,12 @@
 
 Butuh [Bun](https://bun.sh); `ffmpeg` di PATH dipakai untuk mengubah GIF menjadi video. Untuk mengambil potongan video dari link, pasang juga [yt-dlp](https://github.com/yt-dlp/yt-dlp) (pengaturannya ada di `AGENT.md`). Tidak perlu akun, database, atau Docker.
 
+Jika `apps/web/.env.local` belum ada, salin `apps/web/.env.example` ke lokasi itu untuk build produksi lokal. Jalankan `bun --no-env-file script/start-local.mjs` dari repositori. Di Windows, Anda juga bisa menjalankan `script\start-local.cmd`. Peluncur memeriksa pembaruan fast-forward ke `origin/main` saat port editor kosong dan checkout bersih. Versi baru dibangun dan dijalankan sebelum checkout diperbarui. Jika pembaruan gagal, peluncur menjalankan hasil build untuk commit saat ini. Tambahkan `--no-update` atau atur `BOPENCUT_AUTO_UPDATE=0` untuk tetap memakai versi saat ini. Gunakan `--port=3100` untuk memilih port loopback lain.
+
+Hasil pembaruan dicatat di `.bopencut-updates.jsonl` di samping folder data. Peluncur memberi peringatan jika pembaruan mengubah migrasi proyek, karena proyek yang dimigrasikan mungkin memerlukan editor versi baru di komputer lain.
+
+Untuk pengembangan tanpa pembaruan otomatis:
+
 ```
 bun install
 cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000

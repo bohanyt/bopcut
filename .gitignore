@@ -30,3 +30,4 @@ rust-migration-notes.md
 workspace/
 .render-browser/
 .render-jobs/
+.bopencut-updates.jsonl
