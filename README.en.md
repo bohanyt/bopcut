@@ -15,6 +15,7 @@
 - **Two-way notes.** Leave a note on a range or an item, or draw a box on the preview. The agent can read, reply to, and resolve it.
 - **Frame images.** The agent can request an image of a frame at any time.
 - **Review a range.** Read saved words with `transcript-view`, preview a voice-over replacement with `narration-plan`, or use `view` to make a PNG with frames, audio peaks, words, and clip edges. The editor can stay closed. [Agent CLI](AGENT.md#agent-cli)
+- **Cut dead air and filler sounds.** `silence-plan` proposes frame-exact cuts for pauses and sounds like "umm" from the stored words, never through speech without words, ready to apply as one Undo step. [Agent CLI](AGENT.md#agent-cli)
 - **Review a finished export.** The agent can check the actual file and saved timeline, with time-stamped findings and filmstrips as evidence. [Agent CLI](AGENT.md#agent-cli)
 - **Draft narration with your own voice tool.** Point `BOPENCUT_TTS` at any text-to-speech command, and `voice` saves each line as a WAV with word timings, ready for the timeline, word cuts, and captions. No voice engine is bundled. [Agent CLI](AGENT.md#agent-cli)
 - **Fetch a video segment from a link.** Give a link and start and end times, such as a 20-second segment from a three-hour stream. yt-dlp fetches just that segment with frame-accurate cuts. Use an agent draft, the CLI, or the link button in the Assets panel.

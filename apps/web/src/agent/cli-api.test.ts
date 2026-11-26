@@ -104,6 +104,39 @@ test("transcript view reads the saved root and media without a workspace snapsho
 	}
 });
 
+test("silence-plan reads the saved timeline and returns frame-exact cut ops, last first", async () => {
+	const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "agent-cli-silence-"));
+	const data = process.env.BOPENCUT_DATA;
+	process.env.BOPENCUT_DATA = workspace;
+	const call = (query: Record<string, string>) => handleCli(new Request(
+		`http://127.0.0.1:3100/api/agent/cli/silence-plan?${new URLSearchParams(query)}`), "silence-plan", workspace);
+	try {
+		const project = path.join(workspace, "projects", "demo");
+		const metadata = path.join(project, "media", "_metadata");
+		await fs.mkdir(metadata, { recursive: true });
+		const [root] = fixture();
+		root.tracks.main.elements = [];
+		root.tracks.overlay = [];
+		const { params: _params, ...clip } = audio("voice", 0, 8);
+		const tracks = { ...root.tracks, audio: [{ ...root.tracks.audio[0], elements: [clip] }] };
+		await fs.writeFile(path.join(project, "project.json"), JSON.stringify({ version: CURRENT_PROJECT_VERSION,
+			metadata: { id: "demo", name: "Saved fixture" }, scenes: [{ ...root, tracks }], currentSceneId: root.id }));
+		await fs.writeFile(path.join(metadata, "media-voice.json"), JSON.stringify({ name: "Recording", duration: 8,
+			words: [{ text: "hello", start: 1, end: 2 }, { text: "world", start: 3, end: 4 }] }));
+		const result = await (await call({ projectId: "demo" })).json();
+		expect(result.ops).toEqual([{ op: "cut", start: 63 / 30, end: 87 / 30 }, { op: "cut", start: 0, end: 27 / 30 }]);
+		expect(result.cuts.map(({ kind }: { kind: string }) => kind)).toEqual(["lead", "gap"]);
+		expect((await (await call({ projectId: "demo", lead: "0", minGap: "1.5" })).json()).ops).toEqual([]);
+		expect((await call({ projectId: "demo", pad: "-1" })).status).toBe(400);
+		expect((await call({})).status).toBe(400);
+		expect(await fs.readdir(workspace)).toEqual(["projects"]);
+	} finally {
+		if (data === undefined) delete process.env.BOPENCUT_DATA;
+		else process.env.BOPENCUT_DATA = data;
+		await fs.rm(workspace, { recursive: true, force: true });
+	}
+});
+
 test("a chosen project reads its own snapshot even when the last synced snapshot is unreadable", async () => {
 	const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "agent-cli-own-"));
 	const data = process.env.BOPENCUT_DATA;

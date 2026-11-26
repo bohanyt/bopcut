@@ -11,7 +11,7 @@ import { isHttpUrl, parseTime } from "../src/retrieval/time";
 import { runRender } from "./agent-render";
 import { loadEnvLocal } from "./retrieval-cli";
 
-const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check", "voice"] as const;
+const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check", "voice", "silence-plan"] as const;
 type Command = typeof commands[number];
 const usage = `Use: bun run agent <${commands.join("|")}> [--project-id ID] [--timeout SECONDS]`;
 const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
@@ -44,6 +44,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 				"freeze-seconds": { type: "string" }, "outlier-distance": { type: "string" },
 			}),
 			...(command === "transcript-view" && { media: { type: "string" }, timeline: { type: "boolean" } }),
+			...(command === "silence-plan" && { "min-gap": { type: "string" }, pad: { type: "string" }, "keep-fillers": { type: "boolean" },
+				"keep-lead": { type: "boolean" }, tail: { type: "boolean" }, "ignore-media": { type: "string" } }),
 			...(command === "narration-plan" && { clip: { type: "string" }, "new-media": { type: "string" },
 				json: { type: "boolean" }, from: { type: "string" }, to: { type: "string" }, all: { type: "boolean" } }),
 			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
@@ -133,6 +135,17 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
 		throw new Error("Set --url to the local editor origin, for example http://127.0.0.1:3000.");
 	}
+	if (command === "silence-plan" && !projectId) {
+		throw new Error("Use silence-plan --project-id ID [--min-gap SECONDS] [--pad SECONDS] [--keep-fillers] [--keep-lead] [--tail] [--ignore-media NAME,...].");
+	}
+	const silence = command === "silence-plan" ? {
+		...(typeof values["min-gap"] === "string" && { minGap: values["min-gap"] }),
+		...(typeof values.pad === "string" && { pad: values.pad }),
+		...(values["keep-fillers"] === true && { fillers: "0" }),
+		...(values["keep-lead"] === true && { lead: "0" }),
+		...(values.tail === true && { tail: "1" }),
+		...(typeof values["ignore-media"] === "string" && { ignore: values["ignore-media"] }),
+	} : undefined;
 	const narration = command === "narration-plan" ? { clip: values.clip, newMedia: values["new-media"],
 		json: values.json === true, from: values.from, to: values.to, all: values.all === true } : undefined;
 	if (narration && (!projectId || typeof narration.clip !== "string" || !/^[\w-]{1,128}$/.test(narration.clip) ||
@@ -162,7 +175,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		request = parseFrameInput({ times, elements, noteId: values.note, sceneId: values["scene-id"], width: values.width === undefined ? undefined : Number(values.width), allowMissing });
 	}
 	return { command: command as Exclude<Command, "transcript" | "review" | "draft-check" | "voice">, projectId, timeoutMs, origin: url.origin,
-		...(media !== undefined && { media }), ...(request && { request }), ...(narration && { narration }) };
+		...(media !== undefined && { media }), ...(request && { request }), ...(narration && { narration }), ...(silence && { silence }) };
 }
 
 async function transcriptCommand(request: TranscriptRequest, timeoutMs: number) {
@@ -269,6 +282,7 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 	const target = new URL(`/api/agent/cli/${request ? "render" : command}`, origin);
 	if (projectId) target.searchParams.set("projectId", projectId);
 	if (options.media !== undefined) target.searchParams.set("media", options.media);
+	for (const [key, value] of Object.entries(options.silence ?? {})) target.searchParams.set(key, value);
 	if (options.narration) {
 		target.searchParams.set("clip", String(options.narration.clip));
 		target.searchParams.set("newMedia", String(options.narration.newMedia));

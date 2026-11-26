@@ -9,6 +9,8 @@ import { TICKS_PER_SECOND } from "@/wasm";
 import { fileInside } from "./inside";
 import { getRootScene } from "./scene-graph";
 import { packTranscript, sourceTranscript, timelineTranscript, type TranscriptMedia } from "./packed-transcript";
+import { planSilenceCuts, type SilenceOptions } from "./silence-plan";
+import { frameRateToFloat } from "@/fps/utils";
 
 function transcriptScenes(project: SerializedProject): TScene[] {
 	const malformed = (field: string) => new Error(`The saved project has invalid ${field}. Open it in the editor and save it again.`);
@@ -95,4 +97,16 @@ export async function readTranscriptView(projectId: string, name: string | null,
 	if (!root) throw new Error("No timeline was saved for this project.");
 	return packTranscript(timelineTranscript(root, scenes, media), "timeline",
 		calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND);
+}
+
+/** Dead-air and filler cuts for the saved root timeline, from the words stored with its media. */
+export async function readSilencePlan(projectId: string, options: SilenceOptions, signal: AbortSignal) {
+	const { project, root, scenes, media } = await readReviewableProject(projectId, signal);
+	if (!root) throw new Error("No timeline was saved for this project.");
+	const rate: unknown = project.settings?.fps;
+	const fps = typeof rate === "number" && rate > 0 ? rate
+		: isRecord(rate) && typeof rate.numerator === "number" && typeof rate.denominator === "number" && rate.numerator > 0 && rate.denominator > 0
+			? frameRateToFloat({ numerator: rate.numerator, denominator: rate.denominator }) : 30;
+	return planSilenceCuts({ clips: timelineTranscript(root, scenes, media, { groupWords: false }),
+		duration: calculateTotalDuration({ tracks: root.tracks }) / TICKS_PER_SECOND, fps, options });
 }
