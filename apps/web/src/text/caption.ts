@@ -112,27 +112,42 @@ export function editCaptionText(
 ): CaptionData {
 	const tokens = captionTokens(text);
 	const old = caption.words;
-	const table = Array.from(
-		{ length: old.length + 1 },
-		() => new Uint32Array(tokens.length + 1),
-	);
-	for (let i = old.length - 1; i >= 0; i--) {
-		for (let j = tokens.length - 1; j >= 0; j--) {
-			table[i][j] =
-				matchKey(old[i].text) === matchKey(tokens[j])
-					? 1 + table[i + 1][j + 1]
-					: Math.max(table[i + 1][j], table[i][j + 1]);
-		}
-	}
+	// Runs on every keystroke: normalize each word once and compare numbers in the table.
+	const keys = new Map<string, number>();
+	const keyOf = (word: string) => {
+		const key = matchKey(word);
+		let id = keys.get(key);
+		if (id === undefined) keys.set(key, (id = keys.size));
+		return id;
+	};
+	const oldKeys = Uint32Array.from(old, (word) => keyOf(word.text));
+	const newKeys = Uint32Array.from(tokens, keyOf);
 	const words: (CaptionWord | undefined)[] = tokens.map(() => undefined);
+	// The walk below matches equal words as soon as it meets them, so a shared start needs no table.
 	let i = 0;
 	let j = 0;
+	while (i < old.length && j < tokens.length && oldKeys[i] === newKeys[j]) {
+		words[j] = { ...old[i], text: tokens[j] };
+		i++;
+		j++;
+	}
+	const offset = i;
+	const columns = tokens.length - offset + 1;
+	const table = Array.from({ length: old.length - offset + 1 }, () => new Uint32Array(columns));
+	for (let row = old.length - 1; row >= offset; row--) {
+		const here = table[row - offset];
+		const below = table[row - offset + 1];
+		for (let column = tokens.length - 1; column >= offset; column--) {
+			const at = column - offset;
+			here[at] = oldKeys[row] === newKeys[column] ? 1 + below[at + 1] : Math.max(below[at], here[at + 1]);
+		}
+	}
 	while (i < old.length && j < tokens.length) {
-		if (matchKey(old[i].text) === matchKey(tokens[j])) {
+		if (oldKeys[i] === newKeys[j]) {
 			words[j] = { ...old[i], text: tokens[j] };
 			i++;
 			j++;
-		} else if (table[i + 1][j] >= table[i][j + 1]) i++;
+		} else if (table[i + 1 - offset][j - offset] >= table[i - offset][j + 1 - offset]) i++;
 		else j++;
 	}
 	for (let from = 0; from < words.length; ) {
