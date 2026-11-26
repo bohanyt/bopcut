@@ -269,7 +269,7 @@ test("a late codec support result cannot initialize an audio encoder after cance
 
 describe("export requests", () => {
 	test("defaults and checks", () => {
-		expect(parseExportRequest({ rev: "e1" })).toEqual({ rev: "e1", format: "mp4", quality: "high", includeAudio: true, allowMissing: false });
+		expect(parseExportRequest({ rev: "e1" })).toEqual({ rev: "e1", format: "mp4", quality: "very_high", includeAudio: true, allowMissing: false });
 		expect(parseExportRequest({ rev: "e2", format: "webm", quality: "very_high", fps: 60, includeAudio: false, name: "final", projectId: "p" })).toMatchObject({ format: "webm", fps: 60, includeAudio: false, name: "final", projectId: "p" });
 		expect(parseExportRequest({ rev: "e3", format: "mov" })).toContain("format");
 		expect(parseExportRequest({ rev: "e4", fps: 0 })).toContain("fps");
@@ -1446,7 +1446,7 @@ describe("the export poller", () => {
 			await pollExport();
 			await pollExport(); // once per rev
 			expect(log.exports.length).toBe(1);
-			expect(log.exports[0].options).toMatchObject({ format: "mp4", quality: "high", includeAudio: true, sceneId: "main" });
+			expect(log.exports[0].options).toMatchObject({ format: "mp4", quality: "very_high", includeAudio: true, sceneId: "main" });
 			expect(log.uploads).toBe(1);
 			expect(log.posts[0]).toMatchObject({ rev: "e1", projectId: "p", status: "exporting", progress: 0 });
 			expect(await log.result()).toMatchObject({ rev: "e1", projectId: "p", status: "done", file: "exports/final.mp4", bytes: 10, width: 1080, height: 1920, fps: 30, duration: 2 });
