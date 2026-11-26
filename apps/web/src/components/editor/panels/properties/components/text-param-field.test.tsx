@@ -120,6 +120,22 @@ describe("text in the properties panel", () => {
 		expect(editor.command.canUndo()).toBe(false);
 	});
 
+	test("Escape drops what was typed and its preview, without an Undo step", async () => {
+		const before = contents();
+		await type("!");
+		expect(editor.timeline.isPreviewActive()).toBe(true);
+		await act(async () => { field().dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+		await act(async () => { field().dispatchEvent(new dom.FocusEvent("focusout", { bubbles: true })); });
+		expect(editor.timeline.isPreviewActive()).toBe(false);
+		expect(contents()).toEqual(before);
+		expect(field().value).toBe(String(before[0]));
+		expect(editor.command.canUndo()).toBe(false);
+		// The next edit is written as usual.
+		await type("?");
+		await act(async () => { field().dispatchEvent(new dom.FocusEvent("focusout", { bubbles: true })); });
+		expect(contents()[0]).toBe(`${before[0]}?`);
+	});
+
 	test("without typing adds no Undo step", async () => {
 		await act(async () => { field().dispatchEvent(new dom.FocusEvent("focusout", { bubbles: true })); });
 		expect(editor.command.canUndo()).toBe(false);

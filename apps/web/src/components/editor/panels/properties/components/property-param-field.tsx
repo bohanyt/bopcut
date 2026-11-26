@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { useI18n } from "@/i18n/provider";
 import type {
 	ParamDefinition,
@@ -194,7 +194,9 @@ function TextParamField({
 	onPreview: (value: string) => void;
 	onCommit: () => void;
 }) {
+	const { timeline } = useEditor();
 	const [draft, setDraft] = useState<string | null>(null);
+	const cancelled = useRef(false);
 	const unmount = useCommittedRef(() => {
 		if (draft !== null) onCommit();
 	});
@@ -208,8 +210,17 @@ function TextParamField({
 			setDraft(currentTarget.value);
 			onPreview(currentTarget.value);
 		},
+		/** Escape leaves the field without committing: the blur that follows drops the edit. */
+		onKeyDown: ({ key }: KeyboardEvent) => {
+			if (key === "Escape") cancelled.current = true;
+		},
 		onBlur: () => {
-			onCommit();
+			if (cancelled.current) {
+				cancelled.current = false;
+				if (draft !== null) timeline.discardPreview();
+			} else {
+				onCommit();
+			}
 			setDraft(null);
 		},
 	};
