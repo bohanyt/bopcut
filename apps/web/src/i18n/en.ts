@@ -499,6 +499,7 @@ export const en = {
 
 	"properties.addEffectsHint": "Add effects to this layer from the Assets panel.",
 	"properties.addMask": "Add mask",
+	"properties.addStroke": "Add stroke",
 	"properties.animation": "Animation",
 	"properties.animationHint": "Drawn on top of the clip's own keyframes; on a short clip both are shortened to fit.",
 	"properties.animationIn": "In",
@@ -535,6 +536,8 @@ export const en = {
 	"properties.moveEffectUp": "Move {name} up",
 	"properties.removeEffect": "Remove {name}",
 	"properties.removeMask": "Remove {name} mask",
+	"properties.removeMaskPoints": "Delete selected points",
+	"properties.removeStroke": "Remove stroke",
 	"properties.selected": "{count} elements selected.",
 	"properties.spacing": "Spacing",
 	"properties.speed": "Speed",
