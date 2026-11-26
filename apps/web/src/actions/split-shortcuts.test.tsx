@@ -65,8 +65,8 @@ function clips() {
 	return parts;
 }
 
-async function press(key: string, target: { dispatchEvent(event: unknown): boolean } = dom.document.body) {
-	await act(async () => { target.dispatchEvent(new dom.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
+async function press(key: string, target: { dispatchEvent(event: unknown): boolean } = dom.document.body, repeat = false) {
+	await act(async () => { target.dispatchEvent(new dom.KeyboardEvent("keydown", { key, repeat, bubbles: true, cancelable: true })); });
 }
 async function select(...elements: ElementRef[]) {
 	await act(async () => { editor.selection.setSelectedElements({ elements }); });
@@ -151,6 +151,16 @@ describe("split shortcuts", () => {
 		await press("s");
 		expect(clips()).toEqual({ title: [[0, 1], [1, 4]], bg: [[0, 1], [1, 4]], next: [[4, 8]], music: [[0, 1], [1, 4]] });
 		expect(selectedNames().sort()).toEqual(["next@4", "title@1"]);
+	});
+
+	test.each(["s", "w"])("a held %s splits once, also while the playhead moves", async (key) => {
+		await select(bg);
+		await press(key);
+		const once = clips();
+		await act(async () => { editor.playback.seek({ time: t(2) }); });
+		await select(...editor.selection.getSelectedElements());
+		await press(key, dom.document.body, true);
+		expect(clips()).toEqual(once);
 	});
 
 	test("typing in a field splits nothing", async () => {

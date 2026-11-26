@@ -4,11 +4,18 @@ import { useEditor } from "@/editor/use-editor";
 import { useKeybindingsStore } from "@/actions/keybindings-store";
 import { isTypableDOMElement } from "@/utils/browser";
 
+/** Edits that run once per key press: a held key's repeats would repeat the edit. */
+const ONE_SHOT_ACTIONS: ReadonlySet<string> = new Set([
+	"record-voice-over", "split", "split-selected", "split-left", "split-right", "delete-selected",
+	"duplicate-selected", "paste-copied", "create-compound", "break-apart-compound",
+]);
+
 /**
  * a composable that hooks to the caller component's
  * lifecycle and hooks to the keyboard events to fire
  * the appropriate actions based on keybindings
  */
+
 export function useKeybindingsListener() {
 	const editor = useEditor();
 	const {
@@ -79,7 +86,8 @@ export function useKeybindingsListener() {
 					invokeAction("jump-backward", { seconds: 5 }, "keypress");
 					break;
 				default:
-					if (ev.repeat && boundAction === "record-voice-over") break;
+					// A held key repeats: one-shot edits run once per press (playback moves the playhead between repeats).
+					if (ev.repeat && ONE_SHOT_ACTIONS.has(boundAction)) break;
 					invokeAction(boundAction, undefined, "keypress");
 			}
 		};
