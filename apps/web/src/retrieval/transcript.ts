@@ -62,13 +62,24 @@ function readCaptionTrack(
 		const template = path.join(scratch, "captions.%(ext)s");
 		const flags = [origin === "creator" ? "--write-subs" : "--write-auto-subs", "--load-info-json", infoFile,
 			"--sub-langs", "all", "--sub-format", format.ext, "--no-simulate", "-o", template, "-o", "subtitle:" + template];
+		const label = `${origin === "creator" ? "creator" : "automatic"} captions in ${track.language}`;
+		if (format.url) {
+			try {
+				await assertPublicUrl(format.url, deps.env, undefined, activeSignal);
+			} catch (error) {
+				if (error instanceof Cancelled || !(error instanceof RetrievalError)) throw error;
+				// Named in the final message: a caption host that only a proxy resolves is refused, not "unavailable".
+				const host = new URL(format.url).hostname;
+				const reason = error.message.includes(host) ? error.message : `${error.message} (${host})`;
+				return { cues: [], warnings: [`The ${label} were not read: ${reason}.`] };
+			}
+		}
 		try {
-			if (format.url) await assertPublicUrl(format.url, deps.env, undefined, activeSignal);
 			await run(flags, activeSignal);
 			const file = path.join(scratch, `captions.${key}.${format.ext}`);
 			if ((await fs.stat(file)).size > MAX_CAPTION_BYTES) {
 				// Said in the final message, so the caller knows why this track gave nothing.
-				return { cues: [], warnings: [`The ${origin === "creator" ? "creator" : "automatic"} captions in ${track.language} are larger than 32 MB and were not read.`] };
+				return { cues: [], warnings: [`The ${label} are larger than 32 MB and were not read.`] };
 			}
 			return parseCaptions(await fs.readFile(file, "utf8"), format.ext, origin === "auto", duration);
 		} catch (error) {

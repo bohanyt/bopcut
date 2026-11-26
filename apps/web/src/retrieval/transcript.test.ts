@@ -108,6 +108,17 @@ test("automatic VTT is requested only when JSON3 is absent", async () => {
 	expect(calls[1]).toContain("json3");
 });
 
+test("a caption track whose host is refused is named with the host and the reason", async () => {
+	metadata.subtitles = {};
+	metadata.automatic_captions = { en: [{ ext: "json3", url: "http://127.0.0.1:8080/captions" }] };
+	// A public IP literal needs no DNS lookup, so the video link passes without network access.
+	const run = get({ url: "https://93.184.216.34/watch?v=example_id1" }, undefined, runner, "0");
+	await expect(run).rejects.toThrow(
+		/captions unavailable.*The automatic captions in en were not read: links to this machine or the local network are not fetched .*\(127\.0\.0\.1\)\./,
+	);
+	expect(calls).toHaveLength(1);
+});
+
 test("a caption track over 32 MB is named in the unavailable message", async () => {
 	const realStat = fs.stat.bind(fs);
 	const stat = spyOn(fs, "stat").mockImplementation(async (target) => {
