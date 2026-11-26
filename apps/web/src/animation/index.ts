@@ -12,6 +12,7 @@ export {
 	getChannel,
 	removeElementKeyframe,
 	retimeElementKeyframes,
+	scaleAnimationTimes,
 	setBindingComponentChannel,
 	setChannel,
 	splitAnimationsAtTime,

@@ -73,6 +73,33 @@ describe("applyElementUpdate", () => {
 		expect(updatedElement.duration).toBe(mediaTime({ ticks: 7 }));
 		expect(Number.isInteger(updatedElement.duration)).toBe(true);
 	});
+
+	test("a speed change keeps keys on the same footage, handles included", () => {
+		const key = (id: string, ticks: number, value: number) => ({
+			id, time: mediaTime({ ticks }), value, segmentToNext: "bezier" as const, tangentMode: "broken" as const,
+			leftHandle: { dt: mediaTime({ ticks: -400 }), dv: 0 }, rightHandle: { dt: mediaTime({ ticks: 400 }), dv: 0 },
+		});
+		const element = buildVideoElement({
+			duration: mediaTime({ ticks: 4000 }),
+			sourceDuration: mediaTime({ ticks: 4000 }),
+			animations: { opacity: { keys: [key("a", 0, 0), key("b", 2000, 1), key("c", 4000, 0)] } },
+		});
+		const tracks = buildTracks(element);
+		const retime = (from: VideoElement, rate: number) => applyElementUpdate({
+			element: from, patch: { retime: { rate } }, context: { tracks, trackId: tracks.main.id },
+		}) as VideoElement;
+		type Key = { time: number; leftHandle?: { dt: number }; rightHandle?: { dt: number } };
+		const keys = (from: VideoElement) => (from.animations?.opacity as { keys: Key[] }).keys
+			.map(({ time, leftHandle, rightHandle }) => [time, leftHandle?.dt, rightHandle?.dt]);
+
+		const fast = retime(element, 2);
+		expect(fast.duration).toBe(mediaTime({ ticks: 2000 }));
+		// Handles at the outer ends lead nowhere and are not stored.
+		expect(keys(fast)).toEqual([[0, undefined, 200], [1000, -200, 200], [2000, -200, undefined]]);
+		const back = retime(fast, 1);
+		expect(back.duration).toBe(mediaTime({ ticks: 4000 }));
+		expect(keys(back)).toEqual([[0, undefined, 400], [2000, -400, 400], [4000, -400, undefined]]);
+	});
 });
 
 test("group trim stops at the gap between selected clips on one track", () => {
