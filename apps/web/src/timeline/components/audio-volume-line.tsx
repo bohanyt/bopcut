@@ -62,7 +62,17 @@ export function AudioVolumeLine({
 	const { t } = useI18n();
 	const editor = useEditor();
 	const surfaceRef = useRef<HTMLDivElement>(null);
-	const drag = useRef<{ pointerId: number; owner: PreviewGesture } | null>(null);
+	/**
+	 * The clip's box is read once when the drag starts. Pointer moves arrive faster than frames are
+	 * drawn: the latest one waits in `pending` and is applied once per animation frame.
+	 */
+	const drag = useRef<{
+		pointerId: number;
+		owner: PreviewGesture;
+		rect: DOMRect;
+		frame: number | null;
+		pending: { clientX: number; clientY: number } | null;
+	} | null>(null);
 	const startVolumeRef = useRef(getElementVolume({ element }));
 	const lastPreviewVolumeRef = useRef(getElementVolume({ element }));
 	const hasChangedRef = useRef(false);
@@ -111,6 +121,7 @@ export function AudioVolumeLine({
 	);
 
 	const resetDrag = useCallback(() => {
+		if (drag.current?.frame != null) cancelAnimationFrame(drag.current.frame);
 		drag.current = null;
 		setIsDragging(false);
 		setTooltipClientPos(null);
@@ -124,7 +135,7 @@ export function AudioVolumeLine({
 
 	const updateFromPointer = useCallback(
 		({ clientX, clientY }: { clientX: number; clientY: number }) => {
-			const rect = surfaceRef.current?.getBoundingClientRect();
+			const rect = drag.current?.rect;
 			if (!rect) {
 				return;
 			}
@@ -137,6 +148,17 @@ export function AudioVolumeLine({
 		},
 		[previewVolume],
 	);
+
+	/** Applies the move that waits for the next frame, if any. */
+	const flushPending = useCallback(() => {
+		const gesture = drag.current;
+		if (!gesture) return;
+		if (gesture.frame !== null) cancelAnimationFrame(gesture.frame);
+		gesture.frame = null;
+		const pending = gesture.pending;
+		gesture.pending = null;
+		if (pending) updateFromPointer(pending);
+	}, [updateFromPointer]);
 
 	const handleClick = useCallback((event: React.MouseEvent) => {
 		event.preventDefault();
@@ -153,6 +175,11 @@ export function AudioVolumeLine({
 				return;
 			}
 
+			const rect = surfaceRef.current?.getBoundingClientRect();
+			if (!rect) {
+				return;
+			}
+
 			event.preventDefault();
 			event.stopPropagation();
 			finishFocusedField(event.currentTarget);
@@ -164,7 +191,7 @@ export function AudioVolumeLine({
 				resetDrag();
 				if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
 			});
-			drag.current = { pointerId, owner };
+			drag.current = { pointerId, owner, rect, frame: null, pending: null };
 			startVolumeRef.current = currentVolume;
 			lastPreviewVolumeRef.current = currentVolume;
 			hasChangedRef.current = false;
@@ -180,17 +207,16 @@ export function AudioVolumeLine({
 
 	const handlePointerMove = useCallback(
 		(event: React.PointerEvent) => {
-			if (drag.current?.pointerId !== event.pointerId) {
+			const gesture = drag.current;
+			if (gesture?.pointerId !== event.pointerId) {
 				return;
 			}
 
 			event.preventDefault();
-			updateFromPointer({
-				clientX: event.clientX,
-				clientY: event.clientY,
-			});
+			gesture.pending = { clientX: event.clientX, clientY: event.clientY };
+			gesture.frame ??= requestAnimationFrame(flushPending);
 		},
-		[updateFromPointer],
+		[flushPending],
 	);
 
 	const handlePointerUp = useCallback(
@@ -202,12 +228,14 @@ export function AudioVolumeLine({
 
 			event.preventDefault();
 			event.stopPropagation();
+			// The last move counts even when its frame has not come yet.
+			flushPending();
 			gesture.owner.finish();
 			resetDrag();
 			if (hasChangedRef.current) editor.timeline.commitPreview();
 			else editor.timeline.discardPreview();
 		},
-		[editor.timeline, resetDrag],
+		[editor.timeline, flushPending, resetDrag],
 	);
 
 	const handlePointerCancel = useCallback(
