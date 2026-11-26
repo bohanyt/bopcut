@@ -262,7 +262,11 @@ export async function inspectDraftPictures({ root, scenes, media, directory, fro
 				const key = JSON.stringify([source.key, shot.still, shot.still ? 0 : shot.from, shot.still ? 0 : shot.to, shot.rate]);
 				const scan = cache.get(key) ?? await scanShot(shot, source.file, temp, path.dirname(directory), options, scanSignal);
 				const after = await fs.stat(source.file);
-				if (after.size !== source.size || after.mtimeMs !== source.mtimeMs) continue;
+				if (after.size !== source.size || after.mtimeMs !== source.mtimeMs) {
+					// The file changed while it was read: later shots fingerprint and decode it again.
+					files.delete(id);
+					continue;
+				}
 				cache.set(key, scan);
 				if (scan.incomplete) report.incompleteWindows++;
 				report.omittedEvents += scan.omittedEvents;
