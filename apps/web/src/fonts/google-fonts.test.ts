@@ -6,13 +6,18 @@ const originals = {
 	Image: Object.getOwnPropertyDescriptor(globalThis, "Image"),
 };
 let requests = 0;
+let images = 0;
 let respond: () => Response | Promise<Response>;
 
 beforeEach(() => {
 	requests = 0;
+	images = 0;
 	clearFontAtlasCache();
 	forgetLoadedFonts();
-	const replacements = { fetch: async () => { requests++; return respond(); }, Image: class { src = ""; } };
+	const replacements = { fetch: async () => { requests++; return respond(); }, Image: class {
+		src = "";
+		constructor() { images++; }
+	} };
 	for (const [key, value] of Object.entries(replacements)) {
 		Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
 	}
@@ -36,6 +41,14 @@ test("concurrent and later requests share one font atlas download", async () => 
 	expect(second).toBe(first);
 	expect(await loadFontAtlas()).toBe(first);
 	expect(requests).toBe(1);
+});
+
+test("loading the font atlas (any web font in a project) fetches none of the picker's sprite sheets", async () => {
+	respond = () => Response.json({ fonts: Object.fromEntries(
+		Array.from({ length: 30 }, (_, index) => [`Font ${index}`, { x: 0, y: 0, w: 100, ch: index % 15, s: ["400"] }]),
+	) });
+	expect(await loadFontAtlas()).not.toBeNull();
+	expect(images).toBe(0);
 });
 
 test.each(["status", "network"] as const)("a font atlas request that failed (%s) can be retried", async (failure) => {
