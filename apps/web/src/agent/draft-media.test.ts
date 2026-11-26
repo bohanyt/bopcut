@@ -392,6 +392,32 @@ describe("draft errors name the element", () => {
 	});
 });
 
+describe("draft timing", () => {
+	test.each([
+		{ op: { op: "add", track: { name: "Titles" }, element: { agent_id: "title", name: "Title", text: "Hi", start: -2, duration: 1 } }, field: "start" },
+		{ op: { op: "set", match: { agentId: "box" }, start: -3 }, field: "start" },
+		{ op: { op: "set", match: { agentId: "old" }, trimStart: -2 }, field: "trimStart" },
+	] satisfies { op: Parameters<typeof computeAgentDraft>[0]["ops"][number]; field: string }[])(
+		"refuses negative $field in $op.op operations",
+		({ op, field }) => {
+			const scenes = setup().scenes.getScenes();
+			const original = structuredClone(scenes);
+			const out = computeAgentDraft({
+				scenes,
+				rootSceneId: "main",
+				ops: [op],
+				mediaFor: () => undefined,
+				canvas: { width: 1920, height: 1080 },
+				fps: { numerator: 30, denominator: 1 },
+				ripple: false,
+			});
+			expect(out.results[0].ok).toBe(false);
+			expect(out.results[0].error).toContain(field);
+			expect(out.scenes).toEqual(original);
+		},
+	);
+});
+
 describe("keyframe values", () => {
 	const keys = (editor: ReturnType<typeof setup>) => (elements(editor).find((e) => e.agentId === "box")?.animations as any)?.opacity?.keys?.length ?? 0;
 	test("replace with an invalid value fails the op and keeps the existing keyframes", async () => {

@@ -18,7 +18,7 @@ import { applyRippleAdjustments, computeRippleAdjustments } from "@/ripple";
 import type { FrameRate } from "opencut-wasm";
 import { generateUUID } from "@/utils/id";
 import { noteId, validNote } from "./notes";
-import { type AgentElement, type AgentKeyframe, type AgentTrackRef, type LoadedMedia, checkAgentDuration, createAgentTrack, secs } from "./elements";
+import { type AgentElement, type AgentKeyframe, type AgentTrackRef, type LoadedMedia, checkAgentDuration, checkAgentTrim, createAgentTrack, secs } from "./elements";
 import { type BuildContext, applyAgentKeyframes, cloneTracks, placeAgentElement, upsertAgentKeyframe } from "./compound-content";
 import { type AgentMatch, type ElementHit, addressOf, getReachableScenes, getScenePaths, orderedTracks, resolveCompoundTarget, resolveMatch } from "./scene-graph";
 import { updateAgentCaption, type AgentCaption } from "./captions";
@@ -76,6 +76,10 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 const INTERPOLATIONS: unknown[] = ["linear", "hold", "bezier"];
 const seconds = (ticks: number) => ticks / TICKS_PER_SECOND;
 const wordCutFields = ["start", "duration", "trimStart"] as const;
+
+function checkDraftStart({ start, agent_id, name }: { start?: number; agent_id?: string; name: string }): void {
+	if (start != null && !(start >= 0 && Number.isFinite(start))) throw new Error(`start must be 0 or more (${agent_id ?? name})`);
+}
 
 /** Existing overlaps can remain, but closing a gap must not create another one. */
 function assertRippleFits(before: SceneTracks, after: SceneTracks): void {
@@ -270,6 +274,7 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 	const add = (track: DraftTrackRef | undefined, element: AgentElement, result: any) => {
 		if (!track || typeof track.name !== "string") throw new Error("add needs track:{name}");
 		if (!element || typeof element !== "object") throw new Error("add needs an element");
+		checkDraftStart(element);
 		checkAgentDuration(element);
 		let sceneId = rootSceneId;
 		if (track.compound !== undefined) {
@@ -377,7 +382,10 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				let setWords: SourceWord[] | undefined;
 				const atWords = op.startAtWord !== undefined || op.endAfterWord !== undefined;
 				if (atWords && (op.trimStart !== undefined || op.duration !== undefined || cutWords)) throw new Error(`startAtWord/endAfterWord replace trimStart, duration and cut (${hit.element.agentId ?? hit.element.name})`);
-				checkAgentDuration({ agent_id: hit.element.agentId, name: hit.element.name, duration: op.duration });
+				const target = { agent_id: hit.element.agentId, name: hit.element.name };
+				checkDraftStart({ ...target, start: op.start });
+				checkAgentTrim({ ...target, trimStart: op.trimStart });
+				checkAgentDuration({ ...target, duration: op.duration });
 				const stale = staleFor(hit);
 				const protectedFields = protection(hit, stale);
 				if (cutWords || atWords) {
