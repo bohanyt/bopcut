@@ -30,6 +30,15 @@ test("a filler word is cut with the pauses around it, even when they are short; 
 	expect(spans(plan([clip("voice", 0, 10, words)], { tail: true })).at(-1)).toEqual([45, 300, "tail"]);
 });
 
+test("a filler right against a word is cut up to that word, not stopped a pad short inside the filler", () => {
+	// "Eh," ends where "ada" starts: the cut runs to 0.9 s instead of 0.82 s, so no part of "Eh" stays.
+	const result = plan([clip("voice", 0, 10, [["jadi", 0, 0.5], ["Eh,", 0.6, 0.9], ["ada", 0.9, 1.4]])]);
+	expect(spans(result)).toEqual([[18, 27, "filler"]]);
+	// The same at the start of the timeline and at the end.
+	expect(spans(plan([clip("voice", 0, 10, [["Umm,", 0.5, 0.8], ["menurutku", 0.8, 1.5]])]))).toEqual([[0, 24, "lead"]]);
+	expect(spans(plan([clip("voice", 0, 3, [["oke", 1, 1.5], ["hmm", 1.5, 1.8]])], { lead: false, tail: true }, 3))).toEqual([[45, 90, "tail"]]);
+});
+
 test("a clip with sound but no stored words blocks cuts over its time unless its media is ignored", () => {
 	const voice = clip("voice", 0, 10, [["satu", 1, 1.5], ["dua", 5, 5.5]]);
 	const music = clip("music", 2, 3, null);

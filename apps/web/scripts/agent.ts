@@ -45,7 +45,9 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			}),
 			...(command === "transcript-view" && { media: { type: "string" }, timeline: { type: "boolean" } }),
 			...(command === "silence-plan" && { "min-gap": { type: "string" }, pad: { type: "string" }, "keep-fillers": { type: "boolean" },
-				"keep-lead": { type: "boolean" }, tail: { type: "boolean" }, "ignore-media": { type: "string" } }),
+				"keep-lead": { type: "boolean" }, tail: { type: "boolean" }, "ignore-media": { type: "string" },
+				// The answer is always JSON; the flag is accepted like on the commands that also print text.
+				json: { type: "boolean" } }),
 			...(command === "narration-plan" && { clip: { type: "string" }, "new-media": { type: "string" },
 				json: { type: "boolean" }, from: { type: "string" }, to: { type: "string" }, all: { type: "boolean" } }),
 			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
