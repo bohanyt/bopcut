@@ -34,16 +34,30 @@ const LIST_WIDTH = 288;
 const MAX_LIST_HEIGHT = 288;
 const OVERSCAN = 15;
 
+/**
+ * A family the list does not have (a font installed on this computer) can still be typed: the search
+ * text is offered as a family when no listed font has exactly that name.
+ */
+export function typedFamilyToOffer({ search, fontNames }: { search: string; fontNames: readonly string[] }): string | null {
+	const family = search.trim();
+	if (!family) return null;
+	const key = family.toLowerCase();
+	return fontNames.some((name) => name.toLowerCase() === key) ? null : family;
+}
+
 interface FontPickerProps {
 	defaultValue?: string;
 	onValueChange?: (value: string) => void;
 	className?: string;
+	/** The field's accessible name; the trigger shows only the font. */
+	label?: string;
 }
 
 export function FontPicker({
 	defaultValue,
 	onValueChange,
 	className,
+	label,
 }: FontPickerProps) {
 	const { t } = useI18n();
 	const [open, setOpen] = useState(false);
@@ -57,6 +71,7 @@ export function FontPicker({
 		const query = search.toLowerCase();
 		return fontNames.filter((name) => name.toLowerCase().includes(query));
 	}, [fontNames, search]);
+	const typedFamily = typedFamilyToOffer({ search, fontNames });
 
 	const pendingChoice = useRef<AbortController | null>(null);
 	const notifyChoice = useCommittedRef(onValueChange);
@@ -67,11 +82,11 @@ export function FontPicker({
 	);
 
 	const handleSelect = useCallback(
-		async ({ family }: { family: string }) => {
+		async ({ family, load = true }: { family: string; load?: boolean }) => {
 			pendingChoice.current?.abort();
 			const choice = new AbortController();
 			pendingChoice.current = choice;
-			if (!SYSTEM_FONTS.has(family)) {
+			if (load && !SYSTEM_FONTS.has(family)) {
 				try {
 					await loadFullFont({ family });
 				} catch {
@@ -99,6 +114,7 @@ export function FontPicker({
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger
+				aria-label={label ? `${label}: ${defaultValue ?? t("text.selectFont")}` : undefined}
 				className={cn(
 					"border-border bg-accent flex h-7 w-full cursor-pointer items-center justify-between gap-1 rounded-md border px-2.5 text-sm whitespace-nowrap focus-visible:border-primary focus-visible:ring-0 focus:outline-hidden",
 					className,
@@ -191,6 +207,16 @@ export function FontPicker({
 						}}
 						style={{ height: listHeight, width: LIST_WIDTH }}
 					/>
+				)}
+				{typedFamily && (
+					<button
+						type="button"
+						className="hover:bg-accent w-full truncate border-t px-3 py-2 text-left text-sm"
+						// Not in the web font list, so not fetched from it: a font installed on this computer.
+						onClick={() => handleSelect({ family: typedFamily, load: false })}
+					>
+						{t("text.useTypedFont", { name: typedFamily })}
+					</button>
 				)}
 			</PopoverContent>
 		</Popover>

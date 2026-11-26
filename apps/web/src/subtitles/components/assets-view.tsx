@@ -329,7 +329,7 @@ export function Captions() {
 								value={selectedLanguage}
 								onValueChange={(value) => handleLanguageChange({ value })}
 							>
-								<SelectTrigger>
+								<SelectTrigger aria-label={t("captions.language")}>
 									<SelectValue placeholder={t("captions.selectLanguage")} />
 								</SelectTrigger>
 								<SelectContent>

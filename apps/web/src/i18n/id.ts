@@ -1108,6 +1108,7 @@ export const id = {
 	"agentToast.historyScenesGone": "{action} draf agen gagal karena {count} scene yang diubah sudah tidak ada",
 	"timeline.sceneDeleteFailed": "Scene gagal dihapus",
 	"sounds.added": "{name} ditambahkan",
+	"text.useTypedFont": "Pakai “{name}”",
 	"sounds.searchFailed": "Pencarian gagal",
 	"sounds.loadMoreFailed": "Suara lainnya gagal dimuat",
 	"sounds.licenseFilter": "Filter lisensi",
