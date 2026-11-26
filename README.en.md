@@ -38,6 +38,8 @@ Install [Bun](https://bun.sh). Put `ffmpeg` on your PATH for GIF-to-video conver
 
 If `apps/web/.env.local` is missing, copy `apps/web/.env.example` to that path for the local production build. From the repository, run `bun --no-env-file script/start-local.mjs`. On Windows you can also run `script\start-local.cmd`. The launcher checks for a clean fast-forward to `origin/main` when the editor port is free. It builds and starts the candidate before advancing the checkout. If an update fails, it starts the build for the current commit. Add `--no-update` or set `BOPENCUT_AUTO_UPDATE=0` to pin the current version. Pass `--port=3100` to use another loopback port.
 
+In a fresh Windows checkout, the first start puts about 1.7 GB of files under `.git/bopencut-local`, including about 1.4 GB for dependencies and 120 MB for the standalone build.
+
 The launcher runs one editor per checkout and keeps the current build and the previous working build. It records update outcomes in `.bopencut-updates.jsonl` beside the data folder and warns about project migrations, since migrated projects may require the newer editor on other machines.
 
 For development without the auto-updater:

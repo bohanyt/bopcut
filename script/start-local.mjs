@@ -165,15 +165,6 @@ async function lockStartup(state) {
 	}
 }
 
-async function deleteBuild(directory) {
-	for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-		const file = path.join(directory, entry.name);
-		if (entry.isDirectory()) await deleteBuild(file);
-		else await fs.unlink(file);
-	}
-	await fs.rmdir(directory);
-}
-
 async function pruneBuilds(state, current, previous) {
 	const directory = path.join(state, "builds");
 	const previousFile = path.join(state, "previous-build");
@@ -185,7 +176,8 @@ async function pruneBuilds(state, current, previous) {
 		for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
 			const name = entry.name;
 			if (!entry.isDirectory() || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(name) || name === current || name === previous) continue;
-			await deleteBuild(path.join(directory, name));
+			const obsolete = path.join(expected, name);
+			if (await fs.realpath(obsolete) === obsolete) await fs.rm(obsolete, { recursive: true, force: true });
 		}
 	} catch (error) {
 		console.warn(`Could not clean the local build cache: ${error.message}`);

@@ -38,6 +38,8 @@ Butuh [Bun](https://bun.sh); `ffmpeg` di PATH dipakai untuk mengubah GIF menjadi
 
 Jika `apps/web/.env.local` belum ada, salin `apps/web/.env.example` ke lokasi itu untuk build produksi lokal. Jalankan `bun --no-env-file script/start-local.mjs` dari repositori. Di Windows, Anda juga bisa menjalankan `script\start-local.cmd`. Peluncur memeriksa pembaruan fast-forward ke `origin/main` saat port editor kosong dan checkout bersih. Versi baru dibangun dan dijalankan sebelum checkout diperbarui. Jika pembaruan gagal, peluncur menjalankan hasil build untuk commit saat ini. Tambahkan `--no-update` atau atur `BOPENCUT_AUTO_UPDATE=0` untuk tetap memakai versi saat ini. Gunakan `--port=3100` untuk memilih port loopback lain.
 
+Pada checkout Windows yang baru, peluncuran pertama menyiapkan sekitar 1,7 GB berkas di `.git/bopencut-local`, termasuk sekitar 1,4 GB dependensi dan 120 MB untuk build mandiri.
+
 Peluncur menjalankan satu editor per checkout dan menyimpan build saat ini serta build sebelumnya yang berhasil dijalankan. Hasil pembaruan dicatat di `.bopencut-updates.jsonl` di samping folder data. Peluncur memberi peringatan jika pembaruan mengubah migrasi proyek, karena proyek yang dimigrasikan mungkin memerlukan editor versi baru di komputer lain.
 
 Untuk pengembangan tanpa pembaruan otomatis:
