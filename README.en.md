@@ -54,7 +54,7 @@ bun install
 cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
 ```
 
-Open `http://127.0.0.1:3000/projects`.
+Open `http://127.0.0.1:3000`.
 
 Use the **EN / ID** button in the header to choose English or Bahasa Indonesia. The app remembers your choice in that browser.
 
@@ -66,7 +66,7 @@ Use the **EN / ID** button in the header to choose English or Bahasa Indonesia. 
 | Agent workspace (sync files, drafts, frames, edit logs) | `<repo>/workspace/` | `AGENT_WORKSPACE` |
 | Asset root the agent may read | Same as `AGENT_WORKSPACE` | `AGENT_FILES_ROOT` |
 
-`BOPENCUT_DATA` points to the parent of `projects/`. Git ignores `workspace/`. If you use another folder, keep it out of Git as well. When the Projects page loads, it copies old browser projects and their media to disk before you open a project. The browser copies stay intact.
+`BOPENCUT_DATA` points to the parent of `projects/`. Git ignores `workspace/`. If you use another folder, keep it out of Git as well. When the home page loads, it copies old browser projects and their media to disk before you open a project. The browser copies stay intact.
 
 ## Using bopcut with a local agent
 

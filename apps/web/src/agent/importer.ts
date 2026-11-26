@@ -18,6 +18,7 @@ import { type AgentAsset, type AgentElement, type LoadedMedia, buildAgentElement
 import { type BuildContext, applyAgentKeyframes, buildAgentCompound, walkAgentElements } from "./compound-content";
 import { loadTextPresets } from "@/text/presets";
 import { checkAgentCaption, resolveCaptionPreset } from "./captions";
+import { BUNDLE_REV_HEADER } from "./inbox-types";
 
 export type Bundle = {
 	name: string; width: number; height: number;
@@ -80,9 +81,25 @@ export function buildBundleScenes({ bundle, media, sceneId }: { bundle: Bundle; 
 	return { tracks: host.tracks, scenes };
 }
 
+/** The project exists either way: if the record fails, the home page only keeps offering the bundle. */
+async function recordImport(rev: string, projectId: string) {
+	try {
+		const response = await fetch("/api/agent/bundle-imported", {
+			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rev, projectId }),
+		});
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+	} catch (error) {
+		console.warn("Could not record the bundle import", error);
+	}
+}
+
 export async function importAgentBundle({ onStatus }: { onStatus: (text: string) => void }): Promise<string> {
 	const signal = EditorCore.getInstance().project.getSessionSignal();
-	const bundle: Bundle = await (await fetch("/api/agent/bundle", { cache: "no-store" })).json();
+	const response = await fetch("/api/agent/bundle", { cache: "no-store" });
+	const bundle: Bundle = await response.json();
+	if (!response.ok) throw new Error((bundle as { error?: string })?.error ?? `HTTP ${response.status}`);
+	// The version read, so the home page stops offering this bundle once it is a project.
+	const rev = response.headers.get(BUNDLE_REV_HEADER);
 	// Captions, trims, durations and asset keys are checked first: a bad bundle fails before a project is created.
 	let presets: ReturnType<typeof loadTextPresets> | undefined;
 	for (const e of walkAgentElements([...(bundle.main ?? []), ...(bundle.audio ?? []), ...(bundle.overlay ?? []).flatMap((t) => t.elements ?? [])])) {
@@ -139,6 +156,7 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 		}
 		throw error;
 	}
+	if (rev) await recordImport(rev, projectId);
 	onStatus(getBrowserTranslator()("agentImport.done", { count: bundle.assets.length }));
 	return projectId;
 }

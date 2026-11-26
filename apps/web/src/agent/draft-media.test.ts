@@ -6,6 +6,7 @@ import { type MediaTime, TICKS_PER_SECOND } from "@/wasm";
 import * as mediaProcessing from "@/media/processing";
 import { EncodedPacket, EncodedPacketSink, Input, InputAudioTrack, InputVideoTrack, VideoSample, VideoSampleSink } from "mediabunny";
 import { toast } from "sonner";
+import { BUNDLE_REV_HEADER } from "./inbox-types";
 
 // Stub the GPU modules (unused here) before EditorCore pulls them in; see scene-history.test.ts.
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
@@ -183,12 +184,17 @@ describe("draft imports stay private until commit", () => {
 			}),
 		];
 		const fetchBackend = fetch;
+		const recorded: unknown[] = [];
 		globalThis.fetch = (async (url, init) => {
 			if (String(url) === "/api/agent/bundle") return Response.json({
 				name: "Bundle", width: 16, height: 16, fps: 25,
 				assets: [{ key: "clip", name: "Clip", path: "clip.mp4", type: "video" }],
 				main: [{ agent_id: "picture", name: "Picture", asset: "clip", start: 0, sourceAudio: true }],
-			});
+			}, { headers: { [BUNDLE_REV_HEADER]: "b".repeat(64) } });
+			if (String(url) === "/api/agent/bundle-imported") {
+				recorded.push(JSON.parse(String(init?.body)));
+				return Response.json({ ok: true });
+			}
 			if (String(url).startsWith("/api/agent/file")) return new Response(new Blob(["video"], { type: "video/mp4" }));
 			return fetchBackend(url, init);
 		}) as typeof fetch;
@@ -200,6 +206,8 @@ describe("draft imports stay private until commit", () => {
 		const [{ project }] = save.mock.calls[0];
 		const [{ projectId, mediaAsset }] = upload.mock.calls[0];
 		expect(id).toBe(projectId);
+		// The home page stops offering the version of the bundle that became this project.
+		expect(recorded).toEqual([{ rev: "b".repeat(64), projectId: id }]);
 		expect(project.metadata).toMatchObject({ id, duration: T(2) });
 		expect(project.settings).toMatchObject({ canvasSize: { width: 16, height: 16 }, fps: { numerator: 25, denominator: 1 } });
 		expect(mediaAsset).toMatchObject({ name: "Clip", type: "video", hasAudio: false, duration: 2 });
@@ -223,19 +231,22 @@ describe("draft imports stay private until commit", () => {
 		});
 		const flush = spyOn(editor.project, "saveCurrentProject").mockResolvedValue(false);
 		const fetchBackend = fetch;
+		let recorded = 0;
 		globalThis.fetch = (async (url, init) => {
+			if (String(url) === "/api/agent/bundle-imported") recorded++;
 			if (String(url) !== "/api/agent/bundle") return fetchBackend(url, init);
 			const assets = [{ key: "ok", name: "OK", path: "ok.png", type: "image" }];
 			if (failure === "missing file") assets.push({ key: "bad", name: "Bad", path: "bad.png", type: "image" });
 			return Response.json({
 				name: "Bundle", width: 16, height: 16, assets,
 				main: [{ agent_id: "picture", name: "Picture", asset: failure === "invalid timeline" ? "bad" : "ok", start: 0, duration: 1 }],
-			});
+			}, { headers: { [BUNDLE_REV_HEADER]: "c".repeat(64) } });
 		}) as typeof fetch;
 		restore = () => { save.mockRestore(); remove.mockRestore(); flush.mockRestore(); backend.restore(); };
 		const status = mock((_text: string) => {});
 		const error = { "missing file": "Cannot read asset", "invalid timeline": "Asset missing", "failed save": "Disk full" }[failure];
 		await expect(importAgentBundle({ onStatus: status })).rejects.toThrow(error);
+		expect(recorded).toBe(0);
 		expect(editor.project.getActive()).toBe(before);
 		expect(backend.state.saved).toHaveLength(1);
 		expect(remove).toHaveBeenCalledTimes(1);

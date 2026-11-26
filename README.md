@@ -54,7 +54,7 @@ bun install
 cd apps/web && bunx next dev --turbopack -H 127.0.0.1 -p 3000
 ```
 
-Buka `http://127.0.0.1:3000/projects`.
+Buka `http://127.0.0.1:3000`.
 
 Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa Indonesia. Pilihanmu akan diingat di browser itu.
 
@@ -66,7 +66,7 @@ Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa In
 | Folder kerja agen (sync, draf, frame, log editan) | `<repo>/workspace/` | `AGENT_WORKSPACE` |
 | Akar aset yang boleh dibaca agen | = `AGENT_WORKSPACE` | `AGENT_FILES_ROOT` |
 
-`BOPENCUT_DATA` menunjuk ke folder induk `projects/`. `workspace/` tidak masuk Git. Kalau memakai folder lain, pastikan folder itu juga tidak dikomit. Project lama yang masih tersimpan di browser, beserta medianya, disalin otomatis ke folder saat halaman Projects memuat daftar project (sebelum project mana pun dibuka), tanpa menghapus aslinya.
+`BOPENCUT_DATA` menunjuk ke folder induk `projects/`. `workspace/` tidak masuk Git. Kalau memakai folder lain, pastikan folder itu juga tidak dikomit. Project lama yang masih tersimpan di browser, beserta medianya, disalin otomatis ke folder saat halaman utama memuat daftar project (sebelum project mana pun dibuka), tanpa menghapus aslinya.
 
 ## Memakai bopcut dengan agen lokal
 
