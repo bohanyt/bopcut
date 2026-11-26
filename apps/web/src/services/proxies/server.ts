@@ -350,6 +350,8 @@ type Session = {
 type Job = { session: Session; id: string; revision: number; source?: Source; controller: AbortController };
 const sessions = new Map<string, Session>();
 const pauses = new Set<symbol>();
+// A hardware-only failure must not rule out trying that source with software encoding enabled.
+const failureKey = (key: string, software: boolean) => `${key}:${software ? "software-allowed" : "hardware-only"}`;
 const failures = new Set<string>();
 /** Sources that failed before the person asked to try again. They do not stop preparation a second time. */
 const failedBefore = new Set<string>();
@@ -570,7 +572,7 @@ async function pump() {
 						blocked.add(session);
 						continue;
 					}
-					if (!failures.has(source.key)) {
+					if (!failures.has(failureKey(source.key, session.software))) {
 						send(session, "preparing");
 						info = await prepare(dir, source, session.software, encoders, cuda, signal);
 						session.failedInRow = 0;
@@ -596,7 +598,7 @@ async function pump() {
 					continue;
 				}
 				if (job.controller.signal.aborted || !usesJob(session, job)) continue;
-				const key = job.source?.key;
+				const key = job.source && failureKey(job.source.key, session.software);
 				if (error instanceof EncoderBusy) {
 					// A remembered result keeps its time, which the timer is set for.
 					if (!capabilities?.busy || capabilities.expiresAt <= Date.now()) {
