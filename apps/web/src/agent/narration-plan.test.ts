@@ -300,6 +300,19 @@ test("the planner accepts a trim within the editor's word tolerance and refuses 
 	expect(() => planNarration(options)).toThrow("trim cuts a word");
 });
 
+test("a trim that plays no transcribed words is refused with what to do", () => {
+	const input = atZero();
+	const clip = input.root.tracks.audio[0].elements[0];
+	if (clip.type !== "audio") throw new Error("Expected narration.");
+	// Words before and after the played second only.
+	const oldWords = timed([["hello", 0, 0.5], ["world", 2.5, 3]]);
+	clip.trimStart = t(1);
+	clip.duration = t(1);
+	clip.trimEnd = t(clip.sourceDuration ? clip.sourceDuration / 120_000 - 2 : 2);
+	expect(() => planNarration({ ...input, oldWords, newWords: contiguous, newDuration: 4 }))
+		.toThrow("plays no transcribed words");
+});
+
 test("matches unambiguous Indonesian numbers, including two-word forms", () => {
 	const before = words("nol satu sepuluh sebelas dua belas sembilan belas dua puluh");
 	const after = words("0 1 10 11 12 19 20");
