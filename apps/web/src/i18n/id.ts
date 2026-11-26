@@ -775,6 +775,7 @@ export const id = {
 	"guides.addLine": "Tambah garis panduan",
 	"guides.tiktokLayout": "Tata letak TikTok",
 	"preview.canvasLabel": "Kanvas preview",
+	"preview.renderFailed": "Preview gagal menggambar frame ini.",
 	"common.breadcrumb": "Jejak navigasi",
 	"common.more": "Lainnya",
 	"changelog.dismiss": "Tutup",

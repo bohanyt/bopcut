@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useDeepCompareEffect from "use-deep-compare-effect";
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
+import { Button } from "@/components/ui/button";
+import { useI18n } from "@/i18n/provider";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
@@ -171,6 +173,15 @@ function PreviewCanvas({
 	const schedulerRef = useRef<ReturnType<typeof createPreviewFrameScheduler> | null>(null);
 	const renderSignalRef = useRef<AbortSignal | null>(null);
 	const lastRendererRef = useRef<CanvasRenderer | null>(null);
+	// A frame that failed to draw is shown as such (with Retry) until a frame draws again.
+	const [renderFailed, setRenderFailed] = useState(false);
+	const renderFailedRef = useRef(false);
+	const markRenderFailed = useCallback((failed: boolean) => {
+		if (renderFailedRef.current === failed) return;
+		renderFailedRef.current = failed;
+		setRenderFailed(failed);
+	}, []);
+	const { t } = useI18n();
 	const { width: nativeWidth, height: nativeHeight } = usePreviewSize();
 	const viewportSize = useContainerSize({ containerRef: viewportRef });
 	const editor = useEditor();
@@ -321,14 +332,16 @@ function PreviewCanvas({
 				lastSceneRef.current = renderTree;
 				lastFrameRef.current = frame;
 				lastWasProxy.current = proxy;
+				markRenderFailed(false);
 			})
 			.catch((error) => {
 				if (!signal.aborted && !graphics.aborted && error instanceof RecoverableSurfaceError) throw error;
 				if (!signal.aborted && !(error instanceof GraphicsDeviceError) && !(error instanceof DOMException && error.name === "AbortError")) {
 					console.error("Preview render failed:", error);
+					markRenderFailed(true);
 				}
 			});
-	}, [renderer, renderTree, editor.playback, editor.renderer, getRenderTime, settle]);
+	}, [renderer, renderTree, editor.playback, editor.renderer, getRenderTime, settle, markRenderFailed]);
 
 	const renderRef = useCommittedRef(render);
 	useEffect(() => {
@@ -505,6 +518,21 @@ function PreviewCanvas({
 									plane="over-interaction"
 								/>
 								<BookmarkAreaLayer formHost={areaFormHost} />
+								{renderFailed && (
+									<div role="alert" className="bg-background/90 absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-md border px-3 py-1.5 text-xs shadow">
+										<span>{t("preview.renderFailed")}</span>
+										<Button
+											size="sm"
+											variant="outline"
+											onClick={() => {
+												lastFrameRef.current = -1;
+												schedulerRef.current?.request();
+											}}
+										>
+											{t("common.retry")}
+										</Button>
+									</div>
+								)}
 							</div>
 						</ContextMenuTrigger>
 						<PreviewContextMenu

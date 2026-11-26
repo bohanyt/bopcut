@@ -773,6 +773,7 @@ export const en = {
 	"guides.addLine": "Add guide line",
 	"guides.tiktokLayout": "TikTok Layout",
 	"preview.canvasLabel": "Preview canvas",
+	"preview.renderFailed": "The preview could not draw this frame.",
 	"common.breadcrumb": "breadcrumb",
 	"common.more": "More",
 	"changelog.dismiss": "Dismiss",
