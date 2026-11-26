@@ -2,7 +2,7 @@
 
 ## Mode 1 — Editing videos (default)
 
-**bopencut is a place to edit video alongside a human.** You will usually be asked to **create or refine a video**, not change bopencut code. Change code only when the owner explicitly asks (see the rules below).
+**bopcut is a place to edit video alongside a human.** You will usually be asked to **create or refine a video**, not change bopcut code. Change code only when the owner explicitly asks (see the rules below).
 
 What you can build with:
 
@@ -27,9 +27,9 @@ What you can build with:
 
 See [AGENT.md](AGENT.md) for protocol details. Footage and assets live under `AGENT_FILES_ROOT`; never modify source files there.
 
-## Mode 2 — Changing bopencut's code (only when explicitly asked)
+## Mode 2 — Changing bopcut's code (only when explicitly asked)
 
-- **This repository is public.** Do not include AI attribution anywhere (no AI co-author lines or AI model or vendor names), or the owner's project, client, channel, laptop path, or private data in code, comments, documents, or commit messages. Project-specific details stay outside the repository; bopencut contains only general capabilities (see the feature filter in `GOAL.md`).
+- **This repository is public.** Do not include AI attribution anywhere (no AI co-author lines or AI model or vendor names), or the owner's project, client, channel, laptop path, or private data in code, comments, documents, or commit messages. Project-specific details stay outside the repository; bopcut contains only general capabilities (see the feature filter in `GOAL.md`).
 - One stage = one branch + one PR to `main`. Do not push directly to `main`.
 - CI must pass: in `apps/web`, run `bun run build`, `bunx tsc --noEmit -p .`, and `bun test`. Do not suppress type errors (`@ts-ignore`, `any` to avoid errors, `ignoreBuildErrors`) or delete tests to pass.
 - Test in a browser only through browser tab automation. Do not use desktop controls (mouse, keyboard, screen screenshots, or system clipboard) on the owner's machine.

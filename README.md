@@ -1,10 +1,12 @@
 [Read in English](README.en.md)
 
-# bopencut — satu timeline untuk kamu dan agenmu
+# bopcut — satu timeline untuk kamu dan agenmu
 
-**bopencut** adalah editor video web tempat **kamu dan agen mengedit timeline yang sama**. Agen membaca sumbermu dan menyusun draf video yang kamu minta; kamu menggeser, memotong, dan menata di UI seperti CapCut; lalu agen merapikan bagian yang kamu tunjuk. Semua perubahan agen bisa di-Undo, dan editanmu tidak tertimpa.
+**bopcut** adalah editor video web tempat **kamu dan agen mengedit timeline yang sama**. Agen membaca sumbermu dan menyusun draf video yang kamu minta; kamu menggeser, memotong, dan menata di UI seperti CapCut; lalu agen merapikan bagian yang kamu tunjuk. Semua perubahan agen bisa di-Undo, dan editanmu tidak tertimpa.
 
-> bopencut adalah fork dari **OpenCut (classic)** buatan tim [OpenCut](https://github.com/opencut-app/opencut-classic), lisensi MIT (lihat [`LICENSE`](LICENSE)). Editor dasarnya sepenuhnya karya mereka. README asli OpenCut: [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
+Dulu namanya **bopencut**. Repositori dan nama setting `BOPENCUT_*` masih memakai nama itu.
+
+> bopcut adalah fork dari **OpenCut (classic)** buatan tim [OpenCut](https://github.com/opencut-app/opencut-classic), lisensi MIT (lihat [`LICENSE`](LICENSE)). Editor dasarnya sepenuhnya karya mereka. README asli OpenCut: [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
 
 ## Yang bisa dilakukan
 
@@ -66,15 +68,15 @@ Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa In
 
 `BOPENCUT_DATA` menunjuk ke folder induk `projects/`. `workspace/` tidak masuk Git. Kalau memakai folder lain, pastikan folder itu juga tidak dikomit. Project lama yang masih tersimpan di browser, beserta medianya, disalin otomatis ke folder saat halaman Projects memuat daftar project (sebelum project mana pun dibuka), tanpa menghapus aslinya.
 
-## Memakai bopencut dengan agen lokal
+## Memakai bopcut dengan agen lokal
 
-Jalankan bopencut, buka agen coding di folder repo, lalu minta **"baca `AGENTS.md`, lalu bantu aku membuat video dari sumber-sumber ini."** Berikan tautan, artikel, dokumen, atau folder footage. Skrip boleh disertakan. Agen merangkum isi sumber, bertanya video apa yang ingin dibuat, lalu menyusun draf, memeriksa hasilnya, dan mengekspor video dari timeline bersama.
+Jalankan bopcut, buka agen coding di folder repo, lalu minta **"baca `AGENTS.md`, lalu bantu aku membuat video dari sumber-sumber ini."** Berikan tautan, artikel, dokumen, atau folder footage. Skrip boleh disertakan. Agen merangkum isi sumber, bertanya video apa yang ingin dibuat, lalu menyusun draf, memeriksa hasilnya, dan mengekspor video dari timeline bersama.
 
 ## Dokumen
 
 - [GOAL.md](GOAL.md): tujuan, alur kerja, dan tahapan.
 - [AGENT.md](AGENT.md): protokol folder kerja agen (format bundle, draf, catatan, frame, selera).
-- [AGENTS.md](AGENTS.md): titik masuk untuk agen (cara kerja di bopencut, dan aturan kalau mengubah kodenya).
+- [AGENTS.md](AGENTS.md): titik masuk untuk agen (cara kerja di bopcut, dan aturan kalau mengubah kodenya).
 
 ## Lisensi
 

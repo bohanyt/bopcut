@@ -11,8 +11,8 @@ import { isForeignOrigin } from "./origin";
  */
 
 const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
-const SERVER_INFO = { name: "bopencut", title: "bopencut video editor", version: "0.1.0" };
-const INSTRUCTIONS = "Tools for a local bopencut editor: list projects, then read a project's status, notes, " +
+const SERVER_INFO = { name: "bopcut", title: "bopcut video editor", version: "0.1.0" };
+const INSTRUCTIONS = "Tools for a local bopcut editor: list projects, then read a project's status, notes, " +
 	"selection and timeline transcript, and plan dead-air cuts. Times are seconds on the root timeline. " +
 	"The plans return draft ops; this server does not change projects yet.";
 

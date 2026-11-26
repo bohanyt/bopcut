@@ -1,10 +1,12 @@
 [Read in Indonesian](README.md)
 
-# bopencut — one timeline for you and your agent
+# bopcut — one timeline for you and your agent
 
-**bopencut** is a web video editor where **you and an agent edit the same timeline**. The agent reads your sources and drafts the video you ask for. You move, trim, and arrange clips in an interface like CapCut, then ask the agent to refine the parts you point out. You can undo every agent change, and your edits are preserved.
+**bopcut** is a web video editor where **you and an agent edit the same timeline**. The agent reads your sources and drafts the video you ask for. You move, trim, and arrange clips in an interface like CapCut, then ask the agent to refine the parts you point out. You can undo every agent change, and your edits are preserved.
 
-> bopencut is a fork of **OpenCut (classic)** by the [OpenCut](https://github.com/opencut-app/opencut-classic) team under the MIT license (see [`LICENSE`](LICENSE)). The underlying editor is entirely their work. The original OpenCut README is at [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
+It used to be called **bopencut**. The repository and the `BOPENCUT_*` settings still use that name.
+
+> bopcut is a fork of **OpenCut (classic)** by the [OpenCut](https://github.com/opencut-app/opencut-classic) team under the MIT license (see [`LICENSE`](LICENSE)). The underlying editor is entirely their work. The original OpenCut README is at [`docs/opencut-original-readme.md`](docs/opencut-original-readme.md).
 
 ## What you can do
 
@@ -66,9 +68,9 @@ Use the **EN / ID** button in the header to choose English or Bahasa Indonesia. 
 
 `BOPENCUT_DATA` points to the parent of `projects/`. Git ignores `workspace/`. If you use another folder, keep it out of Git as well. When the Projects page loads, it copies old browser projects and their media to disk before you open a project. The browser copies stay intact.
 
-## Using bopencut with a local agent
+## Using bopcut with a local agent
 
-Run bopencut, open your coding agent in the repository, and ask it to **"read `AGENTS.md`, then help me make a video from these sources."** Share links, articles, documents, or a footage folder. A script is optional. The agent summarizes what it understood, asks what to make, and uses the shared timeline to draft, check, and export your video.
+Run bopcut, open your coding agent in the repository, and ask it to **"read `AGENTS.md`, then help me make a video from these sources."** Share links, articles, documents, or a footage folder. A script is optional. The agent summarizes what it understood, asks what to make, and uses the shared timeline to draft, check, and export your video.
 
 ## Documentation
 

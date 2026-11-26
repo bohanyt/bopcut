@@ -1079,7 +1079,7 @@ export const id = {
 	"timeline.compoundNotCreated": "Klip gabungan gagal dibuat",
 	"projects.renamePending": "Nama baru proyek ini masih disimpan. Coba lagi sebentar.",
 	"projects.changedWhileOpening": "Proyek terus berubah saat dibuka kembali",
-	"projects.newerVersion": "Proyek ini dibuat dengan versi bopencut yang lebih baru. Perbarui bopencut untuk membukanya.",
+	"projects.newerVersion": "Proyek ini dibuat dengan versi bopcut yang lebih baru. Perbarui bopcut untuk membukanya.",
 	"projects.invalidVersion": "Versi proyek ini tidak valid. Buka dengan editor yang kompatibel, lalu simpan kembali.",
 	"projects.savePending": "Proyek ini masih disimpan. Coba lagi sebentar.",
 	"storage.projectChanging": "Proyek terus berubah. Coba lagi.",
