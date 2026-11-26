@@ -5,9 +5,10 @@ import type { TProject } from "@/project/types";
 import { CURRENT_PROJECT_VERSION } from "@/services/storage/migrations";
 import { buildDefaultScene, getProjectDurationFromScenes } from "@/timeline/scenes";
 import { generateUUID } from "@/utils/id";
+import { getBrowserTranslator } from "@/i18n/browser";
 
 export function buildNewProject({ name }: { name: string }): TProject {
-	const mainScene = buildDefaultScene({ name: "Main scene", isMain: true });
+	const mainScene = buildDefaultScene({ name: getBrowserTranslator()("timeline.mainSceneName"), isMain: true });
 	return {
 		metadata: {
 			id: generateUUID(),

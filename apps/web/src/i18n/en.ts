@@ -1068,6 +1068,7 @@ export const en = {
 	"text.invalidPresetList": "Invalid preset list",
 	"text.presetSaveFailed": "Could not save text preset",
 	"captions.unsupportedFormat": "Unsupported subtitle format",
+	"timeline.mainSceneName": "Main scene",
 	"timeline.cannotDeleteMain": "Cannot delete main scene",
 	"timeline.sceneInUse": "Scene is used by a compound clip",
 	"timeline.compoundNotCreated": "Compound clip was not created",

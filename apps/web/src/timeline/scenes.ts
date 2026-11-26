@@ -4,6 +4,7 @@ import { calculateTotalDuration } from "@/timeline";
 import { MAIN_TRACK_NAME } from "@/timeline/placement/main-track";
 import { isCompoundSceneReferenced } from "@/timeline/compound";
 import { type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
+import { getBrowserTranslator } from "@/i18n/browser";
 
 export function getMainScene({ scenes }: { scenes: TScene[] }): TScene | null {
 	return scenes.find((scene) => scene.isMain) || null;
@@ -12,7 +13,7 @@ export function getMainScene({ scenes }: { scenes: TScene[] }): TScene | null {
 export function ensureMainScene({ scenes }: { scenes: TScene[] }): TScene[] {
 	const mainIndex = scenes.findIndex((scene) => scene.isMain);
 	if (mainIndex === -1) {
-		const mainScene = buildDefaultScene({ name: "Main scene", isMain: true });
+		const mainScene = buildDefaultScene({ name: getBrowserTranslator()("timeline.mainSceneName"), isMain: true });
 		return [mainScene, ...scenes];
 	}
 	let changed = false;

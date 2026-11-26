@@ -29,6 +29,8 @@ import {
 } from "@/params/registry";
 import { generateUUID } from "@/utils/id";
 import { type MediaTime, roundFrameTime, roundMediaTime, TICKS_PER_SECOND, ZERO_MEDIA_TIME } from "@/wasm";
+import { getBrowserTranslator } from "@/i18n/browser";
+import { createTranslator } from "@/i18n/translate";
 
 // Compound clips: an element that references a nested scene (kind: "compound").
 // All rules (track type, cycles, create/ungroup, audio flattening) live here so the
@@ -44,17 +46,22 @@ export class CompoundCycleError extends Error {
 }
 
 export const DEFAULT_COMPOUND_NAME = "Compound clip";
+const COMPOUND_NAME_TRANSLATIONS = (["en", "id"] as const).map((locale) => createTranslator(locale)("properties.compound"));
 
 /** "Compound clip N" with N one above the highest number already used by a compound scene. */
 export function getNextCompoundName({ scenes }: { scenes: TScene[] }): string {
-	const pattern = new RegExp(`^${DEFAULT_COMPOUND_NAME} (\\d+)$`);
+	// Named in the UI language; numbering continues across both languages' names.
+	const base = getBrowserTranslator()("properties.compound");
+	const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const names = [DEFAULT_COMPOUND_NAME, ...COMPOUND_NAME_TRANSLATIONS].map(escape);
+	const pattern = new RegExp(`^(?:${names.join("|")}) (\\d+)$`);
 	let highest = 0;
 	for (const scene of scenes) {
 		if (!isCompoundScene(scene)) continue;
 		const match = pattern.exec(scene.name);
 		if (match) highest = Math.max(highest, Number(match[1]));
 	}
-	return `${DEFAULT_COMPOUND_NAME} ${highest + 1}`;
+	return `${base} ${highest + 1}`;
 }
 
 export function isCompoundScene(scene: TScene): boolean {
