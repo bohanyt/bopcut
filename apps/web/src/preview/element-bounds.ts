@@ -2,12 +2,20 @@ import type { ElementRef, SceneTracks, TimelineElement } from "@/timeline";
 import type { MediaAsset } from "@/media/types";
 import { STICKER_INTRINSIC_SIZE_FALLBACK } from "@/stickers/intrinsic-size";
 import { DEFAULT_GRAPHIC_SOURCE_SIZE } from "@/graphics";
-import { measureTextElement } from "@/text/measure-element";
+import { getTextMeasurementContext, measureTextElement } from "@/text/measure-element";
 import {
 	getElementLocalTime,
 } from "@/animation";
 import { resolveTransformAtTime } from "@/rendering/animation-values";
 import { buildTransformFromParams } from "@/rendering";
+
+function sharedTextContext() {
+	try {
+		return getTextMeasurementContext();
+	} catch {
+		return null;
+	}
+}
 
 export interface ElementBounds {
 	cx: number;
@@ -186,7 +194,8 @@ export function getElementBounds({
 			localTime,
 		});
 
-		const ctx = textContext ?? document.createElement("canvas").getContext("2d");
+		// The shared measuring context: bounds are read on every playback tick and drag move.
+		const ctx = textContext ?? sharedTextContext();
 		if (!ctx) return null;
 
 		const measured = measureTextElement({

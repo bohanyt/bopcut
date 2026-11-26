@@ -21,7 +21,8 @@ import { makeCaption } from "@/text/caption";
 const SUBTITLE_MAX_WIDTH_RATIO = 0.8;
 const SUBTITLE_BOTTOM_MARGIN_RATIO = 0.05;
 const SUBTITLE_FONT_SIZE = 5;
-const MEASUREMENT_CANVAS_SIZE = 4096;
+// Only measureText is used, which does not depend on the canvas size: 4096×4096 cost 64 MB per import.
+const MEASUREMENT_CANVAS_SIZE = 1;
 
 export function createSubtitleMeasurementContext(): CanvasRenderingContext2D | null {
 	const canvas = document.createElement("canvas");
