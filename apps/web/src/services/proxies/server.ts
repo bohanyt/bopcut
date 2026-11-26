@@ -342,7 +342,7 @@ type Session = {
 	build: boolean;
 	/** Set when the person asks to try again; a value is used once. */
 	retry?: number;
-	done: Set<string>; revisions: Map<string, number>; disk: boolean; bytes: number; written: Map<string, string>;
+	done: Set<string>; revisions: Map<string, number>; diskBlocked: Set<string>; bytes: number; written: Map<string, string>;
 	sequence: number; readerChecked?: number; readerPending: boolean;
 	/** Consecutive tool failures stop this session until it is reopened. */
 	failedInRow: number; stopped?: string;
@@ -420,12 +420,12 @@ export function updateSession(id: string, changes: Pick<Partial<Session>, "ids" 
 	if ((!session.build || session.stopped) && session.ids.some(id => !session.done.has(id))) session.readerChecked = undefined;
 	for (const id of replaced) session.revisions.set(id, (session.revisions.get(id) ?? 0) + 1);
 	for (const id of session.written.keys()) if (!session.ids.includes(id) || replaced.includes(id)) session.written.delete(id);
-	session.disk = false;
+	for (const id of session.diskBlocked) if (!session.ids.includes(id) || replaced.includes(id)) session.diskBlocked.delete(id);
 	void keepNeededJob();
 	void pump();
 }
-export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "disk" | "bytes" | "written" | "sequence" | "readerChecked" | "readerPending" | "failedInRow" | "stopped">) {
-	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), disk: false, bytes: 0, written: new Map<string, string>(), sequence: 0, readerPending: false, failedInRow: 0 };
+export function openSession(id: string, session: Omit<Session, "done" | "revisions" | "diskBlocked" | "bytes" | "written" | "sequence" | "readerChecked" | "readerPending" | "failedInRow" | "stopped">) {
+	const entry = { ...session, done: new Set<string>(), revisions: new Map<string, number>(), diskBlocked: new Set<string>(), bytes: 0, written: new Map<string, string>(), sequence: 0, readerPending: false, failedInRow: 0 };
 	sessions.set(id, entry);
 	// Tools that failed are tried again when a project is opened or the setting is changed, not on their own.
 	if (entry.build) {
@@ -578,6 +578,7 @@ async function pump() {
 				}
 				if (!signal.aborted && usesJob(session, job)) {
 					session.done.add(id);
+				if (info || builds(session)) session.diskBlocked.delete(id);
 					const previous = session.written.get(id);
 					if (previous && previous !== info?.key) {
 						session.written.delete(id);
@@ -606,8 +607,9 @@ async function pump() {
 					retryLater();
 					continue;
 				}
-				if (error instanceof LowDisk) session.disk = true;
-				else if (key) {
+			if (error instanceof LowDisk) session.diskBlocked.add(id);
+			else if (key) {
+				session.diskBlocked.delete(id);
 					if (failures.size >= 1024) failures.delete(failures.values().next().value!);
 					failures.add(key);
 					if (!failedBefore.has(key) && ++session.failedInRow >= failureLimit) session.stopped = errorText(error);
@@ -630,7 +632,7 @@ async function pump() {
 			}
 			if (blocked.has(session)) continue;
 			session.bytes = bytes;
-			if (complete) send(session, !session.build ? "off" : session.stopped ? "failed" : !writable ? "readonly" : session.disk ? "disk" : "ready");
+			if (complete) send(session, !session.build ? "off" : session.stopped ? "failed" : !writable ? "readonly" : session.diskBlocked.size ? "disk" : "ready");
 		}
 	} catch (error) { console.error("Proxy preparation failed", error); }
 	finally {
@@ -662,6 +664,7 @@ export async function clearProxies() {
 		for (const session of sessions.values()) {
 			session.ids = [];
 			session.done.clear();
+			session.diskBlocked.clear();
 			session.bytes = 0;
 			send(session, "off");
 		}
