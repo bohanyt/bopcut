@@ -259,6 +259,7 @@ export const id = {
 	"recording.swapFailed": "Tidak bisa beralih ke rekaman ini. Pastikan audionya masih ada di Media.",
 	"shortcuts.action.toggle-ripple-editing": "Aktifkan atau nonaktifkan ripple editing",
 	"shortcuts.action.toggle-snapping": "Aktifkan atau nonaktifkan snapping",
+	"shortcuts.action.toggle-keyframe-lanes": "Perluas atau ciutkan keyframe klip terpilih",
 	"shortcuts.action.toggle-source-audio": "Pisahkan atau pulihkan audio sumber",
 	"shortcuts.action.undo": "Undo",
 	"shortcuts.category.assets": "Aset",

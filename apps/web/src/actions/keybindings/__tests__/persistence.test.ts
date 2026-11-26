@@ -228,6 +228,20 @@ describe("the split keys of version 10", () => {
 			{ s: "split-left", q: "split" },
 			{},
 		];
-		for (const changed of cases) expect(migrate(changed)).toEqual(changed);
+		// Version 11 adds U on top.
+		for (const changed of cases) expect(migrate(changed)).toEqual({ ...changed, u: "toggle-keyframe-lanes" });
+	});
+});
+
+describe("the keyframe key of version 11", () => {
+	const migrate = (keybindings: Record<string, string>): Record<string, string> => Object.fromEntries(
+		decodePersistedKeybindingsState({
+			state: migratePersistedKeybindingsState({ state: { keybindings, isCustomized: true }, fromVersion: 10 }),
+		})?.keybindings ?? [],
+	);
+
+	test("U expands or collapses keyframes, unless the user put U on another action", () => {
+		expect(migrate({ n: "toggle-snapping" })).toEqual({ n: "toggle-snapping", u: "toggle-keyframe-lanes" });
+		expect(migrate({ u: "undo" })).toEqual({ u: "undo" });
 	});
 });

@@ -257,6 +257,7 @@ export const en = {
 	"recording.swapFailed": "Could not switch to this take. Check that its audio is still in Media.",
 	"shortcuts.action.toggle-ripple-editing": "Toggle ripple editing",
 	"shortcuts.action.toggle-snapping": "Toggle snapping",
+	"shortcuts.action.toggle-keyframe-lanes": "Expand or collapse the keyframes of the selected clips",
 	"shortcuts.action.toggle-source-audio": "Extract or recover source audio",
 	"shortcuts.action.undo": "Undo",
 	"shortcuts.category.assets": "Assets",

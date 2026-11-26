@@ -31,6 +31,7 @@ import {
 	type ScopeEntry,
 } from "@/selection/scope";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
+import { toggleSelectedKeyframeLanes } from "@/timeline/keyframe-lanes";
 import { isCompoundElement } from "@/timeline/compound";
 import { toast } from "sonner";
 
@@ -514,6 +515,14 @@ export function useEditorActions() {
 		"toggle-snapping",
 		() => {
 			toggleSnapping();
+		},
+		undefined,
+	);
+
+	useActionHandler(
+		"toggle-keyframe-lanes",
+		() => {
+			toggleSelectedKeyframeLanes(editor);
 		},
 		undefined,
 	);

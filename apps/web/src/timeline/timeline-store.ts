@@ -13,6 +13,8 @@ interface TimelineStore {
 	toggleRippleEditing: () => void;
 	expandedElementIds: Set<string>;
 	toggleElementExpanded: (elementId: string) => void;
+	/** Shows or hides the keyframe lanes of these clips. */
+	setElementsExpanded: (elementIds: string[], expanded: boolean) => void;
 }
 
 export const useTimelineStore = create<TimelineStore>()(
@@ -41,6 +43,17 @@ export const useTimelineStore = create<TimelineStore>()(
 						next.delete(elementId);
 					} else {
 						next.add(elementId);
+					}
+					return { expandedElementIds: next };
+				});
+			},
+
+			setElementsExpanded: (elementIds, expanded) => {
+				set((state) => {
+					const next = new Set(state.expandedElementIds);
+					for (const id of elementIds) {
+						if (expanded) next.add(id);
+						else next.delete(id);
 					}
 					return { expandedElementIds: next };
 				});
