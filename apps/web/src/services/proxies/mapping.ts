@@ -7,7 +7,7 @@
 };
 
 export type ProxyUpdate = {
-	state: "preparing" | "ready" | "missing" | "failed" | "disk" | "off" | "software" | "readonly";
+	state: "preparing" | "ready" | "empty" | "missing" | "failed" | "disk" | "off" | "software" | "readonly";
 	/** Why tools failed, for `failed`. */
 	error?: string;
 	done: number;

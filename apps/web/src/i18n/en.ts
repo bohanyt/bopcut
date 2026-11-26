@@ -3,6 +3,7 @@ export const en = {
 	"proxies.softwareEncoder": "Allow software encoding",
 	"proxies.preparing": "Preparing {done} of {total}",
 	"proxies.ready": "Ready",
+	"proxies.empty": "No proxies available",
 	"proxies.missing": "Off · FFmpeg was not found",
 	"proxies.failed": "Stopped · FFmpeg failed",
 	"proxies.disk": "Not enough disk space",

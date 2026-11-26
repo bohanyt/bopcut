@@ -280,6 +280,32 @@ test("a session that does not build uses existing proxies and starts no tool", a
 	} finally { await f.dispose(); run.mockRestore(); }
 });
 
+test("the queue reports ready only after a proxy is available", async () => {
+	const f = await fixture(["bad-input", "valid-input"]);
+	const run = spyOn(processes, "runBackgroundProcess").mockImplementation(async (_command, args) => {
+		if (args.includes("-encoders")) return toolResult("h264_nvenc");
+		if (args.includes("-show_frames")) {
+			const name = path.basename(args.at(-1)!);
+			if (name === "bad-input.mp4") throw new Error("Could not read video frames");
+			return videoProbe(3, name.startsWith(".job-"));
+		}
+		if (args.includes("-fs")) await fs.writeFile(args.at(-1)!, "proxy");
+		return toolResult();
+	});
+	try {
+		const tab = f.tab("no-proxy", ["bad-input"]);
+		await tab.wait(event => event.done === 1);
+		expect(tab.events.some(event => event.media)).toBe(false);
+		expect(tab.events.at(-1)?.state).toBe("empty");
+
+		const before = tab.events.length;
+		updateSession("no-proxy", { ids: ["bad-input", "valid-input"] }, 1);
+		await tab.wait(event => event.done === 2 && !event.media, before);
+		expect(tab.events.some(event => event.media?.id === "valid-input")).toBe(true);
+		expect(tab.events.at(-1)?.state).toBe("ready");
+	} finally { await f.dispose(); run.mockRestore(); }
+});
+
 test("a picture that is too small for the encoder has no proxy and is no failure", async () => {
 	const ids = ["a", "b", "c", "d"];
 	const f = await fixture(ids);
@@ -295,7 +321,7 @@ test("a picture that is too small for the encoder has no proxy and is no failure
 	});
 	try {
 		const tab = f.tab("small", ids);
-		await tab.wait(event => event.state === "ready" && event.done === 4);
+		await tab.wait(event => event.state === "empty" && event.done === 4);
 		expect(encodes).toBeGreaterThanOrEqual(4);
 		expect(tab.events.some(event => event.state === "failed")).toBe(false);
 	} finally { await f.dispose(); run.mockRestore(); }
@@ -559,7 +585,7 @@ test("tabs take turns even when the second joins during a job", async () => {
 		await started.promise;
 		const b = f.tab("b", ["b1", "b2"]);
 		finish.resolve();
-		await Promise.all([a.wait(event => event.state === "ready"), b.wait(event => event.state === "ready")]);
+		await Promise.all([a.wait(event => event.state === "empty"), b.wait(event => event.state === "empty")]);
 		expect(probes).toEqual(["a1.mp4", "b1.mp4", "a2.mp4", "b2.mp4"]);
 	} finally { finish.resolve(); await f.dispose(); run.mockRestore(); }
 });

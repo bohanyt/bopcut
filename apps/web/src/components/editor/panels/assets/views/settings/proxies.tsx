@@ -8,7 +8,7 @@ export function ProxySettings() {
 	const { t } = useI18n();
 	const { settings, update, save, clear } = useProxyStore();
 	const enabled = settings.enabled ?? (update?.state === "ready" || update?.state === "preparing" ||
-		update?.state === "disk" || update?.state === "readonly");
+		update?.state === "empty" || update?.state === "disk" || update?.state === "readonly");
 	const status = update?.state ?? "off";
 	return (
 		<Section showTopBorder={false}>
