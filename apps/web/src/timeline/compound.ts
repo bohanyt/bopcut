@@ -332,6 +332,47 @@ function countSurvivingTracks(before: TimelineTrack[], after: TimelineTrack[]): 
 	return before.filter((track) => after.some((next) => next.id === track.id)).length;
 }
 
+/** Finds where one compound can sit without crossing an overlapping visible layer. */
+function getCompoundLayerBounds({
+	tracks,
+	scenes,
+	isSelected,
+}: {
+	tracks: SceneTracks;
+	scenes: TScene[];
+	isSelected: (track: TimelineTrack, element: TimelineElement) => boolean;
+}): { first: number; last: number } {
+	const cache = new Map<string, boolean>();
+	const visible = (element: TimelineElement) =>
+		element.duration > 0 &&
+		!("hidden" in element && element.hidden) &&
+		element.type !== "audio" &&
+		(!isCompoundElement(element) || sceneHasVisualContent({ scenes, sceneId: element.sceneId, cache }));
+	const visualTracks = [...tracks.overlay, tracks.main];
+	const picked = visualTracks.flatMap((track, index) => {
+		if (isTrackHidden(track)) return [];
+		return track.elements
+			.filter((element) => isSelected(track, element) && visible(element))
+			.map((element) => ({ index, start: element.startTime, end: element.startTime + element.duration }));
+	});
+	// A slot is before the overlay with that index, or at the bottom after all overlays.
+	let first = 0;
+	let last = tracks.overlay.length;
+	for (const [index, track] of tracks.overlay.entries()) {
+		if (isTrackHidden(track)) continue;
+		for (const element of track.elements) {
+			if (isSelected(track, element) || !visible(element)) continue;
+			const end = element.startTime + element.duration;
+			for (const layer of picked) {
+				if (element.startTime >= layer.end || end <= layer.start) continue;
+				if (layer.index < index) last = Math.min(last, index);
+				if (layer.index > index) first = Math.max(first, index + 1);
+			}
+		}
+	}
+	return { first, last };
+}
+
 export function buildCompoundFromElements({
 	scenes,
 	hostSceneId,
@@ -437,19 +478,26 @@ export function buildCompoundFromElements({
 
 	let trackId: string;
 	if (trackType === "video") {
+		const { first, last } = getCompoundLayerBounds({ tracks, scenes, isSelected });
+		if (first > last) {
+			throw new Error("These clips cannot be grouped without changing the layer order. Include the overlapping clips or select fewer clips.");
+		}
 		const fromMain = hasPicked(tracks.main);
 		const topSourceIndex = tracks.overlay.findIndex(hasPicked);
 		const topSource = topSourceIndex >= 0 ? tracks.overlay[topSourceIndex] : null;
 		const reusableTop = topSource
 			? nextTracks.overlay.find((track) => track.id === topSource.id)
 			: undefined;
-		if (fromMain && canHost(nextTracks.main)) {
+		if (fromMain && last === tracks.overlay.length && canHost(nextTracks.main)) {
 			nextTracks.main = {
 				...nextTracks.main,
 				elements: [...nextTracks.main.elements, compound],
 			};
 			trackId = nextTracks.main.id;
-		} else if (reusableTop?.type === "video" && canHost(reusableTop)) {
+		} else if (
+			topSourceIndex >= first && topSourceIndex <= last &&
+			reusableTop?.type === "video" && canHost(reusableTop)
+		) {
 			nextTracks.overlay = nextTracks.overlay.map((track) =>
 				track.id === reusableTop.id
 					? { ...reusableTop, elements: [...reusableTop.elements, compound] }
@@ -457,10 +505,9 @@ export function buildCompoundFromElements({
 			);
 			trackId = reusableTop.id;
 		} else {
-			const insertIndex =
-				topSourceIndex >= 0
-					? countSurvivingTracks(tracks.overlay.slice(0, topSourceIndex), nextTracks.overlay)
-					: nextTracks.overlay.length;
+			const preferred = topSourceIndex >= 0 ? topSourceIndex : tracks.overlay.length;
+			const slot = Math.max(first, Math.min(last, preferred));
+			const insertIndex = countSurvivingTracks(tracks.overlay.slice(0, slot), nextTracks.overlay);
 			const track: VideoTrack = {
 				...buildEmptyTrack({ id: generateUUID(), type: "video" }),
 				elements: [compound],

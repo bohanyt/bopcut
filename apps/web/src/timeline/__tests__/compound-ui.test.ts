@@ -443,7 +443,7 @@ describe("compound clip UI: review round 2", () => {
 		// Outer holds the main-track video; inside it, the video becomes an inner compound on the
 		// outer scene's main track.
 		const outer = editor.timeline.createCompound({
-			elements: [{ trackId: "t-main", elementId: "bg" }, refs[0]],
+			elements: [{ trackId: "t-main", elementId: "bg" }, refs[0], refs[1]],
 		});
 		await editor.scenes.enterCompound(outer.compound);
 		const outerScene = editor.scenes.getActiveScene();

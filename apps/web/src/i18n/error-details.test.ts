@@ -25,6 +25,8 @@ test("localizes snapshot and draft errors without dropping what the user can do 
 		.toBe(t("preview.clipboardUnavailable"));
 	expect(localizeErrorDetail("Some selected elements were not found in the scene", t))
 		.toBe(t("timeline.compoundSelectionMissing"));
+	expect(localizeErrorDetail("These clips cannot be grouped without changing the layer order. Include the overlapping clips or select fewer clips.", t))
+		.toBe(t("timeline.compoundLayerConflict"));
 	expect(localizeErrorDetail("The 9000 × 1080 canvas exceeds this graphics device’s limit of 8192 pixels per side. Reduce the canvas size in Project Settings.", t))
 		.toBe(t("settings.canvasOverLimit", { width: 9000, height: 1080, max: 8192 }));
 });

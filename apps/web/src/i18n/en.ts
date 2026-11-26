@@ -1168,6 +1168,7 @@ export const en = {
 	"timeline.sceneIdNotFound": "Scene not found: {id}",
 	"timeline.compoundSceneIdNotFound": "Compound scene not found: {id}",
 	"timeline.compoundCycle": "Compound clip cycle: scene {id} would contain itself (directly or through nested compound clips).",
+	"timeline.compoundLayerConflict": "These clips cannot be grouped without changing the layer order. Include the overlapping clips or select fewer clips.",
 	"agentToast.retryDraft": "Re-read the snapshot and resend the draft.",
 	"agentToast.draftDetails": "See draft-result.json for operation details.",
 } as const;

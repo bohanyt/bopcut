@@ -1170,6 +1170,7 @@ export const id = {
 	"timeline.sceneIdNotFound": "Scene tidak ditemukan: {id}",
 	"timeline.compoundSceneIdNotFound": "Scene klip gabungan tidak ditemukan: {id}",
 	"timeline.compoundCycle": "Klip gabungan gagal dibuat karena scene {id} akan memuat dirinya sendiri atau klip gabungan yang merujuk kembali ke scene tersebut.",
+	"timeline.compoundLayerConflict": "Klip ini tidak bisa digabung tanpa mengubah urutan lapisan. Sertakan klip yang tumpang tindih atau pilih lebih sedikit klip.",
 	"agentToast.retryDraft": "Baca ulang snapshot lalu kirim ulang draf.",
 	"agentToast.draftDetails": "Lihat draft-result.json untuk detail setiap operasi.",
 } satisfies Record<keyof typeof en, string>;
