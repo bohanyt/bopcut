@@ -37,6 +37,7 @@ import {
 } from "./interpolation";
 import {
 	type MediaTime,
+	mediaTime,
 	roundMediaTime,
 	subMediaTime,
 	ZERO_MEDIA_TIME,
@@ -1146,12 +1147,14 @@ function splitScalarChannelAtTime({
 		};
 	}
 
-	// Outside the keyed range, only the empty side needs a boundary key.
-	const boundaryValue = getChannelValueAtTime({
+	// Outside the keyed range, only the empty side needs new keys.
+	const valueAt = (time: number) => getChannelValueAtTime({
 		channel: normalizedChannel,
-		time: splitTime,
+		time,
 		fallbackValue: normalizedChannel.keys[0].value,
 	});
+	const boundaryValue = valueAt(splitTime);
+	const canExtrapolate = normalizedChannel.keys.length > 1;
 	if (leftKeys.length === 0) {
 		leftKeys = [createScalarKey({
 			id: leftBoundaryId,
@@ -1159,6 +1162,11 @@ function splitScalarChannelAtTime({
 			value: boundaryValue,
 			interpolation: "linear",
 		})];
+		if (canExtrapolate && normalizedChannel.extrapolation?.before === "linear" && splitTime > 0) {
+			leftKeys.unshift(createScalarKey({
+				id: `${leftBoundaryId}:slope`, time: ZERO_MEDIA_TIME, value: valueAt(0), interpolation: "linear",
+			}));
+		}
 	}
 	if (rightKeys.length === 0) {
 		rightKeys = [createScalarKey({
@@ -1167,6 +1175,12 @@ function splitScalarChannelAtTime({
 			value: boundaryValue,
 			interpolation: "linear",
 		})];
+		if (canExtrapolate && normalizedChannel.extrapolation?.after === "linear") {
+			// One tick fits even when the remaining clip has the shortest possible duration.
+			rightKeys.push(createScalarKey({
+				id: `${rightBoundaryId}:slope`, time: mediaTime({ ticks: 1 }), value: valueAt(splitTime + 1), interpolation: "linear",
+			}));
+		}
 	}
 
 	return {
