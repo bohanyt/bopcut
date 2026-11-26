@@ -234,8 +234,8 @@ export function computeBoxMaskParamUpdate({
 		});
 	}
 
-	const halfWidth = startParams.width * bounds.width;
-	const halfHeight = startParams.height * bounds.height;
+	const halfWidth = (startParams.width * bounds.width) / 2;
+	const halfHeight = (startParams.height * bounds.height) / 2;
 	// Resize handles sit on the rotated mask: measure the drag along the mask's own axes.
 	const angleRad = (startParams.rotation * Math.PI) / 180;
 	const localX = deltaX * Math.cos(angleRad) + deltaY * Math.sin(angleRad);
