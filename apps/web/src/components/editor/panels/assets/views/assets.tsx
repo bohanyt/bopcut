@@ -709,7 +709,7 @@ function MediaActions({
 			>
 				<HugeiconsIcon icon={CloudUploadIcon} />
 				{/* A narrow panel keeps the icon only, so the button is never cut off at the edge. */}
-				<span className="@max-[18rem]:sr-only">{t("assets.import")}</span>
+				<span className="@max-[15rem]:sr-only">{t("assets.import")}</span>
 			</Button>
 		</div>
 	);
