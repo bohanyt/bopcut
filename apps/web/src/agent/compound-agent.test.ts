@@ -110,6 +110,29 @@ describe("addressing and absolute times", () => {
 		expect(pick({ agentId: "nope" })).toContain("not found");
 		expect(pick({ id: "r", path: ["bg"] })).toContain("not a compound clip");
 	});
+
+	test("strict draft matching rejects repeated agent ids within a scene and lists the candidates", () => {
+		const scenes = nested();
+		const titles = scenes[1].tracks.overlay[0];
+		if (titles.type !== "text") throw new Error("Expected a title track");
+		titles.elements.push({ ...titles.elements[0], id: "a2" });
+		const match = { agentId: "label", path: ["c1"] };
+		expect(resolveMatch(scenes, "main", match)).toMatchObject({ hit: { element: { id: "a1" } } });
+		const strict = { ...match, strict: true };
+		expect(resolveMatch(scenes, "main", strict)).toEqual({ error: expect.stringMatching(/ambiguous.+a1.+a2/) });
+		expect(resolveMatch(scenes, "main", { ...strict, id: "a2" })).toMatchObject({ hit: { element: { id: "a2" } } });
+	});
+
+	test("strict draft matching reports repeated compound ids in a path", () => {
+		const scenes = nested();
+		const track = scenes[0].tracks.overlay[0];
+		if (track.type !== "video") throw new Error("Expected a video track");
+		track.elements[0] = { ...track.elements[0], agentId: "wrapper" };
+		track.elements.push({ ...track.elements[0], id: "other-wrapper" });
+		const match = { agentId: "label", path: ["wrapper"] };
+		expect(resolveMatch(scenes, "main", match)).toMatchObject({ hit: { element: { id: "a1" } } });
+		expect(resolveMatch(scenes, "main", { ...match, strict: true })).toEqual({ error: expect.stringMatching(/ambiguous.+c1.+other-wrapper/) });
+	});
 });
 
 describe("draft ops inside compounds", () => {

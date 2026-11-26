@@ -4,7 +4,7 @@
 import type { CompoundElement, ElementRef, SceneTracks, TScene, TimelineElement, TimelineTrack } from "@/timeline";
 import { isCompoundElement, isCompoundScene, sceneReachesScene } from "@/timeline/compound";
 
-export type AgentMatch = { agentId?: string; id?: string; sceneId?: string; scene?: string; path?: string[] };
+export type AgentMatch = { agentId?: string; id?: string; sceneId?: string; scene?: string; path?: string[]; strict?: boolean };
 export type SceneInstance = { sceneId: string; path: string[]; chain: CompoundElement[] };
 export type ElementHit = { sceneId: string; track: TimelineTrack; index: number; element: TimelineElement };
 export type ElementAddress = { sceneId: string; trackId: string | null; id: string; agentId: string | null; path: string[] | null };
@@ -126,20 +126,32 @@ export function toRootInterval(start: number, end: number, chain: CompoundElemen
 	return [start, end];
 }
 
-function findInScene(scene: TScene, test: (element: TimelineElement) => boolean): ElementHit | null {
+function findInScene(scene: TScene, test: (element: TimelineElement) => boolean, all = false): ElementHit[] {
+	const hits: ElementHit[] = [];
 	for (const track of orderedTracks(scene.tracks)) {
-		const index = track.elements.findIndex(test);
-		if (index >= 0) return { sceneId: scene.id, track, index, element: track.elements[index] };
+		for (const [index, element] of track.elements.entries()) {
+			if (!test(element)) continue;
+			hits.push({ sceneId: scene.id, track, index, element });
+			if (!all) return hits;
+		}
 	}
-	return null;
+	return hits;
+}
+
+function ambiguousMatch(hits: ElementHit[]): { error: string } {
+	const ids = hits.map(({ element, sceneId }) => `${element.id} (${sceneId})`);
+	return { error: `ambiguous match: use an element id or narrow the scene; candidates: ${ids.join(", ")}` };
 }
 
 /** Follows `path` (compound clip ids or agentIds) from the root to the scene inside the last clip. */
-export function resolveScenePath(scenes: TScene[], rootSceneId: string, path: string[]): { sceneId: string } | { error: string } {
+export function resolveScenePath(scenes: TScene[], rootSceneId: string, path: string[], strict = false): { sceneId: string } | { error: string } {
 	let sceneId = rootSceneId;
 	for (const entry of path) {
 		const scene = scenes.find((s) => s.id === sceneId);
-		const hit = scene ? findInScene(scene, (element) => element.id === entry) ?? findInScene(scene, (element) => element.agentId === entry) : null;
+		const ids = scene ? findInScene(scene, (element) => element.id === entry, strict) : [];
+		const hits = scene && !ids.length ? findInScene(scene, (element) => element.agentId === entry, strict) : ids;
+		if (hits.length > 1) return ambiguousMatch(hits);
+		const hit = hits[0];
 		if (!hit || !isCompoundElement(hit.element)) return { error: `path entry "${entry}" is not a compound clip in scene ${sceneId}` };
 		sceneId = hit.element.sceneId;
 	}
@@ -153,17 +165,19 @@ const isMatch = (value: unknown): value is AgentMatch =>
  * Finds one element. `{agentId}` / `{id}` search every scene reachable from the root and fail when
  * the element is in more than one scene; `sceneId` or `path` (compound ids from the root) narrows
  * the search to one scene. When both are given, `id` is searched in every candidate scene first and
- * `agentId` is only tried if no element has that id.
+ * `agentId` is only tried if no element has that id. Strict matching also rejects duplicates
+ * within a scene.
  */
 export function resolveMatch(scenes: TScene[], rootSceneId: string, match: unknown): { hit: ElementHit } | { error: string } {
 	if (!isMatch(match) || !((typeof match.id === "string" && match.id) || (typeof match.agentId === "string" && match.agentId))) {
 		return { error: "invalid match: give agentId or id" };
 	}
 	let sceneIds: string[];
+	const strict = match.strict === true;
 	const explicitScene = match.sceneId ?? match.scene;
 	if (match.path !== undefined) {
 		if (!Array.isArray(match.path) || match.path.some((entry) => typeof entry !== "string")) return { error: "invalid match path" };
-		const resolved = resolveScenePath(scenes, rootSceneId, match.path);
+		const resolved = resolveScenePath(scenes, rootSceneId, match.path, strict);
 		if ("error" in resolved) return resolved;
 		if (explicitScene && explicitScene !== resolved.sceneId) return { error: "match sceneId and path point at different scenes" };
 		sceneIds = [resolved.sceneId];
@@ -174,11 +188,12 @@ export function resolveMatch(scenes: TScene[], rootSceneId: string, match: unkno
 		sceneIds = getReachableScenes(scenes, rootSceneId).map((scene) => scene.id);
 	}
 	const candidates = sceneIds.flatMap((sceneId) => scenes.filter((s) => s.id === sceneId));
-	const search = (test: (element: TimelineElement) => boolean) => candidates.flatMap((scene) => findInScene(scene, test) ?? []);
+	const search = (test: (element: TimelineElement) => boolean) => candidates.flatMap((scene) => findInScene(scene, test, strict));
 	let hits = match.id ? search((element) => element.id === match.id) : [];
 	if (hits.length === 0 && match.agentId) hits = search((element) => element.agentId === match.agentId);
 	if (hits.length === 0) return { error: "item not found (it may have been deleted in the editor)" };
 	if (hits.length > 1) {
+		if (strict) return ambiguousMatch(hits);
 		return { error: `ambiguous match: found in scenes ${hits.map((hit) => hit.sceneId).join(", ")}; add sceneId or path` };
 	}
 	return { hit: hits[0] };
@@ -189,7 +204,7 @@ export function resolveCompoundTarget(scenes: TScene[], rootSceneId: string, tar
 	if (!isMatch(target)) return { error: "invalid compound target" };
 	if (!target.id && !target.agentId) {
 		if (Array.isArray(target.path) && target.path.every((entry) => typeof entry === "string")) {
-			return resolveScenePath(scenes, rootSceneId, target.path);
+			return resolveScenePath(scenes, rootSceneId, target.path, target.strict === true);
 		}
 		return { error: "invalid compound target: give agentId, id or path" };
 	}

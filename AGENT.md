@@ -470,9 +470,11 @@ Timeline UI:
 
 **Matching inside compounds.** In `set`, `delete`, `group`, `ungroup`, and note `match`:
 - `{agentId}` or `{id}` searches every scene reachable from the root. If the element is found in more than one scene, the op fails as ambiguous; narrow it with `sceneId` or `path`.
+- Add `strict:true` to a match to also reject repeated IDs within a scene, including compound IDs in `path`. The error lists candidate element IDs. Existing matches use the first result within each scene.
 - `{agentId|id, sceneId}` searches only that scene.
 - `{agentId|id, path:[…]}` searches the scene inside the last clip of `path`; entries are compound clip ids or their agentIds, from the root.
 - Copies made by duplicate or paste have no `agentId` (see the copy identity policy above), so an `agentId` match always finds the original. Address a copy, and anything inside it, by element `id` (and `path`, using the copied clip's id); the snapshot shows its `agentId` as `null`.
+- When a timeline split keeps both halves of a clip, the left half keeps its original `agentId` and the right half uses its new element ID as its `agentId`. Both halves retain their human edit marks. A one-sided trim keeps the original `agentId` on the surviving half.
 - When both `id` and `agentId` are given, every candidate scene is searched for the `id` first; `agentId` is only used if no element has that id.
 
 **Times in ops inside a compound are relative to that compound's content**, exactly as the snapshot reports them (`start`, `duration`, `trimStart`, keyframe times). The compound clip keeps its position and length when its content changes: added content becomes `trimEnd`, so extend the clip with a `set` `duration` if it should show more.
