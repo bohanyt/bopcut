@@ -305,6 +305,11 @@ export interface DropTarget {
 
 export interface ComputeDropTargetParams {
 	elementType: ElementType;
+	/**
+	 * The track type the element needs, when its element type does not tell (a compound clip whose
+	 * content is only audio belongs on audio tracks). Defaults to the element type's track.
+	 */
+	trackType?: TrackType;
 	mouseX: number;
 	mouseY: number;
 	tracks: SceneTracks;
@@ -319,6 +324,8 @@ export interface ComputeDropTargetParams {
 	excludeElementId?: string;
 	excludeElementIds?: ReadonlySet<string>;
 	targetElementTypes?: string[];
+	/** Height of a track's expanded keyframe lanes, below its row (ordered track index). */
+	getTrackExtraHeight?: (trackIndex: number) => number;
 }
 
 export interface ClipboardItem {

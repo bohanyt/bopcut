@@ -49,16 +49,19 @@ function getTrackAtY({
 	tracks,
 	verticalDragDirection,
 	external,
+	getTrackExtraHeight,
 }: {
 	mouseY: number;
 	tracks: TimelineTrack[];
 	verticalDragDirection?: "up" | "down" | null;
 	external: boolean;
+	getTrackExtraHeight?: (trackIndex: number) => number;
 }): { trackIndex: number; relativeY: number; inGap?: true } | null {
 	let cumulativeHeight = 0;
 
 	for (let i = 0; i < tracks.length; i++) {
-		const trackHeight = getTrackHeight({ type: tracks[i].type });
+		// A track with expanded keyframe lanes is taller on screen; the lanes belong to its row.
+		const trackHeight = getTrackHeight({ type: tracks[i].type }) + (getTrackExtraHeight?.(i) ?? 0);
 		const trackTop = cumulativeHeight;
 		const trackBottom = trackTop + trackHeight;
 
@@ -106,6 +109,8 @@ function fallbackNewTrackDropTarget({
 
 export function computeDropTarget({
 	elementType,
+	trackType,
+	getTrackExtraHeight,
 	mouseX,
 	mouseY,
 	tracks,
@@ -136,7 +141,7 @@ export function computeDropTarget({
 	if (orderedTracks.length === 0) {
 		const placementResult = resolveTrackPlacement({
 			tracks,
-			elementType,
+			...(trackType ? { trackType } : { elementType }),
 			timeSpans: [{ startTime: xPosition, duration: elementDuration, excludeElementId }],
 			strategy: {
 				type: "preferIndex",
@@ -165,6 +170,7 @@ export function computeDropTarget({
 		tracks: orderedTracks,
 		verticalDragDirection,
 		external: isExternalDrop,
+		getTrackExtraHeight,
 	});
 
 	if (!trackAtMouse) {
@@ -172,7 +178,7 @@ export function computeDropTarget({
 
 		const placementResult = resolveTrackPlacement({
 			tracks,
-			elementType,
+			...(trackType ? { trackType } : { elementType }),
 			timeSpans: [{ startTime: xPosition, duration: elementDuration, excludeElementId }],
 			strategy: {
 				type: "preferIndex",
@@ -219,10 +225,10 @@ export function computeDropTarget({
 		}
 	}
 
-	const trackHeight = getTrackHeight({ type: track.type });
+	const trackHeight = getTrackHeight({ type: track.type }) + (getTrackExtraHeight?.(trackIndex) ?? 0);
 	const placementResult = resolveTrackPlacement({
 		tracks,
-		elementType,
+		...(trackType ? { trackType } : { elementType }),
 		timeSpans: [{ startTime: xPosition, duration: elementDuration, excludeElementId, excludeElementIds }],
 		strategy: {
 			type: "preferIndex",
@@ -263,9 +269,11 @@ export function computeDropTarget({
 export function getDropLineY({
 	dropTarget,
 	tracks,
+	getTrackExtraHeight,
 }: {
 	dropTarget: DropTarget;
 	tracks: TimelineTrack[];
+	getTrackExtraHeight?: (trackIndex: number) => number;
 }): number {
 	const safeTrackIndex = Math.min(
 		Math.max(dropTarget.trackIndex, 0),
@@ -274,7 +282,7 @@ export function getDropLineY({
 	let y = 0;
 
 	for (let i = 0; i < safeTrackIndex; i++) {
-		y += getTrackHeight({ type: tracks[i].type }) + TIMELINE_TRACK_GAP_PX;
+		y += getTrackHeight({ type: tracks[i].type }) + (getTrackExtraHeight?.(i) ?? 0) + TIMELINE_TRACK_GAP_PX;
 	}
 
 	return y;

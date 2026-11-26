@@ -340,6 +340,7 @@ export function Timeline() {
 		tracksScrollRef,
 		snappingEnabled,
 		onSnapPointChange: handleSnapPointChange,
+		getTrackExpansionHeight,
 	});
 	const isElementDragging = dragView.kind === "dragging";
 	const dragViewRef = useCommittedRef(dragView);
@@ -372,6 +373,7 @@ export function Timeline() {
 		containerRef: tracksContainerRef,
 		tracksScrollRef,
 		zoomLevel,
+		getTrackExpansionHeight,
 	});
 
 	const {
@@ -510,12 +512,14 @@ export function Timeline() {
 						tracks={tracks}
 						isVisible={isDragOver && !dropTarget?.targetElement}
 						headerHeight={timelineHeaderHeight}
+						getTrackExtraHeight={getTrackExpansionHeight}
 					/>
 					<DragLine
 						dropTarget={isElementDragging ? dragView.dropTarget : null}
 						tracks={tracks}
 						isVisible={isElementDragging}
 						headerHeight={timelineHeaderHeight}
+						getTrackExtraHeight={getTrackExpansionHeight}
 					/>
 
 					<div ref={rulerScrollRef} className="shrink-0 overflow-hidden">

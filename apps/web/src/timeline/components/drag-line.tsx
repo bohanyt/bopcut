@@ -7,6 +7,7 @@ interface DragLineProps {
 	tracks: TimelineTrack[];
 	isVisible: boolean;
 	headerHeight?: number;
+	getTrackExtraHeight?: (trackIndex: number) => number;
 }
 
 export function DragLine({
@@ -14,10 +15,11 @@ export function DragLine({
 	tracks,
 	isVisible,
 	headerHeight = 0,
+	getTrackExtraHeight,
 }: DragLineProps) {
 	if (!isVisible || !dropTarget) return null;
 
-	const y = getDropLineY({ dropTarget, tracks });
+	const y = getDropLineY({ dropTarget, tracks, getTrackExtraHeight });
 	const lineTop = y + headerHeight;
 
 	return (
