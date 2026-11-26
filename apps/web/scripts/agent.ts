@@ -11,7 +11,7 @@ import { isHttpUrl, parseTime } from "../src/retrieval/time";
 import { runRender } from "./agent-render";
 import { loadEnvLocal } from "./retrieval-cli";
 
-const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check"] as const;
+const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check", "voice"] as const;
 type Command = typeof commands[number];
 const usage = `Use: bun run agent <${commands.join("|")}> [--project-id ID] [--timeout SECONDS]`;
 const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
@@ -32,7 +32,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		options: {
 			"project-id": { type: "string" }, timeout: { type: "string" },
 			...(transcript && { lang: { type: "string" }, range: { type: "string" } }),
-			...(!transcript && command !== "draft-check" && { url: { type: "string" } }),
+			...(!transcript && command !== "draft-check" && command !== "voice" && { url: { type: "string" } }),
+			...(command === "voice" && { name: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, replace: { type: "boolean" } }),
 			...(render && command !== "view" && { "allow-missing": { type: "boolean" } }),
 			...(command === "view" && { from: { type: "string" }, to: { type: "string" }, rows: { type: "string" }, file: { type: "string" } }),
 			...(command === "review" && { file: { type: "string" }, pictures: { type: "string" } }),
@@ -49,12 +50,20 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" }, note: { type: "string" }, "scene-id": { type: "string" } }),
 		},
 	});
-	const seconds = Number(values.timeout ?? (render ? 600 : command === "review" ? 180 : command === "draft-check" && values.pictures === true ? 55 : 30));
+	const seconds = Number(values.timeout ?? (render || command === "voice" ? 600 : command === "review" ? 180 : command === "draft-check" && values.pictures === true ? 55 : 30));
 	if (!Number.isFinite(seconds) || seconds < 0.001 || seconds > 86400) throw new Error("Set --timeout to a positive number of seconds, up to 86400.");
 	if (render && !values.file && seconds < minRenderSeconds) throw new Error(`Set --timeout to at least ${minRenderSeconds} seconds for a render.`);
 	const projectId = values["project-id"];
 	if (projectId !== undefined && !/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) throw new Error("Pass a valid project ID to --project-id.");
 	const timeoutMs = Math.round(seconds * 1000);
+	if (command === "voice") {
+		const text = typeof values.text === "string" ? values.text : undefined;
+		const textFile = typeof values["text-file"] === "string" ? values["text-file"] : undefined;
+		if (typeof values.name !== "string" || (text === undefined) === (textFile === undefined)) {
+			throw new Error("Use voice --name NAME (--text TEXT | --text-file PATH) [--replace] [--timeout SECONDS].");
+		}
+		return { command: "voice" as const, input: { name: values.name, text, textFile, replace: values.replace === true }, timeoutMs };
+	}
 	if (command === "draft-check") {
 		if (!projectId) throw new Error("Use draft-check --project-id ID [--from SECONDS] [--to SECONDS] [--json] [--all] [--pictures].");
 		const number = (flag: "from" | "to" | keyof DraftThresholds | "picture-limit" | "picture-distance" | "freeze-seconds" | "outlier-distance") => {
@@ -152,7 +161,7 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			? [...(Array.isArray(values.element) ? values.element : []), ...(typeof values.elements === "string" ? values.elements.split(",") : [])] : undefined;
 		request = parseFrameInput({ times, elements, noteId: values.note, sceneId: values["scene-id"], width: values.width === undefined ? undefined : Number(values.width), allowMissing });
 	}
-	return { command: command as Exclude<Command, "transcript" | "review" | "draft-check">, projectId, timeoutMs, origin: url.origin,
+	return { command: command as Exclude<Command, "transcript" | "review" | "draft-check" | "voice">, projectId, timeoutMs, origin: url.origin,
 		...(media !== undefined && { media }), ...(request && { request }), ...(narration && { narration }) };
 }
 
@@ -207,6 +216,28 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 		} finally {
 			process.removeListener("SIGINT", cancel);
 			process.removeListener("SIGTERM", cancel);
+		}
+	}
+	if (options.command === "voice") {
+		const webDir = path.resolve(import.meta.dir, "..");
+		loadEnvLocal(path.join(webDir, ".env.local"));
+		const workspace = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(webDir, "..", "..", "workspace"));
+		const interrupt = new AbortController();
+		const deadline = AbortSignal.timeout(options.timeoutMs);
+		const stop = () => interrupt.abort(new Error("Interrupted by Ctrl+C."));
+		process.on("SIGINT", stop);
+		process.on("SIGTERM", stop);
+		try {
+			const { voiceCommand } = await import("./agent-voice");
+			return await voiceCommand(options.input, path.resolve(process.env.AGENT_FILES_ROOT ?? workspace),
+				AbortSignal.any([interrupt.signal, deadline]));
+		} catch (error) {
+			if (deadline.aborted) throw new Error("Timed out while making the voice. Increase --timeout and retry; the previous file is unchanged.");
+			if (interrupt.signal.aborted) throw new Error("Interrupted while making the voice; the previous file is unchanged.");
+			throw error;
+		} finally {
+			process.removeListener("SIGINT", stop);
+			process.removeListener("SIGTERM", stop);
 		}
 	}
 	if (options.command === "file-view") {

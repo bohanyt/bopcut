@@ -24,6 +24,7 @@ bun run agent narration-plan --project-id ID --clip CLIP_ID --new-media MEDIA_ID
 bun run agent view --project-id ID --from 12 --to 32 --rows 8
 bun run agent view --file media/take.mp4 --from 8 --to 16
 bun run agent review --project-id ID --file exports/out.mp4
+bun run agent voice --name hook --text "Who wins this round?"
 ```
 
 `status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. A chosen project (`--project-id`) answers from its own snapshot, or from the last synced one when that is the same project. Reads stay inside the agent workspace: a link that leads out of it is refused. Read the preference files directly (see *Preferences*).
@@ -69,6 +70,8 @@ With `--pictures`, FFmpeg samples the active source frame at three times per sho
 
 Dense inspection covers source spans up to six seconds or three short windows in longer spans. Freeze findings require three moving frame steps on each side, without a cut-like jump. Terminal holds and motion below the detector's noise floor can go unreported. The check cannot tell whether an internal hold was intentional. Events outside the windows, frames beyond the decode cap, and unusually long frame intervals beyond the preroll can go unobserved. Up to 12 evidence PNGs go in a temporary directory. The picture pass checks saved source pixels, including baked footage. It does not draw the draft's overlays, masks, effects, or transitions. The report gives coverage, missing media, and omitted rows.
 
+**Make narration with `voice`.** Set `BOPENCUT_TTS` to a text-to-speech command, for example in `apps/web/.env.local`. The command is optional; bopencut ships none. It is called as `<BOPENCUT_TTS> --text-file IN.txt --out OUT.wav --words OUT.json`. It must write a WAV file to `--out` and may write the spoken words as a JSON array of `{text, start, end}` in seconds to `--words`. The setting is one executable path (spaces allowed) or a command line with quoted parts, as for `BOPENCUT_FFMPEG`. Run `bun run agent voice --name NAME --text TEXT` or `--text-file PATH` (a UTF-8 file under `AGENT_FILES_ROOT`, at most 100,000 characters). The server can be closed. The result is saved as `AGENT_FILES_ROOT/voice/NAME.wav` with `NAME.wav.words.json` beside it when words were reported, the sidecar format that `view --file` reads. An existing name is kept unless you pass `--replace`; a replacement without words removes the old word file. A failed, cancelled, or timed-out run (default 600 s, `--timeout SECONDS`) leaves the previous take unchanged. The JSON output has `path`, `duration`, `wordsFile`, optional `warnings`, and `asset`, which can go into a draft `add` element as is. Its `words` enable `cut:"words"`, `startAtWord`, and captions from the same timings. Speak one line or section per file, so each can be redone or moved alone.
+
 Start with a transcript to find the relevant words or a pause. Use a range picture to check the cuts, titles, and sound around it. Use the file protocol below for drafts, changes, historical frames, and comparisons.
 
 ## Agent workspace (`apps/web/.env.local`)
@@ -76,6 +79,7 @@ Start with a transcript to find the relevant words or a pause. Use a range pictu
 BOPENCUT_DATA=/path/to/data-folder      # Default: <repo>/workspace
 AGENT_WORKSPACE=/path/to/workspace      # Default: <repo>/workspace
 AGENT_FILES_ROOT=/path/to/asset-root    # Default: AGENT_WORKSPACE
+BOPENCUT_TTS="/path/to/tts-command"     # Optional, for `agent voice`
 ```
 `BOPENCUT_DATA` is the parent of the `projects/` directory. Open and switch projects from the Projects page. `BOPENCUT_DATA` is read on each request; restart the server after changing `AGENT_WORKSPACE` or `AGENT_FILES_ROOT`. Keep private data outside the repository.
 

@@ -16,6 +16,7 @@
 - **Frame images.** The agent can request an image of a frame at any time.
 - **Review a range.** Read saved words with `transcript-view`, preview a voice-over replacement with `narration-plan`, or use `view` to make a PNG with frames, audio peaks, words, and clip edges. The editor can stay closed. [Agent CLI](AGENT.md#agent-cli)
 - **Review a finished export.** The agent can check the actual file and saved timeline, with time-stamped findings and filmstrips as evidence. [Agent CLI](AGENT.md#agent-cli)
+- **Draft narration with your own voice tool.** Point `BOPENCUT_TTS` at any text-to-speech command, and `voice` saves each line as a WAV with word timings, ready for the timeline, word cuts, and captions. No voice engine is bundled. [Agent CLI](AGENT.md#agent-cli)
 - **Fetch a video segment from a link.** Give a link and start and end times, such as a 20-second segment from a three-hour stream. yt-dlp fetches just that segment with frame-accurate cuts. Use an agent draft, the CLI, or the link button in the Assets panel.
 - **Find sound effects by name.** Search your own sound folders and Myinstants without an account. Use the Library tab in the Sounds panel, or put `sfx: "vine boom"` in an agent draft. Downloaded sounds become part of your library.
 - **Find music by title.** Search your own music folders or fetch just the audio online through yt-dlp. Loudness is normalized on download. The agent can also duck music under speech with adjustable volume keyframes.
