@@ -1452,6 +1452,12 @@ describe("the export poller", () => {
 			expect(await log.result()).toMatchObject({ rev: "e1", projectId: "p", status: "done", file: "exports/final.mp4", bytes: 10, width: 1080, height: 1920, fps: 30, duration: 2 });
 		}));
 
+	test("an fps of 29.97 in a request exports on the NTSC frame grid", () =>
+		withServer({ request: { rev: "e1", fps: 29.97 } }, async (log) => {
+			await pollExport();
+			expect(log.exports[0].options.fps).toEqual({ numerator: 30000, denominator: 1001 });
+		}));
+
 	test("takes the editor as it is once the request has arrived", () =>
 		withServer({ request: { rev: "e1" }, onRequest: () => open("p", 5) }, async (log) => {
 			// The clip grew while the request was read: the export and the answer both use the new length.
