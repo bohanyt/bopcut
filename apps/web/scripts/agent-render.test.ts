@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { main, parseArgs, renderFailed } from "./agent";
 import { launchBrowser, type RunningBrowser } from "./agent-browser";
-import { runRender } from "./agent-render";
+import { runRender, hiddenBrowserExitMessage } from "./agent-render";
 import { isRenderAdapterStage, renderAdapterStage } from "../src/agent/render-gpu";
 
 test.each([["default", undefined], ["low-power", "low-power"]] as const)("launches the hidden browser with GPU mode %s", (_name, mode) => {
@@ -171,3 +171,30 @@ for (const mode of ["visible", "done", "error", "timeout", "interrupt", "server 
 		expect(stops).toBe(starts);
 	});
 }
+
+test("a hidden browser that ends says how and when, and why when it closed at once", () => {
+	const quick = hiddenBrowserExitMessage({ code: 0, signal: null, afterMs: 300 });
+	expect(quick).toContain("(exit code 0 after 0.3 s)");
+	expect(quick).toContain("HeadlessModeEnabled");
+	expect(quick).toContain("UserDataDir");
+	const crash = hiddenBrowserExitMessage({ code: 3221225477, signal: null, afterMs: 12_000 });
+	expect(crash).toContain("(exit code 3221225477 after 12.0 s)");
+	expect(crash).toContain("BOPENCUT_RENDER_GPU=low-power");
+	expect(hiddenBrowserExitMessage({ error: "spawn msedge.exe ENOENT", afterMs: 1 })).toContain("could not start (spawn msedge.exe ENOENT)");
+	expect(hiddenBrowserExitMessage(undefined)).toContain("The hidden browser exited. Open the project");
+});
+
+test("the render stream reports how the hidden browser ended", async () => {
+	const response = new Response(new ReadableStream<Uint8Array>({
+		start(stream) {
+			stream.enqueue(new TextEncoder().encode(JSON.stringify({ launch: "http://localhost/worker", profile: "profile" }) + "\n"));
+		},
+	}));
+	const run = runRender(response, {
+		timeoutMs: 5000,
+		signal: new AbortController().signal,
+		progress: () => {},
+		launch: () => ({ exited: Promise.resolve({ code: 0, signal: null, afterMs: 400 }), stop: async () => {} }),
+	});
+	await expect(run).rejects.toThrow("(exit code 0 after 0.4 s) on its own");
+});

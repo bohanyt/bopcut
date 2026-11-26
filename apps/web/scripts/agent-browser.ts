@@ -3,7 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parseEnv } from "node:util";
 
-export type RunningBrowser = { exited: Promise<unknown>; stop(): Promise<void> };
+/** How the browser process ended: its exit code or signal, or why it could not start, and when. */
+export type BrowserExit = { code?: number | null; signal?: string | null; error?: string; afterMs: number };
+export type RunningBrowser = { exited: Promise<BrowserExit | void>; stop(): Promise<void> };
 
 function findBrowser() {
 	const configured = process.env.BOPENCUT_BROWSER;
@@ -25,9 +27,10 @@ function findBrowser() {
 function startBrowser(args: string[]): RunningBrowser {
 	const windows = process.platform === "win32";
 	const child = spawn(findBrowser(), args, { detached: !windows, windowsHide: true, stdio: "ignore" });
-	const exited = new Promise<unknown>((resolve) => {
-		child.once("error", resolve);
-		child.once("exit", resolve);
+	const started = Date.now();
+	const exited = new Promise<BrowserExit>((resolve) => {
+		child.once("error", (error) => resolve({ error: error.message, afterMs: Date.now() - started }));
+		child.once("exit", (code, signal) => resolve({ code, signal, afterMs: Date.now() - started }));
 	});
 	return {
 		exited,
