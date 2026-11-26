@@ -175,7 +175,7 @@ Settings, in `apps/web/.env.local` or the environment:
 ```
 BOPENCUT_YTDLP=yt-dlp                       # or a command, e.g. "python -m yt_dlp"
 BOPENCUT_FFMPEG=ffmpeg                      # or a full path to ffmpeg
-BOPENCUT_YTDLP_COOKIES_FROM_BROWSER=        # e.g. firefox, for sites that need a login
+BOPENCUT_YTDLP_COOKIES_FROM_BROWSER=        # e.g. firefox, for sites that need a login (a browser chosen in the home page's Accounts tab comes first)
 BOPENCUT_VIDEO_ENCODER=libx264              # h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox use the GPU
 BOPENCUT_RETRIEVE_HEIGHT=1080               # maximum video height
 BOPENCUT_RETRIEVE_MAX_SECONDS=1800          # longest section allowed

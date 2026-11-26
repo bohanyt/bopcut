@@ -158,7 +158,8 @@ async function supervise(command: string, args: string[], signal: AbortSignal, s
 		if (!drained) throw new Error("tool output pipes did not close");
 		const errors = Buffer.concat(stderr).toString();
 		if (size > 256 * 1024 * 1024) throw new Error("tool output exceeded its limit");
-		if (code !== 0) throw Object.assign(new Error("tool exited with code " + code), { stderr: errors, code: code === 127 ? "ENOENT" : undefined });
+		// Some callers read what the tool printed before it failed (the cookie check of the Accounts tab).
+		if (code !== 0) throw Object.assign(new Error("tool exited with code " + code), { stderr: errors, stdout: Buffer.concat(stdout).toString(), code: code === 127 ? "ENOENT" : undefined });
 		return { stdout: Buffer.concat(stdout).toString(), stderr: errors };
 	} finally {
 		signal.removeEventListener("abort", stop);

@@ -63,6 +63,7 @@ Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa In
 | Apa | Lokasi default | Ganti dengan (`apps/web/.env.local`) |
 |---|---|---|
 | Proyek dan media | `<repo>/workspace/projects/` | `BOPENCUT_DATA` |
+| Pilihan dari tab Akun di halaman utama | `<repo>/workspace/accounts.json` | `BOPENCUT_DATA` |
 | Folder kerja agen (sync, draf, frame, log editan) | `<repo>/workspace/` | `AGENT_WORKSPACE` |
 | Akar aset yang boleh dibaca agen | = `AGENT_WORKSPACE` | `AGENT_FILES_ROOT` |
 

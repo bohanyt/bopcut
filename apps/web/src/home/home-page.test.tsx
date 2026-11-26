@@ -3,6 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import type { Inbox } from "@/agent/inbox-types";
+import type { AccountsStatus, CookieCheck } from "@/accounts/types";
 
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({
@@ -39,11 +40,21 @@ const originals = Object.keys(globals).map((key) => [key, Object.getOwnPropertyD
 const originalFetch = globalThis.fetch;
 let root: Root | null = null;
 let inbox: Inbox = { bundle: null, draft: null };
+let accounts: AccountsStatus = { cookies: { browser: null, source: "none" } };
+let check: CookieCheck = { ok: false, error: "not set" };
+const posts: { url: string; body: unknown }[] = [];
 
 beforeAll(() => {
 	for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-	globalThis.fetch = (async (url: string) => {
+	globalThis.fetch = (async (url: string, init?: RequestInit) => {
 		if (String(url) === "/api/agent/inbox") return Response.json(inbox);
+		if (init?.method === "POST") posts.push({ url: String(url), body: JSON.parse(String(init.body)) });
+		if (String(url) === "/api/agent/accounts") {
+			const chosen = posts.at(-1)?.body as { cookiesFromBrowser?: string | null } | undefined;
+			if (init?.method === "POST") accounts = { cookies: { browser: chosen?.cookiesFromBrowser ?? null, source: "accounts" } };
+			return Response.json(accounts);
+		}
+		if (String(url) === "/api/agent/accounts/test") return Response.json(check);
 		throw new Error(`Unexpected fetch ${url}`);
 	}) as typeof fetch;
 });
@@ -152,4 +163,48 @@ test("a draft for a missing project or for no project has no link, and an empty 
 	await refresh({ bundle: null, draft: null });
 	expect(text()).toContain("Nothing new from the agent");
 	expect(tab(/From the agent/).getAttribute("aria-label")).toBeNull();
+});
+
+test("the Accounts tab chooses the cookie browser and tests it", async () => {
+	accounts = { cookies: { browser: "chrome", source: "env" } };
+	posts.length = 0;
+	await show("http://127.0.0.1:3000/?tab=accounts");
+	await settle();
+	const select = dom.document.querySelector("select[aria-label='Browser for cookies']") as unknown as HTMLSelectElement;
+	expect(select.selectedOptions[0]?.textContent).toBe("Chrome (from .env.local)");
+	expect(text()).toContain("Firefox works best.");
+
+	check = { ok: true, browser: "chrome", cookies: 12, undecrypted: 3 };
+	await act(async () => { button("Test")!.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }) as never); });
+	await settle();
+	expect(text()).toContain("Read 12 cookies from Chrome. 3 more could not be decrypted, so some sites may still ask for a login.");
+
+	// Choosing saves at once; the old result goes.
+	await act(async () => {
+		select.value = "firefox";
+		select.dispatchEvent(new dom.Event("change", { bubbles: true }) as never);
+	});
+	await settle();
+	expect(posts).toEqual([
+		{ url: "/api/agent/accounts/test", body: {} },
+		{ url: "/api/agent/accounts", body: { cookiesFromBrowser: "firefox" } },
+	]);
+	expect(select.value).toBe("firefox");
+	expect([...select.options].some((option) => option.textContent?.includes(".env.local"))).toBe(false);
+	expect(text()).not.toContain("Read 12 cookies");
+
+	check = { ok: false, error: "could not find firefox cookies database" };
+	await act(async () => { button("Test")!.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }) as never); });
+	await settle();
+	expect(text()).toContain("The cookies could not be read");
+	expect(text()).toContain("could not find firefox cookies database");
+
+	// None: nothing to test.
+	await act(async () => {
+		select.value = "";
+		select.dispatchEvent(new dom.Event("change", { bubbles: true }) as never);
+	});
+	await settle();
+	expect(posts.at(-1)).toEqual({ url: "/api/agent/accounts", body: { cookiesFromBrowser: null } });
+	expect(button("Test")?.disabled).toBe(true);
 });
