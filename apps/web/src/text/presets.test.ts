@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { getBuiltInElementParams } from "@/params/registry";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -133,4 +134,11 @@ test("a preset taken while an animated pixel stroke is 0 keeps the stroke off", 
 	// Without the animation, a 0 pixel width means "use the em width", which stays.
 	const still = createTextPreset("On", { ...plain, params: { ...plain.params, "stroke.outer.widthPx": 0 } }, 0);
 	expect(still.style["stroke.outer.width"]).toBe(0.2);
+});
+
+test("preset numbers keep to the range the properties panel allows", () => {
+	const definition = getBuiltInElementParams({ type: "text" }).find((param) => param.key === "stroke.outer.width");
+	if (!definition || definition.type !== "number" || definition.max === undefined) throw new Error("Expected a bounded stroke width");
+	const preset = validateTextPreset({ name: "Thick", style: { "stroke.outer.width": definition.max * 5 } });
+	expect(preset.style["stroke.outer.width"]).toBe(definition.max);
 });

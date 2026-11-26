@@ -3,7 +3,7 @@ import type { TextElement } from "@/timeline";
 import { pickTextStyle, TEXT_STYLE_KEYS } from "./style";
 import { resolveAnimationPathValueAtTime } from "@/animation";
 import { getBuiltInElementParams } from "@/params/registry";
-import { parseColorToLinearRgba } from "@/params";
+import { coerceParamValue, parseColorToLinearRgba } from "@/params";
 
 export interface TextStylePreset {
 	name: string;
@@ -29,6 +29,7 @@ export function validateTextPreset(value: unknown): TextStylePreset {
 	if (!style || typeof style !== "object" || Array.isArray(style))
 		throw new Error("Invalid preset style");
 	const entries = Object.entries(style);
+	const checked: Record<string, unknown> = {};
 	for (const [key, entry] of entries) {
 		if (
 			!TEXT_STYLE_KEYS.includes(key) ||
@@ -48,8 +49,10 @@ export function validateTextPreset(value: unknown): TextStylePreset {
 				!parseColorToLinearRgba({ color: String(entry) }))
 		)
 			throw new Error(`Invalid style value: ${key}`);
+		// Numbers keep to the same range and step as the properties panel (a 10em outline becomes 2em).
+		checked[key] = definition.type === "number" ? coerceParamValue({ param: definition, value: entry }) ?? definition.default : entry;
 	}
-	return { name: name.trim(), style: Object.fromEntries(entries) };
+	return { name: name.trim(), style: checked as ParamValues };
 }
 
 export function createTextPreset(
