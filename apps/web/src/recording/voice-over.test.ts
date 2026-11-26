@@ -310,6 +310,62 @@ test("the mic toggle during review keeps the take instead of stacking a second r
 	} finally { manager.dispose(); }
 });
 
+test("Save WAV after a timed-out write drops the take that lands later, without an Undo step", async () => {
+	const { editor, manager, start, importFile } = harness();
+	const click = mock(() => {});
+	const globals = {
+		document: { createElement: () => ({ click }), body: { appendChild() {}, removeChild() {} } },
+		URL: Object.assign(Object.create(URL), { createObjectURL: () => "blob:take", revokeObjectURL() {} }),
+	};
+	const descriptors = Object.entries(globals).map(([key, value]) => {
+		const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
+		Object.defineProperty(globalThis, key, { value, configurable: true });
+		return [key, descriptor] as const;
+	});
+	const assets = editor.media.getAssets();
+	spyOn(editor.media, "setAssets").mockImplementation(({ assets: next }) => { assets.splice(0, assets.length, ...next); });
+	const persist = spyOn(editor.media, "persistBinChange").mockResolvedValue(undefined);
+	try {
+		await start();
+		const importNow = importFile.getMockImplementation()!;
+		let finishWrite = () => {};
+		importFile.mockImplementation((params) => new Promise((resolve) => {
+			finishWrite = () => resolve(importNow(params));
+		}));
+		await manager.stop();
+		expect(manager.getSnapshot().phase).toBe("recovery");
+		manager.saveWav();
+		expect(click).toHaveBeenCalledTimes(1);
+		finishWrite();
+		await Bun.sleep(0);
+		await Bun.sleep(0);
+		expect(editor.media.getAssets()).toEqual([]);
+		expect(persist).toHaveBeenCalledWith(expect.objectContaining({ asset: null }));
+		expect(editor.command.canUndo()).toBe(false);
+	} finally {
+		manager.dispose();
+		for (const [key, descriptor] of descriptors) {
+			if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+			else Reflect.deleteProperty(globalThis, key);
+		}
+	}
+});
+
+test("an abandoned take that a clip already uses stays in the bin", () => {
+	const { editor, manager } = harness();
+	try {
+		const assets = editor.media.getAssets();
+		assets.push({ id: "media-voice", name: "Voice", type: "audio", file: new File([], "voice.wav") });
+		const active = editor.scenes.getActiveScene();
+		spyOn(editor.scenes, "getScenes").mockReturnValue([
+			{ ...active, tracks: { ...active.tracks, audio: [{ ...active.tracks.audio[0], elements: [audio("voice", 0, 1)] }] } },
+		] as never);
+		const projectId = editor.project.getActive().metadata.id;
+		expect(editor.media.discardUnusedAsset({ projectId, id: "media-voice" })).toBe(false);
+		expect(assets.map(({ id }) => id)).toEqual(["media-voice"]);
+	} finally { manager.dispose(); }
+});
+
 test("storage that never answers releases navigation, and retry waits for the running write", async () => {
 	const { editor, manager, close, start, importFile } = harness();
 	try {
