@@ -295,6 +295,21 @@ test.each(["stop", "pause", "seek", "unplug", "navigation", "empty", "silent", "
 	},
 );
 
+test("the mic toggle during review keeps the take instead of stacking a second recording", async () => {
+	const { editor, manager, start, importFile } = harness();
+	try {
+		await start();
+		await manager.stop();
+		expect(manager.getSnapshot().phase).toBe("review");
+		manager.toggle();
+		expect(manager.getSnapshot().phase).toBe("idle");
+		expect(importFile).toHaveBeenCalledTimes(1);
+		expect(editor.scenes.getActiveScene().tracks.audio.flatMap((track) => track.elements).length).toBe(1);
+		manager.toggle();
+		expect(manager.getSnapshot().phase).toBe("setup");
+	} finally { manager.dispose(); }
+});
+
 test("storage that never answers releases navigation, and retry waits for the running write", async () => {
 	const { editor, manager, close, start, importFile } = harness();
 	try {

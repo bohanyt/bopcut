@@ -107,7 +107,9 @@ export class VoiceOver {
 	toggle(): void {
 		if (this.isCapturing()) void this.stop();
 		else if (this.state.phase === "setup") this.closeSetup();
-		else if (this.state.phase === "idle" || this.state.phase === "review") this.openSetup();
+		// In review the toggle closes the panel and keeps the take, like Done; the next press opens a new recording.
+		else if (this.state.phase === "review") this.done();
+		else if (this.state.phase === "idle") this.openSetup();
 	}
 
 	openSetup(): void {
