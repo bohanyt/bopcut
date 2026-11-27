@@ -207,3 +207,34 @@ describe("split shortcuts", () => {
 		field.remove();
 	});
 });
+
+describe("select all", () => {
+	async function ctrlA(target: { dispatchEvent(event: unknown): boolean }) {
+		const event = new dom.KeyboardEvent("keydown", { key: "a", code: "KeyA", ctrlKey: true, bubbles: true, cancelable: true });
+		await act(async () => { target.dispatchEvent(event); });
+		return event;
+	}
+	const field = (type: string) => {
+		const input = dom.document.createElement("input");
+		input.type = type;
+		dom.document.body.append(input);
+		input.focus();
+		return input;
+	};
+
+	test.each(["range", "checkbox"])("Ctrl+A in a %s selects every clip, not the page's text", async (type) => {
+		const control = field(type);
+		const event = await ctrlA(control);
+		expect(event.defaultPrevented).toBe(true);
+		expect(selectedNames().sort()).toEqual(["bg@0", "music@0", "next@4", "title@0"]);
+		control.remove();
+	});
+
+	test.each(["text", "number"])("Ctrl+A in a %s field selects its own text", async (type) => {
+		const input = field(type);
+		const event = await ctrlA(input);
+		expect(event.defaultPrevented).toBe(false);
+		expect(editor.selection.getSelectedElements()).toEqual([]);
+		input.remove();
+	});
+});

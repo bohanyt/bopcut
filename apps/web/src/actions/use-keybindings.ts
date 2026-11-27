@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { invokeAction } from "@/actions";
 import { useEditor } from "@/editor/use-editor";
 import { useKeybindingsStore } from "@/actions/keybindings-store";
-import { isTypableDOMElement } from "@/utils/browser";
+import { hasSelectableText, isTypableDOMElement } from "@/utils/browser";
 
 /** Edits that run once per key press: a held key's repeats would repeat the edit. */
 const ONE_SHOT_ACTIONS: ReadonlySet<string> = new Set([
@@ -62,7 +62,12 @@ export function useKeybindingsListener() {
 				activeElement instanceof HTMLInputElement &&
 				activeElement.type === "range" &&
 				(boundAction === "undo" || boundAction === "redo");
-			if (isTextInput && !canUndoRangeEdit) return;
+			// In a slider or a checkbox, Ctrl+A would select the page's text: it selects the clips.
+			const canSelectAllFromControl =
+				boundAction === "select-all" &&
+				activeElement instanceof HTMLElement &&
+				!hasSelectableText({ element: activeElement });
+			if (isTextInput && !canUndoRangeEdit && !canSelectAllFromControl) return;
 			if (boundAction === "paste-copied") {
 				if (!editor.clipboard.hasEntry()) return;
 				ev.preventDefault();

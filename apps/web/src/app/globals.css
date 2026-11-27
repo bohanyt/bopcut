@@ -143,6 +143,17 @@
   ::selection {
     @apply bg-primary/35 selection:text-primary-foreground;
   }
+  /* The editor is controls, not text to read: a drag, Shift+click, double-click
+     or Ctrl+A must not select its labels, or the next drag moves that text
+     instead of a clip. Fields keep their text selectable. */
+  .editor-chrome {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .editor-chrome :is(input, textarea, [contenteditable]:not([contenteditable="false"])) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
 }
 
 @theme inline {
