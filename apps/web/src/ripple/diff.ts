@@ -28,37 +28,45 @@ export function computeRippleAdjustments({
 		...afterTracks.audio,
 	];
 	const afterTracksById = new Map(afterTrackList.map((track) => [track.id, track]));
-	const allAfterElementIds = new Set(
-		afterTrackList.flatMap((track) => track.elements.map((element) => element.id)),
-	);
+	// Built only when a clip left its track, to tell a move to another track from a removal.
+	let allAfterElementIds: Set<string> | undefined;
+	const isOnAnyTrack = (id: string) => {
+		allAfterElementIds ??= new Set(
+			afterTrackList.flatMap((track) => track.elements.map((element) => element.id)),
+		);
+		return allAfterElementIds.has(id);
+	};
 
-	return beforeTrackList.flatMap((beforeTrack): RippleAdjustment[] =>
-		computeTrackRippleAdjustments({
+	return beforeTrackList.flatMap((beforeTrack): RippleAdjustment[] => {
+		const afterElements = afterTracksById.get(beforeTrack.id)?.elements ?? [];
+		// An untouched track frees nothing.
+		if (afterElements === beforeTrack.elements) return [];
+		return computeTrackRippleAdjustments({
 			trackId: beforeTrack.id,
 			beforeElements: beforeTrack.elements,
-			afterElements: afterTracksById.get(beforeTrack.id)?.elements ?? [],
-			allAfterElementIds,
-		}),
-	);
+			afterElements,
+			isOnAnyTrack,
+		});
+	});
 }
 
 function computeTrackRippleAdjustments({
 	trackId,
 	beforeElements,
 	afterElements,
-	allAfterElementIds,
+	isOnAnyTrack,
 }: {
 	trackId: string;
 	beforeElements: TimelineElement[];
 	afterElements: TimelineElement[];
-	allAfterElementIds: Set<string>;
+	isOnAnyTrack: (id: string) => boolean;
 }): RippleAdjustment[] {
 	const beforeElementsById = buildElementSpanMap({ elements: beforeElements });
 	const afterElementsById = buildElementSpanMap({ elements: afterElements });
 	const { vacatedIntervals, occupiedIntervals } = collectTrackIntervals({
 		beforeElementsById,
 		afterElementsById,
-		allAfterElementIds,
+		isOnAnyTrack,
 	});
 	const freedIntervals = subtractIntervalSets({
 		sourceIntervals: vacatedIntervals,
@@ -88,11 +96,11 @@ function buildElementSpanMap({
 function collectTrackIntervals({
 	beforeElementsById,
 	afterElementsById,
-	allAfterElementIds,
+	isOnAnyTrack,
 }: {
 	beforeElementsById: Map<string, ElementSpan>;
 	afterElementsById: Map<string, ElementSpan>;
-	allAfterElementIds: Set<string>;
+	isOnAnyTrack: (id: string) => boolean;
 }): {
 	vacatedIntervals: Interval[];
 	occupiedIntervals: Interval[];
@@ -105,7 +113,7 @@ function collectTrackIntervals({
 	for (const beforeElement of beforeElementsById.values()) {
 		const afterElement = afterElementsById.get(beforeElement.id);
 		if (!afterElement) {
-			const wasMovedToAnotherTrack = allAfterElementIds.has(beforeElement.id);
+			const wasMovedToAnotherTrack = isOnAnyTrack(beforeElement.id);
 			if (!wasMovedToAnotherTrack) {
 				pushInterval({
 					intervals: vacatedIntervals,
@@ -148,6 +156,8 @@ function collectTrackIntervals({
 	// Keep the group's new spacing intact while closing gaps left by the move.
 	pushInterval({ intervals: occupiedIntervals, startTime: firstMovedStart, endTime: lastMovedEnd });
 
+	// Nothing vacated frees nothing: the occupied spans need no sorting then.
+	if (vacatedIntervals.length === 0) return { vacatedIntervals, occupiedIntervals: [] };
 	return {
 		vacatedIntervals: normalizeIntervals({ intervals: vacatedIntervals }),
 		occupiedIntervals: normalizeIntervals({ intervals: occupiedIntervals }),
@@ -177,6 +187,7 @@ function buildAdjustments({
 	});
 }
 
+/** The parts of the sources that no overlapping interval covers. Both lists are normalized: sorted, disjoint. */
 function subtractIntervalSets({
 	sourceIntervals,
 	overlappingIntervals,
@@ -184,19 +195,21 @@ function subtractIntervalSets({
 	sourceIntervals: Interval[];
 	overlappingIntervals: Interval[];
 }): Interval[] {
-	const normalizedSourceIntervals = normalizeIntervals({
-		intervals: sourceIntervals,
-	});
-	const normalizedOverlappingIntervals = normalizeIntervals({
-		intervals: overlappingIntervals,
-	});
-
-	return normalizedSourceIntervals.flatMap((sourceInterval) =>
-		subtractSingleInterval({
-			sourceInterval,
-			overlappingIntervals: normalizedOverlappingIntervals,
-		}),
-	);
+	const freed: Interval[] = [];
+	let first = 0;
+	for (const source of sourceIntervals) {
+		// Both lists ascend, so an interval that ends before this source ends before the next ones too.
+		while (first < overlappingIntervals.length && overlappingIntervals[first].endTime <= source.startTime) first++;
+		let cursor = source.startTime;
+		for (let index = first; index < overlappingIntervals.length; index++) {
+			const overlapping = overlappingIntervals[index];
+			if (overlapping.startTime >= source.endTime) break;
+			pushInterval({ intervals: freed, startTime: cursor, endTime: overlapping.startTime });
+			cursor = Math.max(cursor, overlapping.endTime);
+		}
+		pushInterval({ intervals: freed, startTime: cursor, endTime: source.endTime });
+	}
+	return freed;
 }
 
 function normalizeIntervals({
@@ -237,46 +250,6 @@ function normalizeIntervals({
 	}
 
 	return mergedIntervals;
-}
-
-function subtractSingleInterval({
-	sourceInterval,
-	overlappingIntervals,
-}: {
-	sourceInterval: Interval;
-	overlappingIntervals: Interval[];
-}): Interval[] {
-	let remainingIntervals: Interval[] = [{ ...sourceInterval }];
-
-	for (const overlappingInterval of overlappingIntervals) {
-		remainingIntervals = remainingIntervals.flatMap((remainingInterval) => {
-		if (
-			overlappingInterval.endTime <= remainingInterval.startTime ||
-			overlappingInterval.startTime >= remainingInterval.endTime
-		) {
-				return [remainingInterval];
-			}
-
-			const nextIntervals: Interval[] = [];
-			pushInterval({
-				intervals: nextIntervals,
-				startTime: remainingInterval.startTime,
-				endTime: overlappingInterval.startTime,
-			});
-			pushInterval({
-				intervals: nextIntervals,
-				startTime: overlappingInterval.endTime,
-				endTime: remainingInterval.endTime,
-			});
-			return nextIntervals;
-		});
-
-		if (remainingIntervals.length === 0) {
-			return [];
-		}
-	}
-
-	return remainingIntervals;
 }
 
 function pushInterval({
