@@ -1,5 +1,4 @@
 import type { SceneTracks, TimelineTrack } from "@/timeline/types";
-import { rippleShiftElements } from "./shift";
 
 export interface RippleAdjustment {
 	trackId: string;
@@ -64,14 +63,14 @@ function applyTrackRippleAdjustments<
 			secondAdjustment.afterTime - firstAdjustment.afterTime,
 	);
 
-	let elements: TElement[] = track.elements;
-	for (const adjustment of sortedAdjustments) {
-		elements = rippleShiftElements({
-			elements,
-			afterTime: adjustment.afterTime,
-			shiftAmount: adjustment.shiftAmount,
-		});
-	}
+	// One pass: each clip takes the shifts in the order they used to be applied one by one, latest first.
+	const elements = track.elements.map((element) => {
+		let startTime: number = element.startTime;
+		for (const { afterTime, shiftAmount } of sortedAdjustments) {
+			if (startTime >= afterTime) startTime -= shiftAmount;
+		}
+		return startTime === element.startTime ? element : ({ ...element, startTime } as TElement);
+	});
 
 	return { ...track, elements };
 }

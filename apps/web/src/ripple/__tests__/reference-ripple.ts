@@ -1,0 +1,365 @@
+// The ripple diff and apply as they were before they skipped untouched tracks and sorted once:
+// the tests check that the current ones give the same results.
+import type { SceneTracks, TimelineElement, TimelineTrack } from "@/timeline/types";
+import type { RippleAdjustment } from "../apply";
+import { rippleShiftElements } from "../shift";
+
+interface Interval {
+	startTime: number;
+	endTime: number;
+}
+
+interface ElementSpan extends Interval {
+	id: string;
+}
+
+export function referenceComputeRippleAdjustments({
+	beforeTracks,
+	afterTracks,
+}: {
+	beforeTracks: SceneTracks;
+	afterTracks: SceneTracks;
+}): RippleAdjustment[] {
+	const beforeTrackList = [
+		...beforeTracks.overlay,
+		beforeTracks.main,
+		...beforeTracks.audio,
+	];
+	const afterTrackList = [
+		...afterTracks.overlay,
+		afterTracks.main,
+		...afterTracks.audio,
+	];
+	const afterTracksById = new Map(afterTrackList.map((track) => [track.id, track]));
+	const allAfterElementIds = new Set(
+		afterTrackList.flatMap((track) => track.elements.map((element) => element.id)),
+	);
+
+	return beforeTrackList.flatMap((beforeTrack): RippleAdjustment[] =>
+		computeTrackRippleAdjustments({
+			trackId: beforeTrack.id,
+			beforeElements: beforeTrack.elements,
+			afterElements: afterTracksById.get(beforeTrack.id)?.elements ?? [],
+			allAfterElementIds,
+		}),
+	);
+}
+
+function computeTrackRippleAdjustments({
+	trackId,
+	beforeElements,
+	afterElements,
+	allAfterElementIds,
+}: {
+	trackId: string;
+	beforeElements: TimelineElement[];
+	afterElements: TimelineElement[];
+	allAfterElementIds: Set<string>;
+}): RippleAdjustment[] {
+	const beforeElementsById = buildElementSpanMap({ elements: beforeElements });
+	const afterElementsById = buildElementSpanMap({ elements: afterElements });
+	const { vacatedIntervals, occupiedIntervals } = collectTrackIntervals({
+		beforeElementsById,
+		afterElementsById,
+		allAfterElementIds,
+	});
+	const freedIntervals = subtractIntervalSets({
+		sourceIntervals: vacatedIntervals,
+		overlappingIntervals: occupiedIntervals,
+	});
+
+	return buildAdjustments({ trackId, intervals: freedIntervals });
+}
+
+function buildElementSpanMap({
+	elements,
+}: {
+	elements: TimelineElement[];
+}): Map<string, ElementSpan> {
+	return new Map(
+		elements.map((element) => [
+			element.id,
+			{
+				id: element.id,
+				startTime: element.startTime,
+				endTime: element.startTime + element.duration,
+			},
+		]),
+	);
+}
+
+function collectTrackIntervals({
+	beforeElementsById,
+	afterElementsById,
+	allAfterElementIds,
+}: {
+	beforeElementsById: Map<string, ElementSpan>;
+	afterElementsById: Map<string, ElementSpan>;
+	allAfterElementIds: Set<string>;
+}): {
+	vacatedIntervals: Interval[];
+	occupiedIntervals: Interval[];
+} {
+	const vacatedIntervals: Interval[] = [];
+	const occupiedIntervals: Interval[] = [];
+	let firstMovedStart = Infinity;
+	let lastMovedEnd = -Infinity;
+
+	for (const beforeElement of beforeElementsById.values()) {
+		const afterElement = afterElementsById.get(beforeElement.id);
+		if (!afterElement) {
+			const wasMovedToAnotherTrack = allAfterElementIds.has(beforeElement.id);
+			if (!wasMovedToAnotherTrack) {
+				pushInterval({
+					intervals: vacatedIntervals,
+					startTime: beforeElement.startTime,
+					endTime: beforeElement.endTime,
+				});
+			}
+			continue;
+		}
+
+		if (beforeElement.endTime > afterElement.endTime) {
+			pushInterval({
+				intervals: vacatedIntervals,
+				startTime: afterElement.endTime,
+				endTime: beforeElement.endTime,
+			});
+			if (afterElement.startTime < beforeElement.startTime) {
+				firstMovedStart = Math.min(firstMovedStart, afterElement.startTime);
+				lastMovedEnd = Math.max(lastMovedEnd, afterElement.endTime);
+			}
+		}
+	}
+
+	for (const afterElement of afterElementsById.values()) {
+		const beforeElement = beforeElementsById.get(afterElement.id);
+		if (beforeElement && (
+			beforeElement.startTime !== afterElement.startTime ||
+			beforeElement.endTime !== afterElement.endTime
+		)) {
+			continue;
+		}
+
+		pushInterval({
+			intervals: occupiedIntervals,
+			startTime: afterElement.startTime,
+			endTime: afterElement.endTime,
+		});
+	}
+
+	// Keep the group's new spacing intact while closing gaps left by the move.
+	pushInterval({ intervals: occupiedIntervals, startTime: firstMovedStart, endTime: lastMovedEnd });
+
+	return {
+		vacatedIntervals: normalizeIntervals({ intervals: vacatedIntervals }),
+		occupiedIntervals: normalizeIntervals({ intervals: occupiedIntervals }),
+	};
+}
+
+function buildAdjustments({
+	trackId,
+	intervals,
+}: {
+	trackId: string;
+	intervals: Interval[];
+}): RippleAdjustment[] {
+	return intervals.flatMap((interval): RippleAdjustment[] => {
+		const shiftAmount = interval.endTime - interval.startTime;
+		if (shiftAmount <= 0) {
+			return [];
+		}
+
+		return [
+			{
+				trackId,
+				afterTime: interval.endTime,
+				shiftAmount,
+			},
+		];
+	});
+}
+
+function subtractIntervalSets({
+	sourceIntervals,
+	overlappingIntervals,
+}: {
+	sourceIntervals: Interval[];
+	overlappingIntervals: Interval[];
+}): Interval[] {
+	const normalizedSourceIntervals = normalizeIntervals({
+		intervals: sourceIntervals,
+	});
+	const normalizedOverlappingIntervals = normalizeIntervals({
+		intervals: overlappingIntervals,
+	});
+
+	return normalizedSourceIntervals.flatMap((sourceInterval) =>
+		subtractSingleInterval({
+			sourceInterval,
+			overlappingIntervals: normalizedOverlappingIntervals,
+		}),
+	);
+}
+
+function normalizeIntervals({
+	intervals,
+}: {
+	intervals: Interval[];
+}): Interval[] {
+	const validIntervals: Interval[] = [];
+	for (const interval of intervals) {
+		pushInterval({
+			intervals: validIntervals,
+			startTime: interval.startTime,
+			endTime: interval.endTime,
+		});
+	}
+
+	const sortedIntervals = validIntervals.sort(
+		(leftInterval, rightInterval) =>
+			leftInterval.startTime - rightInterval.startTime,
+	);
+
+	if (sortedIntervals.length === 0) {
+		return [];
+	}
+
+	const mergedIntervals: Interval[] = [{ ...sortedIntervals[0] }];
+	for (const interval of sortedIntervals.slice(1)) {
+		const previousInterval = mergedIntervals[mergedIntervals.length - 1];
+		if (interval.startTime <= previousInterval.endTime) {
+			previousInterval.endTime = Math.max(
+				previousInterval.endTime,
+				interval.endTime,
+			);
+			continue;
+		}
+
+		mergedIntervals.push({ ...interval });
+	}
+
+	return mergedIntervals;
+}
+
+function subtractSingleInterval({
+	sourceInterval,
+	overlappingIntervals,
+}: {
+	sourceInterval: Interval;
+	overlappingIntervals: Interval[];
+}): Interval[] {
+	let remainingIntervals: Interval[] = [{ ...sourceInterval }];
+
+	for (const overlappingInterval of overlappingIntervals) {
+		remainingIntervals = remainingIntervals.flatMap((remainingInterval) => {
+		if (
+			overlappingInterval.endTime <= remainingInterval.startTime ||
+			overlappingInterval.startTime >= remainingInterval.endTime
+		) {
+				return [remainingInterval];
+			}
+
+			const nextIntervals: Interval[] = [];
+			pushInterval({
+				intervals: nextIntervals,
+				startTime: remainingInterval.startTime,
+				endTime: overlappingInterval.startTime,
+			});
+			pushInterval({
+				intervals: nextIntervals,
+				startTime: overlappingInterval.endTime,
+				endTime: remainingInterval.endTime,
+			});
+			return nextIntervals;
+		});
+
+		if (remainingIntervals.length === 0) {
+			return [];
+		}
+	}
+
+	return remainingIntervals;
+}
+
+function pushInterval({
+	intervals,
+	startTime,
+	endTime,
+}: { intervals: Interval[]; startTime: number; endTime: number }): void {
+	if (endTime <= startTime) {
+		return;
+	}
+
+	intervals.push({ startTime, endTime });
+}
+
+
+export function referenceApplyRippleAdjustments({
+	tracks,
+	adjustments,
+}: {
+	tracks: SceneTracks;
+	adjustments: RippleAdjustment[];
+}): SceneTracks {
+	if (adjustments.length === 0) {
+		return tracks;
+	}
+
+	const adjustmentsByTrack = new Map<string, RippleAdjustment[]>();
+	for (const adjustment of adjustments) {
+		const trackAdjustments = adjustmentsByTrack.get(adjustment.trackId) ?? [];
+		trackAdjustments.push(adjustment);
+		adjustmentsByTrack.set(adjustment.trackId, trackAdjustments);
+	}
+
+	return {
+		overlay: tracks.overlay.map((track) =>
+			applyTrackRippleAdjustments({
+				track,
+				adjustments: adjustmentsByTrack.get(track.id) ?? [],
+			}),
+		),
+		main: applyTrackRippleAdjustments({
+			track: tracks.main,
+			adjustments: adjustmentsByTrack.get(tracks.main.id) ?? [],
+		}),
+		audio: tracks.audio.map((track) =>
+			applyTrackRippleAdjustments({
+				track,
+				adjustments: adjustmentsByTrack.get(track.id) ?? [],
+			}),
+		),
+	};
+}
+
+function applyTrackRippleAdjustments<
+	TElement extends TimelineTrack["elements"][number],
+	TTrack extends TimelineTrack & { elements: TElement[] },
+>({
+	track,
+	adjustments,
+}: {
+	track: TTrack;
+	adjustments: RippleAdjustment[];
+}): TTrack {
+	if (adjustments.length === 0) {
+		return track;
+	}
+
+	const sortedAdjustments = [...adjustments].sort(
+		(firstAdjustment, secondAdjustment) =>
+			secondAdjustment.afterTime - firstAdjustment.afterTime,
+	);
+
+	let elements: TElement[] = track.elements;
+	for (const adjustment of sortedAdjustments) {
+		elements = rippleShiftElements({
+			elements,
+			afterTime: adjustment.afterTime,
+			shiftAmount: adjustment.shiftAmount,
+		});
+	}
+
+	return { ...track, elements };
+}
