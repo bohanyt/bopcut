@@ -24,7 +24,7 @@ export function HandleButton({
 	screen,
 	cursor,
 	hitAreaSize,
-	className,
+	visualClassName,
 	onPointerDown,
 	onPointerMove,
 	onPointerUp,
@@ -33,7 +33,7 @@ export function HandleButton({
 	screen: { x: number; y: number };
 	cursor?: string;
 	hitAreaSize: number;
-	className?: string;
+	visualClassName?: string;
 	onPointerDown: (event: React.PointerEvent) => void;
 	onPointerMove: (event: React.PointerEvent) => void;
 	onPointerUp: (event: React.PointerEvent) => void;
@@ -45,18 +45,16 @@ export function HandleButton({
 			ref={captureTarget}
 			type="button"
 			tabIndex={-1}
-			className={cn(
-				"absolute flex -translate-x-1/2 -translate-y-1/2 touch-none items-center justify-center outline-none pointer-coarse:min-h-8 pointer-coarse:min-w-8",
-				className,
-			)}
+			className="absolute -ml-[var(--handle-radius)] -mt-[var(--handle-radius)] flex touch-none items-center justify-center outline-none pointer-coarse:-ml-4 pointer-coarse:-mt-4 pointer-coarse:min-h-8 pointer-coarse:min-w-8"
 			style={{
 				left: screen.x,
 				top: screen.y,
 				width: hitAreaSize,
 				height: hitAreaSize,
+				"--handle-radius": `${hitAreaSize / 2}px`,
 				pointerEvents: "auto",
 				cursor,
-			}}
+			} as React.CSSProperties}
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
@@ -66,7 +64,8 @@ export function HandleButton({
 			onKeyDown={(event) => event.key === "Enter" && event.preventDefault()}
 			onKeyUp={(event) => event.key === "Enter" && event.preventDefault()}
 		>
-			{children}
+			{/* The visible handle wins over nearby buttons' expanded hit areas. */}
+			<span className={cn("relative z-10 flex items-center justify-center", visualClassName)}>{children}</span>
 		</button>
 	);
 }
@@ -89,6 +88,7 @@ export function CornerHandle({
 			screen={screen}
 			cursor={cursor}
 			hitAreaSize={HANDLE_HIT_AREA_SIZE}
+			visualClassName="z-20"
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
