@@ -140,6 +140,8 @@ interface BaseTimelineElement {
 export interface VideoElement extends BaseTimelineElement {
 	type: "video";
 	mediaId: string;
+	/** A split layout's facecam copy: the facecam's part of the picture, which a face follow keeps the window inside. */
+	reframe?: { facecam: { x: number; y: number; width: number; height: number } };
 	isSourceAudioEnabled?: boolean;
 	hidden?: boolean;
 	retime?: RetimeConfig;

@@ -34,6 +34,7 @@ import { createPreviewFrameScheduler } from "@/preview/frame-scheduler";
 import { createScrubSettle } from "@/preview/scrub-settle";
 import { PreviewToolbar } from "./toolbar";
 import { BookmarkAreaLayer } from "./bookmark-area";
+import { FacePickLayer } from "@/reframe/components/face-pick";
 import { useBookmarkArea } from "@/timeline/bookmarks/area-state";
 import {
 	PreviewViewportProvider,
@@ -520,6 +521,7 @@ function PreviewCanvas({
 									plane="over-interaction"
 								/>
 								<BookmarkAreaLayer formHost={areaFormHost} />
+								<FacePickLayer />
 								{renderFailed && (
 									<div role="alert" className="bg-background/90 absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-md border px-3 py-1.5 text-xs shadow">
 										<span>{t("preview.renderFailed")}</span>

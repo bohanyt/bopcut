@@ -5,6 +5,7 @@ const surfaces = [
 	"components/landing/hero.tsx",
 	"home/accounts-tab.tsx",
 	"reframe/components/split-layout-dialog.tsx",
+	"reframe/components/face-pick.tsx",
 	"project/components/project-mode-dialog.tsx",
 	"home/agent-tab.tsx",
 	"home/home-page.tsx",
