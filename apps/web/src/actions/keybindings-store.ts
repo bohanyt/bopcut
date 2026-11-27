@@ -228,6 +228,10 @@ function getPressedKey(ev: KeyboardEvent): Key | null {
 	if (raw === "arrowleft") return "left";
 	if (raw === "arrowright") return "right";
 
+	// By position, so Shift+] stays "shift+]" (not "}") and other layouts reach the same keys.
+	if (code === "BracketLeft") return "[";
+	if (code === "BracketRight") return "]";
+
 	if (code.startsWith("Key")) {
 		const letter = code.slice(3).toLowerCase();
 		if (isKey(letter)) return letter;

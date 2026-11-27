@@ -95,6 +95,10 @@ export const ACTIONS = {
 		description: en["shortcuts.action.copy-selected"],
 		category: "editing",
 	},
+	"cut-selected": {
+		description: en["shortcuts.action.cut-selected"],
+		category: "editing",
+	},
 	"paste-copied": {
 		description: en["shortcuts.action.paste-copied"],
 		category: "editing",
@@ -117,6 +121,14 @@ export const ACTIONS = {
 	},
 	"select-all": {
 		description: en["shortcuts.action.select-all"],
+		category: "selection",
+	},
+	"select-right-of-playhead": {
+		description: en["shortcuts.action.select-right-of-playhead"],
+		category: "selection",
+	},
+	"select-left-of-playhead": {
+		description: en["shortcuts.action.select-left-of-playhead"],
 		category: "selection",
 	},
 	"cancel-interaction": {
@@ -208,11 +220,14 @@ const ACTION_DEFAULT_SHORTCUTS = [
 	["split-right", ["e"]],
 	["delete-selected", ["backspace", "delete"]],
 	["copy-selected", ["ctrl+c"]],
+	["cut-selected", ["ctrl+x"]],
 	["paste-copied", ["ctrl+v"]],
 	["toggle-snapping", ["n"]],
 	// As in other editors that reveal a clip's keyframed properties with U.
 	["toggle-keyframe-lanes", ["u"]],
 	["select-all", ["ctrl+a"]],
+	["select-right-of-playhead", ["]"]],
+	["select-left-of-playhead", ["["]],
 	["cancel-interaction", ["escape"]],
 	["duplicate-selected", ["ctrl+d"]],
 	["create-compound", ["alt+g"]],

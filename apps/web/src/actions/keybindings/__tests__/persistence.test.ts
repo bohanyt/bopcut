@@ -8,6 +8,8 @@ import {
 	serializeKeybindingsState,
 } from "../persistence";
 
+const ADDED_IN_12 = { "ctrl+x": "cut-selected", "]": "select-right-of-playhead", "[": "select-left-of-playhead" };
+
 describe("keybinding persistence", () => {
 	let warnSpy: ReturnType<typeof mock>;
 	let originalWarn: typeof console.warn;
@@ -42,6 +44,24 @@ describe("keybinding persistence", () => {
 		expect(decoded.keybindings.get("s")).toBe("split");
 		expect(decoded.keybindings.get("ctrl+v")).toBe("paste-copied");
 		expect(decoded.keybindings.get("escape")).toBe("cancel-interaction");
+		expect(warnSpy).not.toHaveBeenCalled();
+	});
+
+	test("saved shortcuts get Ctrl+X, [ and ] unless those keys do something else, and a custom bracket key is kept", () => {
+		const migrated = migratePersistedKeybindingsState({
+			state: { keybindings: { "ctrl+c": "copy-selected", "[": "split-left", "shift+]": "select-right-of-playhead" }, isCustomized: true },
+			fromVersion: 11,
+		});
+		const decoded = decodePersistedKeybindingsState({ state: migrated });
+		if (!decoded) throw new Error("Expected migrated keybindings to decode");
+		expect(decoded.keybindings.get("ctrl+x")).toBe("cut-selected");
+		expect(decoded.keybindings.get("]")).toBe("select-right-of-playhead");
+		expect(decoded.keybindings.get("[")).toBe("split-left");
+		expect(decoded.keybindings.get("shift+]")).toBe("select-right-of-playhead");
+		// Saved again and read back (a reload), the bracket keys stay.
+		const reread = decodePersistedKeybindingsState({ state: JSON.parse(JSON.stringify(serializeKeybindingsState(decoded))) });
+		expect(reread?.keybindings.get("shift+]")).toBe("select-right-of-playhead");
+		expect(reread?.keybindings.get("[")).toBe("split-left");
 		expect(warnSpy).not.toHaveBeenCalled();
 	});
 
@@ -228,8 +248,8 @@ describe("the split keys of version 10", () => {
 			{ s: "split-left", q: "split" },
 			{},
 		];
-		// Version 11 adds U on top.
-		for (const changed of cases) expect(migrate(changed)).toEqual({ ...changed, u: "toggle-keyframe-lanes" });
+		// Version 11 adds U on top, version 12 Ctrl+X, [ and ].
+		for (const changed of cases) expect(migrate(changed)).toEqual({ ...changed, u: "toggle-keyframe-lanes", ...ADDED_IN_12 });
 	});
 });
 
@@ -241,7 +261,7 @@ describe("the keyframe key of version 11", () => {
 	);
 
 	test("U expands or collapses keyframes, unless the user put U on another action", () => {
-		expect(migrate({ n: "toggle-snapping" })).toEqual({ n: "toggle-snapping", u: "toggle-keyframe-lanes" });
-		expect(migrate({ u: "undo" })).toEqual({ u: "undo" });
+		expect(migrate({ n: "toggle-snapping" })).toEqual({ n: "toggle-snapping", u: "toggle-keyframe-lanes", ...ADDED_IN_12 });
+		expect(migrate({ u: "undo" })).toEqual({ u: "undo", ...ADDED_IN_12 });
 	});
 });
