@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { TProjectSortKey } from "@/project/types";
+import type { ProjectMode, TProjectSortKey } from "@/project/types";
 
 export type ProjectsViewMode = "grid" | "list";
 
@@ -12,6 +12,9 @@ interface ProjectsState {
 	/** Showing the archived projects instead of the others (not remembered across visits). */
 	showArchived: boolean;
 	setShowArchived: ({ showArchived }: { showArchived: boolean }) => void;
+	/** Only projects of this mode (not remembered across visits). */
+	modeFilter: "all" | ProjectMode;
+	setModeFilter: ({ modeFilter }: { modeFilter: "all" | ProjectMode }) => void;
 	selectedProjectIds: string[];
 	lastSelectedProjectId: string | null;
 	isHydrated: boolean;
@@ -68,6 +71,8 @@ export const useProjectsStore = create<ProjectsState>()(
 			sortOrder: "desc",
 			viewMode: "grid",
 			showArchived: false,
+			modeFilter: "all",
+			setModeFilter: ({ modeFilter }) => set({ modeFilter, selectedProjectIds: [], lastSelectedProjectId: null }),
 			// The selection belongs to the list it was made in.
 			setShowArchived: ({ showArchived }) => set({ showArchived, selectedProjectIds: [], lastSelectedProjectId: null }),
 			selectedProjectIds: [],

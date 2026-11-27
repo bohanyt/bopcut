@@ -237,3 +237,25 @@ test("archived projects have their own view, and a selection there restores them
 	await act(async () => { button("All projects")!.click(); });
 	expect(text()).toContain("Podcast 12");
 });
+
+test("projects show their mode, and the list can show one mode", async () => {
+	inbox = { bundle: null, draft: null };
+	const clip = { ...project, id: "clip", name: "Stream clip", duration: 0, mode: "editing" as const };
+	const story = { ...project, id: "story", name: "Explainer", duration: 0, mode: "creating" as const };
+	// The same arrays each time, as the editor's list keeps them while nothing changes.
+	const lists = { all: [clip, story], editing: [clip], creating: [story], generating: [] };
+	await show("http://127.0.0.1:3000/", (editor) => {
+		spyOn(editor.project, "getSavedProjects").mockReturnValue([clip, story] as never);
+		spyOn(editor.project, "getFilteredAndSortedProjects").mockImplementation(({ mode = "all" }: { mode?: "all" | "editing" | "creating" | "generating" }) =>
+			lists[mode] as never);
+	});
+	const filter = dom.document.querySelector("[role='group'][aria-label='Show projects by mode']")!;
+	expect([...filter.querySelectorAll("button")].map((node) => node.textContent)).toEqual(["All", "Editing", "Creating"]);
+	expect(text()).toContain("Stream clip");
+	expect(text()).toContain("Explainer");
+	await act(async () => { ([...filter.querySelectorAll("button")].find((node) => node.textContent === "Creating") as unknown as HTMLElement).click(); });
+	expect(text()).toContain("Explainer");
+	expect(text()).not.toContain("Stream clip");
+	await act(async () => { ([...filter.querySelectorAll("button")].find((node) => node.textContent === "All") as unknown as HTMLElement).click(); });
+	expect(text()).toContain("Stream clip");
+});

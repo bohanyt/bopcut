@@ -62,3 +62,11 @@ test("a failed change says so and keeps the mode", async () => {
 	expect(await editor.project.setProjectMode({ id: "a", mode: "creating" })).toBe(false);
 	expect(editor.project.getSavedProjects()[0].mode).toBe("editing");
 });
+
+test("the list can be narrowed to one mode", async () => {
+	const editor = await editorWith([meta("a", { mode: "editing" }), meta("b", { mode: "creating" }), meta("c")]);
+	const list = (mode?: "all" | "editing" | "creating") => editor.project
+		.getFilteredAndSortedProjects({ searchQuery: "", sortOption: "name-asc", mode })
+		.map(({ id }) => id);
+	expect([list(), list("all"), list("editing"), list("creating")]).toEqual([["a", "b", "c"], ["a", "b", "c"], ["a"], ["b"]]);
+});
