@@ -21,8 +21,11 @@ const MAX_CACHED_WINDOWS = 128;
 
 interface MixClip {
 	element: AudioCapableElement;
+	/** Output samples [start, end): each edge is the sample nearest its time, so touching clips share a cut's sample. */
 	start: number;
 	end: number;
+	/** The exact start, which places the source's samples (a split keeps its phase). */
+	startSeconds: number;
 	duration: number;
 	trim: number;
 	rate: number;
@@ -143,11 +146,14 @@ export async function* mixTimelineAudio({
 		source.buffer ??= library?.buffer;
 		source.requiresAudio ||= element.type === "audio" || mediaAsset?.hasAudio === true;
 		const rate = clampRetimeRate({ rate: element.retime?.rate ?? 1 });
-		const start = Math.floor(element.startTime / TICKS_PER_SECOND * sampleRate);
+		const startSeconds = element.startTime / TICKS_PER_SECOND;
 		const seconds = element.duration / TICKS_PER_SECOND;
 		clips.push({
-			source, element, rate, start, end: start + Math.ceil(seconds * sampleRate),
-			duration: seconds, trim: element.trimStart / TICKS_PER_SECOND,
+			source, element, rate,
+			// A floored start and a ceiled length made both clips at a fractional cut add into one sample (a click).
+			start: Math.round(startSeconds * sampleRate),
+			end: Math.round((startSeconds + seconds) * sampleRate),
+			startSeconds, duration: seconds, trim: element.trimStart / TICKS_PER_SECOND,
 			preservePitch: rate !== 1 && shouldMaintainPitch({ rate, maintainPitch: element.retime?.maintainPitch }),
 			gain: resolveEffectiveAudioGain({ element, localTime: 0 }),
 			animated: hasAnimatedVolume({ element }),
@@ -331,7 +337,7 @@ async function mixClip({
 		const pause = checkpoint();
 		if (pause) await pause;
 		for (let index = block; index < Math.min(block + 4096, to); index++) {
-			const time = (index - clip.start) / output.sampleRate;
+			const time = Math.max(0, index / output.sampleRate - clip.startSeconds);
 			const position = stretched ? index - from : (trim + time * rate) * buffer.sampleRate;
 			sample(position, stereo);
 			const gain = clip.animated ? resolveEffectiveAudioGain({ element: clip.element, localTime: time }) : clip.gain;
