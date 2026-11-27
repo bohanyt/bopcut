@@ -19,10 +19,15 @@ import {
 	Delete02Icon,
 	FeatherIcon,
 	NodeRemoveIcon,
+	PinIcon,
 	PlusSignIcon,
 	RotateClockwiseIcon,
 	TextFontIcon,
 } from "@hugeicons/core-free-icons";
+import { maskInElementSpace, paramsLockedToCanvas } from "@/masks/canvas-lock";
+import { isRectangleMaskParams } from "@/masks/geometry";
+import type { RectangleMaskParams } from "@/masks/types";
+import type { ElementBounds } from "@/preview/element-bounds";
 import { useEffect, useRef, useState } from "react";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { Button } from "@/components/ui/button";
@@ -81,6 +86,8 @@ type MaskItemProps = {
 	trackId: string;
 	elementId: string;
 	mask: Mask;
+	/** Where the element is drawn at the playhead (within the clip), for locking a box to the canvas there. */
+	getBounds: () => ElementBounds | null;
 	previewParam: (key: string) => (value: number | string | boolean) => void;
 	onCommit: () => void;
 };
@@ -145,7 +152,7 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 	const hasMask = masks.length > 0;
 	const { onPointerLeave, onOpenChange, markCommitted } = useMenuPreview();
 	const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-	const getElementSize = () => {
+	const getBounds = () => {
 		const clampedTime = Math.min(
 			Math.max(editor.playback.getCurrentTime(), element.startTime),
 			element.startTime + element.duration - 1,
@@ -157,7 +164,11 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 			mediaAssets: editor.media.getAssets(),
 			onlyElements: [{ trackId, elementId: element.id }],
 		});
-		return entry && { width: entry.bounds.width, height: entry.bounds.height };
+		return entry?.bounds ?? null;
+	};
+	const getElementSize = () => {
+		const bounds = getBounds();
+		return bounds && { width: bounds.width, height: bounds.height };
 	};
 
 	const handleDropdownOpenChange = (open: boolean) => {
@@ -267,6 +278,7 @@ export function MasksTab({ element, trackId }: MasksTabProps) {
 						trackId={trackId}
 						elementId={element.id}
 						mask={renderMasks[index] ?? mask}
+						getBounds={getBounds}
 						previewParam={(paramKey) =>
 							previewMaskParam({ index, key: paramKey })
 						}
@@ -282,12 +294,29 @@ function MaskItem({
 	trackId,
 	elementId,
 	mask,
+	getBounds,
 	previewParam,
 	onCommit,
 }: MaskItemProps) {
 	const { t } = useI18n();
 	const editor = useEditor();
 	const definition = getMaskDefinition(mask.type);
+	const canLock = isRectangleMaskParams(mask.params as RectangleMaskParams);
+	const locked = canLock && mask.params.canvasLocked === true;
+	// Locking keeps the box where it is on the canvas now; unlocking keeps it where it is on the clip now.
+	const toggleCanvasLock = () => {
+		const bounds = getBounds();
+		if (!bounds) return;
+		const canvas = editor.project.getActive().settings.canvasSize;
+		const params = locked
+			? maskInElementSpace({ mask, frame: bounds, canvas }).params
+			: paramsLockedToCanvas({ params: mask.params as RectangleMaskParams, frame: bounds, canvas });
+		const element = editor.timeline.getElementsWithTracks({ elements: [{ trackId, elementId }] })[0]?.element;
+		const masks = element && "masks" in element ? element.masks ?? [] : [];
+		editor.timeline.updateElements({
+			updates: [{ trackId, elementId, patch: { masks: masks.map((entry) => (entry.id === mask.id ? { ...entry, params } as Mask : entry)) } }],
+		});
+	};
 	// Points of this freeform mask selected in the preview. The Delete key removes them; so does a button, for touch.
 	const selectedPoints = useEditor((e) => {
 		const selection = e.selection.getSelectedMaskPointSelection();
@@ -316,6 +345,19 @@ function MaskItem({
 								}
 							>
 								<HugeiconsIcon icon={NodeRemoveIcon} />
+							</Button>
+						)}
+						{canLock && (
+							<Button
+								variant="ghost"
+								size="icon"
+								aria-pressed={locked}
+								aria-label={t("properties.lockMaskToCanvas", { name: t(definition.nameKey) })}
+								title={t(locked ? "properties.maskLockedToCanvas" : "properties.lockMaskToCanvas", { name: t(definition.nameKey) })}
+								className={cn(locked && "text-primary")}
+								onClick={toggleCanvasLock}
+							>
+								<HugeiconsIcon icon={PinIcon} />
 							</Button>
 						)}
 						<Button

@@ -548,6 +548,8 @@ export const id = {
 	"properties.graphic": "Grafis",
 	"properties.impact": "Hentakan",
 	"properties.invertMask": "Aktifkan atau nonaktifkan pembalikan mask {name}",
+	"properties.lockMaskToCanvas": "Tahan mask {name} tetap diam di kanvas saat klip bergerak",
+	"properties.maskLockedToCanvas": "Mask {name} diam di kanvas; posisi dan ukurannya relatif ke kanvas. Klik supaya ikut klip lagi.",
 	"properties.masks": "Mask",
 	"properties.model": "3D",
 	"properties.noEffects": "Belum ada efek",

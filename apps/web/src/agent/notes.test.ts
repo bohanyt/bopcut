@@ -62,3 +62,29 @@ test("reports transformed hits topmost first, including muted tracks, and skips 
 		}
 	}
 });
+
+test("a mask locked to the canvas counts where it is on the canvas, not where it would be on the moved clip", () => {
+	registerDefaultMasks();
+	const globals = { document: { createElement: () => createCanvas(96, 96) }, Path2D };
+	const previous = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+	for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { value, configurable: true });
+	try {
+		const locked = image("locked", { "transform.positionX": 30 });
+		locked.masks = [{ id: "mask", type: "rectangle", params: {
+			centerX: 0, centerY: 0, width: 0.1, height: 0.1, rotation: 0, scale: 1, canvasLocked: true,
+			feather: 0, inverted: false, strokeColor: "#fff", strokeWidth: 0, strokeAlign: "inside",
+		} }];
+		const tracks: SceneTracks = { overlay: [track("locked", [locked])], main: track("main", []), audio: [] };
+		const ids = (box: { x: number; y: number; width: number; height: number }) =>
+			elementsInNoteBox(box, time, tracks, { width: 100, height: 100 }, []).map(({ id }) => id);
+		// The window stays at the canvas centre although the clip moved right by 30.
+		expect(ids({ x: 0.47, y: 0.47, width: 0.06, height: 0.06 })).toEqual(["locked"]);
+		// Where an element-space mask would now be.
+		expect(ids({ x: 0.77, y: 0.47, width: 0.06, height: 0.06 })).toEqual([]);
+	} finally {
+		for (const [key, descriptor] of previous) {
+			if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+			else Reflect.deleteProperty(globalThis, key);
+		}
+	}
+});

@@ -1,5 +1,6 @@
 import { drawCssBackground } from "@/gradients";
 import { getMaskDefinition } from "@/masks";
+import { maskInElementSpace } from "@/masks/canvas-lock";
 import { incrementCounter } from "@/diagnostics/render-perf";
 import type { AnyBaseNode } from "../nodes/base-node";
 import type { CanvasRenderer } from "../canvas-renderer";
@@ -519,10 +520,19 @@ function buildMaskArtifacts({
 	mask: LayerMaskDescriptor | null;
 	strokeLayer: FrameItemDescriptor | null;
 } {
-	const mask = node.params.masks?.[0];
-	if (!mask) {
+	const storedMask = node.params.masks?.[0];
+	if (!storedMask) {
 		return { mask: null, strokeLayer: null };
 	}
+	// A canvas-locked box stays where it is on the canvas, whatever this frame's element transform.
+	const mask = maskInElementSpace({
+		mask: storedMask,
+		frame: {
+			cx: transform.centerX, cy: transform.centerY, width: transform.width, height: transform.height,
+			rotation: transform.rotationDegrees, flipX: transform.flipX, flipY: transform.flipY,
+		},
+		canvas: { width: renderer.outputWidth, height: renderer.outputHeight },
+	});
 
 	const definition = getMaskDefinition(mask.type);
 
