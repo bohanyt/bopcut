@@ -34,7 +34,7 @@ import {
 import { useContainerSize } from "@/hooks/use-container-size";
 import { type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
 import { requestAgentCheck, timeAtClientX } from "@/timeline/bookmarks/agent-check";
-import type { ElementDragView, DropTarget } from "@/timeline";
+import type { DropTarget } from "@/timeline";
 import { TimelineTrackContent } from "./timeline-track";
 import { TimelinePlayhead } from "./timeline-playhead";
 import { SelectionBox } from "@/selection/selection-box";
@@ -49,7 +49,8 @@ import {
 	TIMELINE_TRACK_LABELS_COLUMN_WIDTH_PX,
 	KEYFRAME_LANE_HEIGHT_PX,
 } from "./layout";
-import { useElementInteraction } from "@/timeline/hooks/element/use-element-interaction";
+import { useElementDragView, useElementInteraction } from "@/timeline/hooks/element/use-element-interaction";
+import type { ElementInteractionController } from "@/timeline/controllers/element-interaction-controller";
 import {
 	canTrackHaveAudio,
 	canTrackBeHidden,
@@ -336,7 +337,7 @@ export function Timeline() {
 		isReady: tracks.length > 0,
 	});
 
-	const { dragView, handleElementMouseDown, handleElementClick } =
+	const { controller: elementDrag, isElementDragging, handleElementMouseDown, handleElementClick } =
 		useElementInteraction({
 		zoomLevel,
 		tracksContainerRef,
@@ -345,12 +346,7 @@ export function Timeline() {
 		onSnapPointChange: handleSnapPointChange,
 		getTrackExpansionHeight,
 	});
-	const isElementDragging = dragView.kind === "dragging";
-	const dragViewRef = useCommittedRef(dragView);
-	const getDragPointerX = useCallback(() => {
-		const view = dragViewRef.current;
-		return view.kind === "dragging" ? view.currentMouseX : 0;
-	}, [dragViewRef]);
+	const getDragPointerX = useCallback(() => elementDrag.getPointerX(), [elementDrag]);
 
 	const {
 		dragState: bookmarkDragState,
@@ -517,10 +513,9 @@ export function Timeline() {
 						headerHeight={timelineHeaderHeight}
 						getTrackExtraHeight={getTrackExpansionHeight}
 					/>
-					<DragLine
-						dropTarget={isElementDragging ? dragView.dropTarget : null}
+					<ElementDropLine
+						elementDrag={elementDrag}
 						tracks={tracks}
-						isVisible={isElementDragging}
 						headerHeight={timelineHeaderHeight}
 						getTrackExtraHeight={getTrackExpansionHeight}
 					/>
@@ -609,7 +604,7 @@ export function Timeline() {
 										expandedElementIds={expandedElementIds}
 										getTrackExpansionHeight={getTrackExpansionHeight}
 										zoomLevel={zoomLevel}
-										dragView={dragView}
+										elementDrag={elementDrag}
 										onResizeStart={handleResizeStart}
 										onElementMouseDown={handleElementMouseDown}
 										onElementClick={handleElementClick}
@@ -792,7 +787,7 @@ function TimelineTrackRows({
 	expandedElementIds,
 	getTrackExpansionHeight,
 	zoomLevel,
-	dragView,
+	elementDrag,
 	onResizeStart,
 	onElementMouseDown,
 	onElementClick,
@@ -812,7 +807,7 @@ function TimelineTrackRows({
 	expandedElementIds: ReadonlySet<string>;
 	getTrackExpansionHeight: (trackIndex: number) => number;
 	zoomLevel: number;
-	dragView: ElementDragView;
+	elementDrag: ElementInteractionController;
 	onResizeStart: React.ComponentProps<
 		typeof TimelineTrackContent
 	>["onResizeStart"];
@@ -852,6 +847,7 @@ function TimelineTrackRows({
 			}),
 		[tracks, indexes, expandedElementIds],
 	);
+	const dragView = useElementDragView(elementDrag);
 	const dragged = dragView.kind === "dragging" ? dragView : undefined;
 
 	return (
@@ -972,6 +968,16 @@ function TimelineTrackRows({
 			))}
 		</div>
 	);
+}
+
+/** Where a dragged clip would land: it follows the drag without re-rendering the timeline. */
+function ElementDropLine({
+	elementDrag,
+	...props
+}: { elementDrag: ElementInteractionController } & Omit<React.ComponentProps<typeof DragLine>, "dropTarget" | "isVisible">) {
+	const view = useElementDragView(elementDrag);
+	const dragging = view.kind === "dragging";
+	return <DragLine {...props} dropTarget={dragging ? view.dropTarget : null} isVisible={dragging} />;
 }
 
 function TimelineGutter({

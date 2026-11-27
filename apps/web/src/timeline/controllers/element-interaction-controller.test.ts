@@ -61,7 +61,8 @@ function harness(initial: SceneTracks, selected: ElementRef[]) {
 		beforeUp?.({ setTracks: (n) => { tracks = n; } });
 		page.dispatchEvent(Object.assign(new Event("mouseup"), { button: 0, clientX: 100 + DRAG * 2, clientY: 100 }));
 	};
-	return { commits, mouseDown, dragAndUp, idle: () => controller.view.kind === "idle" };
+	const move = (clientX: number, clientY: number) => page.dispatchEvent(Object.assign(new Event("mousemove"), { clientX, clientY }));
+	return { commits, mouseDown, dragAndUp, move, controller, idle: () => controller.view.kind === "idle" };
 }
 
 test("normal drag commits moveElements once", () => {
@@ -84,4 +85,25 @@ test("one of two dragged clips removed before mouseup does not commit", () => {
 	const h = harness(scene([video("a"), video("b", 60_000)]), [{ trackId: "main", elementId: "a" }, { trackId: "main", elementId: "b" }]);
 	h.mouseDown("a"); h.dragAndUp((x) => x.setTracks(scene([video("a")])));
 	expect(h.commits.length).toBe(0); expect(h.idle()).toBe(true);
+});
+
+test("the drag view stays the same object while what it shows is the same, and the pointer x is live", () => {
+	const h = harness(scene([video("a"), video("b", 60_000)]), [{ trackId: "main", elementId: "a" }]);
+	h.mouseDown("a");
+	h.move(100 + DRAG, 100);
+	const first = h.controller.view;
+	h.move(100 + DRAG + 0.2, 100);
+	expect(h.controller.view).toBe(first);
+	expect(h.controller.getPointerX()).toBe(100 + DRAG + 0.2);
+	h.move(100 + DRAG + 40, 100);
+	const later = h.controller.view;
+	expect(later).not.toBe(first);
+	if (first.kind !== "dragging" || later.kind !== "dragging") throw new Error("Expected a drag");
+	// The moving clips and their tracks are worked out once per drag.
+	expect(later.memberTimeOffsets).toBe(first.memberTimeOffsets);
+	h.move(100 + DRAG + 40, 130);
+	expect(h.controller.view).not.toBe(later);
+	// Release, so the drag's timeline gesture ends with the test.
+	h.dragAndUp();
+	expect(h.idle()).toBe(true);
 });

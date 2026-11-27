@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState, type RefObject } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore, type RefObject } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { useShiftKey } from "@/hooks/use-shift-key";
@@ -9,6 +9,7 @@ import {
 	type ElementInteractionDepsRef,
 } from "@/timeline/controllers/element-interaction-controller";
 import type { SnapPoint } from "@/timeline/snapping";
+import type { ElementDragView } from "@/timeline";
 
 interface UseElementInteractionProps {
 	zoomLevel: number;
@@ -72,14 +73,24 @@ export function useElementInteraction({
 		() => new ElementInteractionController({ depsRef }),
 	);
 
-	const [, rerender] = useReducer((n: number) => n + 1, 0);
-	useEffect(() => controller.subscribe(rerender), [controller]);
+	// The owner re-renders when a drag starts or ends; what moves with it reads `useElementDragView`.
+	const subscribe = useCallback((listener: () => void) => controller.subscribe(listener), [controller]);
+	const getIsDragging = useCallback(() => controller.view.kind === "dragging", [controller]);
+	const isElementDragging = useSyncExternalStore(subscribe, getIsDragging, getIsDragging);
 
 	useEffect(() => () => controller.destroy(), [controller]);
 
 	return {
-		dragView: controller.view,
+		controller,
+		isElementDragging,
 		handleElementMouseDown: controller.onElementMouseDown,
 		handleElementClick: controller.onElementClick,
 	};
+}
+
+/** The live drag, for the parts of the timeline that draw it: they re-render as it moves, the rest does not. */
+export function useElementDragView(controller: ElementInteractionController): ElementDragView {
+	const subscribe = useCallback((listener: () => void) => controller.subscribe(listener), [controller]);
+	const getView = useCallback(() => controller.view, [controller]);
+	return useSyncExternalStore(subscribe, getView, getView);
 }
