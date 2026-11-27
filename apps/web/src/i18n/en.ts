@@ -546,6 +546,8 @@ export const en = {
 	"properties.graphic": "Graphic",
 	"properties.impact": "Impact",
 	"properties.invertMask": "Toggle {name} mask inversion",
+	"properties.lockMaskToCanvas": "Keep the {name} mask still on the canvas while the clip moves",
+	"properties.maskLockedToCanvas": "The {name} mask stays still on the canvas; its position and size are parts of the canvas. Click to let it move with the clip again.",
 	"properties.masks": "Masks",
 	"properties.model": "3D",
 	"properties.noEffects": "No effects",

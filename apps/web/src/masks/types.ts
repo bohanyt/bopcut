@@ -24,6 +24,8 @@ export type MaskType = BuiltinMaskType | "freeform";
 export interface BaseMaskParams {
 	feather: number;
 	inverted: boolean;
+	/** Box masks only: the box is kept in canvas fractions, so it stays put while the element moves (masks/canvas-lock.ts). */
+	canvasLocked?: boolean;
 	strokeColor: string;
 	strokeWidth: number;
 	strokeAlign: "inside" | "center" | "outside";

@@ -152,3 +152,29 @@ test("points selected on a freeform mask can be deleted with a button, as with t
 	});
 	expect(button()).toBeNull();
 });
+
+test("a box mask can be locked to the canvas where it is, and unlocked where it is on the clip", async () => {
+	// A clip moved right and zoomed in, so its own space and the canvas differ.
+	await show("rectangle", (mask) => ({ ...mask, params: { ...mask.params, centerX: 0.1, centerY: -0.05 } } as Mask));
+	const clip = editor.scenes.getActiveScene().tracks.main.elements[0] as VideoElement;
+	await act(async () => {
+		editor.timeline.updateElements({ updates: [{ trackId: "t-main", elementId: clip.id, patch: { params: { ...clip.params, "transform.positionX": 200, "transform.scaleX": 2, "transform.scaleY": 2 } } }] });
+	});
+	const before = masks()[0].params as { centerX: number; width: number };
+	const lock = dom.document.querySelector("button[aria-label='Keep the Rectangle mask still on the canvas while the clip moves']") as unknown as HTMLButtonElement;
+	expect(lock.getAttribute("aria-pressed")).toBe("false");
+	await act(async () => { lock.click(); });
+	const locked = masks()[0].params as { centerX: number; width: number; canvasLocked?: boolean };
+	expect(locked.canvasLocked).toBe(true);
+	// The clip is twice the canvas wide: the box keeps its place, so its canvas fractions double.
+	expect(locked.width).toBeCloseTo(before.width * 2, 6);
+	expect(locked.centerX).toBeCloseTo((200 + before.centerX * 3840) / 1920, 6);
+	expect(lock.getAttribute("aria-pressed")).toBe("true");
+	await act(async () => { lock.click(); });
+	const unlocked = masks()[0].params as { centerX: number; width: number; canvasLocked?: boolean };
+	expect(unlocked.canvasLocked).toBe(false);
+	expect(unlocked.centerX).toBeCloseTo(before.centerX, 6);
+	expect(unlocked.width).toBeCloseTo(before.width, 6);
+	await act(async () => { editor.command.undo(); });
+	expect((masks()[0].params as { canvasLocked?: boolean }).canvasLocked).toBe(true);
+});

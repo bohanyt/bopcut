@@ -6,6 +6,8 @@ import { useEditor } from "@/editor/use-editor";
 import { useShiftKey } from "@/hooks/use-shift-key";
 import { getMaskDefinition } from "@/masks";
 import { appendPointToFreeformPathMask } from "@/masks/freeform/definition";
+import { isCanvasLocked, maskInElementSpace, paramsLockedToCanvas } from "@/masks/canvas-lock";
+import type { RectangleMaskParams } from "@/masks/types";
 import {
 	getVisibleElementsWithBounds,
 	type ElementBounds,
@@ -147,10 +149,12 @@ export function useMaskHandles({
 					)
 						? selectedMaskPointSelection?.maskId
 						: masks[0].id;
-					const mask =
+					const storedMask =
 						masks.find((candidate) => candidate.id === activeMaskId) ??
 						masks[0];
-					return { ...entry, element, mask };
+					// Handles work in the element's space: a canvas-locked box is shown there and stored back in canvas fractions.
+					const mask = maskInElementSpace({ mask: storedMask, frame: entry.bounds, canvas: canvasSize });
+					return { ...entry, element, mask, storedMask };
 				})()
 			: null;
 
@@ -557,10 +561,16 @@ export function useMaskHandles({
 
 			onSnapLinesChange?.(activeLines);
 
-			const updatedMask = withUpdatedMaskParams({
-				mask: selectedWithMask.mask,
-				params: nextParams as typeof selectedWithMask.mask.params,
-			});
+			const { storedMask } = selectedWithMask;
+			const updatedMask = isCanvasLocked(storedMask)
+				? withUpdatedMaskParams({
+						mask: storedMask,
+						params: paramsLockedToCanvas({ params: nextParams as RectangleMaskParams, frame: selectedWithMask.bounds, canvas: canvasSize }),
+					})
+				: withUpdatedMaskParams({
+						mask: selectedWithMask.mask,
+						params: nextParams as typeof selectedWithMask.mask.params,
+					});
 			editor.timeline.previewElements({
 				updates: [
 					{
