@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { rendererDevice } from "@/services/renderer/renderer-device";
 import { modelGraphics, retryModelGraphics } from "@/model3d/render";
 import { ChangelogNotification } from "@/changelog/components/changelog-notification";
+import { SplitLayoutHost } from "@/reframe/components/split-layout-dialog";
 import {
 	createPreviewOverlayControl,
 	isPreviewOverlayVisible,
@@ -56,6 +57,7 @@ export default function Editor() {
 					</div>
 					<MigrationDialog />
 					<ChangelogNotification />
+					<SplitLayoutHost />
 				</div>
 			</EditorProvider>
 	);
