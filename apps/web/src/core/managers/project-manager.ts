@@ -858,14 +858,18 @@ export class ProjectManager {
 		searchQuery,
 		sortOption,
 		archived = false,
+		mode = "all",
 	}: {
 		searchQuery: string;
 		sortOption: TProjectSortOption;
 		/** The archived projects instead of the others. */
 		archived?: boolean;
+		/** Only the projects of this mode. */
+		mode?: "all" | ProjectMode;
 	}): TProjectMetadata[] {
 		const filteredProjects = this.savedProjects.filter((project) =>
 			this.archivedIds.has(project.id) === archived &&
+			(mode === "all" || project.mode === mode) &&
 			project.name.toLowerCase().includes(searchQuery.toLowerCase()),
 		);
 

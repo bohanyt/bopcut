@@ -39,6 +39,7 @@ import {
 	Edit03Icon,
 	ArrowDown02Icon,
 	InformationCircleIcon,
+	Target02Icon,
 	Archive02Icon,
 	ArchiveArrowUpIcon,
 } from "@hugeicons/core-free-icons";
@@ -61,6 +62,8 @@ import {
 import { DeleteProjectDialog } from "@/project/components/delete-project-dialog";
 import { ProjectInfoDialog } from "@/project/components/project-info-dialog";
 import { RenameProjectDialog } from "@/project/components/rename-project-dialog";
+import { ProjectModeDialog, projectModeLabel } from "@/project/components/project-mode-dialog";
+import type { ProjectMode } from "@/project/types";
 import { cn } from "@/utils/ui";
 const formatProjectDuration = ({
 	duration,
@@ -83,14 +86,14 @@ const VIEW_MODE_OPTIONS = [
 
 /** The Projects tab of the home page, below its header (see ProjectsViewModes, ProjectsSearchBar and NewProjectButton). */
 export function ProjectsTab() {
-	const { searchQuery, sortKey, sortOrder, viewMode, showArchived } = useProjectsStore();
+	const { searchQuery, sortKey, sortOrder, viewMode, showArchived, modeFilter } = useProjectsStore();
 	const sortOption: TProjectSortOption = `${sortKey}-${sortOrder}`;
 
 	const isLoading = useEditor((e) => e.project.getIsLoading());
 	const isInitialized = useEditor((e) => e.project.getIsInitialized());
 	const listError = useEditor((e) => e.project.getProjectListError());
 	const projectsToDisplay = useEditor((e) =>
-		e.project.getFilteredAndSortedProjects({ searchQuery, sortOption, archived: showArchived }),
+		e.project.getFilteredAndSortedProjects({ searchQuery, sortOption, archived: showArchived, mode: modeFilter }),
 	);
 
 	return (
@@ -240,6 +243,7 @@ function ProjectsToolbar({ projectIds }: { projectIds: string[] }) {
 				</Button>
 
 				<ArchivedToggle />
+				<ModeFilter />
 
 				<div className="h-4 w-px bg-border/50 block md:hidden" />
 
@@ -286,6 +290,59 @@ function ArchivedToggle() {
 			</Button>
 		</>
 	);
+}
+
+/** Narrows the list to one mode; shown once a project has a mode. */
+function ModeFilter() {
+	const { t } = useI18n();
+	const { modeFilter, setModeFilter } = useProjectsStore();
+	const modes = useEditor((e) => {
+		const used = new Set(e.project.getSavedProjects().flatMap(({ mode }) => (mode ? [mode] : [])));
+		return (["editing", "creating", "generating"] as const).filter((mode) => used.has(mode)).join(",");
+	});
+	if (!modes && modeFilter === "all") return null;
+	const options: ("all" | ProjectMode)[] = ["all", ...(modes ? (modes.split(",") as ProjectMode[]) : [])];
+	return (
+		<>
+			<div className="h-4 w-px bg-border/50" />
+			<div role="group" aria-label={t("projectMode.filter")} className="flex items-center gap-1">
+				{options.map((option) => (
+					<Button
+						key={option}
+						variant="text"
+						className={cn("px-2", modeFilter === option ? "text-foreground" : "text-muted-foreground")}
+						aria-pressed={modeFilter === option}
+						onClick={() => setModeFilter({ modeFilter: option })}
+					>
+						{t(option === "all" ? "projectMode.all" : projectModeLabel(option))}
+					</Button>
+				))}
+			</div>
+		</>
+	);
+}
+
+/** Asks what a new project is for, then opens it. */
+function useCreateProject() {
+	const { t } = useI18n();
+	const editor = useEditor();
+	const router = useRouter();
+	const [isChoosing, setIsChoosing] = useState(false);
+	const create = async (mode: ProjectMode | null) => {
+		setIsChoosing(false);
+		try {
+			const projectId = await editor.project.createNewProject({ name: t("projects.newProject"), mode: mode ?? undefined });
+			router.push(`/editor/${projectId}`);
+		} catch (error) {
+			toast.error(t("projects.createFailed"), {
+				description: error instanceof Error ? localizeErrorDetail(error.message, t) : t("common.tryAgain"),
+			});
+		}
+	};
+	const dialog = (
+		<ProjectModeDialog isOpen={isChoosing} onOpenChange={setIsChoosing} purpose="new" onChoose={(mode) => void create(mode)} />
+	);
+	return { start: () => setIsChoosing(true), dialog };
 }
 
 function NoArchivedProjects() {
@@ -526,25 +583,20 @@ function SortDropdown({ children }: { children: React.ReactNode }) {
 
 export function NewProjectButton() {
 	const { t } = useI18n();
-	const editor = useEditor();
-	const router = useRouter();
-
-	const handleCreateProject = async () => {
-		const projectId = await editor.project.createNewProject({
-			name: t("projects.newProject"),
-		});
-		router.push(`/editor/${projectId}`);
-	};
+	const { start, dialog } = useCreateProject();
 
 	return (
-		<Button
-			size="lg"
-			className="flex px-5 md:px-6"
-			onClick={handleCreateProject}
-		>
-			<span className="text-sm font-medium hidden md:block">{t("projects.newProject")}</span>
-			<span className="text-sm font-medium block md:hidden">{t("projects.new")}</span>
-		</Button>
+		<>
+			<Button
+				size="lg"
+				className="flex px-5 md:px-6"
+				onClick={start}
+			>
+				<span className="text-sm font-medium hidden md:block">{t("projects.newProject")}</span>
+				<span className="text-sm font-medium block md:hidden">{t("projects.new")}</span>
+			</Button>
+			{dialog}
+		</>
 	);
 }
 
@@ -570,6 +622,7 @@ function ProjectItem({
 	const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
 	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 	const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
+	const [isModeDialogOpen, setIsModeDialogOpen] = useState(false);
 	const editor = useEditor();
 	const durationLabel = formatProjectDuration({ duration: project.duration });
 	const isMultiSelect = selectedProjectCount > 1;
@@ -631,6 +684,7 @@ function ProjectItem({
 				<h3 className="group-hover:text-foreground/90 line-clamp-2 text-sm leading-snug font-medium">
 					{project.name}
 				</h3>
+				{project.mode && <ModeBadge mode={project.mode} />}
 				<div className="text-muted-foreground flex items-center gap-1.5 text-sm">
 					<HugeiconsIcon icon={Calendar04Icon} className="size-4" />
 					<span>{t("projects.createdOn", { date: formatDate({ date: project.createdAt, locale }) })}</span>
@@ -654,6 +708,8 @@ function ProjectItem({
 			<h3 className="group-hover:text-foreground/90 text-sm font-medium truncate flex-1 min-w-0">
 				{project.name}
 			</h3>
+
+			{project.mode && <ModeBadge mode={project.mode} />}
 
 			<span className="text-muted-foreground text-sm shrink-0 hidden sm:block">
 				{durationLabel ?? "—"}
@@ -699,6 +755,7 @@ function ProjectItem({
 					onDeleteClick={handleDeleteClick}
 					onInfoClick={handleInfoClick}
 					onArchiveClick={handleArchive}
+					onModeClick={() => setIsModeDialogOpen(true)}
 					isArchived={archived}
 				/>
 			)}
@@ -743,6 +800,7 @@ function ProjectItem({
 										onDeleteClick={handleDeleteClick}
 										onInfoClick={handleInfoClick}
 										onArchiveClick={handleArchive}
+										onModeClick={() => setIsModeDialogOpen(true)}
 										isArchived={archived}
 									/>
 								)}
@@ -758,6 +816,7 @@ function ProjectItem({
 					onDeleteClick={handleDeleteClick}
 					onInfoClick={handleInfoClick}
 					onArchiveClick={handleArchive}
+					onModeClick={() => setIsModeDialogOpen(true)}
 					isArchived={archived}
 				/>
 			</ContextMenu>
@@ -784,7 +843,27 @@ function ProjectItem({
 				onOpenChange={setIsInfoDialogOpen}
 				project={project}
 			/>
+
+			<ProjectModeDialog
+				isOpen={isModeDialogOpen}
+				onOpenChange={setIsModeDialogOpen}
+				purpose="change"
+				current={project.mode ?? null}
+				onChoose={(mode) => {
+					setIsModeDialogOpen(false);
+					void editor.project.setProjectMode({ id: project.id, mode });
+				}}
+			/>
 		</>
+	);
+}
+
+function ModeBadge({ mode }: { mode: ProjectMode }) {
+	const { t } = useI18n();
+	return (
+		<span className="bg-muted text-muted-foreground w-fit shrink-0 rounded px-1.5 py-0.5 text-xs">
+			{t(projectModeLabel(mode))}
+		</span>
 	);
 }
 
@@ -794,6 +873,7 @@ function ProjectContextMenuContent({
 	onDeleteClick,
 	onInfoClick,
 	onArchiveClick,
+	onModeClick,
 	isArchived,
 }: {
 	onRenameClick: () => void;
@@ -801,6 +881,7 @@ function ProjectContextMenuContent({
 	onDeleteClick: () => void;
 	onInfoClick: () => void;
 	onArchiveClick: () => void;
+	onModeClick: () => void;
 	isArchived: boolean;
 }) {
 	const { t } = useI18n();
@@ -823,6 +904,12 @@ function ProjectContextMenuContent({
 				onClick={onInfoClick}
 			>
 				{t("common.info")}
+			</ContextMenuItem>
+			<ContextMenuItem
+				icon={<HugeiconsIcon icon={Target02Icon} />}
+				onClick={onModeClick}
+			>
+				{t("projectMode.menu")}
 			</ContextMenuItem>
 			<ContextMenuItem
 				icon={<HugeiconsIcon icon={isArchived ? ArchiveArrowUpIcon : Archive02Icon} />}
@@ -851,6 +938,7 @@ function ProjectMenu({
 	onDeleteClick,
 	onInfoClick,
 	onArchiveClick,
+	onModeClick,
 	isArchived,
 }: {
 	isOpen: boolean;
@@ -861,6 +949,7 @@ function ProjectMenu({
 	onDeleteClick: () => void;
 	onInfoClick: () => void;
 	onArchiveClick: () => void;
+	onModeClick: () => void;
 	isArchived: boolean;
 }) {
 	const { t } = useI18n();
@@ -910,6 +999,11 @@ function ProjectMenu({
 		onOpenChange(false);
 	};
 
+	const handleModeClick = () => {
+		onModeClick();
+		onOpenChange(false);
+	};
+
 	const isGrid = variant === "grid";
 
 	return (
@@ -955,6 +1049,10 @@ function ProjectMenu({
 				<DropdownMenuItem onClick={handleInfoClick}>
 					<HugeiconsIcon icon={InformationCircleIcon} />
 					{t("common.info")}
+				</DropdownMenuItem>
+				<DropdownMenuItem onClick={handleModeClick}>
+					<HugeiconsIcon icon={Target02Icon} />
+					{t("projectMode.menu")}
 				</DropdownMenuItem>
 				<DropdownMenuItem onClick={handleArchiveClick}>
 					<HugeiconsIcon icon={isArchived ? ArchiveArrowUpIcon : Archive02Icon} />
@@ -1023,19 +1121,7 @@ function EmptyState() {
 	const editor = useEditor();
 	const savedProjects = editor.project.getSavedProjects();
 
-	const handleCreateProject = async () => {
-		try {
-			const projectId = await editor.project.createNewProject({
-				name: t("projects.newProject"),
-			});
-			router.push(`/editor/${projectId}`);
-		} catch (error) {
-			toast.error(t("projects.createFailed"), {
-				description:
-					error instanceof Error ? localizeErrorDetail(error.message, t) : t("common.tryAgain"),
-			});
-		}
-	};
+	const { start: handleCreateProject, dialog: createDialog } = useCreateProject();
 
 	if (savedProjects.length > 0) {
 		return (
@@ -1081,6 +1167,7 @@ function EmptyState() {
 				<HugeiconsIcon icon={PlusSignIcon} />
 				{t("projects.createFirst")}
 			</Button>
+			{createDialog}
 		</div>
 	);
 }
