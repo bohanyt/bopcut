@@ -234,7 +234,7 @@ describe("removing used media", () => {
 		writing.open();
 		expect(await saved).toBe(true);
 		await until(() => remove.mock.calls.length === 1);
-		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first", preserveForUndo: true });
 	});
 
 	test("undo before the write uploads again when another tab deleted the bytes", async () => {
@@ -331,7 +331,7 @@ describe("removing used media", () => {
 		expect(disk.writes).toHaveLength(writes);
 		expect(disk.viewWrites.length).toBeGreaterThan(0);
 		await until(() => remove.mock.calls.length === 1);
-		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first", preserveForUndo: true });
 	});
 
 	test("two removals survive a project switch and a failed save", async () => {
@@ -349,8 +349,8 @@ describe("removing used media", () => {
 		expect(remove).not.toHaveBeenCalled();
 		writing.open();
 		await until(() => remove.mock.calls.length === 2);
-		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
-		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "second" });
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first", preserveForUndo: true });
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "second", preserveForUndo: true });
 	});
 
 	test("an asset waits for the earlier removal of its last clip to save", async () => {
@@ -366,7 +366,7 @@ describe("removing used media", () => {
 		writing.open();
 		expect(await saved).toBe(true);
 		await until(() => remove.mock.calls.length === 1);
-		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first" });
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "first", preserveForUndo: true });
 	});
 
 	test.each(["clean", "saving off", "no session"])("deletes immediately when %s", async (mode) => {
@@ -375,7 +375,7 @@ describe("removing used media", () => {
 		if (mode === "saving off") editor.save.stop();
 		if (mode === "no session") editor.save.discardProject("a");
 		editor.media.removeMediaAsset({ projectId: "a", id: "unused" });
-		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "unused" });
+		expect(remove).toHaveBeenCalledWith({ projectId: "a", id: "unused", preserveForUndo: true });
 	});
 
 	test("undo after deletion can save while the asset upload is pending", async () => {
@@ -392,6 +392,28 @@ describe("removing used media", () => {
 			expect(restore).toHaveBeenCalledTimes(1);
 			expect(disk.writes).toHaveLength(writes + 1);
 		} finally {
+			restoring.open();
+			await editor.media.settleBinWrites("a");
+		}
+	});
+
+	test("undo can start while deletion responds slowly and redo waits for the restore", async () => {
+		const { editor, remove, restore } = await setup();
+		editor.media.setAssets({ assets: [...editor.media.getAssets(), asset("unused")] });
+		const deleting = gate();
+		const restoring = gate();
+		remove.mockImplementationOnce(() => deleting.promise);
+		restore.mockImplementationOnce(() => restoring.promise);
+		editor.media.removeMediaAsset({ projectId: "a", id: "unused" });
+		editor.command.undo();
+		try {
+			await until(() => restore.mock.calls.length === 1);
+			editor.command.redo();
+			expect(remove).toHaveBeenCalledTimes(1);
+			restoring.open();
+			await until(() => remove.mock.calls.length === 2);
+		} finally {
+			deleting.open();
 			restoring.open();
 			await editor.media.settleBinWrites("a");
 		}

@@ -10,6 +10,7 @@ import {
 	revision,
 	safeId,
 	commitMedia,
+	MediaUploadNeedsBody,
 	discardReceivedMedia,
 	receiveMedia,
 	statFile,
@@ -295,7 +296,14 @@ async function handle(
 							// A delayed upload or Undo write must not recreate a deleted project.
 							if (!(await statFile(projectFile(id))) && (await readJson(marker(id)))?.deleted)
 								return new Response(null, { status: 404 });
-							const savedRevision = await commitMedia(id, mediaId, metadata, received);
+							const restore = req.headers.get("x-media-restore") === "1";
+							let savedRevision: string | undefined;
+							try {
+								savedRevision = await commitMedia(id, mediaId, metadata, received, restore);
+							} catch (error) {
+								if (restore && error instanceof MediaUploadNeedsBody) return new Response(null, { status: 409 });
+								throw error;
+							}
 							return Response.json({ ok: true }, {
 								headers: savedRevision ? { "X-Media-Revision": savedRevision } : undefined,
 							});
@@ -313,15 +321,20 @@ async function handle(
 						const old = await readJson(file);
 						if (!old) return new Response(null, { status: 400 });
 						const firstMetadata = typeof old.name !== "string";
-						for (const field of Object.keys(mediaEditorFields)) {
-							// The first metadata write may stage an upload. Later writes can only clear the flag.
-							if (field !== "staged" || firstMetadata || metadata.staged !== true) old[field] = metadata[field];
+						const restore = req.headers.get("x-media-restore") === "1";
+						if (firstMetadata || !restore) {
+							for (const field of Object.keys(mediaEditorFields)) {
+								// The first metadata write may stage an upload. Later writes can only clear the flag.
+								if (field !== "staged" || firstMetadata || metadata.staged !== true) old[field] = metadata[field];
+							}
+							if (metadata.thumbnailUrl === null) delete old.thumbnailUrl;
+							else if (isEmbeddedMediaThumbnail(metadata.thumbnailUrl)) old.thumbnailUrl = metadata.thumbnailUrl;
+							await atomicWrite(file, JSON.stringify(old));
 						}
-						if (metadata.thumbnailUrl === null) delete old.thumbnailUrl;
-						else if (isEmbeddedMediaThumbnail(metadata.thumbnailUrl)) old.thumbnailUrl = metadata.thumbnailUrl;
-						await atomicWrite(file, JSON.stringify(old));
 						const reference = mediaThumbnailReference(id, mediaId, old.thumbnailUrl);
-						return Response.json({ ok: true }, {
+						return Response.json({ ok: true, ...(restore && {
+							media: { ...old, thumbnailUrl: reference ?? old.thumbnailUrl },
+						}) }, {
 							headers: reference && reference !== old.thumbnailUrl
 								? { "X-Media-Thumbnail": reference }
 								: undefined,
@@ -332,7 +345,7 @@ async function handle(
 					return await withProjectLock(id, async () => {
 						if (await projectUsesMedia(id, mediaId))
 							return Response.json({ error: "The saved project still uses this media" }, { status: 409 });
-						await removeMedia(id, mediaId);
+						await removeMedia(id, mediaId, req.headers.get("x-media-preserve-for-undo") === "1");
 						return Response.json({ ok: true });
 					});
 			}

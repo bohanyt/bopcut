@@ -139,26 +139,32 @@ export class MediaManager {
 		const reference = parseMediaThumbnailReference((asset ?? removedAsset)?.thumbnailUrl);
 		const pending = projectWrites.get(id);
 		const previous = pending?.started;
-		const started = reference || previous || ifMissing ? Promise.withResolvers<void>() : undefined;
+		const started = asset || reference || previous || ifMissing ? Promise.withResolvers<void>() : undefined;
 		const send = () => {
 			try {
 				return asset
 					? storageService.saveMediaAsset({
-						projectId, mediaAsset: asset,
+						projectId, mediaAsset: asset, restore: true,
+						onRestored: ({ words }) => {
+							if (!this.assets.includes(asset)) return;
+							asset.words = words;
+							this.assets = [...this.assets];
+							this.notify();
+						},
 						...(reference && { onThumbnailStored: (url: string | undefined) => {
 							if (asset.thumbnailUrl === url || !this.assets.includes(asset)) return;
 							asset.thumbnailUrl = url;
 							this.assets = [...this.assets];
 							this.notify();
 						} }),
-					})
-					: storageService.deleteMediaAsset({ projectId, id });
+					}).finally(() => started?.resolve())
+					: storageService.deleteMediaAsset({ projectId, id, preserveForUndo: true });
 			} finally {
-				started?.resolve();
+				if (!asset) started?.resolve();
 			}
 		};
-		// Capture a projected thumbnail before its metadata disappears. A later history action
-		// only waits for the earlier request to be sent, even if its response is delayed.
+		// Capture a projected thumbnail before its metadata disappears. Undo can start before
+		// a delete response arrives; Redo waits for the restore upload so it cannot overtake it.
 		const write = (): Promise<void> => {
 			if (asset && ifMissing) {
 				// Another tab may have removed the bytes meanwhile. Later writes wait for this check, and a

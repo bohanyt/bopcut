@@ -210,9 +210,12 @@ describe("copying thumbnails only for media history or duplication", () => {
 		const undo = media.persistBinChange({ projectId: "p", id, asset: restoring });
 		await putStarted.promise;
 		try {
-			await media.persistBinChange({ projectId: "p", id, asset: null, removedAsset: restoring });
-			await media.persistBinChange({ projectId: "p", id, asset: { ...restoring } });
-			expect(posted).toEqual([inline]);
+			const redo = media.persistBinChange({ projectId: "p", id, asset: null, removedAsset: restoring });
+			const nextUndo = media.persistBinChange({ projectId: "p", id, asset: { ...restoring } });
+			expect(posted).toEqual([]);
+			firstPut.resolve(Response.json({ ok: true }));
+			await Promise.all([undo, redo, nextUndo]);
+			expect(posted).toEqual([inline, inline]);
 		} finally {
 			firstPut.resolve(Response.json({ ok: true }));
 			await undo;

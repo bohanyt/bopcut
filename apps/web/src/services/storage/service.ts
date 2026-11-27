@@ -408,12 +408,16 @@ class StorageService {
 		mediaAsset,
 		staged = false,
 		onThumbnailStored,
+		restore = false,
+		onRestored,
 	}: {
 		projectId: string;
 		mediaAsset: MediaAsset;
 		/** Saved for a draft that has not committed: hidden from loads until promoteMediaAssets. */
 		staged?: boolean;
 		onThumbnailStored?: (url: string | undefined) => void;
+		restore?: boolean;
+		onRestored?: (metadata: MediaAssetData) => void;
 	}): Promise<void> {
 
 		let thumbnailUrl = mediaAsset.thumbnailUrl;
@@ -446,9 +450,10 @@ class StorageService {
 			...(staged ? { staged: true } : {}),
 		};
 
-		metadata.thumbnailUrl = await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file);
-		this.manifests.get(projectId)?.set(metadata.id, metadata);
-		onThumbnailStored?.(metadata.thumbnailUrl);
+		const stored = await this.projectsAdapter.saveMedia(projectId, metadata, mediaAsset.file, restore);
+		this.manifests.get(projectId)?.set(stored.id, stored);
+		onThumbnailStored?.(stored.thumbnailUrl);
+		if (restore) onRestored?.(stored);
 	}
 
 	/** Sets (or replaces) the spoken words stored with a media file. */
@@ -644,12 +649,17 @@ class StorageService {
 	async deleteMediaAsset({
 		projectId,
 		id,
+		preserveForUndo = false,
 	}: {
 		projectId: string;
 		id: string;
+		preserveForUndo?: boolean;
 	}): Promise<void> {
-		await this.projectsAdapter.removeMedia(projectId, id);
-		this.manifests.get(projectId)?.delete(id);
+		const manifest = this.manifests.get(projectId);
+		const previous = manifest?.get(id);
+		await this.projectsAdapter.removeMedia(projectId, id, preserveForUndo);
+		// Undo may already have published new metadata while the delete response was delayed.
+		if (manifest?.get(id) === previous) manifest?.delete(id);
 	}
 
 	async deleteProjectMedia({

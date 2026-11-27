@@ -227,25 +227,29 @@ export async function receiveMedia(
 	return { ...paths, temp };
 }
 
+export class MediaUploadNeedsBody extends Error {}
+
 /** Moves a received upload into the project and writes its metadata. Run it under the project lock. */
 export async function commitMedia(
 	id: string,
 	mediaId: string,
 	metadata: any,
 	received: ReceivedMedia,
+	restore = false,
 ): Promise<string | undefined> {
 	const { dir, fileName, file, metaFile, temp } = received;
 	const old = await readJson(metaFile);
 	if (await isMediaStored(received, mediaId, metadata, old)) return;
 	// The stored file was removed while this request skipped its body: the client sends it again.
-	if (!temp) throw new Error("Upload does not match the saved media");
+	if (!temp) throw new MediaUploadNeedsBody("Upload does not match the saved media");
 	await fs.mkdir(path.dirname(metaFile), { recursive: true });
 	await renameWithRetry(temp, file);
 	if (!old) {
 		try {
+			const saved = restore ? await readJson(undoMediaMetadataPath(id, mediaId)) : null;
 			await atomicWrite(
 				metaFile,
-				JSON.stringify({ ...metadata, diskFile: fileName }),
+				JSON.stringify({ ...(saved ?? metadata), diskFile: fileName, fileType: metadata.fileType, fileName: metadata.fileName }),
 			);
 		} catch (error) {
 			// Without metadata the file is unreachable: do not leave it behind.
@@ -253,6 +257,9 @@ export async function commitMedia(
 			throw error;
 		}
 	}
+	if (restore) await fs.rm(undoMediaMetadataPath(id, mediaId), { force: true }).catch((error) => {
+		console.error("Could not clear restored media metadata:", error);
+	});
 	await removeRepairedThumbnail(id, mediaId);
 	const stat = await statFile(path.join(dir, fileName));
 	return stat ? mediaRevision(stat) : undefined;
@@ -420,7 +427,11 @@ export async function streamMediaFile(file: string, fileType: string | undefined
  * Deletes a media file and its metadata. Also removes a file whose metadata write failed
  * (`<mediaId>.<ext>` without metadata), so a failed import leaves nothing behind.
  */
-export async function removeMedia(id: string, mediaId: string): Promise<void> {
+function undoMediaMetadataPath(id: string, mediaId: string): string {
+	return path.join(projectDir(id), "media", "_removed", `${safeId(mediaId)}.json`);
+}
+
+export async function removeMedia(id: string, mediaId: string, preserveForUndo = false): Promise<void> {
 	const dir = path.join(projectDir(id), "media");
 	safeId(mediaId);
 	const metaFile = path.join(dir, "_metadata", `${mediaId}.json`);
@@ -432,6 +443,13 @@ export async function removeMedia(id: string, mediaId: string): Promise<void> {
 	const files = meta && own.test(meta.diskFile)
 		? [meta.diskFile as string]
 		: (await fs.readdir(dir).catch(() => [] as string[])).filter((name) => own.test(name));
+	const undoFile = undoMediaMetadataPath(id, mediaId);
+	if (preserveForUndo && typeof meta?.name === "string") {
+		await fs.mkdir(path.dirname(undoFile), { recursive: true });
+		await atomicWrite(undoFile, JSON.stringify(meta));
+	} else if (!preserveForUndo) {
+		await retryTransient(() => fs.rm(undoFile, { force: true }));
+	}
 	for (const name of files) await retryTransient(() => fs.rm(path.join(dir, name), { force: true }));
 	await retryTransient(() => fs.rm(metaFile, { force: true }));
 	await removeRepairedThumbnail(id, mediaId);

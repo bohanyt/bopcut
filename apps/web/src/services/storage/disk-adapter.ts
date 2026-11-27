@@ -216,31 +216,39 @@ export class DiskAdapter {
 		id: string,
 		metadata: MediaAssetData,
 		file: File,
-	): Promise<string | undefined> {
+		restore = false,
+	): Promise<MediaAssetData> {
 		const url = this.mediaUrl(id, metadata.id);
+		const restoreHeaders: Record<string, string> = restore ? { "X-Media-Restore": "1" } : {};
 		const minimal = {
 			id: metadata.id,
 			fileName: metadata.fileName,
 			fileType: metadata.fileType,
 		};
-		const upload = await checked(
-			await fetch(url, {
-				method: "PUT",
-				headers: {
-					"X-Media-Metadata": encodeURIComponent(JSON.stringify(minimal)),
-				},
-				body: file,
-			}),
-		);
+		const uploadFile = () => fetch(url, {
+			method: "PUT",
+			headers: {
+				...restoreHeaders,
+				"X-Media-Metadata": encodeURIComponent(JSON.stringify(minimal)),
+			},
+			body: file,
+		});
+		let upload = await uploadFile();
+		if (restore && upload.status === 409) upload = await uploadFile();
+		await checked(upload);
 		recordMediaFileVersion(file, upload.headers.get("X-Media-Revision"));
 		const response = await checked(
 			await fetch(url, {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: { "Content-Type": "application/json", ...restoreHeaders },
 				body: JSON.stringify(metadata),
 			}),
 		);
-		return response.headers.get("X-Media-Thumbnail") ?? metadata.thumbnailUrl;
+		if (restore) {
+			const { media } = await response.json();
+			if (media) return media;
+		}
+		return { ...metadata, thumbnailUrl: response.headers.get("X-Media-Thumbnail") ?? metadata.thumbnailUrl };
 	}
 	/** Replaces the metadata of stored media (its file stays). */
 	async updateMediaMetadata(id: string, metadata: MediaAssetData): Promise<void> {
@@ -253,9 +261,12 @@ export class DiskAdapter {
 			}),
 		);
 	}
-	async removeMedia(id: string, mediaId: string): Promise<void> {
+	async removeMedia(id: string, mediaId: string, preserveForUndo = false): Promise<void> {
 		await checked(
-			await fetch(this.mediaUrl(id, mediaId), { method: "DELETE" }),
+			await fetch(this.mediaUrl(id, mediaId), {
+				method: "DELETE",
+				...(preserveForUndo && { headers: { "X-Media-Preserve-For-Undo": "1" } }),
+			}),
 		);
 	}
 	async removeProjectMedia(id: string): Promise<void> {
