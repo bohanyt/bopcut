@@ -2,8 +2,8 @@ import { getBrowserTranslator } from "@/i18n/browser";
 import { toast } from "sonner";
 import type { EditorCore } from "@/core";
 import { clampRetimeRate, shouldMaintainPitch } from "@/retime/rate";
-import type { AudioClipSource } from "@/media/audio";
-import { createAudioContext, collectAudioClips, resolvePitchSourceEnd } from "@/media/audio";
+import type { AudioClipSource, LibraryAudioRequest } from "@/media/audio";
+import { createAudioContext, fetchLibraryAudioClip, gatherAudioClips, resolvePitchSourceEnd } from "@/media/audio";
 import { buildAudioGainAutomation, hasAnimatedVolume } from "@/timeline/audio-state";
 import { createAudioMasteringChain } from "@/media/audio-mastering";
 import { createPitchReader } from "@/retime";
@@ -224,15 +224,15 @@ export class AudioManager {
 			await audioContext.resume();
 			if (signal.aborted) return;
 
-			const clips = await collectAudioClips({
+			const { clips, library } = gatherAudioClips({
 				tracks: scene.tracks,
 				mediaAssets: this.editor.media.getAssets(),
 				scenes: this.editor.scenes.getScenes(),
-				signal,
 			});
-			if (signal.aborted) return;
 			this.clips = clips.filter((clip) => !clip.muted);
-			if (this.clips.length === 0) {
+			// A muted library sound is not fetched; the others join when they arrive.
+			const pending = library.filter((request) => !request.muted);
+			if (this.clips.length === 0 && pending.length === 0) {
 				this.stopPlayback();
 				return;
 			}
@@ -244,11 +244,21 @@ export class AudioManager {
 			}
 			this.scheduleUpcomingClips(this.playbackAnchor.timelineTime);
 			this.queueBackgroundWake();
+			for (const request of pending) void this.addLibraryClip({ request, signal });
 		} catch (error) {
 			if (signal.aborted) return;
 			console.warn("Failed to start preview audio:", error);
 			this.stopPlayback();
 		}
+	}
+
+	/** A slow library fetch delays only its own sound, which starts at the playhead's place on the audio clock. */
+	private async addLibraryClip({ request, signal }: { request: LibraryAudioRequest; signal: AbortSignal }): Promise<void> {
+		const clip = await fetchLibraryAudioClip({ ...request, signal });
+		if (!clip || signal.aborted) return;
+		this.clips.push(clip);
+		this.scheduleUpcomingClips(this.editor.playback.getPlaybackTime());
+		this.queueBackgroundWake();
 	}
 
 	private scheduleUpcomingClips(currentTime: number): void {

@@ -233,17 +233,19 @@ async function fetchLibraryAudioSource({
 	}
 }
 
-async function fetchLibraryAudioClip({
+/** A library sound still to fetch, with what its clip needs once it arrives. */
+export interface LibraryAudioRequest {
+	element: LibraryAudioElement;
+	muted: boolean;
+	volume: number;
+}
+
+export async function fetchLibraryAudioClip({
 	element,
 	muted,
 	volume,
 	signal,
-}: {
-	element: LibraryAudioElement;
-	muted: boolean;
-	volume: number;
-	signal?: AbortSignal;
-}): Promise<AudioClipSource | null> {
+}: LibraryAudioRequest & { signal?: AbortSignal }): Promise<AudioClipSource | null> {
 	const source = await fetchLibraryAudioSource({ element, volume, signal });
 	return source && { ...source, id: element.id, sourceKey: element.id, muted };
 }
@@ -289,7 +291,7 @@ function collectMediaAudioClip({
 }
 
 export async function collectAudioClips({
-	tracks: sceneTracks,
+	tracks,
 	mediaAssets,
 	scenes = [],
 	signal,
@@ -299,13 +301,31 @@ export async function collectAudioClips({
 	scenes?: TScene[];
 	signal?: AbortSignal;
 }): Promise<AudioClipSource[]> {
+	const { clips, library } = gatherAudioClips({ tracks, mediaAssets, scenes });
+	const fetched = await Promise.all(library.map((request) => fetchLibraryAudioClip({ ...request, signal })));
+	for (const clip of fetched) {
+		if (clip) clips.push(clip);
+	}
+	return clips;
+}
+
+/** The clips whose audio is already here, and the library sounds that still have to be fetched. */
+export function gatherAudioClips({
+	tracks: sceneTracks,
+	mediaAssets,
+	scenes = [],
+}: {
+	tracks: SceneTracks;
+	mediaAssets: MediaAsset[];
+	scenes?: TScene[];
+}): { clips: AudioClipSource[]; library: LibraryAudioRequest[] } {
 	const tracks = expandCompoundAudioTracks({ tracks: sceneTracks, scenes });
 	const orderedTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
 	const clips: AudioClipSource[] = [];
 	const mediaMap = new Map<string, MediaAsset>(
 		mediaAssets.map((asset) => [asset.id, asset]),
 	);
-	const pendingLibraryClips: Array<Promise<AudioClipSource | null>> = [];
+	const library: LibraryAudioRequest[] = [];
 
 	for (const track of orderedTracks) {
 		const isTrackMuted = canTrackHaveAudio(track) && track.muted;
@@ -339,9 +359,7 @@ export async function collectAudioClips({
 						}),
 					);
 				} else {
-					pendingLibraryClips.push(
-						fetchLibraryAudioClip({ element, muted, volume, signal }),
-					);
+					library.push({ element, muted, volume });
 				}
 				continue;
 			}
@@ -361,12 +379,7 @@ export async function collectAudioClips({
 		}
 	}
 
-	const resolvedLibraryClips = await Promise.all(pendingLibraryClips);
-	for (const clip of resolvedLibraryClips) {
-		if (clip) clips.push(clip);
-	}
-
-	return clips;
+	return { clips, library };
 }
 
 function collectPeakRange({
