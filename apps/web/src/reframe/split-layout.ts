@@ -151,6 +151,7 @@ export function buildSplitLayout({ tracks, clip, facecam, split = SPLIT_LIMITS.d
 		name: names.facecamClip(element.name),
 		// One sound: the game clip keeps it.
 		params: { ...facecamPlaced.params, muted: true },
+		reframe: { facecam: { ...facecam } },
 		agentId: facecamAgentId,
 		humanFields: undefined,
 	};

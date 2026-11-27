@@ -102,12 +102,15 @@ import {
 	FolderOpenIcon,
 	AiSearchIcon,
 	LayoutTwoRowIcon,
+	FaceIdIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uppercase } from "@/utils/string";
 import { useMemo, type ComponentProps, type ReactNode } from "react";
 import { requestAgentCheck } from "@/timeline/bookmarks/agent-check";
 import { useSplitLayoutRequest } from "@/reframe/components/split-layout-dialog";
+import { useFacePick } from "@/reframe/components/face-pick";
+import { canFollowFace } from "@/reframe/apply-face-follow";
 import type { SelectedKeyframeRef, ElementKeyframe } from "@/animation/types";
 import { cn } from "@/utils/ui";
 import { usePropertiesStore } from "@/components/editor/panels/properties/stores/properties-store";
@@ -718,6 +721,19 @@ function TimelineElementMenu({
 					}}
 				>
 					{t("reframe.menu")}
+				</ContextMenuItem>
+			)}
+			{canFollowFace(element) && (
+				<ContextMenuItem
+					icon={<HugeiconsIcon icon={FaceIdIcon} />}
+					onClick={(event: React.MouseEvent) => {
+						event.stopPropagation();
+						// The click goes to the frame on screen.
+						editor.playback.pause();
+						useFacePick.setState({ clip: { trackId: track.id, elementId: element.id } });
+					}}
+				>
+					{t("reframe.followMenu")}
 				</ContextMenuItem>
 			)}
 			<ContextMenuItem
