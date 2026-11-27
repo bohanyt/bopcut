@@ -1,8 +1,10 @@
 import type { SceneTracks } from "@/timeline";
 import {
+	buildSnapIndex,
 	buildTimelineSnapPoints,
 	getTimelineSnapThresholdInTicks,
-	resolveTimelineSnap,
+	resolveIndexedSnap,
+	type SnapIndex,
 	type SnapPoint,
 } from "@/timeline/snapping";
 import { getElementEdgeSnapPoints } from "@/timeline/element-snap-source";
@@ -11,36 +13,53 @@ import { getAnimationKeyframeSnapPointsForTimeline } from "@/timeline/animation-
 import type { MoveGroup } from "./types";
 import { addMediaTime, type MediaTime, subMediaTime } from "@/wasm";
 
+/** What the group's edges can snap to: other clips' edges, the playhead and keyframes. Reusable while they do not change. */
+export function buildGroupSnapIndex({
+	group,
+	tracks,
+	playheadTime,
+}: {
+	group: MoveGroup;
+	tracks: SceneTracks;
+	playheadTime: MediaTime;
+}): SnapIndex {
+	const excludeElementIds = new Set(
+		group.members.map((member) => member.elementId),
+	);
+	return buildSnapIndex({
+		points: buildTimelineSnapPoints({
+			sources: [
+				() => getElementEdgeSnapPoints({ tracks, excludeElementIds }),
+				() => getPlayheadSnapPoints({ playheadTime }),
+				() =>
+					getAnimationKeyframeSnapPointsForTimeline({
+						tracks,
+						excludeElementIds,
+					}),
+			],
+		}),
+	});
+}
+
 export function snapGroupEdges({
 	group,
 	anchorStartTime,
 	tracks,
 	playheadTime,
 	zoomLevel,
+	index = buildGroupSnapIndex({ group, tracks, playheadTime }),
 }: {
 	group: MoveGroup;
 	anchorStartTime: MediaTime;
 	tracks: SceneTracks;
 	playheadTime: MediaTime;
 	zoomLevel: number;
+	/** From `buildGroupSnapIndex` for the same group, tracks and playhead. */
+	index?: SnapIndex;
 }): {
 	snappedAnchorStartTime: MediaTime;
 	snapPoint: SnapPoint | null;
 } {
-	const excludeElementIds = new Set(
-		group.members.map((member) => member.elementId),
-	);
-	const snapPoints = buildTimelineSnapPoints({
-		sources: [
-			() => getElementEdgeSnapPoints({ tracks, excludeElementIds }),
-			() => getPlayheadSnapPoints({ playheadTime }),
-			() =>
-				getAnimationKeyframeSnapPointsForTimeline({
-					tracks,
-					excludeElementIds,
-				}),
-		],
-	});
 	const maxSnapDistance = getTimelineSnapThresholdInTicks({ zoomLevel });
 
 	let closestSnapDistance = Infinity;
@@ -52,9 +71,9 @@ export function snapGroupEdges({
 			a: anchorStartTime,
 			b: member.timeOffset,
 		});
-		const memberStartSnap = resolveTimelineSnap({
+		const memberStartSnap = resolveIndexedSnap({
 			targetTime: memberStartTime,
-			snapPoints,
+			index,
 			maxSnapDistance,
 		});
 		if (
@@ -69,12 +88,12 @@ export function snapGroupEdges({
 			snapPoint = memberStartSnap.snapPoint;
 		}
 
-		const memberEndSnap = resolveTimelineSnap({
+		const memberEndSnap = resolveIndexedSnap({
 			targetTime: addMediaTime({
 				a: memberStartTime,
 				b: member.duration,
 			}),
-			snapPoints,
+			index,
 			maxSnapDistance,
 		});
 		if (
