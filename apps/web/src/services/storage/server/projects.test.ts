@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { GET, HEAD, POST, PUT, DELETE } from "../../../app/api/storage/[...slug]/route";
 import { StorageService } from "../service";
+import { ProjectSaveConflict } from "../disk-adapter";
 import { IndexedDBAdapter } from "../indexeddb-adapter";
 import { EditorCore } from "@/core";
 import type { TProject } from "@/project/types";
@@ -97,6 +98,44 @@ test("navigation survives content saves without changing project bytes or their 
 	await route("DELETE", id);
 	expect((await save()).status).toBe(404);
 	expect(await fs.stat(projectPath(id)).catch(() => null)).toBeNull();
+});
+
+test("an editor save keeps its loaded revision despite later reads and detects changes after a conflict", async () => {
+	const id = "two-tab-conflict";
+	await writeLegacy(fixture(id));
+	const handleFetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: RequestInfo | URL, init?: RequestInit) => {
+		expect(String(url)).toBe(`${base}/${id}`);
+		return route(init?.method === "PUT" ? "PUT" : "GET", id, "", init);
+	}, { preconnect: fetch.preconnect }));
+	try {
+		const first = new StorageService();
+		const second = new StorageService();
+		const opened = (await first.loadProject({ id, readOnly: true }))!;
+		const other = (await second.loadProject({ id, readOnly: true }))!;
+		const firstRevision = { value: opened.storageRevision };
+		const secondRevision = { value: other.storageRevision };
+		expect(firstRevision.value).toBeTruthy();
+		const rename = (project: TProject, name: string) => ({ ...project, metadata: { ...project.metadata, name } });
+		await second.saveProject({ project: rename(other.project, "Other tab"), saveRevision: secondRevision });
+		await first.loadProject({ id, readOnly: true });
+
+		const saveStale = () => first.saveProject({ project: rename(opened.project, "Pending edits"), saveRevision: firstRevision });
+		const conflict = await saveStale().catch((error: unknown) => error);
+		expect(conflict).toBeInstanceOf(ProjectSaveConflict);
+		expect(firstRevision.value).toBe(opened.storageRevision);
+		expect(await (await route("GET", id)).json()).toMatchObject({ metadata: { name: "Other tab" } });
+
+		await second.saveProject({ project: rename(other.project, "Newer edit"), saveRevision: secondRevision });
+		firstRevision.value = (conflict as ProjectSaveConflict).diskRevision ?? undefined;
+		await expect(saveStale()).rejects.toBeInstanceOf(ProjectSaveConflict);
+		expect(await (await route("GET", id)).json()).toMatchObject({ metadata: { name: "Newer edit" } });
+
+		firstRevision.value = secondRevision.value;
+		await saveStale();
+		expect(await (await route("GET", id)).json()).toMatchObject({ metadata: { name: "Pending edits" } });
+	} finally {
+		handleFetch.mockRestore();
+	}
 });
 
 test("lists older projects with numeric-keyed tracks even when duration is missing", async () => {

@@ -214,7 +214,11 @@ class StorageService {
 		};
 	}
 
-	async saveProject({ project, includeView = false }: { project: TProject; includeView?: boolean }): Promise<void> {
+	async saveProject({ project, includeView = false, saveRevision }: {
+		project: TProject;
+		includeView?: boolean;
+		saveRevision?: import("./disk-adapter").ProjectSaveRevision;
+	}): Promise<void> {
 		const duration =
 			project.metadata.duration ??
 			getProjectDurationFromScenes({ scenes: project.scenes });
@@ -250,6 +254,7 @@ class StorageService {
 		await this.projectsAdapter.set({
 			key: project.metadata.id,
 			value: serializedProject,
+			saveRevision,
 		});
 	}
 
@@ -291,7 +296,7 @@ class StorageService {
 	}: {
 		id: string;
 		readOnly?: boolean;
-	}): Promise<{ project: TProject } | null> {
+	}): Promise<{ project: TProject; storageRevision?: string } | null> {
 		if (!readOnly) await this.ensureMigrations();
 		let serializedProject = await this.projectsAdapter.get(id);
 		if (!serializedProject) return null;
@@ -346,7 +351,7 @@ class StorageService {
 			timelineViewState: validNavigation ? navigation.timelineViewState : serializedProject.timelineViewState,
 		};
 
-		return { project };
+		return { project, storageRevision: this.projectsAdapter.revisionOf(serializedProject) };
 	}
 
 	async loadAllProjects(): Promise<TProject[]> {

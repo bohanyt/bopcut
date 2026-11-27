@@ -150,8 +150,12 @@ async function handle(
 					const expected = req.headers.get("if-match");
 					if (!migrating && !current && expected === "new" && (await readJson(marker(id)))?.deleted)
 						return new Response(null, { status: 404 });
-					if (!migrating && expected !== (current ? revision(current) : "new"))
-						return Response.json({ error: "Project changed" }, { status: 409 });
+					const currentRevision = current ? revision(current) : "new";
+					if (!migrating && expected !== currentRevision)
+						return Response.json({ error: "Project changed" }, {
+							status: 409,
+							...(current && { headers: { ETag: currentRevision } }),
+						});
 					const etag = await writeProject(id, value, current);
 					if (migrating)
 						await atomicWrite(marker(id), JSON.stringify({ migrated: true }));

@@ -13,6 +13,7 @@ import type {
 import type { ExportOptions, ExportResult, ExportState } from "@/export";
 import { getExportFailure } from "@/export/failure";
 import { storageService } from "@/services/storage/service";
+import { ProjectSaveConflict, type ProjectSaveRevision } from "@/services/storage/disk-adapter";
 import { toast } from "sonner";
 import { generateUUID } from "@/utils/id";
 import { UpdateProjectSettingsCommand } from "@/commands/project";
@@ -120,7 +121,7 @@ export class ProjectManager {
 		this.supersedeLoads();
 		// Opened before the editor's project changes: the open project's unsaved edits are kept (see SaveManager.open).
 		// Nothing is written for the new project until its first write below is done.
-		const saveSession = this.editor.save.open({ projectId: newProject.metadata.id, session: this.session, name, savedAt: null, loading: true });
+		const saveSession = this.editor.save.open({ projectId: newProject.metadata.id, session: this.session, name, savedAt: null, loading: true, storageRevision: "new" });
 		this.active = newProject;
 		this.notify();
 
@@ -132,7 +133,7 @@ export class ProjectManager {
 		});
 
 		try {
-			await storageService.saveProject({ project: newProject });
+			await storageService.saveProject({ project: newProject, saveRevision: saveSession.storageRevision });
 			this.updateMetadata(newProject);
 			saveSession.savedAt = new Date();
 
@@ -233,7 +234,7 @@ export class ProjectManager {
 		// Opened before the editor's project changes: the open project's unsaved edits are taken now and
 		// written in the background (see SaveManager.open). The new session saves nothing but forced
 		// edits until this load is done.
-		const saveSession = this.editor.save.open({ projectId: id, session: this.session, name: project.metadata.name, savedAt: project.metadata.updatedAt, loading: true });
+		const saveSession = this.editor.save.open({ projectId: id, session: this.session, name: project.metadata.name, savedAt: project.metadata.updatedAt, loading: true, storageRevision: result.storageRevision });
 		this.installing = load;
 		this.isLoading = true;
 		this.editor.media.clearAllAssets();
@@ -313,9 +314,9 @@ export class ProjectManager {
 	 * re-render (seconds on a large project) although nothing it shows changed. Only the project
 	 * list, which the editor does not show, gets the new metadata.
 	 */
-	async persistProject(project: TProject): Promise<string | null> {
+	async persistProject(project: TProject, saveRevision?: ProjectSaveRevision): Promise<string | ProjectSaveConflict | null> {
 		try {
-			await storageService.saveProject({ project });
+			await storageService.saveProject({ project, saveRevision });
 			const thumbnail = this.savedProjects.find(({ id }) => id === project.metadata.id)?.thumbnail;
 			this.updateSavedMetadata({ ...project.metadata, thumbnail: thumbnail ?? project.metadata.thumbnail });
 			// A project no longer in the editor (written after it closed): the project list shows it, so it
@@ -324,6 +325,7 @@ export class ProjectManager {
 			return null;
 		} catch (error) {
 			console.error("Failed to save project:", error);
+			if (error instanceof ProjectSaveConflict) return error;
 			return error instanceof Error ? error.message : String(error);
 		}
 	}
