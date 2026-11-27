@@ -4,6 +4,8 @@ import ts from "typescript";
 const surfaces = [
 	"components/landing/hero.tsx",
 	"home/accounts-tab.tsx",
+	"reframe/components/split-layout-dialog.tsx",
+	"project/components/project-mode-dialog.tsx",
 	"home/agent-tab.tsx",
 	"home/home-page.tsx",
 	"preview/components/context-menu.tsx",

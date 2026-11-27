@@ -1,4 +1,5 @@
 import { validateElementTrackCompatibility } from "@/timeline/placement/compatibility";
+import { buildSplitLayout, SPLIT_LIMITS } from "@/reframe/split-layout";
 import { canPlaceTimeSpansOnTrack } from "@/timeline/placement/overlap";
 import { keepTiming, mergeHumanFields, takeHumanFields, validateKeptFit } from "./human-conflicts";
 import { withHumanFields, isHumanFieldPath, equalHumanValue } from "@/timeline/human-fields";
@@ -62,6 +63,8 @@ export type DraftOp = { onConflict?: ConflictPolicy; take?: string[] } & (
 	 * out left while the matched clip slides in from the right.
 	 */
 	| { op: "transition"; match: AgentMatch; type: TransitionType; duration?: number; color?: string }
+	/** The game on top and the facecam below, from one video clip (a vertical canvas): see AGENT.md, *Split layout*. */
+	| { op: "split-layout"; match: AgentMatch; facecam: { x: number; y: number; width: number; height: number }; split?: number }
 	/** In and out animation presets on the matched clip (see agent/animate). */
 	| { op: "animate"; match: AgentMatch; in?: AgentAnimateSide; out?: AgentAnimateSide }
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
@@ -138,8 +141,10 @@ function keyframeTargets(el: any, k: AgentKeyframe): { propertyPath: string; val
 	return [{ propertyPath: k.path, value: k.value }];
 }
 
-export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, fps, ripple, atomic = false, results: initial = [], base, wordsOf, onConflict }: {
+export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, fps, ripple, atomic = false, results: initial = [], base, wordsOf, onConflict, sizeOf }: {
 	scenes: TScene[]; rootSceneId: string; ops: DraftOp[]; mediaFor: (e: AgentElement) => LoadedMedia | undefined;
+	/** The picture size of a project media file, if known. */
+	sizeOf?: (mediaId: string) => { width: number; height: number } | undefined;
 	canvas: { width: number; height: number }; fps: FrameRate; ripple: boolean; atomic?: boolean; results?: any[];
 	/** Element state at the draft's `basedOn` snapshot: set/replace/delete on fields changed since then are stale. */
 	base?: ReadonlyMap<string, ElementRecord>;
@@ -504,6 +509,38 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				result.animate = readAnimationPresets(animated);
 				touched.push({ sceneId: hit.sceneId, elementId: hit.element.id });
 				address(result, "element", hit.sceneId, hit.element.id);
+				return;
+			}
+			case "split-layout": {
+				const hit = find(op.match);
+				if (hit.sceneId !== rootSceneId) throw new Error("split-layout works on the root timeline");
+				if (hit.element.type !== "video") throw new Error("split-layout needs a video clip");
+				if (canvas.height <= canvas.width) throw new Error("split-layout needs a vertical canvas such as 1080×1920; the project is landscape");
+				const size = sizeOf?.(hit.element.mediaId);
+				if (!size?.width || !size.height) throw new Error("split-layout: the clip's picture size is not known yet; retry once its media has loaded");
+				const facecam = op.facecam;
+				const fraction = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+				if (!facecam || ![facecam.x, facecam.y, facecam.width, facecam.height].every(fraction) ||
+					facecam.width < 0.02 || facecam.height < 0.02 || facecam.x + facecam.width > 1.0001 || facecam.y + facecam.height > 1.0001) {
+					throw new Error("split-layout: facecam must be {x, y, width, height} in fractions of the picture, inside it");
+				}
+				if (op.split !== undefined && !(typeof op.split === "number" && op.split >= SPLIT_LIMITS.min && op.split <= SPLIT_LIMITS.max)) {
+					throw new Error(`split-layout: split is the game's share of the height, from ${SPLIT_LIMITS.min} to ${SPLIT_LIMITS.max}`);
+				}
+				if (keep && hit.element.agentId) assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: ["params.transform.positionX", "params.transform.positionY", "params.transform.scaleX", "params.transform.scaleY", "params.transform.rotate"], scenes: list });
+				const camId = `${hit.element.agentId ?? hit.element.id}~facecam`;
+				const layout = editTracks(rootSceneId, (tracks) => {
+					const built = buildSplitLayout({
+						tracks, clip: { trackId: hit.track.id, elementId: hit.element.id }, facecam: { ...facecam }, split: op.split,
+						media: size, canvas, names: { facecamTrack: "Facecam", facecamClip: (name) => `${name} (facecam)` }, facecamAgentId: camId,
+					});
+					if (!built) throw new Error("split-layout: the clip could not be split");
+					Object.assign(tracks, built.tracks);
+					return built;
+				}, { noRipple: true });
+				touched.push({ sceneId: rootSceneId, elementId: layout.game.elementId }, { sceneId: rootSceneId, elementId: layout.facecam.elementId });
+				result.facecam = { agentId: camId, trackId: layout.facecam.trackId };
+				address(result, "element", rootSceneId, layout.game.elementId);
 				return;
 			}
 			case "transition": {

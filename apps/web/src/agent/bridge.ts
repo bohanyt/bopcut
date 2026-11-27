@@ -858,6 +858,10 @@ async function applyDraftNow(draft: Draft, session: DraftSession | null, rootSce
 	const openScene = editor.scenes.getActiveScene();
 	const outcome = computeAgentDraft({
 		scenes: before, rootSceneId: root.id, ops, mediaFor: (e) => media.get(e), atomic: draft.atomic === true, onConflict: draft.onConflict,
+		sizeOf: (mediaId) => {
+			const asset = editor.media.getAssets().find(({ id }) => id === mediaId);
+			return asset?.width && asset.height ? { width: asset.width, height: asset.height } : undefined;
+		},
 		canvas: project.settings.canvasSize, fps: project.settings.fps, ripple: editor.command.isRippleEnabled, base,
 		// Also the words of media this draft imports (a later set can cut by them).
 		wordsOf: ((project) => (id: string) => loadedWords.get(id) ?? project(id))(mediaWords()),

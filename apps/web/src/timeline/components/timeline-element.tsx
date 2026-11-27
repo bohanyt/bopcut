@@ -101,11 +101,13 @@ import {
 	Unlink01Icon,
 	FolderOpenIcon,
 	AiSearchIcon,
+	LayoutTwoRowIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uppercase } from "@/utils/string";
 import { useMemo, type ComponentProps, type ReactNode } from "react";
 import { requestAgentCheck } from "@/timeline/bookmarks/agent-check";
+import { useSplitLayoutRequest } from "@/reframe/components/split-layout-dialog";
 import type { SelectedKeyframeRef, ElementKeyframe } from "@/animation/types";
 import { cn } from "@/utils/ui";
 import { usePropertiesStore } from "@/components/editor/panels/properties/stores/properties-store";
@@ -707,6 +709,17 @@ function TimelineElementMenu({
 					{t("timeline.releaseHumanFields")}
 				</ContextMenuItem>
 			) : null}
+			{element.type === "video" && (
+				<ContextMenuItem
+					icon={<HugeiconsIcon icon={LayoutTwoRowIcon} />}
+					onClick={(event: React.MouseEvent) => {
+						event.stopPropagation();
+						useSplitLayoutRequest.setState({ clip: { trackId: track.id, elementId: element.id } });
+					}}
+				>
+					{t("reframe.menu")}
+				</ContextMenuItem>
+			)}
 			<ContextMenuItem
 				icon={<HugeiconsIcon icon={AiSearchIcon} />}
 				onClick={(event: React.MouseEvent) => {
