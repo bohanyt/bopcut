@@ -337,6 +337,7 @@ test("updatePlayheadPosition without a line element does not read scrollLeft", (
 			}),
 			getSceneBookmarks: () => [],
 			seek: () => {},
+			pause: () => {},
 			setScrubbing: () => {},
 			setTimelineViewState: () => {},
 		} },
