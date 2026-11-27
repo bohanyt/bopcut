@@ -244,7 +244,10 @@ export class DiskAdapter {
 				body: JSON.stringify(metadata),
 			}),
 		);
-		if (restore) return (await response.json()).media ?? metadata;
+		if (restore) {
+			const { media } = await response.json();
+			if (media) return media;
+		}
 		return { ...metadata, thumbnailUrl: response.headers.get("X-Media-Thumbnail") ?? metadata.thumbnailUrl };
 	}
 	/** Replaces the metadata of stored media (its file stays). */
