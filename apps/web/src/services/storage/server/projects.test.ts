@@ -103,10 +103,10 @@ test("navigation survives content saves without changing project bytes or their 
 test("an editor save keeps its loaded revision despite later reads and detects changes after a conflict", async () => {
 	const id = "two-tab-conflict";
 	await writeLegacy(fixture(id));
-	const handleFetch = spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+	const handleFetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: RequestInfo | URL, init?: RequestInit) => {
 		expect(String(url)).toBe(`${base}/${id}`);
 		return route(init?.method === "PUT" ? "PUT" : "GET", id, "", init);
-	});
+	}, { preconnect: fetch.preconnect }));
 	try {
 		const first = new StorageService();
 		const second = new StorageService();

@@ -431,8 +431,7 @@ describe("failed saves", () => {
 			expect(await editor.save.settleProject("p")).toBeTruthy();
 			expect(disk.writes).toEqual([]);
 			const action = notify.mock.calls.at(-1)?.[1]?.action;
-			expect(action && "onClick" in action).toBe(true);
-			if (!action || !("onClick" in action)) throw new Error("Missing overwrite action");
+			if (!action || typeof action !== "object" || !("onClick" in action)) throw new Error("Missing overwrite action");
 			action.onClick(new Event("click", { cancelable: true }) as unknown as Parameters<typeof action.onClick>[0]);
 			await until(() => !editor.save.hasUnsavedChangesOf("p"));
 			expect(attempts.at(-1)).toEqual({ revision: "conflicting-version", main: "latest pending edit" });
