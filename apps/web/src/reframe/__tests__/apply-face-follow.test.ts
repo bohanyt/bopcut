@@ -77,7 +77,7 @@ test("a click on the nose makes the facecam follow it with editable keys, in one
 	const before = camClip(editor, cam.elementId);
 	expect(before.reframe?.facecam).toEqual(facecam);
 	const result = await followFace(editor, { clip: cam, point: onCanvas(before, nose(0)), readFrames });
-	expect(result).toMatchObject({ ok: true, lostShare: 0 });
+	expect(result).toMatchObject({ ok: true, lostShare: 0, zoom: 1.15 });
 	const after = camClip(editor, cam.elementId);
 	expect(Number(after.params["transform.scaleX"])).toBeCloseTo(Number(before.params["transform.scaleX"]) * 1.15, 6);
 	const keys = after.animations?.["transform.positionX"] as unknown as { keys?: unknown[] } | undefined;
@@ -100,6 +100,14 @@ test("a click on the nose makes the facecam follow it with editable keys, in one
 	editor.command.undo();
 	expect(camClip(editor, cam.elementId).animations?.["transform.positionX"]).toBeUndefined();
 	expect(camClip(editor, cam.elementId).params["transform.scaleX"]).toBe(before.params["transform.scaleX"]);
+});
+
+test("a click on a flat part of the picture says there is nothing to follow", async () => {
+	const { editor, cam } = setup();
+	const flat = async ({ times }: { times: number[] }) => times.map((time) => ({ time, width: 160, height: 96, data: new Uint8Array(160 * 96).fill(120) }));
+	const clip = camClip(editor, cam.elementId);
+	expect(await followFace(editor, { clip: cam, point: onCanvas(clip, { x: 0.5, y: 0.5 }), readFrames: flat })).toEqual({ ok: false, reason: "no-detail" });
+	expect(camClip(editor, cam.elementId).animations).toBeUndefined();
 });
 
 test("a click outside the facecam, or on a clip without a window, starts nothing", async () => {

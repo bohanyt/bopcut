@@ -7,7 +7,7 @@ import { clampRetimeRate } from "@/retime/rate";
 import type { ElementRef, SceneTracks, TimelineTrack, VideoElement } from "@/timeline/types";
 import { TICKS_PER_SECOND } from "@/wasm";
 import { planFaceFollow, sourceInWindow, type CanvasWindow, type FollowSample } from "./face-follow";
-import { trackPoint, type GrayFrame } from "./point-track";
+import { patchDetail, trackPoint, type GrayFrame } from "./point-track";
 import { readGrayFrames } from "./read-frames";
 import { framePart, type SourceRect } from "./split-layout";
 
@@ -15,7 +15,10 @@ import { framePart, type SourceRect } from "./split-layout";
 const FOLLOW_FPS = 10;
 const TRANSFORM_KEYS = ["transform.positionX", "transform.positionY", "transform.scaleX", "transform.scaleY", "transform.rotate"];
 
-export type FollowFailure = "not-a-window" | "no-media" | "outside" | "gone";
+export type FollowFailure = "not-a-window" | "no-media" | "outside" | "no-detail" | "gone";
+
+/** Less grey-value spread than this around the click is too flat to follow. */
+const MIN_DETAIL = 3;
 
 /** Whether a clip can follow a face: a video behind a canvas-locked window (a split layout's facecam). */
 export function canFollowFace(element: { type: string; masks?: unknown[] } | undefined): element is VideoElement {
@@ -33,7 +36,7 @@ export async function followFace(editor: EditorCore, { clip, point, signal, onPr
 	signal?: AbortSignal;
 	onProgress?: (done: number, total: number) => void;
 	readFrames?: (request: { file: Blob; crop: SourceRect; times: number[]; signal?: AbortSignal; onProgress?: (done: number, total: number) => void }) => Promise<GrayFrame[]>;
-}): Promise<{ ok: true; keys: number; lostShare: number } | { ok: false; reason: FollowFailure }> {
+}): Promise<{ ok: true; keys: number; zoom: number; lostShare: number } | { ok: false; reason: FollowFailure }> {
 	const canvas = editor.project.getActive().settings.canvasSize;
 	const found = editor.timeline.getElementsWithTracks({ elements: [clip] })[0]?.element;
 	if (!canFollowFace(found)) return { ok: false, reason: "not-a-window" };
@@ -81,11 +84,10 @@ export async function followFace(editor: EditorCore, { clip, point, signal, onPr
 	const { width: frameWidth, height: frameHeight } = frames[0];
 	const seedLocal = (time - element.startTime) / TICKS_PER_SECOND;
 	const seedIndex = Math.max(0, Math.min(frames.length - 1, Math.round(seedLocal * FOLLOW_FPS)));
-	const track = trackPoint({
-		frames,
-		seed: { index: seedIndex, x: ((seed.x - allowed.x) / allowed.width) * frameWidth, y: ((seed.y - allowed.y) / allowed.height) * frameHeight },
-		options: { patch: Math.max(4, Math.round(frameWidth * 0.03)), search: Math.max(8, Math.round(frameWidth * 0.06)) },
-	});
+	const start = { index: seedIndex, x: ((seed.x - allowed.x) / allowed.width) * frameWidth, y: ((seed.y - allowed.y) / allowed.height) * frameHeight };
+	const patch = Math.max(4, Math.round(frameWidth * 0.03));
+	if (patchDetail({ frame: frames[seedIndex], x: start.x, y: start.y, half: patch }) < MIN_DETAIL) return { ok: false, reason: "no-detail" };
+	const track = trackPoint({ frames, seed: start, options: { patch, search: Math.max(8, Math.round(frameWidth * 0.06)) } });
 	const samples: FollowSample[] = track.map((sample, index) => ({
 		time: localTimes[index] ?? sample.time,
 		x: allowed.x + (sample.x / frameWidth) * allowed.width,
@@ -112,5 +114,5 @@ export async function followFace(editor: EditorCore, { clip, point, signal, onPr
 		({ ...candidate, elements: candidate.elements.map((item) => (item.id === element.id ? followed : item)) }) as T;
 	const after: SceneTracks = { overlay: scene.tracks.overlay.map(replace), main: replace(scene.tracks.main), audio: scene.tracks.audio.map(replace) };
 	editor.command.execute({ command: new TracksSnapshotCommand({ before: scene.tracks, after, ripples: false }) });
-	return { ok: true, keys: plan.keys.length, lostShare: samples.filter(({ lost }) => lost).length / samples.length };
+	return { ok: true, keys: plan.keys.length, zoom: plan.zoom, lostShare: samples.filter(({ lost }) => lost).length / samples.length };
 }

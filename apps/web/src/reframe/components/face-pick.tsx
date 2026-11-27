@@ -16,6 +16,7 @@ const FAILURES = {
 	"not-a-window": "reframe.followNotWindow",
 	"no-media": "reframe.followNoMedia",
 	outside: "reframe.followOutside",
+	"no-detail": "reframe.followNoDetail",
 	gone: "reframe.followGone",
 } as const satisfies Record<FollowFailure, string>;
 
@@ -49,7 +50,7 @@ export function FacePickLayer() {
 				toast.error(t(FAILURES[result.reason]));
 				return;
 			}
-			toast.success(t("reframe.followed", { keys: result.keys }));
+			toast.success(t("reframe.followed", { keys: result.keys, zoom: result.zoom.toFixed(2) }));
 			if (result.lostShare > 0.2) toast.warning(t("reframe.followLost", { percent: Math.round(result.lostShare * 100) }));
 		} catch (error) {
 			toast.dismiss(id);

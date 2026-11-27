@@ -17,8 +17,10 @@ export interface CanvasWindow {
 	height: number;
 }
 
-/** How much a face follow zooms in by default, so the window has room to move inside the facecam. */
+/** How much a face follow zooms in at least, so the window has room to move inside the facecam. */
 export const FOLLOW_ZOOM = 1.15;
+/** How much it zooms in at most: more would show the facecam's pixels too large. */
+export const MAX_FOLLOW_ZOOM = 1.6;
 
 /** The part of the source a window shows for a clip frame (no rotation), in fractions of the picture. */
 export function sourceInWindow({ frame, window, canvas }: { frame: ClipFrame; window: CanvasWindow; canvas: { width: number; height: number } }): SourceRect {
@@ -80,22 +82,49 @@ export interface FollowSample {
  * smoothed (±`smoothing` samples), turned into positions that never show more than `allowed`, and cut
  * to the few keyframes that stay within `tolerance` canvas pixels of them.
  */
-export function planFaceFollow({ samples, base, allowed, window, canvas, zoom = FOLLOW_ZOOM, smoothing = 2, tolerance = 3 }: {
+export function planFaceFollow({ samples, base, allowed, window, canvas, zoom, smoothing = 2, tolerance = 3 }: {
 	samples: FollowSample[];
 	/** The clip's frame that shows `allowed` through the window (as the split layout leaves it). */
 	base: ClipFrame;
 	allowed: SourceRect;
 	window: CanvasWindow;
 	canvas: { width: number; height: number };
+	/** A fixed zoom; by default the least zoom (from FOLLOW_ZOOM to MAX_FOLLOW_ZOOM) that keeps the point centred. */
 	zoom?: number;
 	smoothing?: number;
 	tolerance?: number;
-}): { scale: number; keys: { time: number; positionX: number; positionY: number }[] } {
-	const scale = base.scale * zoom;
+}): { scale: number; zoom: number; keys: { time: number; positionX: number; positionY: number }[] } {
 	const smoothed = smoothTrack(samples.map((sample) => ({ ...sample, score: 1 })), smoothing);
+	const used = zoom ?? zoomToCentre({ points: smoothed.filter(({ lost }) => !lost), base, allowed, window });
+	const scale = base.scale * used;
 	const positions = smoothed.map((sample) => {
 		const { positionX, positionY } = followPosition({ point: sample, scale, shown: base.shown, window, allowed, canvas });
 		return { time: sample.time, x: positionX, y: positionY, score: 1, lost: false };
 	});
-	return { scale, keys: simplifyTrack(positions, tolerance).map(({ time, x, y }) => ({ time, positionX: x, positionY: y })) };
+	return { scale, zoom: used, keys: simplifyTrack(positions, tolerance).map(({ time, x, y }) => ({ time, positionX: x, positionY: y })) };
+}
+
+/**
+ * The least zoom that keeps the followed point at the window's centre for nearly all of the clip
+ * (95 % of the samples, so one stray match does not zoom everything in): a zoomed-in window is smaller
+ * in the picture, so it can follow the point closer to the facecam's edge before it must stop.
+ * Bounded by FOLLOW_ZOOM and MAX_FOLLOW_ZOOM.
+ */
+export function zoomToCentre({ points, base, allowed, window }: {
+	points: { x: number; y: number }[];
+	base: ClipFrame;
+	allowed: SourceRect;
+	window: CanvasWindow;
+}): number {
+	if (!points.length) return FOLLOW_ZOOM;
+	// Half the window, in fractions of the picture, before any zoom.
+	const halfX = window.width / 2 / (base.shown.width * base.scale);
+	const halfY = window.height / 2 / (base.shown.height * base.scale);
+	const needed = points.map(({ x, y }) => {
+		const roomX = Math.min(x - allowed.x, allowed.x + allowed.width - x);
+		const roomY = Math.min(y - allowed.y, allowed.y + allowed.height - y);
+		return roomX <= 0 || roomY <= 0 ? Infinity : Math.max(halfX / roomX, halfY / roomY);
+	}).sort((a, b) => a - b);
+	const nearlyAll = needed[Math.min(needed.length - 1, Math.ceil(needed.length * 0.95) - 1)];
+	return Math.min(MAX_FOLLOW_ZOOM, Math.max(FOLLOW_ZOOM, nearlyAll));
 }

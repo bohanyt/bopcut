@@ -84,6 +84,15 @@ function correlate(frame: GrayFrame, template: Patch, cx: number, cy: number): n
 	return denominator > 1e-6 ? cross / denominator : 0;
 }
 
+/**
+ * How much detail the patch around a point has (the standard deviation of its grey values): a flat
+ * patch (a wall, a colour bar) cannot be followed.
+ */
+export function patchDetail({ frame, x, y, half = DEFAULTS.patch }: { frame: GrayFrame; x: number; y: number; half?: number }): number {
+	const patch = readPatch(frame, Math.round(x), Math.round(y), half);
+	return patch ? patch.norm / Math.sqrt(patch.values.length) : 0;
+}
+
 /** Tracks from `seed` (in `frames[seed.index]`) forwards and backwards; one sample per frame, in time order. */
 export function trackPoint({ frames, seed, options = {} }: {
 	frames: GrayFrame[];

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { followPosition, planFaceFollow, sourceInWindow, sourcePoint, type ClipFrame } from "../face-follow";
+import { followPosition, planFaceFollow, sourceInWindow, sourcePoint, zoomToCentre, type ClipFrame } from "../face-follow";
 import { framePart } from "../split-layout";
 
 const canvas = { width: 1080, height: 1920 };
@@ -63,4 +63,33 @@ test("a followed path becomes a zoomed-in clip with few position keys that keep 
 		const sample = samples[Math.round(key.time * 10)];
 		expect(Math.abs((centre.x - sample.x) * shown.width * plan.scale)).toBeLessThan(6);
 	}
+});
+
+test("the zoom rises just enough to keep a wide-moving point centred, up to a limit", () => {
+	const base = layoutFrame();
+	const allowed = sourceInWindow({ frame: base, window, canvas });
+	const moving = (spread: number) => Array.from({ length: 81 }, (_, index) => ({
+		time: index / 10, lost: false,
+		x: allowed.x + allowed.width * (0.5 + spread * Math.sin(index / 13)), y: allowed.y + allowed.height * 0.5,
+	}));
+	// Barely moving: the least zoom.
+	expect(zoomToCentre({ points: moving(0.01), base, allowed, window })).toBe(1.15);
+	// Swinging an eighth of the facecam either way: about 1.3× (the window, half the facecam wide at 1×, needs that much room).
+	const plan = planFaceFollow({ samples: moving(0.12), base, allowed, window, canvas, tolerance: 1 });
+	expect(plan.zoom).toBeGreaterThan(1.15);
+	expect(plan.zoom).toBeLessThan(1.6);
+	for (const key of plan.keys) {
+		const frame = { shown, scale: plan.scale, positionX: key.positionX, positionY: key.positionY };
+		const seen = sourceInWindow({ frame, window, canvas });
+		// Centred on the point (the window never had to stop) and inside the facecam.
+		const centre = sourcePoint({ point: { x: window.cx, y: window.cy }, frame, canvas });
+		expect(Math.abs((centre.x - (allowed.x + allowed.width * (0.5 + 0.12 * Math.sin(key.time * 10 / 13)))) * shown.width * plan.scale)).toBeLessThan(12);
+		expect(seen.x).toBeGreaterThanOrEqual(allowed.x - 1e-9);
+		expect(seen.x + seen.width).toBeLessThanOrEqual(allowed.x + allowed.width + 1e-9);
+	}
+	// To the very edge: the limit, and the window stops at the edge there.
+	expect(zoomToCentre({ points: moving(0.5), base, allowed, window })).toBe(1.6);
+	// A stray sample at the edge does not zoom everything in.
+	const stray = [...moving(0.01), { time: 9, lost: false, x: allowed.x + allowed.width * 0.99, y: allowed.y + allowed.height * 0.5 }];
+	expect(zoomToCentre({ points: stray, base, allowed, window })).toBe(1.15);
 });
