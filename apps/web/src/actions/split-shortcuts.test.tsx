@@ -279,18 +279,19 @@ describe("cut", () => {
 });
 
 describe("select beside the playhead", () => {
-	test("] selects what starts at or after the playhead, [ what ends at or before it, never a clip under it", async () => {
+	test("] selects what ends after the playhead, [ what starts before it, both with the clips under it", async () => {
+		// At 4 s the clips only touch the playhead with an edge: each is on one side.
 		await act(async () => { editor.playback.seek({ time: t(4) }); });
 		await pressKey("]", "BracketRight");
 		expect(selectedNames()).toEqual(["next@4"]);
 		await pressKey("[", "BracketLeft");
 		expect(selectedNames().sort()).toEqual(["bg@0", "music@0", "title@0"]);
-		// At 2 s, every clip but the one after 4 s crosses the playhead.
+		// At 2 s three clips are under the playhead: both keys take them.
 		await act(async () => { editor.playback.seek({ time: t(2) }); });
 		await pressKey("]", "BracketRight");
-		expect(selectedNames()).toEqual(["next@4"]);
+		expect(selectedNames().sort()).toEqual(["bg@0", "music@0", "next@4", "title@0"]);
 		await pressKey("[", "BracketLeft");
-		expect(selectedNames()).toEqual([]);
+		expect(selectedNames().sort()).toEqual(["bg@0", "music@0", "title@0"]);
 	});
 
 	test("clips on a hidden track are left out", async () => {
