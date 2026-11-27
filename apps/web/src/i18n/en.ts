@@ -875,6 +875,8 @@ export const en = {
 	"storage.unsupported": "Storage not fully supported. Some features may not work.",
 	"storage.conflict": "Another tab changed the saved project. Your unsaved edits are still in this tab.",
 	"storage.overwriteSavedVersion": "Overwrite saved version",
+	"storage.discardConflict": "Discard local edits",
+	"storage.conflictReloadFailed": "Could not reload {name}. Your local edits are still in this tab.",
 	"storage.soundCopyFailed": "Failed to copy saved sounds. Browser data remains. Reload to retry.",
 	"storage.projectsCopied": "{count} browser projects copied to storage.",
 	"storage.projectsCopyFailed": "{count} browser projects failed to copy. Browser data remains. Reload to retry.",
