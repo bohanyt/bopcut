@@ -8,6 +8,17 @@ import type {
 } from "@/selection/editor-selection";
 import type { ElementRef } from "@/timeline/types";
 
+/** Same refs in the same order, compared by value. */
+function sameRefs<T extends object>(a: readonly T[], b: readonly T[]): boolean {
+	if (a === b) return true;
+	if (a.length !== b.length) return false;
+	return a.every((ref, index) => {
+		const other = b[index] as Record<string, unknown>;
+		const entries = Object.entries(ref);
+		return entries.length === Object.keys(other).length && entries.every(([key, value]) => other[key] === value);
+	});
+}
+
 export class SelectionManager {
 	private selectedElements: ElementRef[] = [];
 	private selectedKeyframes: SelectedKeyframeRef[] = [];
@@ -63,6 +74,13 @@ export class SelectionManager {
 	}
 
 	setSelectedElements({ elements }: { elements: ElementRef[] }): void {
+		// A box drag sets the selection on every move: an unchanged one wakes no listener.
+		if (
+			sameRefs(this.selectedElements, elements) && this.selectedKeyframes.length === 0 &&
+			this.keyframeSelectionAnchor === null && this.selectedMaskPoints === null
+		) {
+			return;
+		}
 		this.selectedElements = elements;
 		this.selectedKeyframes = [];
 		this.keyframeSelectionAnchor = null;
@@ -77,6 +95,12 @@ export class SelectionManager {
 		keyframes: SelectedKeyframeRef[];
 		anchorKeyframe?: SelectedKeyframeRef | null;
 	}): void {
+		const anchor = anchorKeyframe !== undefined
+			? anchorKeyframe
+			: keyframes.length === 0 ? null : this.keyframeSelectionAnchor;
+		const sameAnchor = anchor === this.keyframeSelectionAnchor ||
+			(anchor !== null && this.keyframeSelectionAnchor !== null && sameRefs([anchor], [this.keyframeSelectionAnchor]));
+		if (sameRefs(this.selectedKeyframes, keyframes) && sameAnchor && this.selectedMaskPoints === null) return;
 		this.selectedKeyframes = keyframes;
 		if (anchorKeyframe !== undefined) {
 			this.keyframeSelectionAnchor = anchorKeyframe;

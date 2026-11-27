@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useCommittedRef } from "@/hooks/use-committed-ref";
 import type {
 	BoxSelectionSnapshot,
 	ResolveIntersections,
@@ -62,8 +63,14 @@ export function useBoxSelect<TId>({
 	getIsAdditiveSelection?: (event: React.MouseEvent<Element>) => boolean;
 	isEnabled?: boolean;
 }) {
-	const [selectionBox, setSelectionBox] =
+	const [selectionBox, setSelectionBoxState] =
 		useState<SelectionBoxState<TId> | null>(null);
+	// The live box for the drag's listeners, which stay attached for the whole drag.
+	const boxRef = useRef<SelectionBoxState<TId> | null>(null);
+	const setSelectionBox = useCallback((next: SelectionBoxState<TId> | null) => {
+		boxRef.current = next;
+		setSelectionBoxState(next);
+	}, []);
 	const justFinishedSelectingRef = useRef(false);
 
 	const handleMouseDown = useCallback(
@@ -127,12 +134,17 @@ export function useBoxSelect<TId>({
 		[onSelectionChange, resolveIntersections],
 	);
 
+	const updateSelectionRef = useCommittedRef(updateSelection);
+	const hasSelectionBox = selectionBox !== null;
+
 	useEffect(() => {
-		if (!selectionBox) {
+		if (!hasSelectionBox) {
 			return;
 		}
 
 		const handleMouseMove = ({ clientX, clientY }: MouseEvent) => {
+			const selectionBox = boxRef.current;
+			if (!selectionBox) return;
 			const currentPos = { x: clientX, y: clientY };
 			const deltaX = Math.abs(clientX - selectionBox.startPos.x);
 			const deltaY = Math.abs(clientY - selectionBox.startPos.y);
@@ -156,11 +168,11 @@ export function useBoxSelect<TId>({
 				return;
 			}
 
-			updateSelection(nextSelectionBox);
+			updateSelectionRef.current(nextSelectionBox);
 		};
 
 		const handleMouseUp = () => {
-			if (selectionBox.isActive) {
+			if (boxRef.current?.isActive) {
 				justFinishedSelectingRef.current = true;
 				requestAnimationFrame(() => {
 					justFinishedSelectingRef.current = false;
@@ -177,10 +189,10 @@ export function useBoxSelect<TId>({
 			window.removeEventListener("mousemove", handleMouseMove);
 			window.removeEventListener("mouseup", handleMouseUp);
 		};
-	}, [containerRef, selectionBox, updateSelection]);
+	}, [containerRef, hasSelectionBox, setSelectionBox, updateSelectionRef]);
 
 	useEffect(() => {
-		if (!selectionBox) {
+		if (!hasSelectionBox) {
 			return;
 		}
 
@@ -199,7 +211,7 @@ export function useBoxSelect<TId>({
 				container.style.userSelect = previousContainerUserSelect;
 			}
 		};
-	}, [containerRef, selectionBox]);
+	}, [containerRef, hasSelectionBox]);
 
 	const shouldIgnoreClick = useCallback(() => {
 		return justFinishedSelectingRef.current;
