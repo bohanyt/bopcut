@@ -134,6 +134,14 @@ type Session =
 
 const IDLE_VIEW: ElementDragView = { kind: "idle" };
 
+function sameDropTarget(a: DropTarget | null, b: DropTarget | null): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return a.trackIndex === b.trackIndex && a.isNewTrack === b.isNewTrack && a.insertPosition === b.insertPosition &&
+		a.xPosition === b.xPosition && a.targetElement?.elementId === b.targetElement?.elementId &&
+		a.targetElement?.trackId === b.targetElement?.trackId;
+}
+
 // --- Pure helpers ---
 
 function pixelToClickOffsetTime({
@@ -328,30 +336,52 @@ export class ElementInteractionController {
 		return this.depsRef.current;
 	}
 
+	/** The view last handed out: the same object while what it shows is the same, so readers can skip a render. */
+	private lastView: { drag: DragProgress; view: Extract<ElementDragView, { kind: "dragging" }> } | null = null;
+	/** The moving clips' tracks and offsets, which stay the same for a drag. */
+	private lastMembers: { group: MoveGroup; sourceTrackIds: Set<string>; memberTimeOffsets: Map<string, MediaTime> } | null = null;
+
 	get view(): ElementDragView {
 		if (this.session.kind !== "dragging") return IDLE_VIEW;
 		const { mousedown, drag } = this.session;
-		const sourceTrackIds = new Set<string>();
-		const memberTimeOffsets = new Map<string, MediaTime>();
-		for (const member of drag.moveGroup.members) {
-			sourceTrackIds.add(member.trackId);
-			memberTimeOffsets.set(member.elementId, member.timeOffset);
+		const last = this.lastView;
+		if (
+			last && last.drag === drag && last.view.currentTime === drag.currentTime &&
+			last.view.currentMouseY === drag.currentMouseY && sameDropTarget(last.view.dropTarget, drag.dropTarget)
+		) {
+			return last.view;
 		}
-		return {
-			kind: "dragging",
+		let members = this.lastMembers;
+		if (members?.group !== drag.moveGroup) {
+			const sourceTrackIds = new Set<string>();
+			const memberTimeOffsets = new Map<string, MediaTime>();
+			for (const member of drag.moveGroup.members) {
+				sourceTrackIds.add(member.trackId);
+				memberTimeOffsets.set(member.elementId, member.timeOffset);
+			}
+			members = this.lastMembers = { group: drag.moveGroup, sourceTrackIds, memberTimeOffsets };
+		}
+		const view = {
+			kind: "dragging" as const,
 			anchorElementId: mousedown.elementId,
 			trackId: mousedown.trackId,
-			sourceTrackIds,
-			memberTimeOffsets,
+			sourceTrackIds: members.sourceTrackIds,
+			memberTimeOffsets: members.memberTimeOffsets,
 			startMouseX: mousedown.origin.x,
 			startMouseY: mousedown.origin.y,
 			startElementTime: mousedown.startElementTime,
 			clickOffsetTime: mousedown.clickOffsetTime,
 			currentTime: drag.currentTime,
-			currentMouseX: drag.currentMouseX,
 			currentMouseY: drag.currentMouseY,
 			dropTarget: drag.dropTarget,
 		};
+		this.lastView = { drag, view };
+		return view;
+	}
+
+	/** The pointer's x during a drag, read live (edge scrolling follows it between renders). */
+	getPointerX(): number {
+		return this.session.kind === "dragging" ? this.session.drag.currentMouseX : 0;
 	}
 
 	subscribe(fn: () => void): () => void {
@@ -484,6 +514,8 @@ export class ElementInteractionController {
 		this.gestureOwner?.finish();
 		this.gestureOwner = null;
 		this.groupSnap = null;
+		this.lastView = null;
+		this.lastMembers = null;
 		this.session = { kind: "idle" };
 		this.endGesture?.();
 		this.endGesture = null;

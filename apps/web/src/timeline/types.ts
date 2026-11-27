@@ -290,7 +290,6 @@ export type ElementDragView =
 			readonly startElementTime: MediaTime;
 			readonly clickOffsetTime: MediaTime;
 			readonly currentTime: MediaTime;
-			readonly currentMouseX: number;
 			readonly currentMouseY: number;
 			readonly dropTarget: DropTarget | null;
 	  };
