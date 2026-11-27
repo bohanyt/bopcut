@@ -1,6 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { PreviewGesture, TimelineManager } from "@/core/managers/timeline-manager";
 import {
+	buildGroupSnapIndex,
 	buildMoveGroup,
 	resolveGroupMove,
 	snapGroupEdges,
@@ -25,7 +26,7 @@ import { generateUUID } from "@/utils/id";
 import { finishFocusedField } from "@/utils/browser";
 import { beginTimelineGesture } from "@/timeline/gesture-state";
 import { listenForTimelineMouseDrag } from "./mouse-drag";
-import type { SnapPoint } from "@/timeline/snapping";
+import type { SnapIndex, SnapPoint } from "@/timeline/snapping";
 import type {
 	DropTarget,
 	ElementRef,
@@ -476,9 +477,13 @@ export class ElementInteractionController {
 		for (const fn of this.subscribers) fn();
 	}
 
+	/** The drag's snap points, rebuilt only when the scene, the playhead or the moving clips change. */
+	private groupSnap: { tracks: SceneTracks; playheadTime: MediaTime; moving: string; index: SnapIndex } | null = null;
+
 	private finishSession(): void {
 		this.gestureOwner?.finish();
 		this.gestureOwner = null;
+		this.groupSnap = null;
 		this.session = { kind: "idle" };
 		this.endGesture?.();
 		this.endGesture = null;
@@ -502,12 +507,20 @@ export class ElementInteractionController {
 			return { snappedTime: frameSnappedTime, snapPoint: null };
 		}
 
+		const tracks = scene.getTracks();
+		const playheadTime = playback.getCurrentTime();
+		const moving = group.members.map((member) => member.elementId).join("\n");
+		const cached = this.groupSnap;
+		const index = cached && cached.tracks === tracks && cached.playheadTime === playheadTime && cached.moving === moving
+			? cached.index
+			: (this.groupSnap = { tracks, playheadTime, moving, index: buildGroupSnapIndex({ group, tracks, playheadTime }) }).index;
 		const result = snapGroupEdges({
 			group,
 			anchorStartTime: frameSnappedTime,
-			tracks: scene.getTracks(),
-			playheadTime: playback.getCurrentTime(),
+			tracks,
+			playheadTime,
 			zoomLevel: viewport.getZoomLevel(),
+			index,
 		});
 
 		// An end that snaps to a point leaves the start off the frame grid when the clip is not a whole

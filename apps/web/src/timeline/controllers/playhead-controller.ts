@@ -7,10 +7,11 @@ import {
 	type MediaTime,
 } from "@/wasm";
 import {
+	buildSnapIndex,
 	buildTimelineSnapPoints,
 	getTimelineSnapThresholdInTicks,
-	resolveTimelineSnap,
-	type SnapPoint,
+	resolveIndexedSnap,
+	type SnapIndex,
 } from "@/timeline/snapping";
 import { getBookmarkSnapPoints } from "@/timeline/bookmarks/snap-source";
 import { getElementEdgeSnapPoints } from "@/timeline/element-snap-source";
@@ -39,7 +40,7 @@ interface ScrubSession {
 	snapCache?: {
 		tracks: SceneTracks;
 		bookmarks: Bookmark[];
-		points: SnapPoint[];
+		index: SnapIndex;
 	};
 }
 
@@ -344,18 +345,20 @@ export class PlayheadController {
 				session.snapCache = {
 					tracks,
 					bookmarks,
-					points: buildTimelineSnapPoints({
-						sources: [
-							() => getElementEdgeSnapPoints({ tracks }),
-							() => getBookmarkSnapPoints({ bookmarks }),
-							() => getAnimationKeyframeSnapPointsForTimeline({ tracks }),
-						],
+					index: buildSnapIndex({
+						points: buildTimelineSnapPoints({
+							sources: [
+								() => getElementEdgeSnapPoints({ tracks }),
+								() => getBookmarkSnapPoints({ bookmarks }),
+								() => getAnimationKeyframeSnapPointsForTimeline({ tracks }),
+							],
+						}),
 					}),
 				};
 			}
-			const result = resolveTimelineSnap({
+			const result = resolveIndexedSnap({
 				targetTime: frameTime,
-				snapPoints: session.snapCache.points,
+				index: session.snapCache.index,
 				maxSnapDistance: getTimelineSnapThresholdInTicks({ zoomLevel }),
 			});
 			return result.snapPoint ? result.snappedTime : frameTime;
