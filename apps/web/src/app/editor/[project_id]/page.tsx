@@ -45,7 +45,7 @@ export default function Editor() {
 
 	return (
 			<EditorProvider projectId={projectId}>
-				<div className="bg-background flex h-screen w-screen flex-col overflow-hidden">
+				<div className="editor-chrome bg-background flex h-screen w-screen flex-col overflow-hidden">
 					<GraphicsStatusBanner />
 					<ModelGraphicsStatusBanner />
 					<EditorHeader />

@@ -47,6 +47,17 @@ export function isTypableDOMElement({
 	return false;
 }
 
+/** Inputs with no text of their own: Ctrl+A there would select the page instead. */
+const TEXTLESS_INPUT_TYPES: ReadonlySet<string> = new Set([
+	"button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit",
+]);
+
+/** A field whose own text Ctrl+A selects. */
+export function hasSelectableText({ element }: { element: HTMLElement }): boolean {
+	if (!isTypableDOMElement({ element })) return false;
+	return !(element instanceof HTMLInputElement) || !TEXTLESS_INPUT_TYPES.has(element.type);
+}
+
 // Pointer handlers run before the browser's default focus change. A field's
 // blur commit must finish before the new gesture starts using timeline tracks.
 export function finishFocusedField(target: Element): void {
