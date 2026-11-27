@@ -552,6 +552,7 @@ export const en = {
 	"reframe.facecamArea": "Facecam area: drag to draw a box",
 	"reframe.gameShare": "Game height: {percent}%",
 	"reframe.makesVertical": "The canvas becomes 9:16 (1080×1920).",
+	"reframe.gamePosition": "Game crop (the dashed box): left to right",
 	"reframe.apply": "Make layout",
 	"reframe.failed": "This clip cannot be split",
 	"reframe.facecamTrack": "Facecam",

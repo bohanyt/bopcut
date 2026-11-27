@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { buildSplitLayout, framePart, type SourceRect } from "../split-layout";
+import { buildSplitLayout, framePart, gameCrop, gameCropWidth, gameCropX, type SourceRect } from "../split-layout";
 import { fixture, getHost, text, video } from "@/timeline/__tests__/compound-fixtures";
 import type { RectangleMaskParams } from "@/masks/types";
 import type { VideoElement } from "@/timeline";
@@ -76,4 +76,20 @@ test("a share outside the limits is clamped, and a clip that is not a video is l
 	const wide = buildSplitLayout({ tracks, clip: { trackId: tracks.main.id, elementId: "stream" }, facecam: { x: 0, y: 0, width: 0.3, height: 0.3 }, split: 0.95, media, canvas, names })!;
 	expect(((wide.tracks.main.elements[0] as VideoElement).masks?.[0].params as RectangleMaskParams).height).toBeCloseTo(0.8, 6);
 	expect(buildSplitLayout({ tracks, clip: { trackId: "titles", elementId: "title" }, facecam: { x: 0, y: 0, width: 0.3, height: 0.3 }, media, canvas, names })).toBeNull();
+});
+
+test("the game's crop keeps the whole height and moves away from a facecam it would cut", () => {
+	const width = gameCropWidth({ media, canvas, split: 0.6 });
+	// A 1080×1152 window shows 0.9375 × 9/16 of a 16:9 picture's width.
+	expect(width).toBeCloseTo((1080 / 1152) * (1080 / 1920), 9);
+	// A facecam in the bottom right: the crop ends where it starts.
+	expect(gameCropX({ facecam: { x: 0.73, y: 0.65, width: 0.25, height: 0.33 }, width })).toBeCloseTo(0.73 - width, 9);
+	// In the bottom left: the crop starts where it ends.
+	expect(gameCropX({ facecam: { x: 0.02, y: 0.6, width: 0.26, height: 0.38 }, width })).toBeCloseTo(0.28, 9);
+	// One the centred crop misses: centred.
+	expect(gameCropX({ facecam: { x: 0.02, y: 0.6, width: 0.2, height: 0.38 }, width })).toBeCloseTo((1 - width) / 2, 9);
+	// A crop as wide as the picture shows all of it.
+	expect(gameCrop({ media, canvas, split: 0.3, facecam: { x: 0.73, y: 0.65, width: 0.25, height: 0.33 } })).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+	// A chosen start wins, kept inside the picture.
+	expect(gameCrop({ media, canvas, split: 0.6, facecam: { x: 0.73, y: 0.65, width: 0.25, height: 0.33 }, gameX: 0.9 }).x).toBeCloseTo(1 - width, 9);
 });

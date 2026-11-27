@@ -554,6 +554,7 @@ export const id = {
 	"reframe.facecamArea": "Area facecam: seret untuk menggambar kotak",
 	"reframe.gameShare": "Tinggi game: {percent}%",
 	"reframe.makesVertical": "Kanvas jadi 9:16 (1080×1920).",
+	"reframe.gamePosition": "Potongan game (kotak putus-putus): kiri ke kanan",
 	"reframe.apply": "Buat layout",
 	"reframe.failed": "Klip ini tidak bisa dipisah",
 	"reframe.facecamTrack": "Facecam",
