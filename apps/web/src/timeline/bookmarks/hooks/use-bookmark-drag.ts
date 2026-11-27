@@ -233,10 +233,12 @@ export function useBookmarkDrag({
 				excludeBookmarkTime: dragState.bookmark.time,
 			});
 
-			setDragState((previousDragState) => ({
-				...previousDragState,
-				currentTime: snapResult.snappedTime,
-			}));
+			// Moves within one frame keep the state, so the timeline does not re-render on every pixel.
+			setDragState((previousDragState) =>
+				previousDragState.currentTime === snapResult.snappedTime
+					? previousDragState
+					: { ...previousDragState, currentTime: snapResult.snappedTime },
+			);
 			onSnapPointChange?.(snapResult.snapPoint);
 		};
 
