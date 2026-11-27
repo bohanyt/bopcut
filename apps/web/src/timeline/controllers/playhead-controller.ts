@@ -64,6 +64,7 @@ export interface PlayheadConfig {
 	getSceneTracks: () => SceneTracks;
 	getSceneBookmarks: () => Bookmark[];
 	seek: (time: MediaTime) => void;
+	pause: () => void;
 	setScrubbing: (isScrubbing: boolean) => void;
 	setTimelineViewState: (viewState: {
 		zoomLevel: number;
@@ -162,6 +163,8 @@ export class PlayheadController {
 		captureTarget.setPointerCapture(event.pointerId);
 		this.session = session;
 		this.activate(session);
+		// Grabbing the playhead or the ruler stops playback, so the release leaves it paused where it was dropped.
+		if (this.config.getIsPlaying()) this.config.pause();
 		this.config.setScrubbing(true);
 		// No element-edge snapping on initial ruler click — avoids a jarring jump.
 		this.scrub({ clientX: event.clientX, isElementSnappingEnabled: !didStartFromRuler, forceSeek: true });
@@ -420,7 +423,7 @@ export class PlayheadController {
 		if (!this.isCurrentScope(session)) return;
 
 		const playheadTime = this.config.getCurrentTime();
-		// Resume audio from the settled position when scrubbing during playback.
+		// Playback started again during the scrub (Space) resumes audio from the settled position.
 		if (this.config.getIsPlaying()) {
 			this.config.seek(playheadTime);
 		}
