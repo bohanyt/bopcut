@@ -120,6 +120,17 @@ test("overlapping cuts share one late decode window and muted clips do not reque
 	expect(blocks[1].getChannelData(0)[0]).toBeCloseTo(0.5);
 });
 
+test.each([1 / 24, 1001 / 30_000])("touching clips at a fractional-sample cut (%f s) add into no sample twice", async (cut) => {
+	installBuffer();
+	stubPackets(async function* () { yield packet(0, sampleRate, 0); });
+	// At 8 kHz neither cut is a whole number of samples (333.3 and 266.9).
+	const tracks = timeline(clip("a", 0, 0, cut), clip("b", cut, cut, cut));
+	const [block] = await Array.fromAsync(mixTimelineAudio({ tracks, mediaAssets: [asset], duration: t(2 * cut), sampleRate }));
+	const samples = Array.from(block.getChannelData(0));
+	expect(Math.max(...samples)).toBeCloseTo(0.5, 5);
+	expect(Math.min(...samples)).toBeCloseTo(0.5, 5);
+});
+
 test("a late range mixes only that interval and preserves leading silence inside it", async () => {
 	installBuffer();
 	const buffers = stubPackets(async function* () { yield packet(10, sampleRate, 0); });
