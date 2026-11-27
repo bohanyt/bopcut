@@ -5,6 +5,7 @@ import type { TProject } from "@/project/types";
 import { ProjectSaveConflict, SERVER_AWAY, type ProjectSaveRevision } from "@/services/storage/disk-adapter";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { toast } from "sonner";
+import { createElement } from "react";
 
 type SaveManagerOptions = {
 	debounceMs?: number;
@@ -33,6 +34,7 @@ type SaveHost = {
 	edited(session: SaveSession): void;
 	/** A closed session has nothing left to write. */
 	finished(session: SaveSession): void;
+	discardConflict(session: SaveSession, canDiscard: () => boolean): Promise<void>;
 };
 
 const errorToastId = (projectId: string) => `project-save-error:${projectId}`;
@@ -313,6 +315,20 @@ export class SaveSession {
 					description: t("storage.conflict"),
 					duration: Number.POSITIVE_INFINITY,
 					dismissible: false,
+					cancel: createElement("button", {
+						type: "button",
+						"data-button": true,
+						"data-cancel": true,
+						onClick: () => {
+							const revision = this.revision;
+							const canDiscard = () => !this.detached && !this.held &&
+								this.conflict === error && this.revision === revision;
+							if (!canDiscard()) return;
+							void this.host.discardConflict(this, canDiscard).catch(() => {
+								toast.error(t("storage.conflictReloadFailed", { name: this.name }));
+							});
+						},
+					}, t("storage.discardConflict")),
 					...(diskRevision && {
 						action: {
 							label: t("storage.overwriteSavedVersion"),
@@ -430,6 +446,26 @@ export class SaveManager {
 			},
 			finished: (session) => {
 				if (this.closing.delete(session)) this.notify();
+			},
+			discardConflict: async (session, canDiscard) => {
+				const id = session.projectId;
+				const discard = () => {
+					if (!canDiscard()) return false;
+					session.discard();
+					if (this.current === session) this.current = null;
+					this.closing.delete(session);
+					this.projects.delete(id);
+					this.notify();
+					return true;
+				};
+				if (this.current !== session) {
+					discard();
+					return;
+				}
+				await this.editor.project.loadProject({
+					id,
+					discardConflict: () => this.current === session && discard(),
+				});
 			},
 		};
 	}

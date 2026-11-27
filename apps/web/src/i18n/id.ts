@@ -877,6 +877,8 @@ export const id = {
 	"storage.unsupported": "Penyimpanan tidak didukung sepenuhnya. Beberapa fitur mungkin tidak berfungsi.",
 	"storage.conflict": "Tab lain mengubah proyek yang tersimpan. Edit yang belum disimpan masih ada di tab ini.",
 	"storage.overwriteSavedVersion": "Timpa versi tersimpan",
+	"storage.discardConflict": "Buang edit lokal",
+	"storage.conflictReloadFailed": "Tidak dapat memuat ulang {name}. Edit lokal masih ada di tab ini.",
 	"storage.soundCopyFailed": "Suara tersimpan gagal disalin. Data masih ada di browser. Muat ulang untuk mencoba lagi.",
 	"storage.projectsCopied": "{count} proyek dari browser disalin ke penyimpanan.",
 	"storage.projectsCopyFailed": "{count} proyek dari browser gagal disalin. Data masih ada di browser. Muat ulang untuk mencoba lagi.",

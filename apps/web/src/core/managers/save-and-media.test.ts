@@ -6,6 +6,7 @@ import { ZoomController } from "@/timeline/controllers/zoom-controller";
 import { buildElementFromMedia } from "@/timeline/element-utils";
 import { roundMediaTime } from "@/wasm";
 import { toast } from "sonner";
+import { isValidElement } from "react";
 
 // Stub the GPU modules (unused here) before EditorCore pulls them in; see scene-history.test.ts.
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
@@ -406,6 +407,34 @@ async function until(check: () => boolean, timeoutMs = 2000) {
 }
 
 describe("failed saves", () => {
+	test("discarding a conflict keeps local edits if reload fails and replaces them after a successful read", async () => {
+		const editor = await load(project("p", new Date(0)));
+		const stored = project("p", new Date(0));
+		stored.scenes[0].name = "Saved by other tab";
+		const disk = memoryDisk([stored]);
+		disk.hooks.write = () => { throw new ProjectSaveConflict("saved-version"); };
+		const notify = spyOn(toast, "error");
+		try {
+			edit(editor, "Pending local edit");
+			expect(await editor.save.flush()).toBe(false);
+			const button = notify.mock.calls.at(-1)?.[1]?.cancel;
+			if (!isValidElement<{ onClick: () => void }>(button)) throw new Error("Missing discard action");
+			disk.hooks.read = () => { throw new Error("Unavailable"); };
+			button.props.onClick();
+			await until(() => notify.mock.calls.some(([message]) => String(message).includes("Could not reload")));
+			expect(mainName({ scenes: editor.scenes.getScenes() } as TProject)).toBe("Pending local edit");
+			expect(editor.save.hasUnsavedChangesOf("p")).toBe(true);
+
+			disk.hooks.read = undefined;
+			button.props.onClick();
+			await until(() => editor.scenes.getActiveScene().name === "Saved by other tab");
+			expect(editor.save.hasUnsavedChangesOf("p")).toBe(false);
+			expect(disk.writes).toHaveLength(1);
+		} finally {
+			notify.mockRestore();
+		}
+	});
+
 	test("a conflicting save keeps the pending edits across a project switch and waits for explicit overwrite", async () => {
 		const editor = await load(project("p", new Date(0)));
 		(editor.save as any).retryDelaysMs = [5, 10];

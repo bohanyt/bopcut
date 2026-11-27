@@ -165,7 +165,7 @@ export class ProjectManager {
 		return this.loadSceneFonts(project.scenes ?? []);
 	}
 
-	async loadProject({ id }: { id: string }): Promise<void> {
+	async loadProject({ id, discardConflict }: { id: string; discardConflict?: () => boolean }): Promise<void> {
 		const take = this.editor.voiceOver.finishForNavigation();
 		if (take) await take;
 		if (!this.isInitialized) {
@@ -198,13 +198,15 @@ export class ProjectManager {
 				}
 				// Changes of this project that are not on disk yet (it is open, or was closed a moment ago)
 				// are written first, so the read below has them.
-				const unsaved = await this.editor.save.settleProject(id);
-				if (superseded()) return;
-				if (unsaved) throw new Error(`Earlier changes of this project are not saved yet: ${unsaved}`);
-				if (this.editor.save.hasUnsavedChangesOf(id)) {
-					// Edited while it was being written: write that too.
-					if (attempt === attempts) throw new Error("The project kept changing while it was reopened");
-					continue;
+				if (!discardConflict) {
+					const unsaved = await this.editor.save.settleProject(id);
+					if (superseded()) return;
+					if (unsaved) throw new Error(`Earlier changes of this project are not saved yet: ${unsaved}`);
+					if (this.editor.save.hasUnsavedChangesOf(id)) {
+						// Edited while it was being written: write that too.
+						if (attempt === attempts) throw new Error("The project kept changing while it was reopened");
+						continue;
+					}
 				}
 				// Every edit counted so far is on disk now. One counted after this mark can be missing from
 				// what is read (even if it is saved by the time the read returns): then it is read again.
@@ -216,6 +218,15 @@ export class ProjectManager {
 				}
 				if (superseded()) return; // a newer load started meanwhile and takes over
 				this.assertOpenable(id);
+				if (discardConflict) {
+					await this.loadProjectFonts(result.project);
+					if (superseded()) return;
+					this.assertOpenable(id);
+					if (this.editor.save.editsOf(id) !== mark || !discardConflict()) {
+						throw new Error("The project changed before local edits could be discarded");
+					}
+					break;
+				}
 				if (this.editor.save.editsOf(id) === mark) break;
 				if (attempt === attempts) throw new Error("The project kept changing while it was reopened");
 			}
@@ -261,7 +272,7 @@ export class ProjectManager {
 			});
 			if (replaced()) return;
 
-			await this.loadProjectFonts(project);
+			if (!discardConflict) await this.loadProjectFonts(project);
 
 			if (replaced()) return;
 
