@@ -80,7 +80,7 @@ const draft = { rev: "d1", modifiedAt: "2026-11-27T02:00:00.000Z", projectId: "p
 /** The inbox answer, and the tab panels' animation frames. */
 const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
 
-async function show(url: string) {
+async function show(url: string, setup?: (editor: ReturnType<typeof EditorCore.getInstance>) => void) {
 	dom.happyDOM.setURL(url);
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
@@ -90,6 +90,7 @@ async function show(url: string) {
 	spyOn(editor.project, "getProjectListError").mockReturnValue(null);
 	spyOn(editor.project, "getSavedProjects").mockReturnValue([project] as never);
 	spyOn(editor.project, "getFilteredAndSortedProjects").mockReturnValue([]);
+	setup?.(editor);
 	const { createRoot } = await import("react-dom/client");
 	root = createRoot(dom.document.body.appendChild(dom.document.createElement("div")) as never);
 	await act(async () => {
@@ -207,4 +208,32 @@ test("the Accounts tab chooses the cookie browser and tests it", async () => {
 	await settle();
 	expect(posts.at(-1)).toEqual({ url: "/api/agent/accounts", body: { cookiesFromBrowser: null } });
 	expect(button("Test")?.disabled).toBe(true);
+});
+
+test("archived projects have their own view, and a selection there restores them", async () => {
+	inbox = { bundle: null, draft: null };
+	// The same arrays each time, as the editor's list keeps them while nothing changes.
+	const archivedList = [{ ...project, id: "old", name: "Old cut", duration: 0 }];
+	const mainList = [{ ...project, duration: 0 }];
+	let archive: ReturnType<typeof spyOn> | undefined;
+	await show("http://127.0.0.1:3000/", (editor) => {
+		spyOn(editor.project, "getArchivedCount").mockReturnValue(1);
+		spyOn(editor.project, "isArchived").mockImplementation(({ id }: { id: string }) => id === "old");
+		spyOn(editor.project, "getFilteredAndSortedProjects").mockImplementation(({ archived }: { archived?: boolean }) =>
+			(archived ? archivedList : mainList) as never);
+		archive = spyOn(editor.project, "setProjectsArchived").mockResolvedValue(true);
+	});
+	expect(text()).toContain("Podcast 12");
+	expect(text()).not.toContain("Old cut");
+
+	await act(async () => { button("Archived (1)")!.click(); });
+	expect(text()).toContain("Old cut");
+	expect(text()).not.toContain("Podcast 12");
+	const select = dom.document.querySelector("[aria-label='Select Old cut']") as unknown as HTMLElement;
+	await act(async () => { select.click(); });
+	await act(async () => { (dom.document.querySelector("button[aria-label='Restore']") as unknown as HTMLElement).click(); });
+	expect(archive).toHaveBeenCalledWith({ ids: ["old"], archived: false });
+
+	await act(async () => { button("All projects")!.click(); });
+	expect(text()).toContain("Podcast 12");
 });

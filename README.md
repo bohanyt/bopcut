@@ -64,6 +64,7 @@ Gunakan tombol **EN / ID** di header untuk memilih bahasa Inggris atau Bahasa In
 |---|---|---|
 | Proyek dan media | `<repo>/workspace/projects/` | `BOPENCUT_DATA` |
 | Pilihan dari tab Akun di halaman utama | `<repo>/workspace/accounts.json` | `BOPENCUT_DATA` |
+| Proyek yang diarsip (disembunyikan dari daftar; file-nya tetap) | `<repo>/workspace/archived-projects.json` | `BOPENCUT_DATA` |
 | Folder kerja agen (sync, draf, frame, log editan) | `<repo>/workspace/` | `AGENT_WORKSPACE` |
 | Akar aset yang boleh dibaca agen | = `AGENT_WORKSPACE` | `AGENT_FILES_ROOT` |
 

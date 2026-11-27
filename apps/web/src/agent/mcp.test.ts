@@ -85,6 +85,10 @@ test("tools read projects, transcripts and silence plans of the saved timeline",
 	const listed = await call("list_projects");
 	expect(listed.structuredContent).toEqual({ projects: [{ id: "demo", name: "Saved fixture",
 		updatedAt: "2026-11-02T00:00:00.000Z", createdAt: "2026-11-01T00:00:00.000Z" }] });
+	// An archived project is still listed, marked.
+	await fs.writeFile(path.join(workspace, "archived-projects.json"), JSON.stringify({ ids: ["demo"] }));
+	expect((await call("list_projects")).structuredContent.projects[0]).toMatchObject({ id: "demo", archived: true });
+	await fs.rm(path.join(workspace, "archived-projects.json"));
 	const transcript = await call("read_transcript", { projectId: "demo" });
 	expect(transcript.isError).toBeUndefined();
 	expect(transcript.content[0].text).toContain("hello");

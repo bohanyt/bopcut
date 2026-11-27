@@ -34,6 +34,11 @@ import {
 	storeMissingMediaThumbnail,
 } from "@/services/storage/server/media-thumbnails";
 import type { MediaAssetData } from "@/services/storage/types";
+import {
+	forgetArchivedProject,
+	readArchivedProjectIds,
+	setProjectsArchived,
+} from "@/services/storage/server/archive";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,6 +101,15 @@ async function handle(
 					await fs.rm(file, { force: true });
 					return Response.json({ ok: true });
 				});
+		}
+		if (s[0] === "archived" && s.length === 1) {
+			if (method === "GET") return Response.json({ ids: await readArchivedProjectIds() });
+			if (method === "PUT") {
+				const body = await req.json().catch(() => null);
+				if (!Array.isArray(body?.ids) || !body.ids.every((id: unknown) => typeof id === "string") || typeof body.archived !== "boolean")
+					return Response.json({ error: "Send {ids: string[], archived: boolean}." }, { status: 400 });
+				return Response.json({ ids: await setProjectsArchived({ ids: body.ids, archived: body.archived }) });
+			}
 		}
 		if (s[0] === "projects" && s.length === 1 && method === "GET") {
 			const summaries = [];
@@ -178,6 +192,7 @@ async function handle(
 							}),
 						),
 					);
+					await forgetArchivedProject(id).catch((error) => console.error("Could not update the archive list:", error));
 					return Response.json({ ok: true });
 				});
 			if (s[2] === "migration" && s.length === 3 && method === "GET")

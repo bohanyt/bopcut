@@ -3,6 +3,7 @@ import path from "node:path";
 import { EXPORT_FORMAT_VALUES, EXPORT_QUALITY_VALUES } from "@/export";
 import { dataRoot } from "@/services/storage/server/files";
 import { readProjectSummary } from "@/services/storage/server/projects";
+import { readArchivedProjectIds } from "@/services/storage/server/archive";
 import { handleCli } from "./cli-api";
 import { launchBrowser } from "./hidden-browser";
 import { type DraftContext, draftResult, MAX_DRAFT_OPS, MAX_DRAFT_WAIT_SECONDS, submitDraft } from "./mcp-drafts";
@@ -44,7 +45,7 @@ const MCP_FRAME_WIDTH = 960;
 export const MCP_TOOLS = [
 	{
 		name: "list_projects", title: "List projects",
-		description: "Projects saved in this editor, newest first, with their IDs, names and last change.",
+		description: "Projects saved in this editor, newest first, with their IDs, names and last change. Archived projects (hidden from the home page's list) have archived: true.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 		annotations: readOnly,
 	},
@@ -250,11 +251,12 @@ async function listProjects(): Promise<ToolResult> {
 		throw error;
 	});
 	const projects = [];
+	const archived = new Set(await readArchivedProjectIds());
 	for (const id of ids.filter((name) => /^[a-zA-Z0-9_-]{1,128}$/.test(name))) {
 		const summary = await readProjectSummary(id).catch(() => null);
 		if (!summary) continue;
 		const { name, updatedAt, createdAt } = summary.metadata;
-		projects.push({ id, name, updatedAt, createdAt });
+		projects.push({ id, name, updatedAt, createdAt, ...(archived.has(id) ? { archived: true } : {}) });
 	}
 	projects.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 	const result = { projects };
