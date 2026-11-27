@@ -352,3 +352,38 @@ test("browser copying marks completion only after all legacy stores have been ch
 		}
 	}
 });
+
+test("a project's mode is stored with it, listed, changed and cleared; an unknown one is left out", async () => {
+	const id = "with-mode";
+	await writeLegacy({ ...fixture(id), metadata: { ...fixture(id).metadata, mode: "creating" } });
+	await writeLegacy({ ...fixture("odd-mode"), metadata: { ...fixture("odd-mode").metadata, mode: "dancing" } });
+	const handleFetch: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch> = async (url, init) => {
+		const relative = String(url);
+		const req = new Request(`http://localhost${relative}`, init);
+		const handle = req.method === "PUT" ? PUT : GET;
+		return handle(req, { params: Promise.resolve({ slug: relative.split("/").slice(3) }) });
+	};
+	const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(handleFetch, { preconnect: fetch.preconnect }));
+	try {
+		const storage = new StorageService();
+		const listed = async () => Object.fromEntries((await storage.loadAllProjectsMetadata())
+			.filter((project) => project.id === id || project.id === "odd-mode")
+			.map((project) => [project.id, project.mode ?? null]));
+		expect(await listed()).toEqual({ [id]: "creating", "odd-mode": null });
+		const loaded = (await storage.loadProject({ id }))!.project;
+		expect(loaded.metadata.mode).toBe("creating");
+		// An editor save keeps it.
+		await storage.saveProject({ project: { ...loaded, metadata: { ...loaded.metadata, name: "Saved" } } });
+		expect(JSON.parse(await fs.readFile(projectPath(id), "utf8")).metadata).toMatchObject({ name: "Saved", mode: "creating" });
+
+		expect((await storage.setProjectMode({ id, mode: "editing" }))?.mode).toBe("editing");
+		expect(JSON.parse(await fs.readFile(projectPath(id), "utf8")).metadata.mode).toBe("editing");
+		expect(await listed()).toEqual({ [id]: "editing", "odd-mode": null });
+
+		await storage.setProjectMode({ id, mode: null });
+		expect("mode" in JSON.parse(await fs.readFile(projectPath(id), "utf8")).metadata).toBe(false);
+		expect(await listed()).toEqual({ [id]: null, "odd-mode": null });
+	} finally {
+		fetchSpy.mockRestore();
+	}
+});

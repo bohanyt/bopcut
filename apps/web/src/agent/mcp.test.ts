@@ -24,7 +24,7 @@ beforeAll(async () => {
 	const { params: _params, ...clip } = audio("voice", 0, 8);
 	const tracks = { ...root.tracks, audio: [{ ...root.tracks.audio[0], elements: [clip] }] };
 	await fs.writeFile(path.join(project, "project.json"), JSON.stringify({ version: CURRENT_PROJECT_VERSION,
-		metadata: { id: "demo", name: "Saved fixture", createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-02T00:00:00.000Z" },
+		metadata: { id: "demo", name: "Saved fixture", mode: "editing", createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-02T00:00:00.000Z" },
 		scenes: [{ ...root, tracks }], currentSceneId: root.id }));
 	await fs.writeFile(path.join(metadata, "media-voice.json"), JSON.stringify({ name: "Recording", duration: 8,
 		words: [{ text: "hello", start: 1, end: 2 }, { text: "world", start: 3, end: 4 }] }));
@@ -83,7 +83,7 @@ test("initialize negotiates the protocol version and lists the tools, marking th
 
 test("tools read projects, transcripts and silence plans of the saved timeline", async () => {
 	const listed = await call("list_projects");
-	expect(listed.structuredContent).toEqual({ projects: [{ id: "demo", name: "Saved fixture",
+	expect(listed.structuredContent).toEqual({ projects: [{ id: "demo", name: "Saved fixture", mode: "editing",
 		updatedAt: "2026-11-02T00:00:00.000Z", createdAt: "2026-11-01T00:00:00.000Z" }] });
 	// An archived project is still listed, marked.
 	await fs.writeFile(path.join(workspace, "archived-projects.json"), JSON.stringify({ ids: ["demo"] }));

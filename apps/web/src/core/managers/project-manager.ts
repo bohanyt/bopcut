@@ -2,6 +2,7 @@ import { localizeErrorDetail } from "@/i18n/error-details";
 import { getBrowserTranslator } from "@/i18n/browser";
 import type { EditorCore } from "@/core";
 import type {
+	ProjectMode,
 	TProject,
 	TProjectMetadata,
 	TProjectSortKey,
@@ -110,10 +111,10 @@ export class ProjectManager {
 		await this.storageMigrationPromise;
 	}
 
-	async createNewProject({ name }: { name: string }): Promise<string> {
+	async createNewProject({ name, mode }: { name: string; mode?: ProjectMode }): Promise<string> {
 		const take = this.editor.voiceOver.finishForNavigation();
 		if (take) await take;
-		const newProject = buildNewProject({ name });
+		const newProject = buildNewProject({ name, mode });
 
 		this.advanceSession();
 		this.supersedeLoads();
@@ -809,6 +810,42 @@ export class ProjectManager {
 		}
 	}
 
+	/**
+	 * Sets what a project is for, or clears it (null). The open project changes in the editor and its
+	 * session saves it; a closed one is changed on its stored copy, like a rename.
+	 */
+	async setProjectMode({ id, mode }: { id: string; mode: ProjectMode | null }): Promise<boolean> {
+		const change = (metadata: TProjectMetadata): TProjectMetadata => {
+			const { mode: _previous, ...rest } = metadata;
+			return mode ? { ...rest, mode } : rest;
+		};
+		try {
+			if (this.changeActiveMetadata({ id, change })) {
+				if (!(await this.editor.save.flush())) throw new Error(this.editor.save.getLastError(id) ?? "The change is not saved yet");
+				return true;
+			}
+			const unsaved = await this.editor.save.settleProject(id);
+			if (unsaved) throw new Error(`Earlier changes of this project are not saved yet: ${unsaved}`);
+			const writing = storageService.setProjectMode({ id, mode });
+			this.renames.set(id, writing);
+			const metadata = await writing.finally(() => {
+				if (this.renames.get(id) === writing) this.renames.delete(id);
+			});
+			if (!metadata) throw new Error("Project not found");
+			this.updateSavedMetadata(metadata);
+			this.notify();
+			// Opened meanwhile: changed in the editor too, so its saves keep it.
+			this.changeActiveMetadata({ id, change });
+			return true;
+		} catch (error) {
+			console.error("Failed to set the project mode:", error);
+			toast.error(getBrowserTranslator()("projects.modeFailed"), {
+				description: error instanceof Error ? localizeErrorDetail(error.message, getBrowserTranslator()) : undefined,
+			});
+			return false;
+		}
+	}
+
 	isArchived({ id }: { id: string }): boolean {
 		return this.archivedIds.has(id);
 	}
@@ -999,8 +1036,13 @@ export class ProjectManager {
 
 	/** Renames the open project in the editor (saved by its session); false when `id` is not open. */
 	private renameActive({ id, name }: { id: string; name: string }): boolean {
+		return this.changeActiveMetadata({ id, change: (metadata) => ({ ...metadata, name }) });
+	}
+
+	/** Changes the open project's metadata, which its session then saves (its timeline is newer than the stored one). */
+	private changeActiveMetadata({ id, change }: { id: string; change: (metadata: TProjectMetadata) => TProjectMetadata }): boolean {
 		if (this.active?.metadata.id !== id) return false;
-		this.active = { ...this.active, metadata: { ...this.active.metadata, name, updatedAt: new Date() } };
+		this.active = { ...this.active, metadata: { ...change(this.active.metadata), updatedAt: new Date() } };
 		this.notify();
 		this.updateMetadata(this.active);
 		this.editor.save.markDirty({ force: true });

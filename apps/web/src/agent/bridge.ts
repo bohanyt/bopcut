@@ -133,6 +133,8 @@ export function agentSnapshot() {
 	const { ready, mediaLoaded, missingMedia, pendingSave, saveError, savedAt } = agentReadiness();
 	return {
 		schema: "opencut-agent-sync-1", projectId: project.metadata.id, projectName: project.metadata.name,
+		// What the project is for (AGENT.md, *Work modes*); null when the person has not said.
+		projectMode: project.metadata.mode ?? null,
 		// ready = media loaded and nothing left to save; savedAt = last write of project.json; syncedAt = this snapshot.
 		ready, mediaLoaded, mediaCount: editor.media.getAssets().length, missingMedia, pendingSave, saveError, savedAt, syncedAt: nextSnapshotTime(),
 		canvas: project.settings.canvasSize, fps: project.settings.fps,

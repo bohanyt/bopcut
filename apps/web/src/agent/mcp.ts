@@ -45,7 +45,7 @@ const MCP_FRAME_WIDTH = 960;
 export const MCP_TOOLS = [
 	{
 		name: "list_projects", title: "List projects",
-		description: "Projects saved in this editor, newest first, with their IDs, names and last change. Archived projects (hidden from the home page's list) have archived: true.",
+		description: "Projects saved in this editor, newest first, with their IDs, names and last change. A project's mode (editing, creating or generating) says what it is for; archived projects (hidden from the home page's list) have archived: true.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 		annotations: readOnly,
 	},
@@ -255,8 +255,8 @@ async function listProjects(): Promise<ToolResult> {
 	for (const id of ids.filter((name) => /^[a-zA-Z0-9_-]{1,128}$/.test(name))) {
 		const summary = await readProjectSummary(id).catch(() => null);
 		if (!summary) continue;
-		const { name, updatedAt, createdAt } = summary.metadata;
-		projects.push({ id, name, updatedAt, createdAt, ...(archived.has(id) ? { archived: true } : {}) });
+		const { name, updatedAt, createdAt, mode } = summary.metadata;
+		projects.push({ id, name, updatedAt, createdAt, ...(mode ? { mode } : {}), ...(archived.has(id) ? { archived: true } : {}) });
 	}
 	projects.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 	const result = { projects };

@@ -154,6 +154,7 @@ export const en = {
 	"projects.noSearchResults": "Your search for \"{query}\" did not return any results.",
 	"projects.projectId": "Project ID",
 	"projects.renameFailed": "Failed to rename project",
+	"projects.modeFailed": "Could not change the project's mode",
 	"projects.renameProject": "Rename project",
 	"projects.search": "Search...",
 	"projects.searchLabel": "Search projects",
