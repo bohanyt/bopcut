@@ -238,3 +238,63 @@ describe("select all", () => {
 		input.remove();
 	});
 });
+
+async function pressKey(key: string, code: string, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}) {
+	await act(async () => {
+		dom.document.body.dispatchEvent(new dom.KeyboardEvent("keydown", { key, code, ...modifiers, bubbles: true, cancelable: true }));
+	});
+}
+
+describe("cut", () => {
+	test("Ctrl+X removes the selected clips in one Undo step, and Ctrl+V pastes them with their spacing", async () => {
+		await select(bg, next);
+		await pressKey("x", "KeyX", { ctrlKey: true });
+		expect(clips()).toEqual({ title: [[0, 4]], music: [[0, 4]] });
+		await act(async () => { editor.command.undo(); });
+		expect(clips()).toEqual(whole);
+		expect(editor.command.canUndo()).toBe(false);
+		// Pasting checks that the clips' media are in the project.
+		editor.media.setAssets({ assets: ["media-bg", "media-next"].map((id) => ({ id, name: id, type: "video", duration: 10 })) as never });
+		await act(async () => { editor.playback.seek({ time: t(8) }); });
+		await pressKey("v", "KeyV", { ctrlKey: true });
+		expect(clips().bg).toEqual([[0, 4], [8, 12]]);
+		expect(clips().next).toEqual([[4, 8], [12, 16]]);
+	});
+
+	test("Ctrl+X without a selection changes nothing", async () => {
+		await pressKey("x", "KeyX", { ctrlKey: true });
+		expect(clips()).toEqual(whole);
+		expect(editor.command.canUndo()).toBe(false);
+	});
+});
+
+describe("select beside the playhead", () => {
+	test("] selects what starts at or after the playhead, [ what ends at or before it, never a clip under it", async () => {
+		await act(async () => { editor.playback.seek({ time: t(4) }); });
+		await pressKey("]", "BracketRight");
+		expect(selectedNames()).toEqual(["next@4"]);
+		await pressKey("[", "BracketLeft");
+		expect(selectedNames().sort()).toEqual(["bg@0", "music@0", "title@0"]);
+		// At 2 s, every clip but the one after 4 s crosses the playhead.
+		await act(async () => { editor.playback.seek({ time: t(2) }); });
+		await pressKey("]", "BracketRight");
+		expect(selectedNames()).toEqual(["next@4"]);
+		await pressKey("[", "BracketLeft");
+		expect(selectedNames()).toEqual([]);
+	});
+
+	test("clips on a hidden track are left out", async () => {
+		const scene = editor.scenes.getActiveScene();
+		await act(async () => {
+			editor.scenes.setScenes({
+				scenes: editor.scenes.getScenes().map((item) => item.id === scene.id
+					? { ...item, tracks: { ...item.tracks, overlay: item.tracks.overlay.map((track) => ({ ...track, hidden: true })) } }
+					: item),
+				activeSceneId: scene.id,
+			});
+			editor.playback.seek({ time: t(4) });
+		});
+		await pressKey("[", "BracketLeft");
+		expect(selectedNames().sort()).toEqual(["bg@0", "music@0"]);
+	});
+});

@@ -33,6 +33,7 @@ import {
 import { useCommittedRef } from "@/hooks/use-committed-ref";
 import { toggleSelectedKeyframeLanes } from "@/timeline/keyframe-lanes";
 import { isCompoundElement } from "@/timeline/compound";
+import { elementsBesidePlayhead } from "@/timeline/beside-playhead";
 import { toast } from "sonner";
 
 export function useEditorActions() {
@@ -400,6 +401,18 @@ export function useEditorActions() {
 	);
 
 	useActionHandler(
+		"select-right-of-playhead",
+		() => setElementSelection({ elements: elementsBesidePlayhead({ tracks: editor.scenes.getActiveScene().tracks, time: editor.playback.getCurrentTime(), side: "right" }) }),
+		undefined,
+	);
+
+	useActionHandler(
+		"select-left-of-playhead",
+		() => setElementSelection({ elements: elementsBesidePlayhead({ tracks: editor.scenes.getActiveScene().tracks, time: editor.playback.getCurrentTime(), side: "left" }) }),
+		undefined,
+	);
+
+	useActionHandler(
 		"cancel-interaction",
 		() => {
 			if (cancelInteraction()) return;
@@ -499,6 +512,17 @@ export function useEditorActions() {
 		"copy-selected",
 		() => {
 			editor.clipboard.copy();
+		},
+		undefined,
+	);
+
+	useActionHandler(
+		"cut-selected",
+		() => {
+			// Copy, then remove as Delete does (a gap, no ripple): only the removal is an Undo step.
+			if (editor.selection.getActiveSelectionKind() !== "elements" || selectedElements.length === 0) return;
+			if (!editor.clipboard.copy()) return;
+			editor.timeline.deleteElements({ elements: selectedElements });
 		},
 		undefined,
 	);
