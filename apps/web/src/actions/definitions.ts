@@ -229,6 +229,7 @@ const ACTION_DEFAULT_SHORTCUTS = [
 	["select-right-of-playhead", ["]"]],
 	["select-left-of-playhead", ["["]],
 	["cancel-interaction", ["escape"]],
+	["deselect-all", ["a"]],
 	["duplicate-selected", ["ctrl+d"]],
 	["create-compound", ["alt+g"]],
 	["break-apart-compound", ["alt+shift+g"]],
