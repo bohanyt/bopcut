@@ -37,6 +37,7 @@ test.each([
 	[{}, { facecam: { x: 0.9, y: 0, width: 0.3, height: 0.3 } }, "inside it"],
 	[{}, { facecam: { x: 0, y: 0, width: 0.01, height: 0.3 } }, "inside it"],
 	[{}, { facecam, split: 0.95 }, "share of the height"],
+	[{}, { facecam, gameX: 1.2 }, "left edge of the game's crop"],
 ] as const)("a bad request says why and changes nothing (%#)", (options, op, message) => {
 	const out = run([{ op: "split-layout", match: { agentId: "stream" }, ...op }], options);
 	expect(out.results[0].ok).toBe(false);

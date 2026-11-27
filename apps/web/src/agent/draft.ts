@@ -1,5 +1,5 @@
 import { validateElementTrackCompatibility } from "@/timeline/placement/compatibility";
-import { buildSplitLayout, SPLIT_LIMITS } from "@/reframe/split-layout";
+import { buildSplitLayout, gameCrop, SPLIT_LIMITS } from "@/reframe/split-layout";
 import { canPlaceTimeSpansOnTrack } from "@/timeline/placement/overlap";
 import { keepTiming, mergeHumanFields, takeHumanFields, validateKeptFit } from "./human-conflicts";
 import { withHumanFields, isHumanFieldPath, equalHumanValue } from "@/timeline/human-fields";
@@ -64,7 +64,7 @@ export type DraftOp = { onConflict?: ConflictPolicy; take?: string[] } & (
 	 */
 	| { op: "transition"; match: AgentMatch; type: TransitionType; duration?: number; color?: string }
 	/** The game on top and the facecam below, from one video clip (a vertical canvas): see AGENT.md, *Split layout*. */
-	| { op: "split-layout"; match: AgentMatch; facecam: { x: number; y: number; width: number; height: number }; split?: number }
+	| { op: "split-layout"; match: AgentMatch; facecam: { x: number; y: number; width: number; height: number }; split?: number; gameX?: number }
 	/** In and out animation presets on the matched clip (see agent/animate). */
 	| { op: "animate"; match: AgentMatch; in?: AgentAnimateSide; out?: AgentAnimateSide }
 	| ({ op: "compound"; track?: DraftTrackRef; agent_id?: string; name: string; start: number; duration?: number; trimStart?: number }
@@ -527,11 +527,13 @@ export function computeAgentDraft({ scenes, rootSceneId, ops, mediaFor, canvas, 
 				if (op.split !== undefined && !(typeof op.split === "number" && op.split >= SPLIT_LIMITS.min && op.split <= SPLIT_LIMITS.max)) {
 					throw new Error(`split-layout: split is the game's share of the height, from ${SPLIT_LIMITS.min} to ${SPLIT_LIMITS.max}`);
 				}
+				if (op.gameX !== undefined && !fraction(op.gameX)) throw new Error("split-layout: gameX is the left edge of the game's crop, from 0 to 1");
 				if (keep && hit.element.agentId) assertNotStale({ base, now, sceneId: hit.sceneId, element: hit.element, fields: ["params.transform.positionX", "params.transform.positionY", "params.transform.scaleX", "params.transform.scaleY", "params.transform.rotate"], scenes: list });
 				const camId = `${hit.element.agentId ?? hit.element.id}~facecam`;
 				const layout = editTracks(rootSceneId, (tracks) => {
 					const built = buildSplitLayout({
 						tracks, clip: { trackId: hit.track.id, elementId: hit.element.id }, facecam: { ...facecam }, split: op.split,
+						game: gameCrop({ media: size, canvas, split: op.split, facecam, gameX: op.gameX }),
 						media: size, canvas, names: { facecamTrack: "Facecam", facecamClip: (name) => `${name} (facecam)` }, facecamAgentId: camId,
 					});
 					if (!built) throw new Error("split-layout: the clip could not be split");

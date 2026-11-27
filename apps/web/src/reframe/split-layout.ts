@@ -13,6 +13,46 @@ export interface SourceRect {
 /** Shares of the canvas height the game may take: the rest is the facecam. */
 export const SPLIT_LIMITS = { min: 0.3, max: 0.8, default: 0.6 } as const;
 
+const clampShare = (split: number) => Math.min(SPLIT_LIMITS.max, Math.max(SPLIT_LIMITS.min, split));
+
+/**
+ * How much of the picture's width the game window shows when it keeps the whole height, as a fraction
+ * (1 when the window is as wide as the picture or wider).
+ */
+export function gameCropWidth({ media, canvas, split = SPLIT_LIMITS.default }: {
+	media: { width: number; height: number };
+	canvas: { width: number; height: number };
+	split?: number;
+}): number {
+	const windowHeight = Math.round(canvas.height * clampShare(split));
+	return Math.min(1, (canvas.width / windowHeight) * (media.height / media.width));
+}
+
+/**
+ * Where the game's crop starts (its left edge, in fractions of the picture) so that it leaves the
+ * facecam out when it can: centred when that already misses it, else moved to the side away from it.
+ */
+export function gameCropX({ facecam, width }: { facecam: SourceRect; width: number }): number {
+	if (width >= 1) return 0;
+	const centred = (1 - width) / 2;
+	if (centred >= facecam.x + facecam.width || centred + width <= facecam.x) return centred;
+	const onTheRight = facecam.x + facecam.width / 2 > 0.5;
+	return Math.min(1 - width, Math.max(0, onTheRight ? facecam.x - width : facecam.x + facecam.width));
+}
+
+/** The game's part of the picture: the whole height, the window's width, starting at `gameX` or away from the facecam. */
+export function gameCrop({ media, canvas, split, facecam, gameX }: {
+	media: { width: number; height: number };
+	canvas: { width: number; height: number };
+	split?: number;
+	facecam: SourceRect;
+	gameX?: number;
+}): SourceRect {
+	const width = gameCropWidth({ media, canvas, split });
+	const x = Math.min(1 - width, Math.max(0, gameX ?? gameCropX({ facecam, width })));
+	return { x, y: 0, width, height: 1 };
+}
+
 const TRANSFORM_KEYS = ["transform.positionX", "transform.positionY", "transform.scaleX", "transform.scaleY", "transform.rotate"];
 
 function windowMask({ top, height, canvasHeight }: { top: number; height: number; canvasHeight: number }): RectangleMask {
@@ -100,7 +140,7 @@ export function buildSplitLayout({ tracks, clip, facecam, split = SPLIT_LIMITS.d
 	const element = track?.elements.find(({ id }) => id === clip.elementId);
 	if (!track || element?.type !== "video") return null;
 
-	const share = Math.min(SPLIT_LIMITS.max, Math.max(SPLIT_LIMITS.min, split));
+	const share = clampShare(split);
 	const top = { top: 0, height: Math.round(canvas.height * share) };
 	const bottom = { top: top.height, height: canvas.height - top.height };
 	const gameClip = placed(element, framePart({ part: game, window: top, media, canvas }), windowMask({ ...top, canvasHeight: canvas.height }));

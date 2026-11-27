@@ -62,6 +62,11 @@ test("the layout makes a landscape canvas vertical and splits the clip, in one U
 	expect(tracks.overlay[0].elements.map(({ id }) => id)).toEqual([facecam!.elementId]);
 	expect((tracks.main.elements[0] as VideoElement).masks?.[0].params).toMatchObject({ canvasLocked: true });
 	expect(editor.selection.getSelectedElements()).toEqual([facecam!]);
+	// The game's crop, which shows the canvas's width, ends before the facecam (at x 0.02 + 0.22 on the left it starts after it).
+	const game = tracks.main.elements[0] as VideoElement;
+	const shownWidth = 1080 * Number(game.params["transform.scaleX"]);
+	const left = 540 + Number(game.params["transform.positionX"]) - shownWidth / 2;
+	expect(-left / shownWidth).toBeGreaterThanOrEqual(0.24 - 1e-9);
 	editor.command.undo();
 	expect(editor.project.getActive().settings.canvasSize).toEqual({ width: 1920, height: 1080 });
 	expect(editor.scenes.getActiveScene().tracks.overlay).toEqual([]);
@@ -81,7 +86,7 @@ test("the dialog takes the facecam box drawn on the still and the game's height"
 	const root = createRoot(dom.document.body.appendChild(dom.document.createElement("div")) as never);
 	await act(async () => {
 		root.render(<LocaleProvider initialLocale="en">
-			<SplitLayoutDialog still="still.jpg" aspect={16 / 9} makesVertical onCancel={() => {}} onConfirm={(choice) => chosen.push(choice)} />
+			<SplitLayoutDialog still="still.jpg" aspect={16 / 9} canvas={{ width: 1080, height: 1920 }} makesVertical onCancel={() => {}} onConfirm={(choice) => chosen.push(choice)} />
 		</LocaleProvider>);
 	});
 	try {
@@ -92,6 +97,10 @@ test("the dialog takes the facecam box drawn on the still and the game's height"
 		await act(async () => { picture.dispatchEvent(pointer("pointerdown", 300, 20) as never); });
 		await act(async () => { picture.dispatchEvent(pointer("pointermove", 380, 110) as never); });
 		await act(async () => { picture.dispatchEvent(pointer("pointerup", 380, 110) as never); });
+		// The dashed game crop moved away from the facecam drawn on the right.
+		const crop = dom.document.querySelector("[data-game-crop]") as unknown as HTMLElement;
+		const cropWidth = (1080 / Math.round(1920 * 0.6)) * (9 / 16);
+		expect(parseFloat(crop.style.left)).toBeCloseTo((0.75 - cropWidth) * 100, 6);
 		const slider = dom.document.querySelector("input[type='range']") as unknown as HTMLInputElement;
 		await act(async () => {
 			Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, "value")!.set!.call(slider, "0.55");
@@ -100,7 +109,9 @@ test("the dialog takes the facecam box drawn on the still and the game's height"
 		const make = [...dom.document.querySelectorAll("button")].find((node) => node.textContent === "Make layout") as unknown as HTMLButtonElement;
 		await act(async () => { make.click(); });
 		expect(chosen).toHaveLength(1);
-		const [{ facecam, split }] = chosen as { facecam: Record<string, number>; split: number }[];
+		const [{ facecam, split, gameX }] = chosen as { facecam: Record<string, number>; split: number; gameX: number }[];
+		// The game is now 55% tall: a wider crop, still ending at the facecam.
+		expect(gameX).toBeCloseTo(0.75 - (1080 / Math.round(1920 * 0.55)) * (9 / 16), 9);
 		const expected = { x: 0.75, y: 20 / 225, width: 0.2, height: 0.4 };
 		for (const key of Object.keys(expected) as (keyof typeof expected)[]) expect(facecam[key]).toBeCloseTo(expected[key], 9);
 		expect(split).toBe(0.55);
