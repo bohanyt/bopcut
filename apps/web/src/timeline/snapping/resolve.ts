@@ -27,3 +27,10 @@ export function resolveTimelineSnap({
 		snapDistance: closestDistance,
 	};
 }
+
+/** The same point, whether or not it is the same object (gestures build fresh points on every move). */
+export function sameSnapPoint({ a, b }: { a: SnapPoint | null; b: SnapPoint | null }): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return a.time === b.time && a.type === b.type && a.elementId === b.elementId && a.trackId === b.trackId;
+}

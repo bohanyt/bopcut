@@ -94,7 +94,7 @@ function mover(scroll = { scrollLeft: 0, scrollTop: 0 }) {
 	return controller;
 }
 
-function resizer() {
+function resizer(overrides: Partial<ResizeConfig> = {}) {
 	const config: ResizeConfig = {
 		zoomLevel: 1, snappingEnabled: false, isShiftHeld: () => false, getSceneTracks: tracks,
 		getCurrentPlayheadTime: () => editor.playback.getCurrentTime(), getActiveProjectFps: () => fps,
@@ -103,6 +103,7 @@ function resizer() {
 		discardPreview: () => editor.timeline.discardPreview(),
 		previewElements: (updates) => editor.timeline.previewElementUpdates({ updates }),
 		commitElements: (updates) => editor.timeline.updateElements({ updates }),
+		...overrides,
 	};
 	const controller = new ResizeController({ configRef: { current: config } });
 	destroyController = () => controller.destroy();
@@ -149,4 +150,31 @@ test("clip move uses the drop position under the pointer after scrolling", () =>
 	editor.command.undo();
 	expect(clip().startTime).toBe(t(2));
 	expect(editor.command.canUndo()).toBe(false);
+});
+
+test("a trim previews once per frame it reaches and builds its snap points once", () => {
+	const scene = tracks();
+	let reads = 0;
+	// Snap points read every clip of a track: count those reads.
+	const counted = { ...scene, main: { ...scene.main, get elements() { reads++; return scene.main.elements; } } };
+	let previews = 0;
+	const snapPoints: unknown[] = [];
+	const controller = resizer({
+		zoomLevel: 10, snappingEnabled: true, getSceneTracks: () => counted,
+		previewElements: (updates) => { previews++; editor.timeline.previewElementUpdates({ updates }); },
+		onSnapPointChange: (point) => snapPoints.push(point),
+	});
+	const right = 5 * 10 * pps;
+	const frame = (10 * pps) / 30;
+	controller.onResizeStart({ event: mouseDown(right), element: clip(), track: tracks().main, side: "right" });
+	mouse("mousemove", right - frame);
+	const readsAfterFirstMove = reads;
+	for (const x of [right - frame - 1, right - frame - 2, right - 2 * frame, right - 2 * frame - 1]) {
+		mouse("mousemove", x);
+	}
+	expect(previews).toBe(2);
+	expect(reads).toBe(readsAfterFirstMove);
+	expect(snapPoints).toEqual([null, null, null, null, null]);
+	mouse("mouseup", right - 2 * frame - 1);
+	expect(clip().duration).toBe(t(3 - 2 / 30));
 });

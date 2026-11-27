@@ -50,6 +50,8 @@ interface ResizeSession {
 	result: GroupResizeResult | null;
 	/** Word edges each member's edge snaps to (worked out once, when the resize starts). */
 	wordPoints: Map<string, SnapPoint[]>;
+	/** Timeline snap points, rebuilt only when the scene or the playhead changes during the trim. */
+	snapCache?: { tracks: SceneTracks; playheadTime: MediaTime; points: SnapPoint[] };
 }
 
 type Session = { kind: "idle" } | ResizeSession;
@@ -292,19 +294,25 @@ export class ResizeController {
 
 		const tracks = this.config.getSceneTracks();
 		const playheadTime = this.config.getCurrentPlayheadTime();
-		const excludeElementIds = new Set(session.members.map((m) => m.elementId));
-
-		const snapPoints = buildTimelineSnapPoints({
-			sources: [
-				() => getElementEdgeSnapPoints({ tracks, excludeElementIds }),
-				() => getPlayheadSnapPoints({ playheadTime }),
-				() =>
-					getAnimationKeyframeSnapPointsForTimeline({
-						tracks,
-						excludeElementIds,
-					}),
-			],
-		});
+		if (session.snapCache?.tracks !== tracks || session.snapCache.playheadTime !== playheadTime) {
+			const excludeElementIds = new Set(session.members.map((m) => m.elementId));
+			session.snapCache = {
+				tracks,
+				playheadTime,
+				points: buildTimelineSnapPoints({
+					sources: [
+						() => getElementEdgeSnapPoints({ tracks, excludeElementIds }),
+						() => getPlayheadSnapPoints({ playheadTime }),
+						() =>
+							getAnimationKeyframeSnapPointsForTimeline({
+								tracks,
+								excludeElementIds,
+							}),
+					],
+				}),
+			};
+		}
+		const snapPoints = session.snapCache.points;
 		const maxSnapDistance = getTimelineSnapThresholdInTicks({ zoomLevel });
 
 		let closestSnapPoint: SnapPoint | null = null;
@@ -371,6 +379,8 @@ export class ResizeController {
 			fps: session.fps,
 		});
 
+		// Pointer moves within one frame give the same trim: preview it once, not on every pixel.
+		if (session.result?.deltaTime === result.deltaTime) return;
 		session.result = result;
 		this.config.previewElements(result.updates);
 	}
