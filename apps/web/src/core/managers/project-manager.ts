@@ -40,6 +40,8 @@ export class ProjectManager {
 	/** Identifies the explicit frame-rate edit currently applied by history. */
 	private fpsEditRevision: symbol | undefined;
 	private savedProjects: TProjectMetadata[] = [];
+	/** Projects hidden from the list. Kept apart from their metadata, which their saves write. */
+	private archivedIds: ReadonlySet<string> = new Set();
 	private isLoading = true;
 	private projectListError: string | null = null;
 	/**
@@ -426,8 +428,16 @@ export class ProjectManager {
 		try {
 			await this.ensureStorageMigrations();
 			try {
-				const metadata = await storageService.loadAllProjectsMetadata();
+				const [metadata, archived] = await Promise.all([
+					storageService.loadAllProjectsMetadata(),
+					// Without the list every project shows: nothing is hidden by mistake.
+					storageService.loadArchivedProjectIds().catch((error) => {
+						console.error("Failed to load archived projects:", error);
+						return [];
+					}),
+				]);
 				this.savedProjects = metadata;
+				this.archivedIds = new Set(archived);
 				this.projectListError = null;
 				this.notify();
 			} catch (error) {
@@ -481,6 +491,9 @@ export class ProjectManager {
 			this.savedProjects = this.savedProjects.filter(
 				(project) => !deletedIds.has(project.id),
 			);
+			if ([...deletedIds].some((id) => this.archivedIds.has(id))) {
+				this.archivedIds = new Set([...this.archivedIds].filter((id) => !deletedIds.has(id)));
+			}
 			if (this.active && deletedIds.has(this.active.metadata.id)) {
 				this.advanceSession();
 				this.active = null;
@@ -781,14 +794,41 @@ export class ProjectManager {
 		}
 	}
 
+	/** Hides projects from the list, or brings them back; nothing of the projects themselves changes. */
+	async setProjectsArchived({ ids, archived }: { ids: string[]; archived: boolean }): Promise<boolean> {
+		try {
+			this.archivedIds = new Set(await storageService.setProjectsArchived({ ids, archived }));
+			this.notify();
+			return true;
+		} catch (error) {
+			console.error("Failed to change archived projects:", error);
+			toast.error(getBrowserTranslator()(archived ? "projects.archiveFailed" : "projects.restoreFailed"), {
+				description: error instanceof Error ? localizeErrorDetail(error.message, getBrowserTranslator()) : undefined,
+			});
+			return false;
+		}
+	}
+
+	isArchived({ id }: { id: string }): boolean {
+		return this.archivedIds.has(id);
+	}
+
+	getArchivedCount(): number {
+		return this.savedProjects.filter(({ id }) => this.archivedIds.has(id)).length;
+	}
+
 	getFilteredAndSortedProjects({
 		searchQuery,
 		sortOption,
+		archived = false,
 	}: {
 		searchQuery: string;
 		sortOption: TProjectSortOption;
+		/** The archived projects instead of the others. */
+		archived?: boolean;
 	}): TProjectMetadata[] {
 		const filteredProjects = this.savedProjects.filter((project) =>
+			this.archivedIds.has(project.id) === archived &&
 			project.name.toLowerCase().includes(searchQuery.toLowerCase()),
 		);
 

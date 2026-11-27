@@ -1,11 +1,15 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { EditorCore } from "@/core";
 import { MediaDragOverlay } from "@/components/editor/panels/assets/drag-overlay";
 import { PropertyParamField } from "@/components/editor/panels/properties/components/property-param-field";
 import { textStyleParams } from "@/text/style";
 import { getRegionLabelKey, resolveQueryToRegions } from "@/stickers/providers/flags";
 import { LocaleProvider } from "./provider";
 import { createTranslator } from "./translate";
+
+// The property field reads the editor: its core must not outlive this file (a render-only core needs none).
+afterEach(() => EditorCore.reset());
 
 test.each([
 	["en", "Processing your files (46%)", "Highlight active word"],

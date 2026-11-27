@@ -64,6 +64,7 @@ Use the **EN / ID** button in the header to choose English or Bahasa Indonesia. 
 | --- | --- | --- |
 | Projects and media | `<repo>/workspace/projects/` | `BOPENCUT_DATA` |
 | Choices from the home page's Accounts tab | `<repo>/workspace/accounts.json` | `BOPENCUT_DATA` |
+| Archived projects (hidden from the list; their files stay) | `<repo>/workspace/archived-projects.json` | `BOPENCUT_DATA` |
 | Agent workspace (sync files, drafts, frames, edit logs) | `<repo>/workspace/` | `AGENT_WORKSPACE` |
 | Asset root the agent may read | Same as `AGENT_WORKSPACE` | `AGENT_FILES_ROOT` |
 

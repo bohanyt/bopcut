@@ -365,6 +365,24 @@ class StorageService {
 		this.forgetMediaManifest({ projectId: id });
 	}
 
+	/** IDs of the projects hidden from the project list; their files stay where they are. */
+	async loadArchivedProjectIds(): Promise<string[]> {
+		const response = await fetch("/api/storage/archived", { cache: "no-store" });
+		if (!response.ok) throw new Error(`Storage failed (${response.status}): ${await response.text()}`);
+		return (await response.json()).ids;
+	}
+
+	/** Archives or restores projects. Returns the archived IDs after the change. */
+	async setProjectsArchived({ ids, archived }: { ids: string[]; archived: boolean }): Promise<string[]> {
+		const response = await fetch("/api/storage/archived", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ ids, archived }),
+		});
+		if (!response.ok) throw new Error(`Storage failed (${response.status}): ${await response.text()}`);
+		return (await response.json()).ids;
+	}
+
 	async saveMediaAsset({
 		projectId,
 		mediaAsset,

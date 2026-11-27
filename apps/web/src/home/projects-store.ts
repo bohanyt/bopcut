@@ -9,6 +9,9 @@ interface ProjectsState {
 	sortKey: TProjectSortKey;
 	sortOrder: "asc" | "desc";
 	viewMode: ProjectsViewMode;
+	/** Showing the archived projects instead of the others (not remembered across visits). */
+	showArchived: boolean;
+	setShowArchived: ({ showArchived }: { showArchived: boolean }) => void;
 	selectedProjectIds: string[];
 	lastSelectedProjectId: string | null;
 	isHydrated: boolean;
@@ -64,6 +67,9 @@ export const useProjectsStore = create<ProjectsState>()(
 			sortKey: "updatedAt",
 			sortOrder: "desc",
 			viewMode: "grid",
+			showArchived: false,
+			// The selection belongs to the list it was made in.
+			setShowArchived: ({ showArchived }) => set({ showArchived, selectedProjectIds: [], lastSelectedProjectId: null }),
 			selectedProjectIds: [],
 			lastSelectedProjectId: null,
 			isHydrated: false,

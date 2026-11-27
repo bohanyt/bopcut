@@ -39,6 +39,8 @@ import {
 	Edit03Icon,
 	ArrowDown02Icon,
 	InformationCircleIcon,
+	Archive02Icon,
+	ArchiveArrowUpIcon,
 } from "@hugeicons/core-free-icons";
 import { OcVideoIcon } from "@/components/icons";
 import { Label } from "@/components/ui/label";
@@ -81,14 +83,14 @@ const VIEW_MODE_OPTIONS = [
 
 /** The Projects tab of the home page, below its header (see ProjectsViewModes, ProjectsSearchBar and NewProjectButton). */
 export function ProjectsTab() {
-	const { searchQuery, sortKey, sortOrder, viewMode } = useProjectsStore();
+	const { searchQuery, sortKey, sortOrder, viewMode, showArchived } = useProjectsStore();
 	const sortOption: TProjectSortOption = `${sortKey}-${sortOrder}`;
 
 	const isLoading = useEditor((e) => e.project.getIsLoading());
 	const isInitialized = useEditor((e) => e.project.getIsInitialized());
 	const listError = useEditor((e) => e.project.getProjectListError());
 	const projectsToDisplay = useEditor((e) =>
-		e.project.getFilteredAndSortedProjects({ searchQuery, sortOption }),
+		e.project.getFilteredAndSortedProjects({ searchQuery, sortOption, archived: showArchived }),
 	);
 
 	return (
@@ -100,7 +102,7 @@ export function ProjectsTab() {
 				) : listError && projectsToDisplay.length === 0 ? (
 					<ProjectListError detail={listError} />
 				) : projectsToDisplay.length === 0 ? (
-					<EmptyState />
+					showArchived ? <NoArchivedProjects /> : <EmptyState />
 				) : (
 					<div
 						className={
@@ -237,6 +239,8 @@ function ProjectsToolbar({ projectIds }: { projectIds: string[] }) {
 					/>
 				</Button>
 
+				<ArchivedToggle />
+
 				<div className="h-4 w-px bg-border/50 block md:hidden" />
 
 				<div className="flex md:hidden items-center gap-4">
@@ -258,6 +262,38 @@ function ProjectsToolbar({ projectIds }: { projectIds: string[] }) {
 				</div>
 			</div>
 			{selectedProjectCount > 0 ? <ProjectActions /> : null}
+		</div>
+	);
+}
+
+/** Switches the list between the projects and the archived ones; shown once something is archived. */
+function ArchivedToggle() {
+	const { t } = useI18n();
+	const { showArchived, setShowArchived } = useProjectsStore();
+	const count = useEditor((e) => e.project.getArchivedCount());
+	if (!showArchived && count === 0) return null;
+	return (
+		<>
+			<div className="h-4 w-px bg-border/50" />
+			<Button
+				variant="text"
+				className="text-muted-foreground gap-1.5"
+				aria-pressed={showArchived}
+				onClick={() => setShowArchived({ showArchived: !showArchived })}
+			>
+				<HugeiconsIcon icon={Archive02Icon} className="size-4" />
+				{showArchived ? t("projects.allProjects") : t("projects.archivedCount", { count })}
+			</Button>
+		</>
+	);
+}
+
+function NoArchivedProjects() {
+	const { t } = useI18n();
+	return (
+		<div className="text-muted-foreground flex flex-col items-center gap-2 py-16 text-center text-sm">
+			<HugeiconsIcon icon={Archive02Icon} className="size-10" />
+			<p>{t("projects.noArchived")}</p>
 		</div>
 	);
 }
@@ -359,6 +395,7 @@ function ProjectActions() {
 		selectedProjectIds,
 		clearSelectedProjects,
 		removeProjectFromSelection,
+		showArchived,
 	} = useProjectsStore();
 	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
@@ -385,16 +422,27 @@ function ProjectActions() {
 		setIsDeleteDialogOpen(false);
 	};
 
+	const handleArchive = async () => {
+		if (await editor.project.setProjectsArchived({ ids: selectedProjectIds, archived: !showArchived })) clearSelectedProjects();
+	};
+
 	const actionHandlers: Record<string, () => void> = {
+		archive: () => void handleArchive(),
 		duplicate: handleDuplicate,
 		delete: handleDeleteClick,
 	};
+	const actions = [
+		showArchived
+			? { id: "archive", label: "projects.restore" as const, icon: ArchiveArrowUpIcon, variant: "outline" as const }
+			: { id: "archive", label: "projects.archive" as const, icon: Archive02Icon, variant: "outline" as const },
+		...PROJECT_ACTIONS,
+	];
 
 	return (
 		<>
 			<div className="flex items-center gap-2.5 px-3">
 				<div className="hidden sm:flex items-center gap-2.5">
-					{PROJECT_ACTIONS.map((action) => (
+					{actions.map((action) => (
 						<Button
 							key={action.id}
 							size="icon"
@@ -415,7 +463,7 @@ function ProjectActions() {
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">
-						{PROJECT_ACTIONS.map((action) => (
+						{actions.map((action) => (
 							<DropdownMenuItem
 								key={action.id}
 								variant={action.id === "delete" ? "destructive" : undefined}
@@ -533,6 +581,12 @@ function ProjectItem({
 	};
 	const handleDeleteClick = () => setIsDeleteDialogOpen(true);
 	const handleInfoClick = () => setIsInfoDialogOpen(true);
+	const archived = useEditor((e) => e.project.isArchived({ id: project.id }));
+	const handleArchive = async () => {
+		if (await editor.project.setProjectsArchived({ ids: [project.id], archived: !archived })) {
+			removeProjectFromSelection({ projectId: project.id });
+		}
+	};
 	const handleDeleteConfirm = async () => {
 		await deleteProjects({ editor, ids: [project.id] });
 		removeProjectFromSelection({ projectId: project.id });
@@ -644,6 +698,8 @@ function ProjectItem({
 					onDuplicateClick={handleDuplicate}
 					onDeleteClick={handleDeleteClick}
 					onInfoClick={handleInfoClick}
+					onArchiveClick={handleArchive}
+					isArchived={archived}
 				/>
 			)}
 		</div>
@@ -686,6 +742,8 @@ function ProjectItem({
 										onDuplicateClick={handleDuplicate}
 										onDeleteClick={handleDeleteClick}
 										onInfoClick={handleInfoClick}
+										onArchiveClick={handleArchive}
+										isArchived={archived}
 									/>
 								)}
 							</>
@@ -699,6 +757,8 @@ function ProjectItem({
 					onDuplicateClick={handleDuplicate}
 					onDeleteClick={handleDeleteClick}
 					onInfoClick={handleInfoClick}
+					onArchiveClick={handleArchive}
+					isArchived={archived}
 				/>
 			</ContextMenu>
 
@@ -733,11 +793,15 @@ function ProjectContextMenuContent({
 	onDuplicateClick,
 	onDeleteClick,
 	onInfoClick,
+	onArchiveClick,
+	isArchived,
 }: {
 	onRenameClick: () => void;
 	onDuplicateClick: () => void;
 	onDeleteClick: () => void;
 	onInfoClick: () => void;
+	onArchiveClick: () => void;
+	isArchived: boolean;
 }) {
 	const { t } = useI18n();
 	return (
@@ -760,6 +824,12 @@ function ProjectContextMenuContent({
 			>
 				{t("common.info")}
 			</ContextMenuItem>
+			<ContextMenuItem
+				icon={<HugeiconsIcon icon={isArchived ? ArchiveArrowUpIcon : Archive02Icon} />}
+				onClick={onArchiveClick}
+			>
+				{t(isArchived ? "projects.restore" : "projects.archive")}
+			</ContextMenuItem>
 			<ContextMenuSeparator />
 			<ContextMenuItem
 				variant="destructive"
@@ -780,6 +850,8 @@ function ProjectMenu({
 	onDuplicateClick,
 	onDeleteClick,
 	onInfoClick,
+	onArchiveClick,
+	isArchived,
 }: {
 	isOpen: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -788,6 +860,8 @@ function ProjectMenu({
 	onDuplicateClick: () => void;
 	onDeleteClick: () => void;
 	onInfoClick: () => void;
+	onArchiveClick: () => void;
+	isArchived: boolean;
 }) {
 	const { t } = useI18n();
 	const handleMenuClick = ({
@@ -828,6 +902,11 @@ function ProjectMenu({
 
 	const handleInfoClick = () => {
 		onInfoClick();
+		onOpenChange(false);
+	};
+
+	const handleArchiveClick = () => {
+		onArchiveClick();
 		onOpenChange(false);
 	};
 
@@ -876,6 +955,10 @@ function ProjectMenu({
 				<DropdownMenuItem onClick={handleInfoClick}>
 					<HugeiconsIcon icon={InformationCircleIcon} />
 					{t("common.info")}
+				</DropdownMenuItem>
+				<DropdownMenuItem onClick={handleArchiveClick}>
+					<HugeiconsIcon icon={isArchived ? ArchiveArrowUpIcon : Archive02Icon} />
+					{t(isArchived ? "projects.restore" : "projects.archive")}
 				</DropdownMenuItem>
 				<DropdownMenuItem variant="destructive" onClick={handleDeleteClick}>
 					<HugeiconsIcon icon={Delete02Icon} />
