@@ -564,6 +564,8 @@ class StorageService {
 		signal,
 		usedIds,
 		excludeIds,
+		first,
+		onFirstLoaded,
 	}: {
 		projectId: string;
 		concurrency?: number;
@@ -573,17 +575,32 @@ class StorageService {
 		/** Media the project's timeline uses: staged media are loaded only when listed here. */
 		usedIds?: ReadonlySet<string>;
 		excludeIds?: ReadonlySet<string>;
+		/** Media read before the others, e.g. the ones the timeline shows. */
+		first?: ReadonlySet<string>;
+		/** Called once every `first` medium is read or has failed, with those read, while the others still load. */
+		onFirstLoaded?: (assets: MediaAsset[]) => void;
 	}): Promise<MediaAsset[]> {
 		// Staged media belong to a draft still loading (maybe in another tab): skipped unless the
 		// saved timeline already uses them (the draft committed but its promotion did not finish).
 		const list = [...(await this.fetchManifest({ projectId })).values()].filter((metadata) => !excludeIds?.has(metadata.id) && (!metadata.staged || usedIds?.has(metadata.id)));
 		const items: (MediaAsset | null)[] = new Array(list.length).fill(null);
+		// Reads start with the `first` media; the result keeps the list's order.
+		const isFirst = (index: number) => first?.has(list[index].id) ?? false;
+		const order = list.map((_, index) => index).sort((a, b) => Number(isFirst(b)) - Number(isFirst(a)));
+		let firstLeft = order.filter(isFirst).length;
+		let firstReported = false;
+		const reportFirst = () => {
+			if (firstReported) return;
+			firstReported = true;
+			onFirstLoaded?.(order.filter(isFirst).flatMap((index) => items[index] ?? []));
+		};
+		if (firstLeft === 0) reportFirst();
 		let next = 0;
 		let loaded = 0;
 		const worker = async () => {
-			while (next < list.length) {
+			while (next < order.length) {
 				signal?.throwIfAborted();
-				const index = next++;
+				const index = order[next++];
 				const metadata = list[index];
 				try {
 					items[index] = await this.readMediaAsset({ projectId, metadata, signal });
@@ -599,6 +616,7 @@ class StorageService {
 				}
 				loaded++;
 				onProgress?.({ loaded, total: list.length });
+				if (isFirst(index) && --firstLeft === 0) reportFirst();
 			}
 		};
 		await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), list.length) }, worker));

@@ -254,7 +254,10 @@ export class ProjectManager {
 				});
 			}
 
-			await this.editor.media.loadProjectMedia({ projectId: id });
+			// The editor opens once the timeline's media are in; the rest of the bin goes on loading.
+			await new Promise<void>((resolve) => {
+				void this.editor.media.loadProjectMedia({ projectId: id, onUsedLoaded: resolve }).finally(resolve);
+			});
 			if (replaced()) return;
 
 			await this.loadProjectFonts(project);

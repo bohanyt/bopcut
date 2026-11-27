@@ -1600,3 +1600,27 @@ describe("save sessions: storage edge cases", () => {
 		expect(editor.save.hasUnsavedChangesOf("a")).toBe(true);
 	});
 });
+
+describe("opening with the timeline's media", () => {
+	test("the project opens once the media it uses are in; agents wait for the rest of the bin", async () => {
+		const editor = EditorCore.getInstance();
+		let finish!: (assets: MediaAsset[]) => void;
+		stub({
+			ensureMigrations: async () => {},
+			loadProject: async () => ({ project: structuredClone(project("p", new Date(0))) }),
+			loadAllMediaAssets: ({ onFirstLoaded }: { onFirstLoaded?: (used: MediaAsset[]) => void }) => {
+				onFirstLoaded?.([asset("on-timeline")]);
+				return new Promise<MediaAsset[]>((resolve) => { finish = resolve; });
+			},
+			saveProject: async () => {},
+		});
+		await editor.project.loadProject({ id: "p" });
+		expect(editor.project.getActive().metadata.id).toBe("p");
+		expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["on-timeline"]);
+		expect(agentReadiness()).toMatchObject({ ready: false, mediaLoaded: false });
+		finish([asset("on-timeline"), asset("unused")]);
+		await wait(0);
+		expect(editor.media.getAssets().map(({ id }) => id)).toEqual(["on-timeline", "unused"]);
+		expect(agentReadiness()).toMatchObject({ mediaLoaded: true });
+	});
+});

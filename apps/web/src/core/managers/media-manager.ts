@@ -353,8 +353,12 @@ export class MediaManager {
 	 * Loads a project's stored media. Assets added while loading (an import, an agent draft) are
 	 * kept: the stored list is merged in front of them. A load superseded by a newer load or a clear
 	 * (switching projects) is cancelled and never overwrites the newer assets.
+	 *
+	 * The media the timeline uses are read first and published as soon as they are in
+	 * (`onUsedLoaded`), so the editor can open while the rest of the bin loads. The project's media
+	 * count as loaded (`isProjectMediaLoaded`, which agents and exports wait for) only once all are.
 	 */
-	async loadProjectMedia({ projectId }: { projectId: string }): Promise<void> {
+	async loadProjectMedia({ projectId, onUsedLoaded }: { projectId: string; onUsedLoaded?: () => void }): Promise<void> {
 		const generation = ++this.loadGeneration;
 		this.loadController?.abort();
 		const controller = new AbortController();
@@ -381,6 +385,14 @@ export class MediaManager {
 				signal: controller.signal,
 				usedIds,
 				excludeIds: new Set(bin.changes.keys()),
+				first: usedIds,
+				onFirstLoaded: (used) => {
+					if (generation !== this.loadGeneration) return;
+					const live = new Map(this.assets.map((asset) => [asset.id, asset]));
+					this.mergeAssets(used.filter(({ id }) => !bin.changes.has(id)).map((asset) => live.get(asset.id) ?? asset));
+					this.notify();
+					onUsedLoaded?.();
+				},
 				onProgress: ({ loaded, total }) => {
 					// At most ~4 updates a second: re-rendering the toast for every file slows the load itself.
 					const now = Date.now();
