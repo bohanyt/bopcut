@@ -40,7 +40,7 @@ import { TimelinePlayhead } from "./timeline-playhead";
 import { SelectionBox } from "@/selection/selection-box";
 import { useBoxSelect } from "@/selection/hooks/use-box-select";
 import { SnapIndicator } from "./snap-indicator";
-import type { SnapPoint } from "@/timeline/snapping";
+import { sameSnapPoint, type SnapPoint } from "@/timeline/snapping";
 import type { TimelineTrack } from "@/timeline";
 import {
 	TIMELINE_SCROLLBAR_SIZE_PX,
@@ -186,8 +186,9 @@ export function Timeline() {
 		containerRef: timelineHeaderRef,
 	});
 
+	// Gestures report a fresh object on every move: only a different point re-renders the timeline.
 	const handleSnapPointChange = useCallback((snapPoint: SnapPoint | null) => {
-		setCurrentSnapPoint(snapPoint);
+		setCurrentSnapPoint((current) => sameSnapPoint({ a: current, b: snapPoint }) ? current : snapPoint);
 	}, []);
 
 	const timelineDuration = timeline.getTotalDuration() || 0;
