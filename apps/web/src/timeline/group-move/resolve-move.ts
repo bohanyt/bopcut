@@ -446,9 +446,10 @@ function canApplyMovesToExistingTracks({
 			return {
 				startTime: move.newStartTime,
 				duration: sourceElement?.duration ?? ZERO_MEDIA_TIME,
+				sourceStartTime: sourceElement?.startTime ?? move.newStartTime,
 			};
 		});
-		if (hasOverlappingTimeSpans({ timeSpans })) {
+		if (addsOverlapBetweenMovedSpans({ timeSpans })) {
 			return false;
 		}
 
@@ -469,24 +470,34 @@ function canApplyMovesToExistingTracks({
 	return true;
 }
 
-function hasOverlappingTimeSpans({
+/**
+ * Whether two moved clips overlap after the move where they did not before. Clips moved together by
+ * the same amount keep the overlaps they already had (a project written outside the editor can
+ * have some), and those must not stop a whole track from moving.
+ */
+function addsOverlapBetweenMovedSpans({
 	timeSpans,
 }: {
-	timeSpans: Array<{ startTime: number; duration: number }>;
+	timeSpans: Array<{ startTime: number; duration: number; sourceStartTime: number }>;
 }): boolean {
+	const overlap = (aStart: number, bStart: number, a: { duration: number }, b: { duration: number }) =>
+		aStart < bStart + b.duration && bStart < aStart + a.duration;
 	const sortedSpans = [...timeSpans].sort(
 		(leftSpan, rightSpan) => leftSpan.startTime - rightSpan.startTime,
 	);
-
-	for (let spanIndex = 1; spanIndex < sortedSpans.length; spanIndex += 1) {
-		const previousSpan = sortedSpans[spanIndex - 1];
-		const currentSpan = sortedSpans[spanIndex];
-		if (
-			previousSpan.startTime + previousSpan.duration >
-			currentSpan.startTime
-		) {
-			return true;
+	// Spans that still reach the current start, in a sweep over the sorted starts.
+	let reaching: typeof sortedSpans = [];
+	for (const span of sortedSpans) {
+		reaching = reaching.filter((other) => other.startTime + other.duration > span.startTime);
+		for (const other of reaching) {
+			if (
+				overlap(other.startTime, span.startTime, other, span) &&
+				!overlap(other.sourceStartTime, span.sourceStartTime, other, span)
+			) {
+				return true;
+			}
 		}
+		reaching.push(span);
 	}
 
 	return false;
