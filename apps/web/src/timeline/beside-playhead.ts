@@ -2,15 +2,15 @@ import type { ElementRef, SceneTracks, TimelineTrack } from "@/timeline/types";
 import { addMediaTime, type MediaTime } from "@/wasm";
 
 /**
- * The clips wholly on one side of the playhead, on every track that is not hidden: on the right,
- * those that start at or after it; on the left, those that end at or before it. A clip under the
- * playhead is on neither side.
+ * The clips on one side of the playhead, on every track that is not hidden, together with the clips
+ * under it (as in other editors): on the right, those that end after it; on the left, those that
+ * start before it. A clip that only touches the playhead with its edge is on the other side only.
  */
 export function elementsBesidePlayhead({ tracks, time, side }: { tracks: SceneTracks; time: MediaTime; side: "left" | "right" }): ElementRef[] {
 	const shown = (track: TimelineTrack) => !("hidden" in track && track.hidden);
 	return [...tracks.overlay, tracks.main, ...tracks.audio].filter(shown).flatMap((track) =>
 		track.elements
-			.filter((element) => side === "right" ? element.startTime >= time : addMediaTime({ a: element.startTime, b: element.duration }) <= time)
+			.filter((element) => side === "right" ? addMediaTime({ a: element.startTime, b: element.duration }) > time : element.startTime < time)
 			.map((element) => ({ trackId: track.id, elementId: element.id })),
 	);
 }
