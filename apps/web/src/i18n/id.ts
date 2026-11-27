@@ -311,6 +311,7 @@ export const id = {
 	"assets.video": "Video",
 
 	"bookmark.addNote": "Tambahkan catatan...",
+	"bookmark.agentCheckNote": "Tolong cek bagian ini.",
 	"bookmark.pointArea": "Tunjuk area gambar",
 	"bookmark.resizeArea": "Ubah ukuran area catatan",
 	"bookmark.areaInterrupted": "Draf area dibatalkan. Tunjuk area gambar lagi saat dijeda.",
@@ -731,6 +732,7 @@ export const id = {
 	"timeline.rightResizeHandle": "Pegangan pengubah ukuran kanan",
 	"timeline.ripple": "Ripple editing",
 	"timeline.ruler": "Penggaris timeline",
+	"timeline.askAgentCheck": "Minta agen cek",
 	"timeline.scenes": "Scene",
 	"timeline.selectScenes": "Pilih scene ({count})",
 	"timeline.selectScenesToDelete": "Pilih scene yang akan dihapus",

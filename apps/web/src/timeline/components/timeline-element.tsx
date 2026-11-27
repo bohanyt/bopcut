@@ -100,10 +100,12 @@ import {
 	LayerAddIcon,
 	Unlink01Icon,
 	FolderOpenIcon,
+	AiSearchIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uppercase } from "@/utils/string";
 import { useMemo, type ComponentProps, type ReactNode } from "react";
+import { requestAgentCheck } from "@/timeline/bookmarks/agent-check";
 import type { SelectedKeyframeRef, ElementKeyframe } from "@/animation/types";
 import { cn } from "@/utils/ui";
 import { usePropertiesStore } from "@/components/editor/panels/properties/stores/properties-store";
@@ -291,6 +293,8 @@ export const TimelineElement = memo(function TimelineElement({
 	isDropTarget = false,
 }: TimelineElementProps) {
 	const { t } = useI18n();
+	// The note a check request opens keeps the focus when the menu closes.
+	const askedAgent = useRef(false);
 	const displayedStartTime = draggedStartTime ?? displayElement.startTime;
 	const elementWidth = timelineTimeToPixels({
 		time: displayElement.duration,
@@ -395,12 +399,19 @@ export const TimelineElement = memo(function TimelineElement({
 							{renderContent(null, 0)}
 						</ContextMenuTrigger>
 					)}
-					<ContextMenuContent className="w-64">
+					<ContextMenuContent
+						className="w-64"
+						onCloseAutoFocus={(event) => {
+							if (askedAgent.current) event.preventDefault();
+							askedAgent.current = false;
+						}}
+					>
 						<TimelineElementMenu
 							element={element}
 							track={track}
 							hasKeyframes={elementKeyframes.length > 0}
 							isExpanded={isExpanded}
+							onAskAgent={() => { askedAgent.current = true; }}
 						/>
 					</ContextMenuContent>
 				</ContextMenu>
@@ -537,11 +548,13 @@ function TimelineElementMenu({
 	track,
 	hasKeyframes,
 	isExpanded,
+	onAskAgent,
 }: {
 	element: TimelineElementType;
 	track: ClipTrack;
 	hasKeyframes: boolean;
 	isExpanded: boolean;
+	onAskAgent: () => void;
 }) {
 	const { t } = useI18n();
 	const editor = useEditor();
@@ -694,6 +707,22 @@ function TimelineElementMenu({
 					{t("timeline.releaseHumanFields")}
 				</ContextMenuItem>
 			) : null}
+			<ContextMenuItem
+				icon={<HugeiconsIcon icon={AiSearchIcon} />}
+				onClick={(event: React.MouseEvent) => {
+					event.stopPropagation();
+					onAskAgent();
+					requestAgentCheck({
+						editor,
+						time: element.startTime,
+						duration: element.duration,
+						elementIds: [element.id],
+						note: t("bookmark.agentCheckNote"),
+					});
+				}}
+			>
+				{t("timeline.askAgentCheck")}
+			</ContextMenuItem>
 
 			<ContextMenuSeparator />
 			<DeleteMenuItem

@@ -6,6 +6,7 @@ import type { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
 import type { BookmarkDragState } from "../hooks/use-bookmark-drag";
 import { areaTarget, startBookmarkArea, useBookmarkArea } from "../area-state";
+import { useRequestedNote } from "../agent-check";
 import { DEFAULT_TIMELINE_BOOKMARK_COLOR } from "@/timeline/components/theme";
 import { TIMELINE_BOOKMARK_ROW_HEIGHT_PX } from "@/timeline/components/layout";
 import { DEFAULT_FPS } from "@/fps/defaults";
@@ -158,6 +159,16 @@ function TimelineBookmark({
 	const duration = editor.timeline.getTotalDuration();
 	const [isPopoverOpen, setIsPopoverOpen] = useState(false);
 	const [hovered, setHovered] = useState(false);
+	// A note just asked for opens with its text selected, so typing replaces it.
+	const requested = useRequestedNote((state) => state.id);
+	const [selectNote, setSelectNote] = useState(false);
+	const noteRef = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		if (!bookmark.id || requested !== bookmark.id) return;
+		useRequestedNote.setState({ id: null });
+		setSelectNote(true);
+		setIsPopoverOpen(true);
+	}, [requested, bookmark.id]);
 	useEffect(() => {
 		if ((!hovered && !isPopoverOpen) || !bookmark.box) return;
 		const shown = { ...areaTarget(editor, bookmark.time), bookmark };
@@ -211,7 +222,13 @@ function TimelineBookmark({
 	};
 
 	return (
-		<Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
+		<Popover
+			open={isPopoverOpen}
+			onOpenChange={(open) => {
+				setIsPopoverOpen(open);
+				if (!open) setSelectNote(false);
+			}}
+		>
 			<PopoverAnchor asChild>
 				<button
 					aria-haspopup="dialog"
@@ -313,6 +330,10 @@ function TimelineBookmark({
 				sideOffset={8}
 				onOpenAutoFocus={(event) => {
 					event.preventDefault();
+					if (selectNote) {
+						noteRef.current?.focus({ preventScroll: true });
+						noteRef.current?.select();
+					}
 					if (bookmark.box) {
 						editor.playback.pause();
 						handleSeek();
@@ -325,6 +346,7 @@ function TimelineBookmark({
 					timelineDuration={duration}
 					onPopoverClose={() => setIsPopoverOpen(false)}
 					onAssignId={onAssignId}
+					noteRef={noteRef}
 				/>
 			</PopoverContent>
 		</Popover>
@@ -337,12 +359,14 @@ function BookmarkPopoverContent({
 	timelineDuration,
 	onPopoverClose,
 	onAssignId,
+	noteRef,
 }: {
 	bookmark: Bookmark;
 	time: MediaTime;
 	timelineDuration: MediaTime;
 	onPopoverClose: () => void;
 	onAssignId: (id: string) => void;
+	noteRef: React.RefObject<HTMLInputElement | null>;
 }) {
 	const { t } = useI18n();
 	const fieldId = useId();
@@ -407,6 +431,7 @@ function BookmarkPopoverContent({
 			<div className="flex flex-col gap-2">
 				<Label htmlFor={`${fieldId}-note`} className="text-xs">{t("bookmark.note")}</Label>
 				<Input
+					ref={noteRef}
 					id={`${fieldId}-note`}
 					placeholder={t("bookmark.addNote")}
 					value={bookmark.note ?? ""}
