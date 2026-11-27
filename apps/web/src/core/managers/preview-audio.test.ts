@@ -60,14 +60,17 @@ function uploadedClip(overrides: Partial<UploadAudioElement> = {}): UploadAudioE
 	};
 }
 
-function setup(clip: AudioElement = libraryClip()) {
+function setup(clip: AudioElement | AudioElement[] = libraryClip()) {
 	EditorCore.reset();
 	const editor = EditorCore.getInstance();
 	editor.save.stop();
+	const clips = Array.isArray(clip) ? clip : [clip];
 	const activeScene = scene("main", {
 		overlay: [],
 		main: { id: "main", name: "Main", type: "video", muted: false, hidden: false, elements: [] },
-		audio: [{ id: "audio", name: "Audio", type: "audio", muted: false, elements: [clip] }],
+		audio: clips.map((element, index) => ({
+			id: index ? `audio-${index}` : "audio", name: "Audio", type: "audio", muted: false, elements: [element],
+		})),
 	});
 	editor.project.setActiveProject({
 		project: {
@@ -86,9 +89,10 @@ function setup(clip: AudioElement = libraryClip()) {
 		},
 	});
 	editor.scenes.setScenes({ scenes: [activeScene], activeSceneId: activeScene.id });
-	if (clip.sourceType === "upload") {
+	const uploads = clips.filter((element): element is UploadAudioElement => element.sourceType === "upload");
+	if (uploads.length) {
 		editor.media.setAssets({
-			assets: [{ id: clip.mediaId, name: clip.name, type: "audio", file: new File(["audio"], "audio.wav") }],
+			assets: uploads.map(({ mediaId, name }) => ({ id: mediaId, name, type: "audio", file: new File(["audio"], "audio.wav") })),
 		});
 	}
 	return { editor, tracks: activeScene.tracks };
@@ -291,9 +295,9 @@ test("startup catches up to the unrounded playhead and subsequent frames follow 
 
 	editor.playback.play();
 	frame(400);
+	frame(115);
 	resumed.resolve();
 	await flush();
-	frame(115);
 	library.resolve(new Response("audio"));
 	await waitForStarts();
 	expect(decode.mock.calls[0][0]).toBeCloseTo(0.515, 6);
@@ -303,6 +307,31 @@ test("startup catches up to the unrounded playhead and subsequent frames follow 
 	audio.currentTime = 70;
 	frame(62_000);
 	expect(editor.playback.getCurrentTime()).toBe(t(60.5));
+});
+
+test("a slow library sound holds back no ready audio and joins on the audio clock; a muted one is not fetched", async () => {
+	const { editor } = setup([
+		uploadedClip({ duration: t(4) }),
+		libraryClip({ id: "late", duration: t(4) }),
+		libraryClip({ id: "muted", sourceUrl: "https://example.test/muted.mp3", params: { volume: 0, muted: true } }),
+	]);
+	const { audio, starts, waitForStarts } = fakeAudio();
+	const library = deferred<Response>();
+	const fetch = stubFetch(library.promise);
+	const { decode } = stubDecoder(async function* (start) { yield packet(start, 0.1); });
+
+	editor.playback.play();
+	await waitForStarts();
+	expect(starts[0].when).toBe(10);
+	expect(fetch).toHaveBeenCalledTimes(1);
+	expect(fetch).toHaveBeenCalledWith("https://example.test/sound.mp3", expect.anything());
+
+	// The sound arrives a second later on the audio clock and starts one second in.
+	audio.currentTime = 11;
+	library.resolve(new Response("audio"));
+	await waitForStarts(2);
+	expect(decode.mock.calls[1][0]).toBeCloseTo(1, 6);
+	expect(starts[1].when).toBe(11);
 });
 
 test("streaming clips cut spanning packets at both ends and place fade corners on the timeline", async () => {
