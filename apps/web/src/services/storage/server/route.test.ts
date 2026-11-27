@@ -6,6 +6,7 @@ import path from "node:path";
 import { GET, HEAD, PUT, POST, DELETE } from "../../../app/api/storage/[...slug]/route";
 import { MediaThumbnailCache, mediaThumbnailReference } from "./media-thumbnails";
 import { atomicWrite, repairedThumbnailFile, withProjectLock } from "./files";
+import { StorageService } from "../service";
 
 let root: string;
 let previous: string | undefined;
@@ -176,6 +177,77 @@ describe("media thumbnails", () => {
 		const handler = method === "DELETE" ? DELETE : method === "POST" ? POST : method === "PUT" ? PUT : GET;
 		return handler(req, { params: Promise.resolve({ slug }) });
 	}
+
+	test.each(["replace", "clear"])("bin undo preserves a transcript another tab wrote before removal (%s)", async (operation) => {
+		const id = `undo-media-${operation}`;
+		const { metadata, metadataFile } = await legacyMedia(id);
+		const url = `/api/storage/projects/${id}/media/m`;
+		const stale = { ...metadata, words: [{ text: "old", start: 0, end: 1 }] };
+		const words = operation === "replace" ? [{ text: "new", start: 0, end: 1 }] : undefined;
+		await atomicWrite(metadataFile, JSON.stringify({ ...stale, futureField: "preserve" }));
+		expect((await call(url, "POST", {}, JSON.stringify({ ...stale, words }))).ok).toBe(true);
+		expect((await call(url, "DELETE", { "X-Media-Preserve-For-Undo": "1" })).ok).toBe(true);
+		expect((await call(url)).status).toBe(404);
+
+		const restore = { "X-Media-Restore": "1" };
+		const upload = { id: "m", fileName: "video.mp4", fileType: "video/mp4" };
+		expect((await call(url, "PUT", {
+			...restore, "X-Media-Metadata": encodeURIComponent(JSON.stringify(upload)),
+		}, "original")).ok).toBe(true);
+		const finish = () => call(url, "POST", restore, JSON.stringify(stale));
+		expect((await (await finish()).json()).media.words).toEqual(words);
+		expect(await (await call(url)).text()).toBe("original");
+		expect(JSON.parse(await fs.readFile(metadataFile, "utf8")).futureField).toBe("preserve");
+
+		const duringRestore = [{ text: "latest", start: 0, end: 1 }];
+		expect((await call(url, "POST", {}, JSON.stringify({ ...metadata, words: duringRestore }))).ok).toBe(true);
+		expect((await (await finish()).json()).media.words).toEqual(duringRestore);
+	});
+
+	test("a delayed delete response does not evict the restored media from the client manifest", async () => {
+		const id = "undo-delayed-reply";
+		await legacyMedia(id);
+		const deleted = Promise.withResolvers<void>();
+		const reply = Promise.withResolvers<void>();
+		const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: RequestInfo | URL, init?: RequestInit) => {
+			const req = new Request(`http://localhost${String(url)}`, init);
+			const methods = { GET, PUT, DELETE, POST };
+			const response = await methods[req.method as keyof typeof methods](req, {
+				params: Promise.resolve({ slug: new URL(req.url).pathname.split("/").slice(3) }),
+			});
+			if (req.method === "DELETE") {
+				deleted.resolve();
+				await reply.promise;
+			}
+			return response;
+		}, { preconnect: fetch.preconnect }));
+		const storage = new StorageService();
+		let removal: Promise<void> | undefined;
+		try {
+			expect(await storage.loadAllMediaAssets({ projectId: id })).toHaveLength(1);
+			removal = storage.deleteMediaAsset({ projectId: id, id: "m", preserveForUndo: true });
+			await deleted.promise;
+			let words: unknown;
+			await storage.saveMediaAsset({
+				projectId: id,
+				mediaAsset: {
+					id: "m", name: "video", type: "video",
+					file: new File(["original"], "video.mp4", { type: "video/mp4" }),
+					words: [{ text: "stale", start: 0, end: 1 }],
+				},
+				restore: true,
+				onRestored: (saved) => { words = saved.words; },
+			});
+			expect(words).toBeUndefined();
+			reply.resolve();
+			await removal;
+			await expect(storage.setMediaWords({ projectId: id, id: "m", words: [{ text: "updated", start: 0, end: 1 }] })).resolves.toBeUndefined();
+		} finally {
+			reply.resolve();
+			await removal?.catch(() => {});
+			fetchSpy.mockRestore();
+		}
+	});
 
 	test("media deletion keeps bytes used by a saved compound scene", async () => {
 		const id = "referenced-media";
