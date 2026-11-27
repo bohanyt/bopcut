@@ -8,7 +8,7 @@ import {
 	serializeKeybindingsState,
 } from "../persistence";
 
-const ADDED_IN_12 = { "ctrl+x": "cut-selected", "]": "select-right-of-playhead", "[": "select-left-of-playhead" };
+const ADDED_AFTER_11 = { "ctrl+x": "cut-selected", "]": "select-right-of-playhead", "[": "select-left-of-playhead", a: "deselect-all" };
 
 describe("keybinding persistence", () => {
 	let warnSpy: ReturnType<typeof mock>;
@@ -58,6 +58,7 @@ describe("keybinding persistence", () => {
 		expect(decoded.keybindings.get("]")).toBe("select-right-of-playhead");
 		expect(decoded.keybindings.get("[")).toBe("split-left");
 		expect(decoded.keybindings.get("shift+]")).toBe("select-right-of-playhead");
+		expect(decoded.keybindings.get("a")).toBe("deselect-all");
 		// Saved again and read back (a reload), the bracket keys stay.
 		const reread = decodePersistedKeybindingsState({ state: JSON.parse(JSON.stringify(serializeKeybindingsState(decoded))) });
 		expect(reread?.keybindings.get("shift+]")).toBe("select-right-of-playhead");
@@ -248,8 +249,8 @@ describe("the split keys of version 10", () => {
 			{ s: "split-left", q: "split" },
 			{},
 		];
-		// Version 11 adds U on top, version 12 Ctrl+X, [ and ].
-		for (const changed of cases) expect(migrate(changed)).toEqual({ ...changed, u: "toggle-keyframe-lanes", ...ADDED_IN_12 });
+		// Version 11 adds U on top, version 12 Ctrl+X, [ and ], version 13 A.
+		for (const changed of cases) expect(migrate(changed)).toEqual({ ...changed, u: "toggle-keyframe-lanes", ...ADDED_AFTER_11 });
 	});
 });
 
@@ -261,7 +262,7 @@ describe("the keyframe key of version 11", () => {
 	);
 
 	test("U expands or collapses keyframes, unless the user put U on another action", () => {
-		expect(migrate({ n: "toggle-snapping" })).toEqual({ n: "toggle-snapping", u: "toggle-keyframe-lanes", ...ADDED_IN_12 });
-		expect(migrate({ u: "undo" })).toEqual({ u: "undo", ...ADDED_IN_12 });
+		expect(migrate({ n: "toggle-snapping" })).toEqual({ n: "toggle-snapping", u: "toggle-keyframe-lanes", ...ADDED_AFTER_11 });
+		expect(migrate({ u: "undo" })).toEqual({ u: "undo", ...ADDED_AFTER_11 });
 	});
 });

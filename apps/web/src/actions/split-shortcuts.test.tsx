@@ -230,6 +230,16 @@ describe("select all", () => {
 		control.remove();
 	});
 
+	test("A deselects what Ctrl+A selected; typed in a text field it deselects nothing", async () => {
+		await ctrlA(dom.document.body);
+		const input = field("text");
+		await pressKey("a", "KeyA");
+		expect(editor.selection.getSelectedElements()).toHaveLength(4);
+		input.remove();
+		await pressKey("a", "KeyA");
+		expect(editor.selection.getSelectedElements()).toEqual([]);
+	});
+
 	test.each(["text", "number"])("Ctrl+A in a %s field selects its own text", async (type) => {
 		const input = field(type);
 		const event = await ctrlA(input);
