@@ -298,7 +298,9 @@ Human edits are logged in `AGENT_WORKSPACE/edits/<projectId>.jsonl`. Run `bun ap
 
 ## Notes and frames
 
-Ruler bookmarks also serve as notes: press the bookmark button at the playhead (select an element first to associate it), then double-click the marker to enter text, duration, color, resolve, or delete it. Agent markers are orange; resolved markers are gray. Snapshot `notes` contain `{id,text,start,end?,elementIds,replies,author,resolved,createdAt}`; times are in seconds. Old bookmarks without text are excluded from the notes list.
+Ruler bookmarks also serve as notes: press the bookmark button at the playhead (select an element first to associate it), then double-click the marker to enter text, duration, color, resolve, or delete it. Agent markers are orange; resolved markers are gray.
+
+**Ask the agent to check** in the timeline's right-click menu adds such a note. On a clip it spans the clip and lists it in `elementIds`; on the ruler or an empty part of a track it marks that frame. The note text starts as "Please check this part." (or the editor language's version) and opens selected, so the person can type what to check instead. A note already at that frame is opened unchanged. Treat these as requests for a critique: look at frames across the note's span, then reply in the note or fix it in a draft. Snapshot `notes` contain `{id,text,start,end?,elementIds,replies,author,resolved,createdAt}`; times are in seconds. Old bookmarks without text are excluded from the notes list.
 
 Choose **Point at an area** in the preview toolbar or an open note, draw on the paused image, enter text, and save. Escape cancels the draft. The corner handles can be dragged or adjusted with the arrow keys. A note's box appears when its marker is open or hovered. The saved `box:{x,y,width,height}` uses fractions of the canvas measured from its top-left corner, so preview zoom, pan, and canvas resizing do not change it. Older builds can open the timeline. A save from an older build that strips unknown bookmark fields can remove the box.
 

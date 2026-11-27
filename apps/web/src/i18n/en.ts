@@ -309,6 +309,7 @@ export const en = {
 	"assets.video": "Video",
 
 	"bookmark.addNote": "Add a note...",
+	"bookmark.agentCheckNote": "Please check this part.",
 	"bookmark.pointArea": "Point at an area",
 	"bookmark.resizeArea": "Resize note area",
 	"bookmark.areaInterrupted": "Area draft canceled. Point at the picture again when it is paused.",
@@ -729,6 +730,7 @@ export const en = {
 	"timeline.rightResizeHandle": "Right resize handle",
 	"timeline.ripple": "Ripple editing",
 	"timeline.ruler": "Timeline ruler",
+	"timeline.askAgentCheck": "Ask the agent to check",
 	"timeline.scenes": "Scenes",
 	"timeline.selectScenes": "Select scenes ({count})",
 	"timeline.selectScenesToDelete": "Select scenes to delete",

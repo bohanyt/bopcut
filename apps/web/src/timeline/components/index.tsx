@@ -3,6 +3,7 @@
 import { useI18n } from "@/i18n/provider";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+	AiSearchIcon,
 	Delete02Icon,
 	MagicWand05Icon,
 	MusicNote03Icon,
@@ -31,7 +32,8 @@ import {
 	type ReactNode,
 } from "react";
 import { useContainerSize } from "@/hooks/use-container-size";
-import type { MediaTime } from "@/wasm";
+import { type MediaTime, ZERO_MEDIA_TIME } from "@/wasm";
+import { requestAgentCheck, timeAtClientX } from "@/timeline/bookmarks/agent-check";
 import type { ElementDragView, DropTarget } from "@/timeline";
 import { TimelineTrackContent } from "./timeline-track";
 import { TimelinePlayhead } from "./timeline-playhead";
@@ -826,8 +828,12 @@ function TimelineTrackRows({
 	dropTarget: DropTarget | null;
 }) {
 	const { t } = useI18n();
-	const { timeline, media } = useEditor();
+	const editor = useEditor();
+	const { timeline, media } = editor;
 	const keyboard = useTimelineKeyboard(tracks, () => media.getAssets());
+	// Where the menu was opened, and whether its check request opened a note that keeps the focus.
+	const menuTime = useRef<MediaTime>(ZERO_MEDIA_TIME);
+	const askedAgent = useRef(false);
 	const selectedByTrack = useMemo(
 		() => groupElementIds(selectedElements),
 		[selectedElements],
@@ -854,6 +860,9 @@ function TimelineTrackRows({
 					<ContextMenuTrigger asChild>
 						<div
 							data-timeline-track-id={track.id}
+							onContextMenu={(event) => {
+								menuTime.current = timeAtClientX({ clientX: event.clientX, element: event.currentTarget, zoomLevel });
+							}}
 							className={cn(
 								"absolute right-0 left-0 transition-colors",
 								selectedByTrack.has(track.id) && SELECTED_TRACK_ROW_CLASS,
@@ -897,7 +906,13 @@ function TimelineTrackRows({
 							/>
 						</div>
 					</ContextMenuTrigger>
-					<ContextMenuContent className="w-40">
+					<ContextMenuContent
+						className="w-48"
+						onCloseAutoFocus={(event) => {
+							if (askedAgent.current) event.preventDefault();
+							askedAgent.current = false;
+						}}
+					>
 						<ContextMenuItem
 							icon={<HugeiconsIcon icon={TaskAdd02Icon} />}
 							onClick={(event: React.MouseEvent) => {
@@ -906,6 +921,16 @@ function TimelineTrackRows({
 							}}
 						>
 							{t("timeline.pasteElements")}
+						</ContextMenuItem>
+						<ContextMenuItem
+							icon={<HugeiconsIcon icon={AiSearchIcon} />}
+							onClick={(event: React.MouseEvent) => {
+								event.stopPropagation();
+								askedAgent.current = true;
+								requestAgentCheck({ editor, time: menuTime.current, note: t("bookmark.agentCheckNote") });
+							}}
+						>
+							{t("timeline.askAgentCheck")}
 						</ContextMenuItem>
 						{canTrackHaveAudio(track) && (
 							<ContextMenuItem
