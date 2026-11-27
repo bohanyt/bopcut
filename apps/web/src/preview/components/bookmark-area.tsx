@@ -162,9 +162,11 @@ function AreaEditor({ initial, style, onSave, formHost }: {
 			{box && <Box box={box}>{corners.map(([x, y], index) => {
 				const anchor = { x: box.x + (1 - x) * box.width, y: box.y + (1 - y) * box.height };
 				return <button key={`${x}${y}`} type="button" aria-label={t("bookmark.resizeArea")} data-area-corner={index}
-					className="absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-sm border border-black bg-cyan-300"
+					className="absolute flex size-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center pointer-coarse:size-8"
 					style={{ left: `${x * 100}%`, top: `${y * 100}%`, cursor: x === y ? "nwse-resize" : "nesw-resize" }}
-					onPointerDown={(event) => start(event, anchor)} />;
+					onPointerDown={(event) => start(event, anchor)}>
+					<span aria-hidden className="size-3 rounded-sm border border-black bg-cyan-300" />
+				</button>;
 			})}</Box>}
 		</div>
 		{formBox && formHost && createPortal(<form className="mx-auto flex max-w-md flex-wrap items-center gap-1 rounded-md border bg-popover p-2"

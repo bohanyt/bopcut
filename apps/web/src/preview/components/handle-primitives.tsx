@@ -24,7 +24,7 @@ export function HandleButton({
 	screen,
 	cursor,
 	hitAreaSize,
-	className,
+	visualClassName,
 	onPointerDown,
 	onPointerMove,
 	onPointerUp,
@@ -33,7 +33,7 @@ export function HandleButton({
 	screen: { x: number; y: number };
 	cursor?: string;
 	hitAreaSize: number;
-	className?: string;
+	visualClassName?: string;
 	onPointerDown: (event: React.PointerEvent) => void;
 	onPointerMove: (event: React.PointerEvent) => void;
 	onPointerUp: (event: React.PointerEvent) => void;
@@ -44,18 +44,17 @@ export function HandleButton({
 		<button
 			ref={captureTarget}
 			type="button"
-			className={cn(
-				"absolute flex items-center justify-center outline-none",
-				className,
-			)}
+			tabIndex={-1}
+			className="absolute -ml-[var(--handle-radius)] -mt-[var(--handle-radius)] flex touch-none items-center justify-center outline-none pointer-coarse:-ml-4 pointer-coarse:-mt-4 pointer-coarse:min-h-8 pointer-coarse:min-w-8"
 			style={{
-				left: screen.x - hitAreaSize / 2,
-				top: screen.y - hitAreaSize / 2,
+				left: screen.x,
+				top: screen.y,
 				width: hitAreaSize,
 				height: hitAreaSize,
+				"--handle-radius": `${hitAreaSize / 2}px`,
 				pointerEvents: "auto",
 				cursor,
-			}}
+			} as React.CSSProperties}
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
@@ -65,7 +64,8 @@ export function HandleButton({
 			onKeyDown={(event) => event.key === "Enter" && event.preventDefault()}
 			onKeyUp={(event) => event.key === "Enter" && event.preventDefault()}
 		>
-			{children}
+			{/* The visible handle wins over nearby buttons' expanded hit areas. */}
+			<span className={cn("relative z-10 flex items-center justify-center", visualClassName)}>{children}</span>
 		</button>
 	);
 }
@@ -88,6 +88,7 @@ export function CornerHandle({
 			screen={screen}
 			cursor={cursor}
 			hitAreaSize={HANDLE_HIT_AREA_SIZE}
+			visualClassName="z-20"
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
@@ -194,12 +195,13 @@ export function IconHandle({
 		<HandleButton
 			screen={screen}
 			hitAreaSize={ICON_HANDLE_RADIUS * 2}
-			className="rounded-full bg-white text-black shadow-sm"
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
 		>
-			<HugeiconsIcon icon={icon} className="size-3" strokeWidth={2.5} />
+			<span className="flex size-5 items-center justify-center rounded-full bg-white text-black shadow-sm">
+				<HugeiconsIcon icon={icon} className="size-3" strokeWidth={2.5} />
+			</span>
 		</HandleButton>
 	);
 }

@@ -60,7 +60,7 @@ export function PreviewInteractionOverlay() {
 		<div className={areaEditing ? "invisible absolute inset-0" : "absolute inset-0"}>
 			<div
 				ref={captureTarget}
-				className="absolute inset-0 pointer-events-auto"
+				className="absolute inset-0 touch-none pointer-events-auto"
 				role="application"
 				aria-label={t("preview.canvasLabel")}
 				style={{

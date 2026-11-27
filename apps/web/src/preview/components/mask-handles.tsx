@@ -78,7 +78,7 @@ export function MaskHandles({
 
 	return (
 		<div
-			className="pointer-events-none absolute inset-0 overflow-hidden"
+			className="pointer-events-none absolute inset-0 touch-none overflow-hidden"
 			aria-hidden
 		>
 			{isCreatingFreeformPathMask ? (
