@@ -7,11 +7,18 @@ import { fixture, t } from "@/timeline/__tests__/compound-fixtures";
 import { isTimelineGestureActive } from "@/timeline/gesture-state";
 import { useBookmarkDrag } from "./use-bookmark-drag";
 
-function BookmarkTest() {
+/** Stands for the rest of the timeline, which renders when the hook's state changes. */
+let renders = 0;
+function Content() {
+	renders++;
+	return null;
+}
+function BookmarkTest({ zoomLevel = 1 }: { zoomLevel?: number }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
-	const { handleBookmarkMouseDown } = useBookmarkDrag({ zoomLevel: 1, scrollRef, snappingEnabled: false });
+	const { handleBookmarkMouseDown } = useBookmarkDrag({ zoomLevel, scrollRef, snappingEnabled: false });
 	return (
 		<div ref={scrollRef}>
+			<Content />
 			<input aria-label="Text field" />
 			<button onMouseDown={(event) => handleBookmarkMouseDown({ event, bookmark: { time: t(0) } })}>Bookmark</button>
 		</div>
@@ -63,6 +70,19 @@ test("bookmark dragging releases the timeline gesture on drop, cancellation, and
 		act(() => root.unmount());
 		unmounted = true;
 		expect(isTimelineGestureActive()).toBe(false);
+
+		// At 1,500 px a second a frame is 50 px: moves inside it do not re-render.
+		const zoomed = createRoot(document.body);
+		act(() => zoomed.render(<BookmarkTest zoomLevel={30} />));
+		start();
+		const rendersInDrag = renders;
+		for (const clientX of [41, 42, 43]) {
+			act(() => { dom.document.dispatchEvent(new dom.MouseEvent("mousemove", { clientX })); });
+		}
+		expect(renders).toBe(rendersInDrag);
+		act(() => { dom.document.dispatchEvent(new dom.MouseEvent("mousemove", { clientX: 140 })); });
+		expect(renders).toBeGreaterThan(rendersInDrag);
+		act(() => zoomed.unmount());
 	} finally {
 		if (!unmounted) act(() => root.unmount());
 		for (const [key, value] of previous) {
