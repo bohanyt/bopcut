@@ -2,7 +2,7 @@ import { localizeErrorDetail } from "@/i18n/error-details";
 import { getBrowserTranslator } from "@/i18n/browser";
 import type { EditorCore } from "@/core";
 import type { TProject } from "@/project/types";
-import { SERVER_AWAY } from "@/services/storage/disk-adapter";
+import { ProjectSaveConflict, SERVER_AWAY, type ProjectSaveRevision } from "@/services/storage/disk-adapter";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { toast } from "sonner";
 
@@ -26,7 +26,7 @@ type SaveHost = {
 	/** The project of an open session as it is in the editor now, or null when it is not the editor's. */
 	snapshotOf(session: SaveSession, content: boolean): TProject | null;
 	/** Writes a project to storage: null on success, else the error. */
-	persist(project: TProject): Promise<string | null>;
+	persist(project: TProject, saveRevision: ProjectSaveRevision): Promise<string | ProjectSaveConflict | null>;
 	persistNavigation(project: TProject): Promise<string | null>;
 	changed(session: SaveSession): void;
 	/** An edit was counted (see SaveManager.editsOf). */
@@ -57,6 +57,8 @@ export class SaveSession {
 	savedAt: Date | null;
 	/** Error of the last failed write, cleared by the next successful one. */
 	lastError: string | null = null;
+	readonly storageRevision: ProjectSaveRevision;
+	private conflict: ProjectSaveConflict | null = null;
 	private revision = 0;
 	private savedRevision = 0;
 	private contentRevision = 0;
@@ -83,13 +85,14 @@ export class SaveSession {
 
 	constructor(
 		private host: SaveHost,
-		{ projectId, session, name, savedAt, loading }: { projectId: string; session: number; name: string; savedAt: Date | null; loading: boolean },
+		{ projectId, session, name, savedAt, loading, storageRevision }: { projectId: string; session: number; name: string; savedAt: Date | null; loading: boolean; storageRevision?: string },
 	) {
 		this.projectId = projectId;
 		this.session = session;
 		this.name = name;
 		this.savedAt = savedAt;
 		this.loading = loading;
+		this.storageRevision = { value: storageRevision };
 	}
 
 	/** Some edit is not on disk yet (also while it is being written). */
@@ -211,7 +214,7 @@ export class SaveSession {
 	 */
 	settle(revision = this.revision, { timeoutMs = 15000 }: { timeoutMs?: number } = {}): Promise<boolean> {
 		if (this.savedRevision >= revision) return Promise.resolve(true);
-		if (this.detached || !this.host.isRunning() || (this.closed && !this.snapshot)) return Promise.resolve(false);
+		if (this.detached || this.conflict || !this.host.isRunning() || (this.closed && !this.snapshot)) return Promise.resolve(false);
 		return new Promise((resolve) => {
 			let done = false;
 			// Removed again however this ends, so repeated settles on a hung write keep nothing behind.
@@ -251,7 +254,7 @@ export class SaveSession {
 	}
 
 	private schedule(delayMs: number): void {
-		if (this.writing || this.detached || this.loading || this.held || !this.host.isRunning()) return;
+		if (this.writing || this.detached || this.loading || this.held || this.conflict || !this.host.isRunning()) return;
 		this.clearTimer();
 		this.timer = setTimeout(() => {
 			this.timer = null;
@@ -260,7 +263,7 @@ export class SaveSession {
 	}
 
 	private async write(): Promise<void> {
-		if (this.writing || this.detached || this.loading || this.held || !this.host.isRunning() || !this.isDirty()) return;
+		if (this.writing || this.detached || this.loading || this.held || this.conflict || !this.host.isRunning() || !this.isDirty()) return;
 		if (!this.host.canWrite()) {
 			this.schedule(this.host.debounceMs());
 			return;
@@ -276,9 +279,9 @@ export class SaveSession {
 		this.urgent = false;
 		this.inFlight = { target, project };
 		const run = (async () => {
-			let error: string | null = null;
+			let error: string | ProjectSaveConflict | null = null;
 			if (saveContent) {
-				error = await this.host.persist(project);
+				error = await this.host.persist(project, this.storageRevision);
 				if (error === null) {
 					this.savedContentRevision = content;
 					this.savedAt = new Date();
@@ -299,6 +302,31 @@ export class SaveSession {
 				const due = this.savedWaiters.filter((waiter) => waiter.revision <= this.savedRevision);
 				this.savedWaiters = this.savedWaiters.filter((waiter) => waiter.revision > this.savedRevision);
 				for (const waiter of due) waiter.resolve(project);
+			} else if (error instanceof ProjectSaveConflict) {
+				const { diskRevision } = error;
+				this.conflict = error;
+				this.lastError = error.message;
+				for (const fail of [...this.failureWaiters]) fail();
+				const t = getBrowserTranslator();
+				toast.error(t("storage.saveNamedFailed", { name: this.name }), {
+					id: errorToastId(this.projectId),
+					description: t("storage.conflict"),
+					duration: Number.POSITIVE_INFINITY,
+					dismissible: false,
+					...(diskRevision && {
+						action: {
+							label: t("storage.overwriteSavedVersion"),
+							onClick: (event) => {
+								event.preventDefault();
+								if (this.detached || this.conflict !== error) return;
+								// Only replace the revision that caused the conflict. A later save conflicts again.
+								this.storageRevision.value = diskRevision;
+								this.conflict = null;
+								this.retry();
+							},
+						},
+					}),
+				});
 			} else {
 				// Not on disk: stays dirty (readiness reports it) and is retried with backoff, whether or not
 				// anything else changes.
@@ -391,7 +419,7 @@ export class SaveManager {
 				}
 				return content ? project.snapshotActive() : project.getActive();
 			},
-			persist: (project) => this.editor.project.persistProject(project),
+			persist: (project, saveRevision) => this.editor.project.persistProject(project, saveRevision),
 			persistNavigation: (project) => this.editor.project.persistNavigation(project),
 			changed: (session) => {
 				this.projects.set(session.projectId, { savedAt: session.savedAt, error: session.lastError });
@@ -444,9 +472,9 @@ export class SaveManager {
 	 * Opens the save session of a project being put in the editor. The open session is closed first, so
 	 * call this before the editor's project or scenes change (see closeCurrent).
 	 */
-	open({ projectId, session, name, savedAt, loading }: { projectId: string; session: number; name: string; savedAt: Date | null; loading: boolean }): SaveSession {
+	open({ projectId, session, name, savedAt, loading, storageRevision }: { projectId: string; session: number; name: string; savedAt: Date | null; loading: boolean; storageRevision?: string }): SaveSession {
 		this.closeCurrent();
-		const opened = new SaveSession(this.host, { projectId, session, name, savedAt, loading });
+		const opened = new SaveSession(this.host, { projectId, session, name, savedAt, loading, storageRevision });
 		this.current = opened;
 		this.projects.set(projectId, { savedAt, error: null });
 		this.notify();

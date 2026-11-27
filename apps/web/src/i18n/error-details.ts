@@ -3,6 +3,7 @@ import type { createTranslator, StaticMessageKey } from "./translate";
 
 // Protocol messages are stable. Translate known details where they are shown to people.
 const messageKeys = new Map<string, StaticMessageKey>([
+	["Another tab changed the saved project", "storage.conflict"],
 	["url must be an http(s) link", "retrieval.url"],
 	["start is required (seconds, 1:02:03, or a link with t=)", "retrieval.startRequired"],
 	["start is not a valid time", "retrieval.invalidStart"],

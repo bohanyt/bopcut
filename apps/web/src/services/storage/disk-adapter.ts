@@ -1,5 +1,3 @@
-import { getBrowserTranslator } from "@/i18n/browser";
-import { toast } from "sonner";
 import { recordMediaFileVersion } from "./media-file-version";
 import type { SerializedProject, MediaAssetData, ProjectNavigation, ProjectSummary } from "./types";
 
@@ -15,12 +13,22 @@ async function checked(response: Response): Promise<Response> {
 
 /** Error of a project read or write that got no answer at all. */
 export const SERVER_AWAY = "The editor's server does not answer";
+export const PROJECT_SAVE_CONFLICT = "Another tab changed the saved project";
+export class ProjectSaveConflict extends Error {
+	constructor(readonly diskRevision: string | null) {
+		super(PROJECT_SAVE_CONFLICT);
+	}
+}
+
+/** Updated only on a successful write by the save session that owns it. */
+export type ProjectSaveRevision = { value?: string };
 const serverAway = () => {
 	throw new Error(SERVER_AWAY);
 };
 
 export class DiskAdapter {
 	private revisions = new Map<string, string>();
+	private loadedRevisions = new WeakMap<SerializedProject, string>();
 	private writes = new Map<string, Promise<void>>();
 	/**
 	 * Projects this adapter saw exist and then saw gone (deleted here or in another tab): a write never
@@ -29,6 +37,9 @@ export class DiskAdapter {
 	private gone = new Set<string>();
 	async get(id: string): Promise<SerializedProject | null> {
 		return (await this.read(id))?.value ?? null;
+	}
+	revisionOf(project: SerializedProject): string | undefined {
+		return this.loadedRevisions.get(project);
 	}
 	/** Reads a project with the revision of that copy (the shared cache can move on meanwhile). */
 	private async read(id: string): Promise<{ value: SerializedProject; revision: string } | null> {
@@ -41,7 +52,9 @@ export class DiskAdapter {
 		await checked(response);
 		const revision = response.headers.get("etag") ?? "new";
 		this.revisions.set(id, revision);
-		return { value: await response.json(), revision };
+		const value: SerializedProject = await response.json();
+		if (value && typeof value === "object") this.loadedRevisions.set(value, revision);
+		return { value, revision };
 	}
 	async summaries(): Promise<ProjectSummary[]> {
 		return (await checked(await fetch(base, { cache: "no-store" }))).json();
@@ -71,11 +84,13 @@ export class DiskAdapter {
 	async set({
 		key,
 		value,
+		saveRevision,
 	}: {
 		key: string;
 		value: SerializedProject;
+		saveRevision?: ProjectSaveRevision;
 	}): Promise<void> {
-		await this.queued(key, () => this.writeProject(key, value));
+		await this.queued(key, () => this.writeProject(key, value, saveRevision));
 	}
 	/**
 	 * Changes the stored project with `change`, applied to the copy on disk at the moment of the write:
@@ -105,7 +120,9 @@ export class DiskAdapter {
 				});
 				if (response.status === 409) continue;
 				await checked(response);
-				this.revisions.set(key, response.headers.get("etag") ?? "new");
+				const revision = response.headers.get("etag") ?? "new";
+				this.revisions.set(key, revision);
+				this.loadedRevisions.set(next, revision);
 				result = next;
 				return;
 			}
@@ -127,9 +144,10 @@ export class DiskAdapter {
 	private async writeProject(
 		key: string,
 		value: SerializedProject,
+		saveRevision?: ProjectSaveRevision,
 	): Promise<void> {
 		if (this.gone.has(key)) throw new Error("The project was deleted; not saved");
-		let expected = this.revisions.get(key);
+		let expected = saveRevision?.value ?? this.revisions.get(key);
 		if (!expected) {
 			await this.get(key);
 			expected = this.revisions.get(key) ?? "new";
@@ -140,19 +158,16 @@ export class DiskAdapter {
 				headers: { "Content-Type": "application/json", "If-Match": version },
 				body: JSON.stringify(value),
 			}).catch(serverAway);
-		let response = await write(expected);
+		const response = await write(expected);
 		if (response.status === 409) {
-			toast.warning(
-				getBrowserTranslator()("storage.conflict"),
-			);
-			for (let attempt = 0; attempt < 3 && response.status === 409; attempt++) {
-				// Deleted meanwhile: a write must not bring it back.
-				if (!(await this.get(key))) throw new Error("The project was deleted; not saved");
-				response = await write(this.revisions.get(key) ?? "new");
-			}
+			const diskRevision = response.headers.get("etag");
+			if (!diskRevision && !(await this.get(key))) throw new Error("The project was deleted; not saved");
+			throw new ProjectSaveConflict(diskRevision);
 		}
 		await checked(response);
-		this.revisions.set(key, response.headers.get("etag") ?? "new");
+		const revision = response.headers.get("etag") ?? "new";
+		this.revisions.set(key, revision);
+		if (saveRevision) saveRevision.value = revision;
 	}
 	async migrate(value: SerializedProject): Promise<boolean> {
 		const response = await checked(

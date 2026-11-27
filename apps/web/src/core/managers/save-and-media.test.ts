@@ -5,6 +5,7 @@ import type { ProjectNavigation } from "@/services/storage/types";
 import { ZoomController } from "@/timeline/controllers/zoom-controller";
 import { buildElementFromMedia } from "@/timeline/element-utils";
 import { roundMediaTime } from "@/wasm";
+import { toast } from "sonner";
 
 // Stub the GPU modules (unused here) before EditorCore pulls them in; see scene-history.test.ts.
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
@@ -13,7 +14,7 @@ const { EditorCore } = await import("@/core");
 const { agentReadiness } = await import("@/agent/bridge");
 const { StorageService, storageService } = await import("@/services/storage/service");
 const { CanvasRenderer } = await import("@/services/renderer/canvas-renderer");
-const { SERVER_AWAY } = await import("@/services/storage/disk-adapter");
+const { ProjectSaveConflict, SERVER_AWAY } = await import("@/services/storage/disk-adapter");
 const { rememberPlayhead } = await import("@/project/playhead-memory");
 const { beginTimelineGesture } = await import("@/timeline/gesture-state");
 
@@ -405,6 +406,41 @@ async function until(check: () => boolean, timeoutMs = 2000) {
 }
 
 describe("failed saves", () => {
+	test("a conflicting save keeps the pending edits across a project switch and waits for explicit overwrite", async () => {
+		const editor = await load(project("p", new Date(0)));
+		(editor.save as any).retryDelaysMs = [5, 10];
+		const disk = memoryDisk([project("p", new Date(0)), project("q", new Date(0))]);
+		const attempts: { revision?: string; main: string | undefined }[] = [];
+		stub({
+			saveProject: async ({ project: written, saveRevision }: {
+				project: TProject; saveRevision: { value?: string };
+			}) => {
+				attempts.push({ revision: saveRevision.value, main: mainName(written) });
+				if (saveRevision.value !== "conflicting-version") throw new ProjectSaveConflict("conflicting-version");
+			},
+		});
+		const notify = spyOn(toast, "error");
+		try {
+			edit(editor, "first pending edit");
+			expect(await editor.save.flush()).toBe(false);
+			edit(editor, "latest pending edit");
+			await editor.project.loadProject({ id: "q" });
+			await wait(40);
+			expect(attempts).toEqual([{ revision: undefined, main: "first pending edit" }]);
+			expect(editor.save.hasUnsavedChangesOf("p")).toBe(true);
+			expect(await editor.save.settleProject("p")).toBeTruthy();
+			expect(disk.writes).toEqual([]);
+			const action = notify.mock.calls.at(-1)?.[1]?.action;
+			expect(action && "onClick" in action).toBe(true);
+			if (!action || !("onClick" in action)) throw new Error("Missing overwrite action");
+			action.onClick(new Event("click", { cancelable: true }) as unknown as Parameters<typeof action.onClick>[0]);
+			await until(() => !editor.save.hasUnsavedChangesOf("p"));
+			expect(attempts.at(-1)).toEqual({ revision: "conflicting-version", main: "latest pending edit" });
+		} finally {
+			notify.mockRestore();
+		}
+	});
+
 	const dirty = async (failures: number, error = "EPERM: operation not permitted") => {
 		const editor = await load(project("p", new Date(0)));
 		(editor.save as any).retryDelaysMs = [5, 10];
