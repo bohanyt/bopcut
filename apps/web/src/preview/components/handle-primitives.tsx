@@ -44,13 +44,14 @@ export function HandleButton({
 		<button
 			ref={captureTarget}
 			type="button"
+			tabIndex={-1}
 			className={cn(
-				"absolute flex items-center justify-center outline-none",
+				"absolute flex -translate-x-1/2 -translate-y-1/2 touch-none items-center justify-center outline-none pointer-coarse:min-h-8 pointer-coarse:min-w-8",
 				className,
 			)}
 			style={{
-				left: screen.x - hitAreaSize / 2,
-				top: screen.y - hitAreaSize / 2,
+				left: screen.x,
+				top: screen.y,
 				width: hitAreaSize,
 				height: hitAreaSize,
 				pointerEvents: "auto",
@@ -194,12 +195,13 @@ export function IconHandle({
 		<HandleButton
 			screen={screen}
 			hitAreaSize={ICON_HANDLE_RADIUS * 2}
-			className="rounded-full bg-white text-black shadow-sm"
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
 		>
-			<HugeiconsIcon icon={icon} className="size-3" strokeWidth={2.5} />
+			<span className="flex size-5 items-center justify-center rounded-full bg-white text-black shadow-sm">
+				<HugeiconsIcon icon={icon} className="size-3" strokeWidth={2.5} />
+			</span>
 		</HandleButton>
 	);
 }
