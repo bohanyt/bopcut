@@ -2,6 +2,12 @@ import type { FrameRate } from "opencut-wasm";
 import type { TScene } from "@/timeline/types";
 import type { MediaTime } from "@/wasm";
 
+/** What a project is for. It directs the agents that work on it (AGENT.md, *Work modes*). */
+export const PROJECT_MODES = ["editing", "creating", "generating"] as const;
+export type ProjectMode = (typeof PROJECT_MODES)[number];
+export const isProjectMode = (value: unknown): value is ProjectMode =>
+	PROJECT_MODES.includes(value as ProjectMode);
+
 export type TBackground =
 	| {
 			type: "color";
@@ -20,6 +26,8 @@ export interface TCanvasSize {
 export interface TProjectMetadata {
 	id: string;
 	name: string;
+	/** Unset on projects made before modes, and when the person leaves it open. */
+	mode?: ProjectMode;
 	thumbnail?: string;
 	duration: MediaTime;
 	createdAt: Date;

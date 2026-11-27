@@ -187,7 +187,7 @@ describe("draft imports stay private until commit", () => {
 		const recorded: unknown[] = [];
 		globalThis.fetch = (async (url, init) => {
 			if (String(url) === "/api/agent/bundle") return Response.json({
-				name: "Bundle", width: 16, height: 16, fps: 25,
+				name: "Bundle", width: 16, height: 16, fps: 25, mode: "creating",
 				assets: [{ key: "clip", name: "Clip", path: "clip.mp4", type: "video" }],
 				main: [{ agent_id: "picture", name: "Picture", asset: "clip", start: 0, sourceAudio: true }],
 			}, { headers: { [BUNDLE_REV_HEADER]: "b".repeat(64) } });
@@ -208,7 +208,7 @@ describe("draft imports stay private until commit", () => {
 		expect(id).toBe(projectId);
 		// The home page stops offering the version of the bundle that became this project.
 		expect(recorded).toEqual([{ rev: "b".repeat(64), projectId: id }]);
-		expect(project.metadata).toMatchObject({ id, duration: T(2) });
+		expect(project.metadata).toMatchObject({ id, duration: T(2), mode: "creating" });
 		expect(project.settings).toMatchObject({ canvasSize: { width: 16, height: 16 }, fps: { numerator: 25, denominator: 1 } });
 		expect(mediaAsset).toMatchObject({ name: "Clip", type: "video", hasAudio: false, duration: 2 });
 		expect(backend.state.saved).toEqual([mediaAsset.id]);
@@ -844,6 +844,11 @@ describe("basedOn is checked before anything is imported", () => {
 			expect(a?.sceneId).toBe("main");
 			expect(b?.sceneId).toBe("other");
 			expect(a?.syncedAt).not.toBe(b?.syncedAt);
+			// No mode yet: the agent is told so, not left to guess.
+			expect(a?.projectMode).toBeNull();
+			const project = editor.project.getActive();
+			editor.project.setActiveProject({ project: { ...project, metadata: { ...project.metadata, mode: "editing" } } });
+			expect(agentSnapshot()?.projectMode).toBe("editing");
 		} finally {
 			setSystemTime();
 		}

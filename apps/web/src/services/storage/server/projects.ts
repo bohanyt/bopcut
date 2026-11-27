@@ -1,4 +1,5 @@
 import { promises as fs, type Stats } from "node:fs";
+import { isProjectMode } from "@/project/types";
 import path from "node:path";
 import type { ProjectNavigation, ProjectSummary, SerializedProject } from "../types";
 import { isRecord } from "../migrations/transformers/utils";
@@ -29,11 +30,12 @@ async function preserveInlineThumbnail(id: string, thumbnail: string | undefined
 
 function summarize(id: string, project: SerializedProject | null): ProjectSummary | null {
 	if (project?.metadata?.id !== id || typeof project.metadata.name !== "string") return null;
-	const { name, duration, createdAt, updatedAt, thumbnail } = project.metadata;
+	const { name, duration, createdAt, updatedAt, thumbnail, mode } = project.metadata;
 	return {
 		version: project.version,
 		metadata: {
 			id, name, duration: Number.isFinite(duration) ? duration : legacyDuration(project), createdAt, updatedAt,
+			...(isProjectMode(mode) && { mode }),
 			thumbnail: inlineThumbnail(thumbnail) ? thumbnailUrl(id) : storedThumbnail(thumbnail),
 		},
 	};

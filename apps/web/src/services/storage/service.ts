@@ -1,6 +1,6 @@
 import { normalizeTrackHumanFields } from "@/timeline/human-fields";
 import { getBrowserTranslator } from "@/i18n/browser";
-import type { TProject, TProjectMetadata } from "@/project/types";
+import { isProjectMode, type ProjectMode, type TProject, type TProjectMetadata } from "@/project/types";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import type { MediaAsset, MediaLoadFailure } from "@/media/types";
 import { normalizeBookmarkBox } from "@/timeline/bookmarks/area";
@@ -44,8 +44,11 @@ function readProjectVersion(raw: unknown): number {
 }
 
 function deserializeMetadata(metadata: ProjectSummary["metadata"], duration = metadata.duration): TProjectMetadata {
+	const { mode, ...rest } = metadata;
 	return {
-		...metadata,
+		...rest,
+		// A value this editor does not know is left out rather than guessed.
+		...(isProjectMode(mode) && { mode }),
 		duration: roundMediaTime({ time: duration ?? 0 }),
 		createdAt: new Date(metadata.createdAt),
 		updatedAt: new Date(metadata.updatedAt),
@@ -231,6 +234,7 @@ class StorageService {
 			metadata: {
 				id: project.metadata.id,
 				name: project.metadata.name,
+				...(project.metadata.mode && { mode: project.metadata.mode }),
 				thumbnail: project.metadata.thumbnail,
 				duration,
 				createdAt: project.metadata.createdAt.toISOString(),
@@ -261,6 +265,17 @@ class StorageService {
 	 * Renames a stored project on the copy that is on disk when it is written (a write in between is
 	 * re-read, not overwritten). The new metadata, or null when the project does not exist.
 	 */
+	/** Sets or clears the mode of a stored project, on its copy as it is when written. */
+	async setProjectMode({ id, mode }: { id: string; mode: ProjectMode | null }): Promise<TProjectMetadata | null> {
+		const updated = await this.projectsAdapter.update(id, (stored) => {
+			readProjectVersion(stored.version);
+			const { mode: _previous, ...metadata } = stored.metadata;
+			return { ...stored, metadata: { ...metadata, ...(mode && { mode }), updatedAt: new Date().toISOString() } };
+		});
+		if (!updated) return null;
+		return deserializeSummary(updated);
+	}
+
 	async renameProject({ id, name }: { id: string; name: string }): Promise<TProjectMetadata | null> {
 		const updated = await this.projectsAdapter.update(id, (stored) => {
 			readProjectVersion(stored.version);

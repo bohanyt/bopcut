@@ -11,7 +11,7 @@ import { generateUUID } from "@/utils/id";
 import { floatToFrameRate } from "@/fps/utils";
 import { releaseMediaAssetUrls } from "@/media/url-release";
 import { buildNewProject } from "@/project/create";
-import type { TProjectSettings } from "@/project/types";
+import { isProjectMode, type TProjectSettings } from "@/project/types";
 import { storageService } from "@/services/storage/service";
 import { getProjectDurationFromScenes } from "@/timeline/scenes";
 import { type AgentAsset, type AgentElement, type LoadedMedia, buildAgentElement, checkAgentDuration, checkAgentTrim, createAgentTrack, prepareBundleAsset } from "./elements";
@@ -24,6 +24,8 @@ export type Bundle = {
 	name: string; width: number; height: number;
 	/** Project frame rate (frames per second); the editor default when omitted. Imported media never change it. */
 	fps?: number;
+	/** What the project is for (AGENT.md, *Work modes*); left unset when omitted or unknown. */
+	mode?: string;
 	assets: (AgentAsset & { key: string })[];
 	main: AgentElement[]; audio: AgentElement[];
 	overlay: { name: string; type: "video" | "effect" | "graphic" | "text"; elements: AgentElement[] }[];
@@ -109,7 +111,7 @@ export async function importAgentBundle({ onStatus }: { onStatus: (text: string)
 		checkAgentDuration(e);
 	}
 	checkBundleAssetKeys(bundle);
-	const project = buildNewProject({ name: bundle.name });
+	const project = buildNewProject({ name: bundle.name, mode: isProjectMode(bundle.mode) ? bundle.mode : undefined });
 	const projectId = project.metadata.id;
 	const settings = { ...project.settings, ...bundleProjectSettings(bundle) };
 	const media = new Map<string, LoadedMedia>();

@@ -156,6 +156,7 @@ export const id = {
 	"projects.noSearchResults": "Tidak ada hasil untuk pencarian \"{query}\".",
 	"projects.projectId": "ID proyek",
 	"projects.renameFailed": "Gagal mengganti nama proyek",
+	"projects.modeFailed": "Mode proyek tidak bisa diganti",
 	"projects.renameProject": "Ganti nama proyek",
 	"projects.search": "Cari...",
 	"projects.searchLabel": "Cari proyek",

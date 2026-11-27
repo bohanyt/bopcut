@@ -81,7 +81,7 @@ Start with a transcript to find the relevant words or a pause. Use a range pictu
 
 The editor server also answers the Model Context Protocol at `http://127.0.0.1:3000/api/mcp` (use your port). Add it to an MCP client as a Streamable HTTP server; it needs no login and answers local clients only, with the same checks as the agent CLI. The editor can stay closed. The tools reuse the CLI commands and return their results, both as text and as structured content:
 
-- `list_projects`: project IDs, names and last change, newest first. A project the person archived (hidden from the home page's list, its files untouched) has `archived: true`; it can still be opened and changed.
+- `list_projects`: project IDs, names and last change, newest first, with `mode` when the project has one (*Work modes*). A project the person archived (hidden from the home page's list, its files untouched) has `archived: true`; it can still be opened and changed.
 - `get_status`, `get_notes`, `get_selection`: as the CLI commands of the same name.
 - `read_transcript`: as `transcript-view`, with `media` for one source.
 - `plan_silence_cuts`: as `silence-plan`, with `minGap`, `pad`, `keepFillers`, `keepLead`, `tail` and `ignoreMedia` (a list).
@@ -112,7 +112,7 @@ BOPENCUT_TTS="/path/to/tts-command"     # Optional, for `agent voice`
 | `draft-result.json` | editor → agent | result per operation (items deleted by the human are skipped) |
 | `drafts-applied/` | editor → agent | each draft once applied (it is moved here from `draft.json`, so it never applies to another project opened later). Drafts that failed or were skipped move here too: read `draft-result.json` and write a new `rev` to retry. A newer draft written at the same moment is never moved; one replaced by an even newer draft before it applied is kept here as `superseded-*.json` |
 
-**bundle.json** (any `schema`): `name,width,height` (the project canvas, in pixels), `fps?` (project frame rate), `assets:[{key,path(relative to AGENT_FILES_ROOT),type:image|video|audio,name}]`, `main:[el]`, `audio:[el]`, `overlay:[{name,type:"video"|"effect",elements:[el]}]` (index 0 = topmost). `el`: `agent_id,name,start,duration,trimStart` (seconds), `asset` or `effect`+`effectParams`, `params` (e.g. `transform.positionX/Y` = pixels from canvas center, `opacity`, `volume`), `size:[w,h]` (display size in pixels), `keyframes:[{path:"opacity"|"scale"|param,time,value}]`. A video element plays without its own sound unless it has `sourceAudio: true`; for sound you want to edit separately (volume keyframes, ducking, fades of its own), add an audio element with the same asset instead.
+**bundle.json** (any `schema`): `name,width,height` (the project canvas, in pixels), `fps?` (project frame rate), `mode?` (`editing`, `creating` or `generating`; see *Work modes*), `assets:[{key,path(relative to AGENT_FILES_ROOT),type:image|video|audio,name}]`, `main:[el]`, `audio:[el]`, `overlay:[{name,type:"video"|"effect",elements:[el]}]` (index 0 = topmost). `el`: `agent_id,name,start,duration,trimStart` (seconds), `asset` or `effect`+`effectParams`, `params` (e.g. `transform.positionX/Y` = pixels from canvas center, `opacity`, `volume`), `size:[w,h]` (display size in pixels), `keyframes:[{path:"opacity"|"scale"|param,time,value}]`. A video element plays without its own sound unless it has `sourceAudio: true`; for sound you want to edit separately (volume keyframes, ducking, fades of its own), add an audio element with the same asset instead.
 
 **draft.json**: `{schema:"opencut-agent-draft-1", rev, label, projectId?, ops:[{op:"set", match:{agentId}|{id}, start?, duration?, trimStart?, params?}, {op:"delete", match:…}, {op:"add", track:{name, type?:"video"|"audio"|"effect", index?}, element:el}]}`. For `add`, `el.asset` is an object `{path,type,name}` (not a bundle key); an existing track with that name is reused, otherwise one is created (overlays are inserted at `index`). Exact names take precedence; `Main`, the legacy `Utama`, and the editor default `Main Track` are aliases of each other (so `Main` reaches the main track of a compound made in the editor). Existing saved track names are not renamed. The entire draft is one Undo; changed/added items are selected immediately. `match` can also reach inside compound clips, and `group`, `ungroup`, and `compound` ops exist: see *Compound clips for agents*. `replace`, `atomic`, `set` keyframes, and `mediaId`: see *Draft reliability*.
 
@@ -289,6 +289,16 @@ The settings are in the Transform tab of the properties panel. Preview and expor
 - Dropped GIFs are converted to silent video with the configured FFmpeg command. Transparent GIFs use VP9 WebM and opaque GIFs use H.264 MP4.
 - Fix: preview interruption on effect tracks (`effect_pass_groups`).
 - Removed: React Scan, Next dev indicator, databuddy analytics.
+
+## Work modes
+
+A project can say what it is for: `mode` is `editing`, `creating` or `generating`, or absent (older projects, or the person has not said). Read it from `list_projects` (`mode`), the snapshot (`projectMode`, null when absent) or the bundle you write (`mode`). It can change later, so read it again before a long piece of work. Each mode sets what comes first:
+
+- **editing**: existing footage made watchable for its purpose (clips for short video from a long recording, a podcast tidied from a long session). **Speed of output comes first**: many usable results, fast. Start from the footage and its words (`transcript-view`, `silence-plan`), cut to the point, add captions. Review for what breaks a clip (chopped words, a missing payoff, unreadable captions), not for polish, and hand back after one tidy pass.
+- **creating**: content that starts from a script, with most visuals (animation, 3D, motion graphics) built by the agent as a draft that the person edits and the agent then tidies. **Story and output are balanced**: follow the script's beats, keep the draft complete enough to edit, and spend a second pass on what the person changed. The script is wherever the person keeps it (a file in the agent workspace or a project note); ask once if you cannot find it.
+- **generating**: video made by generation models from a script and a chosen style. **The story comes first**, because generating is cheap: spend the passes on the script, its hook and its turns before generating, and regenerate a shot rather than polish it. The editor has no generating tools yet.
+
+Without a mode, ask what the project is for when it changes what you would do; otherwise follow the person's request.
 
 ## Preferences
 
