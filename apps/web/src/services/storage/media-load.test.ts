@@ -67,6 +67,35 @@ describe("loading project media", () => {
 		expect(api.stats.lists).toBe(1);
 	});
 
+	test("the media asked for first are read first and handed over before the rest, which keep the list's order", async () => {
+		const api = fakeApi(12, { fileDelayMs: 3 });
+		restore = api.restore;
+		const reads: string[] = [];
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (url: string, init?: RequestInit) => {
+			if (!/\/media$/.test(String(url))) reads.push(decodeURIComponent(String(url).split("/").pop() ?? ""));
+			return realFetch(url, init);
+		}) as typeof fetch;
+		let handed: { ids: string[]; readsSoFar: number } | null = null;
+		const assets = await new StorageService().loadAllMediaAssets({
+			projectId: "p", concurrency: 2, first: new Set(["m9", "m3"]),
+			onFirstLoaded: (used) => { handed = { ids: used.map(({ id }) => id), readsSoFar: reads.length }; },
+		});
+		expect(reads.slice(0, 2).sort()).toEqual(["m3", "m9"]);
+		// Handed over in the list's order, before most of the others were read.
+		expect(handed!.ids).toEqual(["m3", "m9"]);
+		expect(handed!.readsSoFar).toBeLessThan(6);
+		expect(assets.map(({ id }) => id)).toEqual(Array.from({ length: 12 }, (_, n) => `m${n}`));
+	});
+
+	test("nothing asked for first is handed over at once", async () => {
+		const api = fakeApi(3);
+		restore = api.restore;
+		const handed: string[][] = [];
+		await new StorageService().loadAllMediaAssets({ projectId: "p", first: new Set(), onFirstLoaded: (used) => handed.push(used.map(({ id }) => id)) });
+		expect(handed).toEqual([[]]);
+	});
+
 	test("aborting stops starting new file reads", async () => {
 		const api = fakeApi(200, { fileDelayMs: 5 });
 		restore = api.restore;
@@ -203,6 +232,30 @@ describe("media manager loads", () => {
 		stored.resolve([asset("a"), asset("b"), asset("logo-1")]);
 		await load;
 		expect(media.getAssets().map((a) => a.id)).toEqual(["a", "b", "logo-1", "logo-2"]);
+		expect(media.isProjectMediaLoaded({ projectId: "p" })).toBe(true);
+	});
+
+	test("the timeline's media are published before the rest of the bin, which counts as loaded only at the end", async () => {
+		const editor = EditorCore.getInstance();
+		const { media } = editor;
+		const rest = deferred<MediaAsset[]>();
+		(storageService as any).loadAllMediaAssets = ({ onFirstLoaded }: { onFirstLoaded?: (used: MediaAsset[]) => void }) => {
+			onFirstLoaded?.([asset("used")]);
+			return rest.promise;
+		};
+		let usedLoaded = false;
+		const load = media.loadProjectMedia({ projectId: "p", onUsedLoaded: () => { usedLoaded = true; } });
+		await Promise.resolve();
+		expect(usedLoaded).toBe(true);
+		expect(media.getAssets().map(({ id }) => id)).toEqual(["used"]);
+		expect(media.isProjectMediaLoaded({ projectId: "p" })).toBe(false);
+		expect(media.isLoadingMedia()).toBe(true);
+		const used = media.getAssets()[0];
+		rest.resolve([asset("early"), asset("used"), asset("late")]);
+		await load;
+		expect(media.getAssets().map(({ id }) => id)).toEqual(["early", "used", "late"]);
+		// The published asset stays the same object.
+		expect(media.getAssets()[1]).toBe(used);
 		expect(media.isProjectMediaLoaded({ projectId: "p" })).toBe(true);
 	});
 
