@@ -70,6 +70,8 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 	let bookmarks: Bookmark[] = [{ time: time(1) }];
 	let shift = false;
 	let snapping = true;
+	let playing = isPlaying;
+	let pauses = 0;
 	const controller = new PlayheadController({
 		configRef: { current: {
 			zoomLevel: 1,
@@ -80,7 +82,7 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 			getActiveProjectFps: () => ({ numerator: 30, denominator: 1 }),
 			isShiftHeld: () => shift,
 			isSnappingEnabled: () => snapping,
-			getIsPlaying: () => isPlaying,
+			getIsPlaying: () => playing,
 			getRulerEl: () => ruler,
 			getRulerScrollEl: () => autoScroll ? rulerViewport : null,
 			getTracksScrollEl: () => autoScroll ? tracksViewport : null,
@@ -91,6 +93,10 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 				currentTime = value;
 				seek.push(value);
 				drawnAtSeek.push(attrs.get("aria-valuenow"));
+			},
+			pause: () => {
+				playing = false;
+				pauses++;
 			},
 			setScrubbing: (value) => scrubbing.push(value),
 			setTimelineViewState: ({ playheadTime }) => saved.push(playheadTime),
@@ -113,6 +119,9 @@ function setup({ autoScroll = false, isPlaying = false } = {}) {
 		release: (x: number) => send("pointerup", x, { buttons: 0 }),
 		frame() { for (const [frame, callback] of [...frames]) { frames.delete(frame); callback(0); } },
 		edgeReads: () => edgeReads,
+		isPlaying: () => playing,
+		pauses: () => pauses,
+		play: () => { playing = true; },
 		setBookmarks: (value: Bookmark[]) => { bookmarks = value; },
 		holdShift: () => { shift = true; },
 		turnSnappingOff: () => { snapping = false; },
@@ -224,6 +233,8 @@ test("scrubbing while playing can seek back to the same snapped frame", () => {
 test("playback draws the live time during a scrub without centering the viewport", () => {
 	const scrub = setup({ isPlaying: true, autoScroll: true });
 	scrub.controller.onRulerPointerDown(scrub.event(50));
+	// Space while the playhead is held plays again.
+	scrub.play();
 	scrub.controller.handlePlaybackUpdate(time(9), true);
 	scrub.controller.handleScroll(time(9));
 	expect(scrub.lineTime()).toBe(String(time(9)));
@@ -326,6 +337,7 @@ test("updatePlayheadPosition without a line element does not read scrollLeft", (
 			}),
 			getSceneBookmarks: () => [],
 			seek: () => {},
+			pause: () => {},
 			setScrubbing: () => {},
 			setTimelineViewState: () => {},
 		} },
@@ -348,4 +360,25 @@ test("edits in the same scene invalidate snapping and use the new duration", () 
 	expect(scrub.controller.isActive).toBe(true);
 	expect(scrub.edgeReads()).toBeGreaterThan(reads);
 	expect(scrub.seek.at(-1)).toBe(time(2));
+});
+
+test.each(["playhead", "ruler"] as const)("grabbing the %s during playback pauses it, and the release leaves it paused", (grabbed) => {
+	const scrub = setup({ isPlaying: true });
+	if (grabbed === "playhead") scrub.controller.onPlayheadPointerDown(scrub.event(50));
+	else scrub.controller.onRulerPointerDown(scrub.event(50));
+	expect(scrub.isPlaying()).toBe(false);
+	scrub.move(100);
+	scrub.frame();
+	scrub.release(100);
+	expect(scrub.isPlaying()).toBe(false);
+	expect(scrub.pauses()).toBe(1);
+	expect(scrub.seek.at(-1)).toBe(time(2));
+	expect(scrub.saved).toEqual([time(2)]);
+});
+
+test("a scrub while paused does not pause again", () => {
+	const scrub = setup();
+	scrub.controller.onPlayheadPointerDown(scrub.event(50));
+	scrub.release(50);
+	expect(scrub.pauses()).toBe(0);
 });

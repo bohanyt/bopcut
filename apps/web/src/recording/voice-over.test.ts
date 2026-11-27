@@ -218,6 +218,7 @@ test("a coalesced scrub seek interrupts the recorder through PlaybackManager", a
 		getSceneTracks: () => editor.scenes.getActiveScene().tracks,
 		getSceneBookmarks: () => [],
 		seek: (time) => editor.playback.seek({ time }),
+		pause: () => editor.playback.pause(),
 		setScrubbing: (isScrubbing) => editor.playback.setScrubbing({ isScrubbing }),
 		setTimelineViewState: () => {},
 	} } });
