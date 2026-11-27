@@ -136,10 +136,40 @@ test("a shared subtitle canvas restores the measurement state after each cue", (
 		canvasSize,
 	});
 	const unusualFamily = 'Example\\"Display';
-	const alone = build(unusualFamily, 10, 0);
-	build(FONT, 32, 10);
-	expect(ctx.font).toBe(initialFont);
-	expect(build(unusualFamily, 10, 0)).toEqual(alone);
+	const font = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(ctx), "font")!;
+	const measureText = ctx.measureText.bind(ctx);
+	const measuredFonts = new Set<string>();
+	const measure = spyOn(ctx, "measureText").mockImplementation((text) => {
+		measuredFonts.add(ctx.font);
+		return measureText(text);
+	});
+	let rejections = 0;
+	Object.defineProperty(ctx, "font", {
+		configurable: true,
+		get: () => font.get!.call(ctx),
+		set: (value: string) => {
+			// A canvas ignores font shorthand it cannot parse and keeps its current font.
+			if (value.includes("Example") && value.includes("Display")) rejections++;
+			else font.set!.call(ctx, value);
+		},
+	});
+	try {
+		const alone = build(unusualFamily, 10, 0);
+		expect([...measuredFonts]).toEqual([initialFont]);
+		measuredFonts.clear();
+
+		build(FONT, 32, 10);
+		expect([...measuredFonts]).not.toContain(initialFont);
+		expect(ctx.font).toBe(initialFont);
+		measuredFonts.clear();
+
+		expect(build(unusualFamily, 10, 0)).toEqual(alone);
+		expect([...measuredFonts]).toEqual([initialFont]);
+		expect(rejections).toBe(2);
+	} finally {
+		Reflect.deleteProperty(ctx, "font");
+		measure.mockRestore();
+	}
 });
 
 test("raster shows both rings, one shadow, emphasis and the active-word fill", () => {
