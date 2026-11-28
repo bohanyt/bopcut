@@ -27,6 +27,7 @@ bun run agent view --project-id ID --from 12 --to 32 --rows 8
 bun run agent view --file media/take.mp4 --from 8 --to 16
 bun run agent review --project-id ID --file exports/out.mp4
 bun run agent voice --name hook --text "Who wins this round?"
+bun run agent assemble --script script.txt --plan plan.json --submit --project-id ID
 ```
 
 `status` returns the most recent timeline snapshot and its readiness at the time it synced. `selection` reports the last editor selection. `notes` lists the notes in the snapshot. A chosen project (`--project-id`) answers from its own snapshot, or from the last synced one when that is the same project. Reads stay inside the agent workspace: a link that leads out of it is refused. Read the preference files directly (see *Preferences*).
@@ -75,6 +76,18 @@ With `--pictures`, FFmpeg samples the active source frame at three times per sho
 Dense inspection covers source spans up to six seconds or three short windows in longer spans. Freeze findings require three moving frame steps on each side, without a cut-like jump. Terminal holds and motion below the detector's noise floor can go unreported. The check cannot tell whether an internal hold was intentional. Events outside the windows, frames beyond the decode cap, and unusually long frame intervals beyond the preroll can go unobserved. Up to 12 evidence PNGs go in a temporary directory. The picture pass checks saved source pixels, including baked footage. It does not draw the draft's overlays, masks, effects, or transitions. The report gives coverage, missing media, and omitted rows.
 
 **Make narration with `voice`.** Set `BOPENCUT_TTS` to a text-to-speech command, for example in `apps/web/.env.local`. The command is optional; bopcut ships none. It is called as `<BOPENCUT_TTS> --text-file IN.txt --out OUT.wav --words OUT.json`. It must write a WAV file to `--out` and may write the spoken words as a JSON array of `{text, start, end}` in seconds to `--words`. The setting is one executable path (spaces allowed) or a command line with quoted parts, as for `BOPENCUT_FFMPEG`. Run `bun run agent voice --name NAME --text TEXT` or `--text-file PATH` (a UTF-8 file under `AGENT_FILES_ROOT`, at most 100,000 characters). The server can be closed. The result is saved as `AGENT_FILES_ROOT/voice/NAME.wav` with `NAME.wav.words.json` beside it when words were reported, the sidecar format that `view --file` reads. An existing name is kept unless you pass `--replace`; a replacement without words removes the old word file. A failed, cancelled, or timed-out run (default 600 s, `--timeout SECONDS`) leaves the previous take unchanged. The JSON output has `path`, `duration`, `wordsFile`, optional `warnings`, and `asset`, which can go into a draft `add` element as is. Its `words` enable `cut:"words"`, `startAtWord`, and captions from the same timings. Speak one line or section per file, so each can be redone or moved alone.
+
+**Build the first draft from a script with `assemble`.** It runs without the editor, and with `--submit` it needs the server, not an open tab (see the hidden editor below).
+- **Script:** a UTF-8 file under `AGENT_FILES_ROOT` with one coded line per line, such as `A01. Text of the line`. Other lines, such as headings and comments, are skipped, and a code may appear only once.
+- **Voices:** each line's take is `voice/<CODE>.wav` (or `.m4a`, `.mp3`, `.ogg`, `.flac`; `--voices FOLDER` changes the folder), with the `<file>.words.json` that `voice` writes. A WAV's length comes from its header. Other formats take the end of their last word plus 0.2 s.
+- **Plan:** an optional JSON object keyed by code: `{"A01": {"visual": {"kind": "news", "asset": {"path": "shots/a01.png", "type": "image"}, "trimStart"?, "params"?, "note"?}, "voice"?: {"path": "voice/take.m4a", "start": 12.3, "end": 15.8}}}`. Use `voice` for a span of a long take, such as a clean-take map.
+- **Draft:** one draft (`atomic`, one Undo step).
+  - The lines play back to back on the `VO` audio track, from `--start` (default 0) with `--gap` seconds between them (default 0). Each clip is named by its code (`vo-<CODE>`) and keeps its words.
+  - Each line gets a caption on `Captions`, built from the words actually spoken, with their timings (else the script text), and with `--caption-preset NAME` if given.
+  - Each line's visual goes on the main track and lasts until the next line starts, so a gap never shows black.
+  - A line without a visual gets a placeholder caption `[A03 · footage] note` on `Placeholders`, for you to replace with a `replace` op later.
+  - A line without a voice take is left out and listed under `missing`.
+- **Output:** the draft is written to `AGENT_WORKSPACE/assemble/<name>.draft.json` (`--name`, default the script's name). The answer is `{file, lines, voiced, placeholders, missing, duration, ops}`. `--submit --project-id ID` also sends the draft through the editor's `submit_draft` and adds its answer as `submitted`.
 
 Start with a transcript to find the relevant words or a pause. Use a range picture to check the cuts, titles, and sound around it. Use the file protocol below for drafts, changes, historical frames, and comparisons.
 
