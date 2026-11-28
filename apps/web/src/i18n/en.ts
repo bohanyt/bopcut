@@ -317,7 +317,6 @@ export const en = {
 	"assets.descending": "descending",
 	"assets.dragFiles": "Drag and drop videos, photos, and audio files here",
 	"assets.end": "End",
-	"assets.exportClips": "Export clips",
 	"assets.fetching": "Fetching…",
 	"assets.fetchingSection": "Fetching the section… this takes about as long as the section itself.",
 	"assets.fileSize": "File size",
