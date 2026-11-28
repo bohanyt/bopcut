@@ -95,7 +95,7 @@ export class PlaybackManager {
 
 	/**
 	 * Sets the playback speed (up to MAX_PLAYBACK_RATE either way; 0 means 1), from where playback is
-	 * now. The sound plays only at 1×.
+	 * now. Forwards the sound plays at that speed too; backwards plays the picture only.
 	 */
 	setRate(rate: number): void {
 		const next = Math.max(-MAX_PLAYBACK_RATE, Math.min(MAX_PLAYBACK_RATE, rate)) || 1;
