@@ -81,7 +81,7 @@ beforeEach(() => {
 test("a cache adapter opens its database once for many reads", async () => {
 	const cache = new IndexedDBAdapter<{ peaks: number[] }>({ dbName: "cache", storeName: "summaries", keepOpen: true });
 	await cache.set({ key: "a", value: { peaks: [1, 2] } });
-	for (let read = 0; read < 50; read++) expect(await cache.get("a")).toEqual({ id: "a", peaks: [1, 2] });
+	for (let read = 0; read < 50; read++) expect((await cache.get("a")) as unknown).toEqual({ id: "a", peaks: [1, 2] });
 	expect(opens).toBe(1);
 });
 
