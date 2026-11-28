@@ -17,6 +17,14 @@ import {
 	buildTextLayoutParamsFromElement,
 } from "@/text/measure-element";
 
+/**
+ * The text typed on the canvas. A field with every character deleted still holds the browser's
+ * empty line, which reads as one line break: that is no text.
+ */
+export function editedText(innerText: string): string {
+	return innerText === "\n" ? "" : innerText;
+}
+
 export function TextEditOverlay({
 	element,
 	onPreview,
@@ -50,7 +58,7 @@ export function TextEditOverlay({
 	const handleInput = useCallback(() => {
 		const div = divRef.current;
 		if (!div) return;
-		onPreview(div.innerText);
+		onPreview(editedText(div.innerText));
 	}, [onPreview]);
 
 	const handleKeyDown = useCallback(

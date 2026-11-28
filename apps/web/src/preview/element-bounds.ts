@@ -205,10 +205,14 @@ export function getElementBounds({
 			ctx,
 		});
 
+		// A text with no characters has no width: keep it as wide as a line is tall, so it can
+		// still be clicked and double-clicked to type again.
+		const rect = measured.visualRect;
+		const width = Math.max(rect.width, rect.height);
 		return getTransformedRectBounds({
 			canvasWidth,
 			canvasHeight,
-			rect: measured.visualRect,
+			rect: { ...rect, left: rect.left - (width - rect.width) / 2, width },
 			transform,
 		});
 	}
