@@ -13,6 +13,7 @@ import * as videoProbe from "@/media/video-probe";
 mock.module("@/services/renderer/compositor/wasm-compositor", () => ({ wasmCompositor: {} }));
 mock.module("@/services/renderer/gpu-renderer", () => ({ gpuRenderer: {}, initializeGpuRenderer: async () => {}, isGpuAvailable: () => false }));
 const { defaultExportName, parseExportRequest, safeName } = await import("./export");
+const { exportOutputSize } = await import("@/export");
 const { CLAIM_MS, handleExportFile, handleExportResult, readTextLimited, saveExport, writeExportResult } = await import("./export-server");
 const { holdMediaUrls, revokeMediaUrl } = await import("@/media/url-release");
 const { EditorCore } = await import("@/core");
@@ -276,6 +277,35 @@ describe("export requests", () => {
 		expect(parseExportRequest({ rev: "e5", name: "../.." })).toContain("name");
 		expect(parseExportRequest({ rev: "bad rev" })).toBeNull();
 		expect(parseExportRequest(null)).toBeNull();
+	});
+
+	test("a smaller video for reviews: size, or preview for 540 at low quality", () => {
+		expect(parseExportRequest({ rev: "p1", preview: true })).toMatchObject({ size: 540, quality: "low" });
+		expect(parseExportRequest({ rev: "p2", preview: true, size: 720, quality: "medium" })).toMatchObject({ size: 720, quality: "medium" });
+		expect(parseExportRequest({ rev: "p3", size: 360 })).toMatchObject({ size: 360, quality: "very_high" });
+		expect(parseExportRequest({ rev: "p4" })).not.toHaveProperty("size");
+		for (const size of [100, 5000, 540.5, "540"]) expect(parseExportRequest({ rev: "p5", size })).toContain("size");
+		expect(parseExportRequest({ rev: "p6", preview: "yes" })).toContain("preview");
+	});
+
+	test("the scaled video keeps the canvas shape with even sides", () => {
+		expect(exportOutputSize({ canvas: { width: 1080, height: 1920 }, size: 540 })).toEqual({ width: 540, height: 960, scale: 0.5 });
+		expect(exportOutputSize({ canvas: { width: 1920, height: 1080 }, size: 540 })).toEqual({ width: 960, height: 540, scale: 0.5 });
+		// 4:5 at 540 would be 540 x 675: the nearest even pair is taken instead.
+		const portrait = exportOutputSize({ canvas: { width: 1080, height: 1350 }, size: 540 });
+		expect([portrait.width % 2, portrait.height % 2]).toEqual([0, 0]);
+		expect(Math.abs(portrait.width / portrait.height - 1080 / 1350)).toBeLessThan(0.005);
+		// No larger than the canvas, and unset means the canvas.
+		expect(exportOutputSize({ canvas: { width: 1280, height: 720 }, size: 1080 })).toEqual({ width: 1280, height: 720, scale: 1 });
+		expect(exportOutputSize({ canvas: { width: 1280, height: 720 } })).toEqual({ width: 1280, height: 720, scale: 1 });
+	});
+
+	test("the exporter draws at the scale it is given", async () => {
+		await withCanvas(async () => {
+			const exporter = new SceneExporter({ width: 1080, height: 1920, renderScale: 0.5, fps: { numerator: 30, denominator: 1 }, format: "mp4", quality: "low" });
+			const renderer = (exporter as unknown as { renderer: { outputWidth: number; outputHeight: number } }).renderer;
+			expect([renderer.outputWidth, renderer.outputHeight]).toEqual([540, 960]);
+		});
 	});
 
 	test("file names keep letters and digits (any language) and never name a folder or a device", () => {

@@ -1,7 +1,7 @@
 import type { EditorCore } from "@/core";
 import { editorActivity } from "@/agent/review-activity-client";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
-import type { ExportOptions, ExportResult } from "@/export";
+import { type ExportOptions, type ExportResult, exportOutputSize } from "@/export";
 import { getExportFailure } from "@/export/failure";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import { buildScene, collectVisibleMedia } from "@/services/renderer/scene-builder";
@@ -184,8 +184,8 @@ export class RendererManager {
 
 	/** Checks a loaded scene before mixdown or rendering. */
 	checkExport({
-		format, allowMissing, includeAudio, scene, scenes, canvasSize, duration = calculateTotalDuration({ tracks: scene.tracks }),
-	}: Pick<ExportOptions, "format" | "allowMissing" | "includeAudio"> & {
+		format, allowMissing, includeAudio, scene, scenes, canvasSize, size, duration = calculateTotalDuration({ tracks: scene.tracks }),
+	}: Pick<ExportOptions, "format" | "allowMissing" | "includeAudio" | "size"> & {
 		scene: TScene;
 		scenes: TScene[];
 		canvasSize: TCanvasSize;
@@ -193,11 +193,14 @@ export class RendererManager {
 	}): ExportResult | null {
 		const sizeIssue = getCanvasSizeIssue(canvasSize);
 		if (sizeIssue) return { success: false, error: describeCanvasSizeIssue(sizeIssue), issue: sizeIssue };
-		if (format === "mp4" && (canvasSize.width % 2 !== 0 || canvasSize.height % 2 !== 0)) {
+		const output = exportOutputSize({ canvas: canvasSize, size });
+		if (format === "mp4" && (output.width % 2 !== 0 || output.height % 2 !== 0)) {
 			return {
 				success: false,
-				issue: { kind: "evenDimensions", ...canvasSize },
-				error: `MP4 needs even canvas dimensions (${canvasSize.width} × ${canvasSize.height}). Choose WebM or set both dimensions to even numbers in project settings.`,
+				issue: { kind: "evenDimensions", width: output.width, height: output.height },
+				error: output.scale === 1
+					? `MP4 needs even canvas dimensions (${canvasSize.width} × ${canvasSize.height}). Choose WebM or set both dimensions to even numbers in project settings.`
+					: `MP4 needs even dimensions, and this canvas scales to ${output.width} × ${output.height}. Choose WebM or another size.`,
 			};
 		}
 		if (allowMissing === true) return null;
@@ -267,7 +270,7 @@ export class RendererManager {
 		onStage?: (stage: string) => void;
 		signal: AbortSignal;
 	}): Promise<ExportResult> {
-		const { format, quality, fps, includeAudio, sceneId, allowMissing } = options;
+		const { format, quality, fps, includeAudio, sceneId, allowMissing, size } = options;
 		const mediaFailure = new AbortController();
 		const signal = AbortSignal.any([callerSignal, mediaFailure.signal, rendererDevice.signal]);
 		let audioBlocks: ReturnType<typeof mixTimelineAudio> | undefined;
@@ -319,7 +322,7 @@ export class RendererManager {
 			}
 			signal.throwIfAborted();
 
-			const preflight = this.checkExport({ format, allowMissing, includeAudio, scene: exported, scenes, canvasSize, duration });
+			const preflight = this.checkExport({ format, allowMissing, includeAudio, scene: exported, scenes, canvasSize, size, duration });
 			if (preflight) return preflight;
 			if (rendererDevice.status.state !== "idle") rendererDevice.requireReady();
 			const mediaAssets = media.getAssets();
@@ -386,6 +389,7 @@ export class RendererManager {
 			const exporter = new SceneExporter({
 				width: canvasSize.width,
 				height: canvasSize.height,
+				renderScale: exportOutputSize({ canvas: canvasSize, size }).scale,
 				fps: exportFps,
 				format,
 				quality,

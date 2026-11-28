@@ -18,6 +18,7 @@ bun run agent status
 bun run agent selection
 bun run agent notes
 bun run agent export --name "Final" --format mp4
+bun run agent export --name "Review" --preview
 bun run agent frames --times 0,1,2 --width 960
 bun run agent transcript-view --project-id ID --timeline
 bun run agent narration-plan --project-id ID --clip CLIP_ID --new-media MEDIA_ID --json
@@ -383,7 +384,8 @@ A preset is a setting of the clip (the params `animation.in`, `animation.inDurat
 
 ## Exports for agents
 
-Write `export-request.json` to get a finished video file without a browser download: `{rev:"export-1", name?, format?:"mp4"|"webm", quality?:"low"|"medium"|"high"|"very_high", fps?, includeAudio?, projectId?, allowMissing?}`.
+Write `export-request.json` to get a finished video file without a browser download: `{rev:"export-1", name?, format?:"mp4"|"webm", quality?:"low"|"medium"|"high"|"very_high", fps?, includeAudio?, projectId?, allowMissing?, size?, preview?}`.
+- **Smaller copies for reviews:** `size` is the video's shorter side in pixels, from 144 to 4320. A 1080 × 1920 canvas at `size:540` exports at 540 × 960. Both sides stay even for MP4, and a size at or above the canvas's own changes nothing. `preview:true` means `size:540` and `quality:"low"`, unless they are given. The CLI flags are `--size N` and `--preview`, and the MCP `export_video` takes `size` and `preview`. The result's `width` and `height` are the video's.
 - The CLI gives an open editor for that project the first chance to render. If no tab takes the request within a few seconds, it uses the saved project in a hidden Chrome or Edge and closes the browser when the command ends. Set `BOPENCUT_BROWSER` to choose an installed browser executable. The separate profile lives in `BOPENCUT_DATA/.render-browser` or, if the data folder is read-only, `AGENT_WORKSPACE/.render-browser`.
 - The hidden browser requests a high-performance GPU for both export and frame capture. The CLI prints its graphics adapter vendor once when the browser makes it available. Set `BOPENCUT_RENDER_GPU=low-power` in the CLI environment or `apps/web/.env.local` to use the browser's usual adapter selection, including when the hidden browser cannot start with the default. The accepted values are `high-performance` (default) and `low-power`.
 - The CLI uses the same request and result formats inside a job folder and returns the final JSON on stdout. The workspace request and result files belong to the direct-file workflow. One CLI render runs against a server at a time. Others wait in a queue, first come first served, up to 8 of them; a ninth request is refused. While a render waits, its stage reads `waiting in the render queue (N ahead; the running render is …)`. That stage changes as the running render progresses, so `--timeout` counts the wait as progress. A waiting render leaves the queue when its command is interrupted. The MCP tools `export_video` and `get_frames` use the same queue, so agents need no locks of their own. Interrupt it with Ctrl+C. The hidden browser needs graphics, a video encoder for export, and media it can read without retrieval or GIF conversion. Open the editor to render inputs that require those steps.

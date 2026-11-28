@@ -140,7 +140,8 @@ async function describe(job: Job, { workspace, filesRoot }: JobContext): Promise
 }
 
 export async function exportVideo(args: Args, projectId: string, context: JobContext): Promise<JobAnswer> {
-	const parsed = parseExportRequest({ rev: "mcp", name: args.name, format: args.format, quality: args.quality, fps: args.fps, allowMissing: args.allowMissing });
+	const parsed = parseExportRequest({ rev: "mcp", name: args.name, format: args.format, quality: args.quality, fps: args.fps, allowMissing: args.allowMissing,
+		size: args.size, preview: args.preview });
 	if (!parsed || typeof parsed === "string") throw new Error(parsed ?? "Invalid export.");
 	const { rev: _rev, ...request } = parsed;
 	const job = await startRender("export", projectId, request, context);

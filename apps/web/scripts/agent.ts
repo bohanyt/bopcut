@@ -57,7 +57,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 				json: { type: "boolean" } }),
 			...(command === "narration-plan" && { clip: { type: "string" }, "new-media": { type: "string" },
 				json: { type: "boolean" }, from: { type: "string" }, to: { type: "string" }, all: { type: "boolean" } }),
-			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" } }),
+			...(command === "export" && { name: { type: "string" }, format: { type: "string" }, quality: { type: "string" }, fps: { type: "string" },
+				size: { type: "string" }, preview: { type: "boolean" } }),
 			...(command === "frames" && { times: { type: "string" }, width: { type: "string" }, element: { type: "string", multiple: true }, elements: { type: "string" }, note: { type: "string" }, "scene-id": { type: "string" } }),
 		},
 	});
@@ -172,7 +173,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 	if (rangeView) request = rangeView;
 	const allowMissing = values["allow-missing"] === true;
 	if (command === "export") {
-		const parsed = parseExportRequest({ rev: "cli", name: values.name, format: values.format, quality: values.quality, fps: values.fps === undefined ? undefined : Number(values.fps), allowMissing });
+		const parsed = parseExportRequest({ rev: "cli", name: values.name, format: values.format, quality: values.quality, fps: values.fps === undefined ? undefined : Number(values.fps), allowMissing,
+			size: values.size === undefined ? undefined : Number(values.size), preview: values.preview === true ? true : undefined });
 		if (!parsed || typeof parsed === "string") throw new Error(parsed ?? "Invalid export.");
 		const { rev: _rev, ...options } = parsed;
 		request = options;
