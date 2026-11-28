@@ -25,6 +25,12 @@ test("the local CLI reads the last project and filters selection without writing
 		expect(await (await call("selection")).json()).toEqual({ selection: { projectId: "demo", playhead: 3 } });
 		expect(await (await call("selection", "?projectId=other")).json()).toEqual({ selection: null });
 		expect(await fs.readdir(workspace)).toEqual(before);
+		// A selection file cut short by a write, or not an object, is no selection rather than an error.
+		for (const broken of ['{"projectId": "de', "[]", "3"]) {
+			await fs.writeFile(path.join(workspace, "selection.json"), broken);
+			const response = await call("selection");
+			expect([response.status, await response.json()]).toEqual([200, { selection: null }]);
+		}
 	} finally {
 		if (data === undefined) delete process.env.BOPENCUT_DATA;
 		else process.env.BOPENCUT_DATA = data;
