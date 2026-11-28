@@ -8,6 +8,7 @@ import { handleCli } from "./cli-api";
 import { launchBrowser } from "./hidden-browser";
 import { type DraftContext, draftResult, MAX_DRAFT_OPS, MAX_DRAFT_WAIT_SECONDS, submitDraft } from "./mcp-drafts";
 import { cancelJob, exportVideo, type JobAnswer, type JobContext, jobStatus, makeVoice, MAX_JOB_WAIT_SECONDS, renderFrames } from "./mcp-jobs";
+import { openHiddenEditor } from "./hidden-editor";
 import { isForeignOrigin } from "./origin";
 import { MAX_FRAMES } from "./render-input";
 import { MAX_VOICE_TEXT } from "./voice";
@@ -21,7 +22,7 @@ const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 const SERVER_INFO = { name: "bopcut", title: "bopcut video editor", version: "0.1.0" };
 const INSTRUCTIONS = "Tools for a local bopcut editor: list projects, then read a project's status, notes, " +
 	"selection and timeline transcript, and plan dead-air cuts. Times are seconds on the root timeline. " +
-	"Change a project with submit_draft: its ops apply in the open editor as one Undo step, which the person can undo. " +
+	"Change a project with submit_draft: its ops apply in the open editor (or a hidden one when no tab is open) as one Undo step, which the person can undo. " +
 	"Put the snapshot's syncedAt from get_status in basedOn, so ops on clips the person changed since are refused. " +
 	"Look at the result with get_frames and export it with export_video; both run as jobs that get_job follows. " +
 	"make_voice, when the editor has a text-to-speech command, speaks narration for a draft.";
@@ -97,7 +98,7 @@ export const MCP_TOOLS = [
 		name: "submit_draft", title: "Send a draft",
 		description: "Changes a project: the editor applies the ops in order as one Undo step and selects what changed. " +
 			"The ops are those of draft.json in the bopcut agent guide (AGENT.md), such as set, delete, add, cut, animate and note; " +
-			"the ops of plan_silence_cuts go in as they are. Drafts apply only while the project is open in the editor. " +
+			"the ops of plan_silence_cuts go in as they are. With no editor tab of the project open, a hidden editor opens the saved project and applies it there. " +
 			"Waits a few seconds for the result; get_draft_result reads it later.",
 		inputSchema: {
 			type: "object", additionalProperties: false, required: ["projectId", "ops"],
@@ -206,12 +207,15 @@ const structured = ({ value, isError, pictures = [] }: JobAnswer) => ({
 		...pictures.map((data) => ({ type: "image" as const, data, mimeType: "image/jpeg" as const }))] }),
 });
 
+/** Drafts for a project no tab has open go to a hidden editor, unless BOPENCUT_HIDDEN_EDITOR is off. */
+const hiddenEditorEnabled = () => process.env.BOPENCUT_HIDDEN_EDITOR !== "off";
+
 /** How long submit_draft waits for the open editor to apply a draft (it looks every 2 s). */
 const DRAFT_WAIT_MS = 15_000;
 /** How long a render tool waits before it answers with its job: a short one is done by then. */
 const JOB_WAIT_MS = 20_000;
 type ToolContext = DraftContext & JobContext;
-export type McpOptions = Partial<Pick<ToolContext, "editorOpen" | "waitMs" | "launch" | "jobWaitMs" | "filesRoot" | "tts">>;
+export type McpOptions = Partial<Pick<ToolContext, "editorOpen" | "openHidden" | "waitMs" | "launch" | "jobWaitMs" | "filesRoot" | "tts">>;
 
 /**
  * The open tabs are known to the agent routes, so they are asked over HTTP, as the CLI asks them,
@@ -376,6 +380,9 @@ export async function handleMcp(req: Request, workspace: string, options: McpOpt
 	const context: ToolContext = {
 		workspace, signal: req.signal, origin: url.origin, waitMs: options.waitMs ?? DRAFT_WAIT_MS,
 		editorOpen: options.editorOpen ?? ((projectId) => askEditorOpen(url.origin, projectId, req.signal)),
+		openHidden: "openHidden" in options ? options.openHidden : hiddenEditorEnabled()
+			? (projectId) => openHiddenEditor({ projectId, origin: url.origin, workspace })
+			: null,
 		launch: options.launch ?? launchBrowser, jobWaitMs: options.jobWaitMs ?? JOB_WAIT_MS,
 		filesRoot: options.filesRoot ?? path.resolve(process.env.AGENT_FILES_ROOT ?? workspace),
 		tts: "tts" in options ? options.tts : process.env.BOPENCUT_TTS,
