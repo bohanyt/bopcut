@@ -37,7 +37,7 @@ function harness(initial: SceneTracks, selected: ElementRef[]) {
 		selection: {
 			getSelected: () => selected,
 			isSelected: (ref) => selected.some((s) => s.elementId === ref.elementId && s.trackId === ref.trackId),
-			select: () => {}, handleClick: () => {}, clearKeyframeSelection: () => {},
+			select: () => {}, handleClick: () => {}, selectMany: (refs) => { selected.splice(0, selected.length, ...refs); }, clearKeyframeSelection: () => {},
 		},
 		playback: { getCurrentTime: () => ZERO_MEDIA_TIME },
 		timeline: { moveElements: (args) => { commits.push(args); }, beginPreviewGesture: () => ({ finish: () => {}, cancel: () => {} }) },
@@ -45,11 +45,11 @@ function harness(initial: SceneTracks, selected: ElementRef[]) {
 	};
 	const controller = new ElementInteractionController({ depsRef: { current: deps } });
 	cleanup = () => { controller.destroy(); if (prevDoc) Object.defineProperty(globalThis, "document", prevDoc); else Reflect.deleteProperty(globalThis, "document"); };
-	const mouseDown = (id: string) => {
+	const mouseDown = (id: string, keys: { ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean } = {}) => {
 		const el = tracks.main.elements.find((e) => e.id === id)!;
 		controller.onElementMouseDown({
 			event: {
-				button: 0, clientX: 100, clientY: 100, metaKey: false, ctrlKey: false, shiftKey: false,
+				button: 0, clientX: 100, clientY: 100, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...keys,
 				stopPropagation: () => {},
 				currentTarget: { ownerDocument: page, getBoundingClientRect: () => ({ left: 100, top: 100 }) },
 			} as unknown as ReactMouseEvent,
@@ -106,4 +106,18 @@ test("the drag view stays the same object while what it shows is the same, and t
 	// Release, so the drag's timeline gesture ends with the test.
 	h.dragAndUp();
 	expect(h.idle()).toBe(true);
+});
+
+test("Ctrl+Shift+click picks every clip on the track and drags them together; with Alt it adds the track", () => {
+	const selected: ElementRef[] = [];
+	const h = harness(scene([video("a"), video("b", 30_000), video("c", 60_000)]), selected);
+	h.mouseDown("b", { ctrlKey: true, shiftKey: true });
+	expect(selected.map(({ elementId }) => elementId)).toEqual(["a", "b", "c"]);
+	h.dragAndUp();
+	expect((h.commits[0] as { moves: { elementId: string }[] }).moves.map(({ elementId }) => elementId).sort()).toEqual(["a", "b", "c"]);
+
+	const kept: ElementRef[] = [{ trackId: "captions", elementId: "cap" }, { trackId: "main", elementId: "a" }];
+	const h2 = harness(scene([video("a"), video("b", 30_000)]), kept);
+	h2.mouseDown("a", { ctrlKey: true, shiftKey: true, altKey: true });
+	expect(kept).toEqual([{ trackId: "captions", elementId: "cap" }, { trackId: "main", elementId: "a" }, { trackId: "main", elementId: "b" }]);
 });

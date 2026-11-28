@@ -8,7 +8,8 @@ import {
 	serializeKeybindingsState,
 } from "../persistence";
 
-const ADDED_AFTER_11 = { "ctrl+x": "cut-selected", "]": "select-right-of-playhead", "[": "select-left-of-playhead", a: "deselect-all" };
+const ADDED_IN_15 = { "shift+]": "select-right-on-selected-tracks", "shift+[": "select-left-on-selected-tracks" };
+const ADDED_AFTER_11 = { "ctrl+x": "cut-selected", "]": "select-right-of-playhead", "[": "select-left-of-playhead", a: "deselect-all", ...ADDED_IN_15 };
 
 describe("keybinding persistence", () => {
 	let warnSpy: ReturnType<typeof mock>;
@@ -277,9 +278,10 @@ describe("the shuttle keys of version 14", () => {
 	test("J, K and L become the shuttle and the 1 s steps move to Shift, unless the user changed those keys", () => {
 		expect(migrate({ j: "seek-backward", k: "toggle-play", l: "seek-forward", space: "toggle-play" })).toEqual({
 			j: "shuttle-backward", k: "shuttle-stop", l: "shuttle-forward", "shift+j": "seek-backward", "shift+l": "seek-forward", space: "toggle-play",
+			...ADDED_IN_15,
 		});
 		expect(migrate({ l: "split", k: "undo", "shift+l": "redo", j: "seek-backward" })).toEqual({
-			l: "split", k: "undo", "shift+l": "redo", j: "shuttle-backward", "shift+j": "seek-backward",
+			l: "split", k: "undo", "shift+l": "redo", j: "shuttle-backward", "shift+j": "seek-backward", ...ADDED_IN_15,
 		});
 	});
 });

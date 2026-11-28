@@ -143,6 +143,14 @@ export const ACTIONS = {
 		description: en["shortcuts.action.select-left-of-playhead"],
 		category: "selection",
 	},
+	"select-right-on-selected-tracks": {
+		description: en["shortcuts.action.select-right-on-selected-tracks"],
+		category: "selection",
+	},
+	"select-left-on-selected-tracks": {
+		description: en["shortcuts.action.select-left-on-selected-tracks"],
+		category: "selection",
+	},
 	"cancel-interaction": {
 		description: en["shortcuts.action.cancel-interaction"],
 		category: "controls",
@@ -244,6 +252,8 @@ const ACTION_DEFAULT_SHORTCUTS = [
 	["select-all", ["ctrl+a"]],
 	["select-right-of-playhead", ["]"]],
 	["select-left-of-playhead", ["["]],
+	["select-right-on-selected-tracks", ["shift+]"]],
+	["select-left-on-selected-tracks", ["shift+["]],
 	["cancel-interaction", ["escape"]],
 	["deselect-all", ["a"]],
 	["duplicate-selected", ["ctrl+d"]],

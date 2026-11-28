@@ -425,6 +425,17 @@ export function useEditorActions() {
 		undefined,
 	);
 
+	// On the tracks of the clips selected now (Ctrl+Shift+click picks a whole track); with none, on every track.
+	const besideOnSelectedTracks = (side: "left" | "right") => {
+		const picked = new Set(editor.selection.getSelectedElements().map(({ trackId }) => trackId));
+		setElementSelection({ elements: elementsBesidePlayhead({
+			tracks: editor.scenes.getActiveScene().tracks, time: editor.playback.getCurrentTime(), side,
+			...(picked.size && { onTracks: picked }),
+		}) });
+	};
+	useActionHandler("select-right-on-selected-tracks", () => besideOnSelectedTracks("right"), undefined);
+	useActionHandler("select-left-on-selected-tracks", () => besideOnSelectedTracks("left"), undefined);
+
 	useActionHandler(
 		"select-left-of-playhead",
 		() => setElementSelection({ elements: elementsBesidePlayhead({ tracks: editor.scenes.getActiveScene().tracks, time: editor.playback.getCurrentTime(), side: "left" }) }),

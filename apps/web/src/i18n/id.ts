@@ -239,6 +239,8 @@ export const id = {
 	"shortcuts.action.select-all": "Pilih semua elemen",
 	"shortcuts.action.select-right-of-playhead": "Pilih elemen di kanan dan di bawah playhead",
 	"shortcuts.action.select-left-of-playhead": "Pilih elemen di kiri dan di bawah playhead",
+	"shortcuts.action.select-right-on-selected-tracks": "Sama, hanya di track klip terpilih (Ctrl+Shift+klik klip memilih track-nya)",
+	"shortcuts.action.select-left-on-selected-tracks": "Pilih di kiri dan di bawah playhead, hanya di track klip terpilih",
 	"shortcuts.action.split": "Belah semua elemen di playhead",
 	"shortcuts.action.split-left": "Belah elemen terpilih dan hapus bagian kiri",
 	"shortcuts.action.split-right": "Belah elemen terpilih dan hapus bagian kanan",
