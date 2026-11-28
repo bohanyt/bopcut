@@ -593,6 +593,7 @@ export const en = {
 	"properties.removeMaskPoints": "Delete selected points",
 	"properties.removeStroke": "Remove stroke",
 	"properties.selected": "{count} elements selected.",
+	"properties.volumeAll": "Volume of {count} clips, each from its own level (drag dB)",
 	"properties.spacing": "Spacing",
 	"properties.speed": "Speed",
 	"properties.speedOverlap": "This speed would overlap the next clip. Enable Ripple or make room on the track.",

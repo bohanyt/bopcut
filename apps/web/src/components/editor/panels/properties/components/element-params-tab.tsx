@@ -13,6 +13,7 @@ import {
 	type ElementParamDefinition,
 } from "@/params/registry";
 import type { TimelineElement } from "@/timeline";
+import { TICKS_PER_SECOND } from "@/wasm";
 
 export function ElementParamsTab({
 	element,
@@ -92,6 +93,7 @@ function ElementParamField({
 		<PropertyParamField
 			param={param}
 			value={resolvedValue}
+			clipSeconds={element.duration / TICKS_PER_SECOND}
 			onPreview={animatedParam.onPreview}
 			onCommit={animatedParam.onCommit}
 			keyframe={

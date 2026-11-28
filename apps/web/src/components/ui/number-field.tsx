@@ -105,7 +105,8 @@ interface NumberFieldProps
 	icon?: React.ReactNode;
 	suffix?: string;
 	suffixClassName?: string;
-	dragSensitivity?: DragSensitivity;
+	/** A named speed, or how much one pixel of dragging changes the value. */
+	dragSensitivity?: DragSensitivity | number;
 	scrubRanges?: readonly ScrubRange[];
 	scrubClamp?: ScrubClamp;
 	onScrub?: (value: number) => void;
@@ -202,7 +203,7 @@ function NumberField({
 							min: scrubClamp?.min,
 							max: scrubClamp?.max,
 						})
-					: startValue + pixelDelta * DRAG_SENSITIVITIES[dragSensitivity];
+					: startValue + pixelDelta * (typeof dragSensitivity === "number" ? dragSensitivity : DRAG_SENSITIVITIES[dragSensitivity]);
 				onScrub(newValue);
 			},
 			onCommit: () => onScrubEnd?.(),

@@ -217,6 +217,9 @@ const audioElementParams: ElementParamDefinition[] = [
 		min: VOLUME_DB_MIN,
 		max: VOLUME_DB_MAX,
 		step: 0.01,
+		shortLabel: "dB",
+		scrubPerPixel: 0.1,
+		slider: { detent: 0 },
 	},
 	{
 		key: "fadeIn",
@@ -227,6 +230,9 @@ const audioElementParams: ElementParamDefinition[] = [
 		max: 30,
 		step: 0.01,
 		keyframable: false,
+		shortLabel: "↗",
+		scrubPerPixel: 0.01,
+		slider: { halfOfClip: true },
 	},
 	{
 		key: "fadeOut",
@@ -237,6 +243,9 @@ const audioElementParams: ElementParamDefinition[] = [
 		max: 30,
 		step: 0.01,
 		keyframable: false,
+		shortLabel: "↘",
+		scrubPerPixel: 0.01,
+		slider: { halfOfClip: true },
 	},
 	{
 		key: "muted",

@@ -15,6 +15,8 @@ import {
 } from "@/utils/math";
 import { SectionField } from "@/components/section";
 import { NumberField } from "@/components/ui/number-field";
+import { Slider } from "@/components/ui/slider";
+import type { PreviewGesture } from "@/core/managers/timeline-manager";
 import { Switch } from "@/components/ui/switch";
 import { ColorPicker } from "@/components/ui/color-picker";
 import { FontPicker } from "@/components/ui/font-picker";
@@ -34,6 +36,7 @@ import { useCommittedRef } from "@/hooks/use-committed-ref";
 export function PropertyParamField({
 	param,
 	value,
+	clipSeconds,
 	onPreview,
 	onCommit,
 	keyframe,
@@ -47,6 +50,8 @@ export function PropertyParamField({
 		isDisabled: boolean;
 		onToggle: () => void;
 	};
+	/** The clip's length in seconds, for sliders limited to half of it. */
+	clipSeconds?: number;
 }) {
 	const { locale, t } = useI18n();
 	const label = t(param.labelKey);
@@ -67,6 +72,7 @@ export function PropertyParamField({
 			<ParamInput
 				param={param}
 				value={value}
+				clipSeconds={clipSeconds}
 				onPreview={onPreview}
 				onCommit={onCommit}
 			/>
@@ -77,11 +83,13 @@ export function PropertyParamField({
 function ParamInput({
 	param,
 	value,
+	clipSeconds,
 	onPreview,
 	onCommit,
 }: {
 	param: ParamDefinition;
 	value: ParamValue;
+	clipSeconds?: number;
 	onPreview: (value: ParamValue) => void;
 	onCommit: () => void;
 }) {
@@ -95,6 +103,7 @@ function ParamInput({
 				param={param}
 				label={label}
 				value={typeof value === "number" ? value : Number(value)}
+				clipSeconds={clipSeconds}
 				onPreview={onPreview}
 				onCommit={onCommit}
 			/>
@@ -238,6 +247,7 @@ function NumberParamField({
 	param,
 	label,
 	value,
+	clipSeconds,
 	onPreview,
 	onCommit,
 }: {
@@ -245,6 +255,7 @@ function NumberParamField({
 	/** The field's accessible name: the short label shown next to it is often a single letter. */
 	label: string;
 	value: number;
+	clipSeconds?: number;
 	onPreview: (value: number) => void;
 	onCommit: () => void;
 }) {
@@ -286,12 +297,16 @@ function NumberParamField({
 		onCommit();
 	};
 
-	return (
+	const slider = param.slider;
+	const sliderMax = slider?.halfOfClip && clipSeconds
+		? Math.max(min + step, Math.min(max ?? Infinity, (clipSeconds / 2) * displayMultiplier))
+		: max;
+	const field = (
 		<NumberField
 			icon={param.shortLabel}
 			aria-label={label}
 			value={draft.displayValue}
-			dragSensitivity="slow"
+			dragSensitivity={param.scrubPerPixel ?? "slow"}
 			isDefault={value === param.default}
 			onFocus={draft.onFocus}
 			onChange={draft.onChange}
@@ -301,6 +316,59 @@ function NumberParamField({
 			onScrubEnd={onCommit}
 			beginScrubGesture={timeline.beginPreviewGesture}
 			onReset={handleReset}
+		/>
+	);
+	if (!slider || sliderMax === undefined) return field;
+	return (
+		<div className="flex flex-col gap-2">
+			{field}
+			<ParamSlider
+				label={label}
+				min={min}
+				max={sliderMax}
+				step={step}
+				value={displayValue}
+				detent={slider.detent}
+				onSlide={previewFromDisplay}
+				onCommit={onCommit}
+				onReset={handleReset}
+			/>
+		</div>
+	);
+}
+
+/**
+ * A slider for a number: one drag is one preview committed on release (one Undo step); near the
+ * detent it settles on it, and a double-click resets the value.
+ */
+function ParamSlider({ label, min, max, step, value, detent, onSlide, onCommit, onReset }: {
+	label: string; min: number; max: number; step: number; value: number; detent?: number;
+	onSlide: (value: number) => void; onCommit: () => void; onReset: () => void;
+}) {
+	const { timeline } = useEditor();
+	const gesture = useRef<PreviewGesture | null>(null);
+	const settle = (next: number) => (detent !== undefined && Math.abs(next - detent) <= (max - min) * 0.02 ? detent : next);
+	const end = () => {
+		gesture.current?.finish();
+		gesture.current = null;
+	};
+	return (
+		<Slider
+			aria-label={label}
+			min={min}
+			max={max}
+			step={step}
+			value={[Math.max(min, Math.min(max, value))]}
+			onPointerDown={() => {
+				end();
+				gesture.current = timeline.beginPreviewGesture(() => { gesture.current = null; });
+			}}
+			onValueChange={([next]) => onSlide(settle(next))}
+			onValueCommit={() => {
+				onCommit();
+				end();
+			}}
+			onDoubleClick={onReset}
 		/>
 	);
 }

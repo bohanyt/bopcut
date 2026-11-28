@@ -595,6 +595,7 @@ export const id = {
 	"properties.removeMaskPoints": "Hapus titik yang dipilih",
 	"properties.removeStroke": "Hapus garis tepi",
 	"properties.selected": "{count} elemen dipilih.",
+	"properties.volumeAll": "Volume {count} klip, masing-masing dari levelnya (geser dB)",
 	"properties.spacing": "Jarak",
 	"properties.speed": "Kecepatan",
 	"properties.speedOverlap": "Kecepatan ini akan membuat klip bertumpang tindih dengan klip berikutnya. Aktifkan Ripple atau beri ruang pada trek.",

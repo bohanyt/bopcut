@@ -195,6 +195,13 @@ export interface NumberParamDefinition<TKey extends string = string>
 	unit?: "percent";
 	/** Short label shown as the scrub handle icon in the number field (e.g. "W", "R"). */
 	shortLabel?: string;
+	/** How much one pixel of dragging the scrub handle changes the shown value (default 0.5). */
+	scrubPerPixel?: number;
+	/**
+	 * A slider under the field: `detent` is a value the thumb settles on when dragged near it, and
+	 * `halfOfClip` limits the slider to half the clip's length (fades).
+	 */
+	slider?: { detent?: number; halfOfClip?: boolean };
 }
 
 export interface BooleanParamDefinition<TKey extends string = string>
