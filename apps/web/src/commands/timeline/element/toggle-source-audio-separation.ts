@@ -3,6 +3,7 @@ import { Command, type CommandResult } from "@/commands/base-command";
 import {
 	buildSeparatedAudioElement,
 	canExtractSourceAudio,
+	isSeparatedAudioOf,
 	isSourceAudioSeparated,
 } from "@/timeline/audio-separation";
 import {
@@ -52,9 +53,14 @@ export class ToggleSourceAudioSeparationCommand extends Command {
 		const videoElement: VideoElement = sourceElement;
 
 		if (isSourceAudioSeparated({ element: videoElement })) {
+			// The video plays its own sound again, so the separated clip goes: both would play.
+			const audio = this.savedState.audio.map((track) => {
+				const elements = track.elements.filter((element) => !isSeparatedAudioOf({ audio: element, video: videoElement }));
+				return elements.length === track.elements.length ? track : { ...track, elements };
+			});
 			editor.timeline.updateTracks(
 				updateSourceAudioEnabled({
-					tracks: this.savedState,
+					tracks: { ...this.savedState, audio },
 					trackId: this.params.trackId,
 					elementId: this.params.elementId,
 					isSourceAudioEnabled: true,

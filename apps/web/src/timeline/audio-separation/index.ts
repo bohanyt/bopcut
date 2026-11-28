@@ -1,6 +1,7 @@
 import { cloneAnimations } from "@/animation";
 import type { ElementAnimations } from "@/animation/types";
 import type { MediaAsset } from "@/media/types";
+import { getSourceSpanAtClipTime } from "@/retime";
 import { DEFAULTS } from "@/timeline/defaults";
 import type {
 	CreateUploadAudioElement,
@@ -43,6 +44,26 @@ export function canRecoverSourceAudio(
 	element: TimelineElement,
 ): element is VideoElement {
 	return element.type === "video" && isSourceAudioSeparated({ element });
+}
+
+/**
+ * Whether an audio clip is the separated audio of a video clip: the same file, starting inside the
+ * video clip at the source moment the video plays there. That is the clip Extract audio made, or a
+ * piece of it still in sync after a split or trim; a clip moved elsewhere is no longer one.
+ */
+export function isSeparatedAudioOf({
+	audio,
+	video,
+}: {
+	audio: TimelineElement;
+	video: VideoElement;
+}): boolean {
+	if (audio.type !== "audio" || audio.sourceType !== "upload" || audio.mediaId !== video.mediaId) return false;
+	const offset = audio.startTime - video.startTime;
+	if (offset < 0 || offset >= video.duration) return false;
+	const expected = video.trimStart + getSourceSpanAtClipTime({ clipTime: offset, retime: video.retime });
+	// Splits round the source point to a tick.
+	return Math.abs(audio.trimStart - expected) <= 2;
 }
 
 export function canToggleSourceAudio(
