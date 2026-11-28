@@ -319,7 +319,6 @@ export const id = {
 	"assets.descending": "turun",
 	"assets.dragFiles": "Seret dan lepas video, foto, dan file audio ke sini",
 	"assets.end": "Akhir",
-	"assets.exportClips": "Ekspor klip",
 	"assets.fetching": "Mengunduh…",
 	"assets.fetchingSection": "Sedang mengunduh bagian ini. Waktunya kira-kira sama dengan durasi bagian tersebut.",
 	"assets.fileSize": "Ukuran file",
