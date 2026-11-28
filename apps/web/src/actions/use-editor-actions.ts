@@ -36,6 +36,7 @@ import { isCompoundElement } from "@/timeline/compound";
 import { elementsBesidePlayhead } from "@/timeline/beside-playhead";
 import { toast } from "sonner";
 import { nextShuttleRate, shuttleLabel } from "./shuttle";
+import { planPasteAttributes } from "@/clipboard/paste-attributes";
 
 export function useEditorActions() {
 	const editor = useEditor();
@@ -553,6 +554,30 @@ export function useEditorActions() {
 			if (editor.selection.getActiveSelectionKind() !== "elements" || selectedElements.length === 0) return;
 			if (!editor.clipboard.copy()) return;
 			editor.timeline.deleteElements({ elements: selectedElements });
+		},
+		undefined,
+	);
+
+	useActionHandler(
+		"paste-attributes",
+		() => {
+			const t = getBrowserTranslator();
+			const entry = editor.clipboard.getEntry();
+			const source = entry?.type === "elements" ? entry.items[0]?.element : undefined;
+			if (!source) {
+				toast.error(t("clipboard.attributesNoSource"));
+				return;
+			}
+			const targets = editor.timeline.getElementsWithTracks({ elements: editor.selection.getSelectedElements() });
+			const plan = planPasteAttributes({ source, targets });
+			if (!plan.keys.length) {
+				toast.info(t("clipboard.attributesNothing"));
+				return;
+			}
+			editor.timeline.updateElements({ updates: plan.updates });
+			toast.success(t("clipboard.attributesPasted", { updated: plan.updated.length, skipped: plan.skipped.length }), {
+				description: plan.keys.join(", "),
+			});
 		},
 		undefined,
 	);

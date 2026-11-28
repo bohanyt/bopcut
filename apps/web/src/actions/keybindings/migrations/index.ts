@@ -11,6 +11,7 @@ import { v11ToV12 } from "./v11-to-v12";
 import { v12ToV13 } from "./v12-to-v13";
 import { v13ToV14 } from "./v13-to-v14";
 import { v14ToV15 } from "./v14-to-v15";
+import { v15ToV16 } from "./v15-to-v16";
 
 type MigrationFn = ({ state }: { state: unknown }) => unknown;
 
@@ -28,9 +29,10 @@ const migrations: Record<number, MigrationFn> = {
 	12: v12ToV13,
 	13: v13ToV14,
 	14: v14ToV15,
+	15: v15ToV16,
 };
 
-export const CURRENT_VERSION = 15;
+export const CURRENT_VERSION = 16;
 
 export function runMigrations({
 	state,
