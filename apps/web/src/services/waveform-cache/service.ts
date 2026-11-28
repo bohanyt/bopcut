@@ -37,6 +37,7 @@ export class WaveformCache {
 	private persisted = new IndexedDBAdapter<SourceWaveformSummary>({
 		dbName: "bopencut-waveform-cache",
 		storeName: "summaries",
+		keepOpen: true,
 	});
 
 	getSourceSummary(args: GetSourceWaveformSummaryArgs): Promise<SourceWaveformSummary> {
