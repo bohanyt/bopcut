@@ -48,11 +48,14 @@ function setup() {
 
 /** A focused control, reached with the keyboard (Tab) or with a click. */
 function focused(html: string, { byKeyboard }: { byKeyboard: boolean }) {
-	const holder = dom.document.body.appendChild(dom.document.createElement("div"));
+	const holder = dom.document.createElement("div");
+	dom.document.body.appendChild(holder);
 	holder.innerHTML = html;
 	const element = holder.firstElementChild as unknown as HTMLElement;
 	const matches = element.matches.bind(element);
-	element.matches = (selector: string) => (selector === ":focus-visible" ? byKeyboard : matches(selector));
+	Object.defineProperty(element, "matches", {
+		value: (selector: string) => (selector === ":focus-visible" ? byKeyboard : matches(selector)),
+	});
 	element.focus();
 	expect(dom.document.activeElement as unknown).toBe(element);
 	return element;
