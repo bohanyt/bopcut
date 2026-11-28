@@ -35,6 +35,29 @@ type Job = {
 let active: Job | undefined;
 let reserved = false;
 export const isCliRenderRunning = () => reserved;
+
+/** How many CLI renders may wait for the one that runs. */
+export const MAX_RENDER_QUEUE = 8;
+type Waiting = { grant(): void; update(stage: string): void };
+/** Renders that wait for the running one, first come first served. */
+const queue: Waiting[] = [];
+let runningStage: string | undefined;
+/** Tells every waiting render its place and what the running one does, so its own timeout keeps counting progress. */
+function announceQueue() {
+	queue.forEach((waiting, index) => waiting.update(
+		`waiting in the render queue (${index + 1} ahead${runningStage ? `; the running render is ${runningStage}` : ""})`));
+}
+/** Ends the running render's hold: the next waiting render starts, or the slot is free. */
+function release() {
+	runningStage = undefined;
+	const next = queue.shift();
+	if (!next) {
+		reserved = false;
+		return;
+	}
+	// The next render announces the new places when it reports its first stage.
+	next.grant();
+}
 const requestBody = (req: Request, signal: AbortSignal) =>
 	new Response(req.body?.pipeThrough(new TransformStream(), { signal }), { headers: req.headers });
 
@@ -67,13 +90,87 @@ export async function renderRequest(req: Request, kind: Exclude<Kind, "view">, w
 	return json(request, { headers: { "Cache-Control": "no-store" } });
 }
 
-export async function startRender(req: Request, workspace: string, resolveProject: () => Promise<string>,
-	{ grace = 2500, seen = presenceMs, claim = CLAIM_MS, watchRegistration = 5000, profileRoot }: {
-		grace?: number; seen?: number; claim?: number; watchRegistration?: number; profileRoot?: string;
-	} = {}) {
-	if (reserved) return json({ error: "A CLI render is already running." }, { status: 409 });
+type RenderOptions = { grace?: number; seen?: number; claim?: number; watchRegistration?: number; profileRoot?: string };
+
+/**
+ * Starts a CLI render, or puts it in the queue behind the one that runs: the queued render's stream
+ * reports its place until its turn comes, then carries the render as if it had started then.
+ */
+export async function startRender(req: Request, workspace: string, resolveProject: () => Promise<string>, options: RenderOptions = {}) {
 	if (isReviewRunning()) return json({ error: "An export review is running." }, { status: 409 });
-	reserved = true;
+	if (!reserved) {
+		reserved = true;
+		return beginRender(req, workspace, resolveProject, options);
+	}
+	if (queue.length >= MAX_RENDER_QUEUE) return json({ error: `The render queue is full (${MAX_RENDER_QUEUE} waiting). Retry later.` }, { status: 409 });
+	let body: string;
+	try {
+		body = await requestBody(req, AbortSignal.any([req.signal, AbortSignal.timeout(10_000)])).text();
+	} catch {
+		return json({ error: "Invalid render request." }, { status: 400 });
+	}
+	let output!: ReadableStreamDefaultController<Uint8Array>;
+	let done = false;
+	const send = (event: object) => {
+		if (!done) output.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
+	};
+	const finish = () => {
+		if (done) return;
+		done = true;
+		const index = queue.indexOf(waiting);
+		if (index >= 0) {
+			queue.splice(index, 1);
+			announceQueue();
+		}
+		try { output.close(); } catch { /* Client disconnected. */ }
+	};
+	let last: string | undefined;
+	const waiting: Waiting = {
+		update(stage) {
+			if (stage === last) return;
+			last = stage;
+			send({ stage });
+		},
+		async grant() {
+			if (done || req.signal.aborted) {
+				done = true;
+				release();
+				return;
+			}
+			const started = await beginRender(new Request(req.url, { method: "POST", headers: req.headers, body, signal: req.signal }),
+				workspace, resolveProject, options);
+			if (!started.ok || !started.body) {
+				const answer = await started.json().catch(() => null);
+				send({ result: { error: answer?.error ?? "The render did not start." } });
+				finish();
+				return;
+			}
+			const reader = started.body.getReader();
+			try {
+				for (;;) {
+					const { value, done: ended } = await reader.read();
+					if (ended || done) break;
+					output.enqueue(value);
+				}
+			} catch { /* The render closed its stream. */ }
+			finish();
+		},
+	};
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller) {
+			output = controller;
+			queue.push(waiting);
+			announceQueue();
+			req.signal.addEventListener("abort", finish, { once: true });
+		},
+		cancel: finish,
+	});
+	return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
+}
+
+/** Runs a render that holds the slot (`reserved`); the slot passes on when it ends. */
+async function beginRender(req: Request, workspace: string, resolveProject: () => Promise<string>,
+	{ grace = 2500, seen = presenceMs, claim = CLAIM_MS, watchRegistration = 5000, profileRoot }: RenderOptions) {
 	let running = false;
 	try {
 		const handshake = AbortSignal.any([req.signal, AbortSignal.timeout(10_000)]);
@@ -118,7 +215,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 			req.signal.removeEventListener("abort", close);
 			cleanup = Promise.allSettled(writes).then(() => removeRenderJob(workspace, scratch)).catch(console.error).finally(() => {
 				active = undefined;
-				reserved = false;
+				release();
 				try { stream.close(); } catch { /* Client disconnected. */ }
 			});
 			return cleanup;
@@ -150,6 +247,8 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 				}
 				if (next === stage) return;
 				stage = next;
+				runningStage = next;
+				announceQueue();
 				clearTimeout(deadline);
 				deadline = setTimeout(() => {
 					job.send({ result: { rev, projectId, error: renderTimeoutMessage(timeoutMs, stage) } });
@@ -218,7 +317,7 @@ export async function startRender(req: Request, workspace: string, resolveProjec
 	} catch (error) {
 		return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
 	} finally {
-		if (!running) reserved = false;
+		if (!running) release();
 	}
 }
 

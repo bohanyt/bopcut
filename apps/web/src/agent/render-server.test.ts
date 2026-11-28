@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { renderPresence, renderRequest, renderWorker, startRender } from "./render-server";
+import { MAX_RENDER_QUEUE, renderPresence, renderRequest, renderWorker, startRender } from "./render-server";
 import { profileDirectory, recordOutput, recoverRenderJobs } from "./render-output";
 import { MAX_RANGE_PNG } from "./range-view";
 
@@ -129,7 +129,13 @@ for (const owner of ["visible", "hidden"] as const) {
 			expect(await next()).toEqual({ stage: "waiting for a tab" });
 			expect(await readdir(scratch)).toHaveLength(1);
 			expect(await readdir(scratch)).not.toContain("cli-01234567-0000-0000-0000-012345678901");
-			expect((await startRender(begin(), workspace, async () => "project")).status).toBe(409);
+			// A second render waits in the queue instead of failing; it leaves the queue when its client goes.
+			const queued = new AbortController();
+			const second = await startRender(begin(queued.signal), workspace, async () => "project");
+			const secondReader = second.body!.pipeThrough(new TextDecoderStream()).getReader();
+			expect(JSON.parse((await secondReader.read()).value!).stage).toMatch(/^waiting in the render queue \(1 ahead/);
+			queued.abort();
+			await secondReader.cancel();
 			let claim: Response;
 			if (owner === "hidden") {
 				const offer = await next();
@@ -572,3 +578,35 @@ test("cancelling a job also cancels a stalled result body", async () => {
 		await rm(workspace, { recursive: true, force: true });
 	}
 }, 1500);
+
+test("renders queue behind the running one and start in turn; a full queue is refused", async () => {
+	const workspace = await mkdtemp(path.join(tmpdir(), "agent-render-queue-"));
+	const readers: ReadableStreamDefaultReader<string>[] = [];
+	const open = async (signal?: AbortSignal) => {
+		const response = await startRender(begin(signal), workspace, async () => "project", { grace: 60_000, seen: 60_000 });
+		expect(response.ok).toBe(true);
+		const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+		readers.push(reader);
+		return async () => JSON.parse((await reader.read()).value!);
+	};
+	try {
+		const first = new AbortController();
+		const running = await open(first.signal);
+		expect(await running()).toEqual({ stage: "waiting for a tab" });
+		const second = await open();
+		expect((await second()).stage).toBe("waiting in the render queue (1 ahead; the running render is waiting for a tab)");
+		const third = await open();
+		expect((await third()).stage).toBe("waiting in the render queue (2 ahead; the running render is waiting for a tab)");
+		for (let index = 2; index < MAX_RENDER_QUEUE; index++) await open();
+		expect((await startRender(begin(), workspace, async () => "project")).status).toBe(409);
+
+		// The running render ends: the second starts as a render of its own, and the third moves up.
+		first.abort();
+		expect(await second()).toEqual({ stage: "waiting for a tab" });
+		expect((await third()).stage).toBe("waiting in the render queue (1 ahead; the running render is waiting for a tab)");
+	} finally {
+		for (const reader of readers) await reader.cancel().catch(() => {});
+		await Bun.sleep(50);
+		await rm(workspace, { recursive: true, force: true, maxRetries: 3 });
+	}
+});
