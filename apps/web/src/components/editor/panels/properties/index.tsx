@@ -16,6 +16,7 @@ import { getPropertiesConfig } from "./registry";
 import { cn } from "@/utils/ui";
 import { EmptyView } from "./empty-view";
 import { CaptionProperties } from "@/text/components/caption-properties";
+import { MultiVolumeControl } from "./components/multi-volume";
 
 export function PropertiesPanel() {
 	const editor = useEditor();
@@ -38,6 +39,7 @@ export function PropertiesPanel() {
 		return (
 			<div className="panel bg-background flex h-full flex-col overflow-auto rounded-sm border">
 				{text?.element.type === "text" && <CaptionProperties element={text.element} trackId={text.track.id} presetsOnly />}
+				<MultiVolumeControl refs={selectedElements} />
 				<p className="text-muted-foreground text-sm">
 					{t("properties.selected", { count: selectedElements.length })}
 				</p>
