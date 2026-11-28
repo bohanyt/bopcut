@@ -68,6 +68,7 @@ export const id = {
 	"export.graphicsUnavailable": "Preview dan ekspor tidak tersedia. Coba mulai ulang grafis.",
 	"export.high": "Tinggi - Disarankan",
 	"export.includeAudio": "Sertakan audio saat ekspor",
+	"export.keepsRunning": "Menutup panel ini tidak menghentikan ekspor; videonya terunduh saat selesai. Batal menghentikannya.",
 	"export.low": "Rendah - File paling kecil",
 	"export.medium": "Sedang - Seimbang",
 	"export.missingMedia": "Sebagian media yang digunakan di timeline ini tidak tersedia.",

@@ -66,6 +66,7 @@ export const en = {
 	"export.graphicsUnavailable": "Preview and export are unavailable. Retry graphics initialization.",
 	"export.high": "High - Recommended",
 	"export.includeAudio": "Include audio in export",
+	"export.keepsRunning": "Closing this panel keeps the export going; it downloads when done. Cancel stops it.",
 	"export.low": "Low - Smallest file size",
 	"export.medium": "Medium - Balanced",
 	"export.missingMedia": "Some media used in this timeline are unavailable.",
