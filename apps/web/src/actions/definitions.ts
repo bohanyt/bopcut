@@ -115,6 +115,10 @@ export const ACTIONS = {
 		description: en["shortcuts.action.paste-copied"],
 		category: "editing",
 	},
+	"paste-attributes": {
+		description: en["shortcuts.action.paste-attributes"],
+		category: "editing",
+	},
 	"toggle-snapping": {
 		description: en["shortcuts.action.toggle-snapping"],
 		category: "editing",
@@ -246,6 +250,7 @@ const ACTION_DEFAULT_SHORTCUTS = [
 	["copy-selected", ["ctrl+c"]],
 	["cut-selected", ["ctrl+x"]],
 	["paste-copied", ["ctrl+v"]],
+	["paste-attributes", ["ctrl+shift+v"]],
 	["toggle-snapping", ["n"]],
 	// As in other editors that reveal a clip's keyframed properties with U.
 	["toggle-keyframe-lanes", ["u"]],

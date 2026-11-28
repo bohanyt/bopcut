@@ -9,7 +9,9 @@ import {
 } from "../persistence";
 
 const ADDED_IN_15 = { "shift+]": "select-right-on-selected-tracks", "shift+[": "select-left-on-selected-tracks" };
-const ADDED_AFTER_11 = { "ctrl+x": "cut-selected", "]": "select-right-of-playhead", "[": "select-left-of-playhead", a: "deselect-all", ...ADDED_IN_15 };
+/** Keys later versions add to every saved set of shortcuts that has them free. */
+const ADDED_AFTER_14 = { ...ADDED_IN_15, "ctrl+shift+v": "paste-attributes" };
+const ADDED_AFTER_11 = { "ctrl+x": "cut-selected", "]": "select-right-of-playhead", "[": "select-left-of-playhead", a: "deselect-all", ...ADDED_AFTER_14 };
 
 describe("keybinding persistence", () => {
 	let warnSpy: ReturnType<typeof mock>;
@@ -278,10 +280,23 @@ describe("the shuttle keys of version 14", () => {
 	test("J, K and L become the shuttle and the 1 s steps move to Shift, unless the user changed those keys", () => {
 		expect(migrate({ j: "seek-backward", k: "toggle-play", l: "seek-forward", space: "toggle-play" })).toEqual({
 			j: "shuttle-backward", k: "shuttle-stop", l: "shuttle-forward", "shift+j": "seek-backward", "shift+l": "seek-forward", space: "toggle-play",
-			...ADDED_IN_15,
+			...ADDED_AFTER_14,
 		});
 		expect(migrate({ l: "split", k: "undo", "shift+l": "redo", j: "seek-backward" })).toEqual({
-			l: "split", k: "undo", "shift+l": "redo", j: "shuttle-backward", "shift+j": "seek-backward", ...ADDED_IN_15,
+			l: "split", k: "undo", "shift+l": "redo", j: "shuttle-backward", "shift+j": "seek-backward", ...ADDED_AFTER_14,
 		});
+	});
+});
+
+describe("the paste-attributes key of version 16", () => {
+	const migrate = (keybindings: Record<string, string>): Record<string, string> => Object.fromEntries(
+		decodePersistedKeybindingsState({
+			state: migratePersistedKeybindingsState({ state: { keybindings, isCustomized: true }, fromVersion: 15 }),
+		})?.keybindings ?? [],
+	);
+
+	test("Ctrl+Shift+V pastes attributes unless the user put that key on another action", () => {
+		expect(migrate({ "ctrl+v": "paste-copied" })).toEqual({ "ctrl+v": "paste-copied", "ctrl+shift+v": "paste-attributes" });
+		expect(migrate({ "ctrl+shift+v": "redo" })).toEqual({ "ctrl+shift+v": "redo" });
 	});
 });
