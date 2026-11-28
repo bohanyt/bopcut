@@ -114,7 +114,9 @@ export async function handleCli(req: Request, action: string, workspace: string)
 			}
 		}
 		if (action === "selection") {
-			const selected = await readInside(workspace, "selection.json");
+			// A selection file cut short or not an object counts as no selection, like a missing one.
+			const read: unknown = await readSnapshot(workspace, "selection.json");
+			const selected = read && typeof read === "object" && !Array.isArray(read) ? read as Snapshot : null;
 			return json({ selection: !requested || requested === selected?.projectId ? selected : null });
 		}
 		if (action === "render" && req.method === "POST") {
