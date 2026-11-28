@@ -686,7 +686,7 @@ describe("preview gesture history boundaries", () => {
 							isSelected: () => false,
 							select: (ref) => editor.selection.setSelectedElements({ elements: [ref] }),
 							handleClick: () => {},
-							clearKeyframeSelection: () => editor.selection.clearKeyframeSelection(),
+							selectMany: () => {}, clearKeyframeSelection: () => editor.selection.clearKeyframeSelection(),
 						},
 						viewport: {
 							getZoomLevel: () => 1,

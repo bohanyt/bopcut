@@ -78,7 +78,7 @@ function harness() {
 			isSelected: () => true,
 			select: () => {},
 			handleClick: () => {},
-			clearKeyframeSelection: () => {},
+			selectMany: () => {}, clearKeyframeSelection: () => {},
 		},
 		playback: { getCurrentTime: () => PLAYHEAD },
 		timeline: {

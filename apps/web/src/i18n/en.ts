@@ -237,6 +237,8 @@ export const en = {
 	"shortcuts.action.select-all": "Select all elements",
 	"shortcuts.action.select-right-of-playhead": "Select elements right of and under the playhead",
 	"shortcuts.action.select-left-of-playhead": "Select elements left of and under the playhead",
+	"shortcuts.action.select-right-on-selected-tracks": "Same, on the selected clips' tracks only (Ctrl+Shift+click a clip picks its track)",
+	"shortcuts.action.select-left-on-selected-tracks": "Select left of and under the playhead on the selected clips' tracks only",
 	"shortcuts.action.split": "Split all elements at playhead",
 	"shortcuts.action.split-left": "Split selected elements and remove left",
 	"shortcuts.action.split-right": "Split selected elements and remove right",

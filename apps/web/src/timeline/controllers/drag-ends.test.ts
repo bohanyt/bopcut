@@ -80,7 +80,7 @@ function mover(scroll = { scrollLeft: 0, scrollTop: 0 }) {
 			),
 			select: (ref) => editor.selection.setSelectedElements({ elements: [ref] }),
 			handleClick: () => {},
-			clearKeyframeSelection: () => editor.selection.clearKeyframeSelection(),
+			selectMany: () => {}, clearKeyframeSelection: () => editor.selection.clearKeyframeSelection(),
 		},
 		playback: { getCurrentTime: () => editor.playback.getCurrentTime() },
 		timeline: {

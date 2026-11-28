@@ -101,7 +101,7 @@ test("a horizontal drag of an audio-only compound stays on its audio track", () 
 			isSelected: () => true,
 			select: () => {},
 			handleClick: () => {},
-			clearKeyframeSelection: () => {},
+			selectMany: () => {}, clearKeyframeSelection: () => {},
 		},
 		playback: { getCurrentTime: () => ZERO_MEDIA_TIME },
 		timeline: {

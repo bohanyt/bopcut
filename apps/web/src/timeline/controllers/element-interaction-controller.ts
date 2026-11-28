@@ -63,6 +63,8 @@ export interface ElementSelectionApi {
 	isSelected: (ref: ElementRef) => boolean;
 	select: (ref: ElementRef) => void;
 	handleClick: (args: ElementRef & { isMultiKey: boolean }) => void;
+	/** Replaces the selection with these clips. */
+	selectMany: (refs: ElementRef[]) => void;
 	clearKeyframeSelection: () => void;
 }
 
@@ -426,13 +428,21 @@ export class ElementInteractionController {
 
 		const ref = { trackId: track.id, elementId: element.id };
 
-		if (event.metaKey || event.ctrlKey || event.shiftKey) {
-			this.deps.selection.handleClick({ ...ref, isMultiKey: true });
+		let selectedElements: readonly ElementRef[];
+		if ((event.metaKey || event.ctrlKey) && event.shiftKey) {
+			// Ctrl+Shift+click picks the whole track (with Alt, adds it to the tracks already picked).
+			const whole = currentTrack!.elements.map((item) => ({ trackId: track.id, elementId: item.id }));
+			const kept = event.altKey ? this.deps.selection.getSelected().filter((item) => item.trackId !== track.id) : [];
+			selectedElements = [...kept, ...whole];
+			this.deps.selection.selectMany([...selectedElements]);
+		} else {
+			if (event.metaKey || event.ctrlKey || event.shiftKey) {
+				this.deps.selection.handleClick({ ...ref, isMultiKey: true });
+			}
+			selectedElements = this.deps.selection.isSelected(ref)
+				? this.deps.selection.getSelected()
+				: [ref];
 		}
-
-		const selectedElements = this.deps.selection.isSelected(ref)
-			? this.deps.selection.getSelected()
-			: [ref];
 
 		const scrollContainer = this.deps.viewport.getTracksScrollEl();
 		const zoomLevel = this.deps.viewport.getZoomLevel();

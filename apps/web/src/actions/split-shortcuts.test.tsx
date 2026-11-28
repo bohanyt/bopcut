@@ -310,6 +310,20 @@ describe("select beside the playhead", () => {
 	});
 });
 
+describe("select beside the playhead on picked tracks", () => {
+	test("Shift+] and Shift+[ stay on the selected clips' tracks; with nothing selected they take every track", async () => {
+		await select(bg);
+		await act(async () => { editor.playback.seek({ time: t(2) }); });
+		await pressKey("]", "BracketRight", { shiftKey: true });
+		expect(selectedNames().sort()).toEqual(["bg@0", "next@4"]);
+		await pressKey("[", "BracketLeft", { shiftKey: true });
+		expect(selectedNames()).toEqual(["bg@0"]);
+		await select();
+		await pressKey("]", "BracketRight", { shiftKey: true });
+		expect(selectedNames().sort()).toEqual(["bg@0", "music@0", "next@4", "title@0"]);
+	});
+});
+
 describe("J/K/L shuttle", () => {
 	test("L, L, L plays at 1×, 2× and 4×; K stops at normal speed; J plays backward; Shift+L still steps 1 s", async () => {
 		const raf = Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame");
