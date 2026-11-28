@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { atomicWrite, projectDir, readJson } from "@/services/storage/server/files";
+import type { HiddenEditorState } from "./hidden-editor";
 import { fileInside } from "./inside";
 
 /**
@@ -18,6 +19,8 @@ export type DraftContext = {
 	editorOpen: (projectId: string) => Promise<boolean>;
 	/** How long submit_draft waits for the open editor, and get_draft_result by default. */
 	waitMs: number;
+	/** Opens the project in the hidden editor when no tab has it open; null leaves the draft waiting for a tab. */
+	openHidden?: ((projectId: string) => Promise<HiddenEditorState>) | null;
 };
 type Outcome = { value: Record<string, unknown>; isError?: boolean };
 type Replaced = { rev: string; projectId: string | null };
@@ -108,6 +111,7 @@ async function draftStatus({ rev, projectId, waitMs, replaced }: { rev: string; 
 	const deadline = Date.now() + waitMs;
 	const extra = replaced ? { replacedDraft: replaced } : {};
 	let open: boolean | undefined;
+	let hidden: HiddenEditorState | undefined;
 	let missing = false;
 	for (;;) {
 		const result = await readWorkspaceJson(context.workspace, "draft-result.json");
@@ -115,14 +119,23 @@ async function draftStatus({ rev, projectId, waitMs, replaced }: { rev: string; 
 			if (result.projectId !== undefined && result.projectId !== projectId) {
 				throw new Error(`Draft ${rev} belongs to project ${String(result.projectId)}.`);
 			}
-			return answered(rev, projectId, result, extra);
+			return answered(rev, projectId, result, hidden ? { ...extra, hiddenEditor: hidden } : extra);
 		}
 		const pending = await readWorkspaceJson(context.workspace, "draft.json");
 		if (pending?.rev === rev) {
 			if (pending.projectId !== projectId) throw new Error(`Draft ${rev} belongs to project ${String(pending.projectId)}.`);
 			missing = false;
 			open ??= await context.editorOpen(projectId);
-			if (!open || Date.now() >= deadline) return waiting(rev, projectId, open, waitMs, extra);
+			if (!open && !hidden && context.openHidden) {
+				hidden = await context.openHidden(projectId).catch((error) => {
+					console.error("[agent] Could not open the hidden editor:", error);
+					return undefined;
+				});
+			}
+			const loading = !open && (hidden === "opened" || hidden === "running");
+			if ((!open && !loading) || Date.now() >= deadline) {
+				return waiting(rev, projectId, open, waitMs, hidden ? { ...extra, hiddenEditor: hidden } : extra);
+			}
 		} else if (missing) {
 			// Gone from draft.json without a result of its own, also after the editor had time to write one.
 			throw new Error(`Draft ${rev} is not waiting in draft.json, and draft-result.json holds another draft's result. ` +
@@ -145,11 +158,19 @@ function answered(rev: string, projectId: string, result: Record<string, unknown
 }
 
 function waiting(rev: string, projectId: string, open: boolean, waitMs: number, extra: Args): Outcome {
+	const hidden = extra.hiddenEditor;
 	const message = open
 		? `Draft ${rev} has not applied after ${Math.round(waitMs / 1000)} s. The editor waits while media load, a save is pending ` +
 			"or the person drags on the timeline. Call get_draft_result again."
-		: `Draft ${rev} waits in draft.json: no editor tab of project ${projectId} answered in the last few seconds, and drafts ` +
-			"apply only in an open editor. Ask the person to open the project in the editor (a tab in the background can take " +
-			"a minute), then call get_draft_result.";
+		: hidden === "opened" || hidden === "running"
+			? `Draft ${rev} has not applied yet: no editor tab had project ${projectId} open, so a hidden editor ` +
+				`${hidden === "opened" ? "is loading" : "has"} the saved project and applies the draft there (a project with much media ` +
+				"takes longer to load). Call get_draft_result again."
+			: hidden === "busy"
+				? `Draft ${rev} waits in draft.json: no editor tab of project ${projectId} is open, and the hidden editor is still busy ` +
+					"with another project's draft. Call get_draft_result again in a moment."
+				: `Draft ${rev} waits in draft.json: no editor tab of project ${projectId} answered in the last few seconds, and drafts ` +
+					"apply only in an open editor. Ask the person to open the project in the editor (a tab in the background can take " +
+					"a minute), then call get_draft_result.";
 	return { value: { rev, projectId, answered: false, editorOpen: open, message, ...extra } };
 }

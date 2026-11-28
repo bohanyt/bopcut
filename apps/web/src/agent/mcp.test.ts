@@ -35,7 +35,7 @@ afterAll(async () => {
 	await fs.rm(workspace, { recursive: true, force: true });
 });
 
-const closedEditor: McpOptions = { editorOpen: async () => false, waitMs: 0 };
+const closedEditor: McpOptions = { editorOpen: async () => false, openHidden: null, waitMs: 0 };
 let options = closedEditor;
 afterEach(async () => {
 	options = closedEditor;
@@ -157,6 +157,30 @@ test("with the project open, submit_draft returns the editor's result, and a ref
 	expect(stale.structuredContent.message).toContain("Read get_status again");
 });
 
+test("with no tab open, the draft goes to the hidden editor, which is waited for like an open tab", async () => {
+	const opened: string[] = [];
+	options = { waitMs: 5000, editorOpen: async () => false, openHidden: async (projectId) => {
+		opened.push(projectId);
+		setTimeout(() => void editorAnswers({ applied: true, saved: true, results: [{ op: "cut", ok: true }] }), 50);
+		return "opened";
+	} };
+	const applied = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] });
+	expect(opened).toEqual(["demo"]);
+	expect(applied.structuredContent).toMatchObject({ answered: true, applied: true, result: { saved: true } });
+
+	// Still loading when the wait ends: the answer says so, and asks to look again.
+	options = { waitMs: 0, editorOpen: async () => false, openHidden: async () => "opened" };
+	const loading = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] });
+	expect(loading.structuredContent).toMatchObject({ answered: false, editorOpen: false, hiddenEditor: "opened" });
+	expect(loading.structuredContent.message).toContain("hidden editor is loading the saved project");
+
+	// Busy with another project's draft: the draft waits, and nothing else is opened.
+	options = { waitMs: 5000, editorOpen: async () => false, openHidden: async () => "busy" };
+	const busy = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] });
+	expect(busy.structuredContent).toMatchObject({ answered: false, hiddenEditor: "busy" });
+	expect(busy.structuredContent.message).toContain("still busy with another project's draft");
+});
+
 test("an open editor that has not applied the draft yet is waited for, then reported as still waiting", async () => {
 	options = { waitMs: 0, editorOpen: async () => true };
 	const sent = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] });
@@ -204,7 +228,7 @@ test("invalid drafts are refused before anything is written", async () => {
 test("without a stub, the server asks its own agent routes whether the project is open", async () => {
 	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => handleCli(req, "presence", workspace) });
 	try {
-		options = { waitMs: 0 };
+		options = { waitMs: 0, openHidden: null };
 		const endpoint = `http://127.0.0.1:${server.port}/api/mcp`;
 		const closed = await call("submit_draft", { projectId: "demo", ops: [{ op: "cut", start: 0, end: 0.9 }] }, endpoint);
 		expect(closed.structuredContent).toMatchObject({ answered: false, editorOpen: false });
