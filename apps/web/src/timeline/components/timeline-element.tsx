@@ -123,6 +123,12 @@ import {
 } from "./expanded-layout";
 
 const KEYFRAME_INDICATOR_MIN_WIDTH_PX = 40;
+/**
+ * Keyframe marks closer than this on screen overlap: they show as one mark that holds them all,
+ * so a dense track (face follow keys 10 times a second) mounts about one mark per 8 px of clip
+ * instead of one per key. Zooming in parts them again.
+ */
+export const KEYFRAME_MIN_GAP_PX = 8;
 const ELEMENT_RING_WIDTH_PX = 1.5;
 
 const PixelsPerSecondContext = createContext<number | null>(null);
@@ -156,6 +162,20 @@ interface KeyframeIndicator {
 	time: MediaTime;
 	offsetPx: number;
 	keyframes: SelectedKeyframeRef[];
+}
+
+/** Marks sorted by time, with each one closer than KEYFRAME_MIN_GAP_PX to the last shown merged into it. */
+export function mergeOverlappingIndicators(indicators: readonly KeyframeIndicator[]): KeyframeIndicator[] {
+	const merged: KeyframeIndicator[] = [];
+	for (const indicator of indicators) {
+		const last = merged.at(-1);
+		if (last && indicator.offsetPx - last.offsetPx < KEYFRAME_MIN_GAP_PX) {
+			last.keyframes.push(...indicator.keyframes);
+			continue;
+		}
+		merged.push({ ...indicator, keyframes: [...indicator.keyframes] });
+	}
+	return merged;
 }
 
 export function buildKeyframeIndicator({
@@ -238,7 +258,7 @@ export function getKeyframeIndicators({
 		existingIndicator.keyframes.push(indicator.keyframeRef);
 	}
 
-	return [...keyframesByTime.values()].sort((a, b) => a.time - b.time);
+	return mergeOverlappingIndicators([...keyframesByTime.values()].sort((a, b) => a.time - b.time));
 }
 
 export function getDisplayShortcut({ action }: { action: TAction }) {
@@ -1115,8 +1135,15 @@ function ExpandedKeyframeLanes({
 			onClick={onLaneClick}
 		>
 			{rows.map((row) => {
-				const laneKeyframes = keyframes.filter(
-					(kf) => kf.propertyPath === row.propertyPath,
+				const marks = mergeOverlappingIndicators(
+					keyframes
+						.filter((kf) => kf.propertyPath === row.propertyPath)
+						.sort((a, b) => a.time - b.time)
+						.map((kf) => ({
+							time: kf.time,
+							offsetPx: timelineTimeToSnappedPixels({ time: displayedStartTime + kf.time, zoomLevel }) - elementLeft,
+							keyframes: [{ trackId, elementId, propertyPath: row.propertyPath, keyframeId: kf.id }],
+						})),
 				);
 				return (
 					<div
@@ -1124,35 +1151,23 @@ function ExpandedKeyframeLanes({
 						className={cn("relative flex items-center bg-muted/50")}
 						style={{ height: `${KEYFRAME_LANE_HEIGHT_PX}px` }}
 					>
-						{laneKeyframes.map((kf) => {
-							const keyframeRef: SelectedKeyframeRef = {
-								trackId,
-								elementId,
-								propertyPath: row.propertyPath,
-								keyframeId: kf.id,
-							};
-							const isBeingDragged = keyframeDragState.draggingKeyframeIds.has(
-								kf.id,
+						{marks.map((mark) => {
+							const isBeingDragged = mark.keyframes.some((keyframe) =>
+								keyframeDragState.draggingKeyframeIds.has(keyframe.keyframeId),
 							);
-							const kfLeft = timelineTimeToSnappedPixels({
-								time: displayedStartTime + kf.time,
-								zoomLevel,
-							});
-							const offsetPx = kfLeft - elementLeft;
 							const visualOffset = getVisualOffsetPx({
-								indicatorTime: kf.time,
-								indicatorOffsetPx: offsetPx,
+								indicatorTime: mark.time,
+								indicatorOffsetPx: mark.offsetPx,
 								isBeingDragged,
 								displayedStartTime,
 								elementLeft,
 							});
-							const isSelected = isKeyframeSelected({
-								keyframe: keyframeRef,
-							});
+							const isSelected = mark.keyframes.some((keyframe) => isKeyframeSelected({ keyframe }));
+							const time = keyframeSeconds(displayedStartTime + mark.time, locale);
 
 							return (
 								<button
-									key={kf.id}
+									key={mark.keyframes[0].keyframeId}
 									type="button"
 									className={cn(
 										"pointer-events-auto absolute top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-grab",
@@ -1164,22 +1179,24 @@ function ExpandedKeyframeLanes({
 										event.stopPropagation();
 										onKeyframeMouseDown({
 											event,
-											keyframes: [keyframeRef],
+											keyframes: mark.keyframes,
 										});
 									}}
 									onClick={(event) => {
 										event.stopPropagation();
 										onKeyframeClick({
 											event,
-											keyframes: [keyframeRef],
+											keyframes: mark.keyframes,
 											orderedKeyframes,
-											indicatorTime: kf.time,
+											indicatorTime: mark.time,
 										});
 									}}
-									aria-label={t("timeline.keyframeAt", {
-										property: row.labelKey ? t(row.labelKey) : row.fallbackLabel ?? row.propertyPath,
-										time: keyframeSeconds(displayedStartTime + kf.time, locale),
-									})}
+									aria-label={mark.keyframes.length > 1
+										? t("timeline.keyframesAt", { count: mark.keyframes.length, time })
+										: t("timeline.keyframeAt", {
+											property: row.labelKey ? t(row.labelKey) : row.fallbackLabel ?? row.propertyPath,
+											time,
+										})}
 									aria-pressed={isSelected}
 								>
 									<HugeiconsIcon
