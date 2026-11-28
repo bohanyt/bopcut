@@ -80,7 +80,8 @@ export function ClipEffectsTab({
 	trackId: string;
 }) {
 	const { t } = useI18n();
-	const [dragIndex, setDragIndex] = useState<number | null>(null);
+	// The dragged effect by id: an effect removed during the drag shifts the others' indexes.
+	const [dragId, setDragId] = useState<string | null>(null);
 	const [dropIndex, setDropIndex] = useState<number | null>(null);
 	const editor = useEditor();
 	const { renderElement, previewUpdates, commit } = useElementPreview({
@@ -90,6 +91,8 @@ export function ClipEffectsTab({
 	});
 
 	const effects: Effect[] = element.effects ?? [];
+	const draggedAt = dragId === null ? -1 : effects.findIndex((effect) => effect.id === dragId);
+	const dragIndex = draggedAt === -1 ? null : draggedAt;
 
 	const getRenderParams = ({ effectId }: { effectId: string }): ParamValues => {
 		return (
@@ -114,7 +117,7 @@ export function ClipEffectsTab({
 			previewUpdates({ effects: updatedEffects });
 		};
 
-	const handleDragStart = ({ index }: { index: number }) => setDragIndex(index);
+	const handleDragStart = ({ index }: { index: number }) => setDragId(effects[index]?.id ?? null);
 
 	const handleDragOver = ({
 		event,
@@ -136,12 +139,12 @@ export function ClipEffectsTab({
 				toIndex,
 			});
 		}
-		setDragIndex(null);
+		setDragId(null);
 		setDropIndex(null);
 	};
 
 	const handleDragEnd = () => {
-		setDragIndex(null);
+		setDragId(null);
 		setDropIndex(null);
 	};
 
