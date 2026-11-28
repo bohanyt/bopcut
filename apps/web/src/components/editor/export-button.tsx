@@ -52,10 +52,11 @@ export function ExportButton() {
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActiveOrNull());
 	const hasProject = !!activeProject;
+	const { isExporting, progress } = useEditor((e) => e.project.getExportState());
 
+	// Closing the panel keeps a running export going (it downloads when done): only Cancel stops it.
 	const handlePopoverOpenChange = ({ open }: { open: boolean }) => {
-		if (!open) {
-			editor.project.cancelExport();
+		if (!open && !editor.project.getExportState().isExporting) {
 			editor.project.clearExportState();
 		}
 		setIsExportPopoverOpen(open);
@@ -85,6 +86,9 @@ export function ExportButton() {
 					<div className="relative flex items-center gap-1.5 rounded-[0.6rem] bg-linear-270 from-[#2567EC] to-[#37B6F7] px-4 py-1 shadow-[0_1px_3px_0px_rgba(0,0,0,0.65)]">
 						<HugeiconsIcon icon={TransitionTopIcon} className="z-50 size-3.5" />
 						<span className="z-50 text-[0.875rem]">{t("export.action")}</span>
+						{isExporting && !isExportPopoverOpen && (
+							<span className="z-50 text-[0.75rem] tabular-nums">{Math.round(progress * 100)}%</span>
+						)}
 						<div className="absolute top-0 left-0 z-10 flex size-full items-center justify-center rounded-[0.6rem] bg-linear-to-t from-white/0 to-white/50">
 							<div className="absolute top-[0.08rem] z-50 h-[calc(100%-2px)] w-[calc(100%-2px)] rounded-[0.6rem] bg-linear-270 from-[#2567EC] to-[#37B6F7]"></div>
 						</div>
@@ -322,6 +326,7 @@ function ExportPopover({
 										<p className="text-muted-foreground text-sm">100%</p>
 									</div>
 									<Progress value={progress * 100} className="w-full" />
+									<p className="text-muted-foreground text-xs">{t("export.keepsRunning")}</p>
 								</div>
 
 								<Button
