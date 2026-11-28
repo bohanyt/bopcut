@@ -74,7 +74,7 @@ function PreviewLayoutToggle() {
 	);
 }
 
-function ProjectDropdown() {
+export function ProjectDropdown() {
 	const { t } = useI18n();
 	const [openDialog, setOpenDialog] = useState<
 		"delete" | "rename" | "shortcuts" | null
@@ -84,9 +84,14 @@ function ProjectDropdown() {
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
 
+	// The project list is fetched while the menu is open and the exit saves, not after the project
+	// closes: "Exiting project..." then lasts only as long as showing the list.
+	const prefetchHome = () => router.prefetch("/");
+
 	const handleExit = async () => {
 		if (isExiting) return;
 		setIsExiting(true);
+		prefetchHome();
 
 		try {
 			await editor.project.prepareExit();
@@ -141,7 +146,7 @@ function ProjectDropdown() {
 
 	return (
 		<>
-			<DropdownMenu>
+			<DropdownMenu onOpenChange={(open) => { if (open) prefetchHome(); }}>
 				<DropdownMenuTrigger asChild>
 					<Button variant="ghost" size="icon" className="p-1 rounded-sm size-8 shrink-0" aria-label={t("projects.menu")}>
 						<Image
