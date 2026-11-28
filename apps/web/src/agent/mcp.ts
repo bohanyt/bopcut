@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { EXPORT_FORMAT_VALUES, EXPORT_QUALITY_VALUES } from "@/export";
+import { EXPORT_FORMAT_VALUES, EXPORT_QUALITY_VALUES, EXPORT_SIZE_MAX, EXPORT_SIZE_MIN } from "@/export";
 import { dataRoot } from "@/services/storage/server/files";
 import { readProjectSummary } from "@/services/storage/server/projects";
 import { readArchivedProjectIds } from "@/services/storage/server/archive";
@@ -143,6 +143,8 @@ export const MCP_TOOLS = [
 				quality: { type: "string", enum: [...EXPORT_QUALITY_VALUES], description: "Default very_high." },
 				fps: { type: "number", minimum: 1, maximum: 240, description: "Frame rate (default: the project's)." },
 				allowMissing: { type: "boolean", description: "Export even when media files are missing." },
+				size: { type: "integer", minimum: EXPORT_SIZE_MIN, maximum: EXPORT_SIZE_MAX, description: "The video's shorter side in pixels, to export smaller than the canvas (default: the canvas size)." },
+				preview: { type: "boolean", description: "A quick review copy: size 540 and quality low, unless they are given." },
 			},
 		},
 		annotations: writesFiles,

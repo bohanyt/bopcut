@@ -1,6 +1,6 @@
 // Exports for agents: `export-request.json` asks the open editor to export the timeline into the
 // workspace's `exports/` folder; progress and the result go to `export-result.json`.
-import { EXPORT_FORMAT_VALUES, EXPORT_QUALITY_VALUES, type ExportFormat, type ExportQuality } from "@/export";
+import { EXPORT_FORMAT_VALUES, EXPORT_QUALITY_VALUES, EXPORT_SIZE_MAX, EXPORT_SIZE_MIN, type ExportFormat, type ExportQuality } from "@/export";
 import { DEFAULT_EXPORT_OPTIONS } from "@/export/defaults";
 
 export type ExportRequest = {
@@ -15,7 +15,12 @@ export type ExportRequest = {
 	includeAudio: boolean;
 	/** Export even if stored media could not be loaded (they would be missing from the video). */
 	allowMissing: boolean;
+	/** The video's shorter side in pixels, below the canvas's (unset: the canvas size). */
+	size?: number;
 };
+
+/** What `preview` means: a 540-pixel shorter side at low quality, unless they are given. */
+export const PREVIEW_EXPORT = { size: 540, quality: "low" } as const;
 
 const REV = /^[a-zA-Z0-9_-]{1,100}$/;
 
@@ -26,11 +31,16 @@ export function parseExportRequest(value: unknown): ExportRequest | string | nul
 	if (typeof raw.rev !== "string" || !REV.test(raw.rev)) return null;
 	const format = raw.format ?? "mp4";
 	if (!EXPORT_FORMAT_VALUES.includes(format as ExportFormat)) return `format must be one of ${EXPORT_FORMAT_VALUES.join(", ")}`;
-	const quality = raw.quality ?? DEFAULT_EXPORT_OPTIONS.quality;
+	const quality = raw.quality ?? (raw.preview === true ? PREVIEW_EXPORT.quality : DEFAULT_EXPORT_OPTIONS.quality);
 	if (!EXPORT_QUALITY_VALUES.includes(quality as ExportQuality)) return `quality must be one of ${EXPORT_QUALITY_VALUES.join(", ")}`;
 	if (raw.fps !== undefined && (typeof raw.fps !== "number" || !Number.isFinite(raw.fps) || raw.fps < 1 || raw.fps > 240)) return "fps must be 1 to 240";
 	if (raw.name !== undefined && (typeof raw.name !== "string" || !safeName(raw.name))) return "name must have letters or digits (no folders)";
 	if (raw.projectId !== undefined && typeof raw.projectId !== "string") return "projectId must be a string";
+	if (raw.preview !== undefined && typeof raw.preview !== "boolean") return "preview must be true or false";
+	const size = raw.size ?? (raw.preview === true ? PREVIEW_EXPORT.size : undefined);
+	if (size !== undefined && (typeof size !== "number" || !Number.isInteger(size) || size < EXPORT_SIZE_MIN || size > EXPORT_SIZE_MAX)) {
+		return `size must be a whole number of pixels from ${EXPORT_SIZE_MIN} to ${EXPORT_SIZE_MAX}`;
+	}
 	return {
 		rev: raw.rev,
 		...(typeof raw.projectId === "string" ? { projectId: raw.projectId } : {}),
@@ -40,6 +50,7 @@ export function parseExportRequest(value: unknown): ExportRequest | string | nul
 		...(typeof raw.fps === "number" ? { fps: raw.fps } : {}),
 		includeAudio: raw.includeAudio !== false,
 		allowMissing: raw.allowMissing === true,
+		...(size !== undefined ? { size } : {}),
 	};
 }
 

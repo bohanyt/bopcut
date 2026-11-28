@@ -6,7 +6,7 @@ import { draftHistory, isForOtherProject, nextSnapshotTime, snapshotHistory } fr
 import { changesResult, keepAnswerState } from "./changes";
 import { markAnswered, wasAnswered } from "./answered";
 import { defaultExportName, parseExportRequest } from "./export";
-import type { ExportResult } from "@/export";
+import { type ExportResult, exportOutputSize } from "@/export";
 import type { MediaLoadFailure } from "@/media/types";
 import { isTimelineGestureActive, subscribeTimelineGestures } from "@/timeline/gesture-state";
 import { createSelectionWriter } from "./selection-writer";
@@ -459,7 +459,7 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 		try {
 			// The export takes the timeline as it is now and stops when the project closes.
 			result = await editor.renderer.exportProject({
-				options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id },
+				options: { format: request.format, quality: request.quality, fps, includeAudio: request.includeAudio, allowMissing: request.allowMissing, sceneId: root.id, size: request.size },
 				onProgress: ({ progress: value, frame }) => progress(value, frame),
 				onStage: reportStage,
 				signal,
@@ -473,8 +473,9 @@ async function answerExport(source?: Response, transport?: RenderTransport) {
 		if (signal.aborted) return;
 		if (!result.success || !result.buffer) return await reportFailure(result);
 		// The server writes the final answer together with the file.
+		const output = exportOutputSize({ canvas: settings.canvasSize, size: request.size });
 		const done = {
-			format: request.format, quality: request.quality, width: settings.canvasSize.width, height: settings.canvasSize.height,
+			format: request.format, quality: request.quality, width: output.width, height: output.height,
 			sceneId: root.id, includeAudio: request.includeAudio,
 			fps: fps.numerator / fps.denominator, duration: Math.round(duration * 1000) / 1000, seconds: Math.round((Date.now() - started) / 100) / 10,
 		};

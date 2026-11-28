@@ -23,6 +23,8 @@ import { waitWithAbort } from "@/utils/abort";
 type ExportParams = {
 	width: number;
 	height: number;
+	/** Draws the canvas smaller: the video is the canvas times this (default 1). */
+	renderScale?: number;
 	fps: FrameRate;
 	format: ExportFormat;
 	quality: ExportQuality;
@@ -56,6 +58,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 	constructor({
 		width,
 		height,
+		renderScale = 1,
 		fps,
 		format,
 		quality,
@@ -66,6 +69,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		this.renderer = new CanvasRenderer({
 			width,
 			height,
+			renderScale,
 			fps,
 			exactFrames: true,
 			requireFullSize: true,
