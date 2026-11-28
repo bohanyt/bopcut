@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { invokeAction } from "@/actions";
 import { useEditor } from "@/editor/use-editor";
 import { useKeybindingsStore } from "@/actions/keybindings-store";
-import { hasSelectableText, isTypableDOMElement } from "@/utils/browser";
+import { hasSelectableText, isKeyForFocusedControl, isTypableDOMElement } from "@/utils/browser";
 
 /** Edits that run once per key press: a held key's repeats would repeat the edit. */
 const ONE_SHOT_ACTIONS: ReadonlySet<string> = new Set([
@@ -68,6 +68,7 @@ export function useKeybindingsListener() {
 				activeElement instanceof HTMLElement &&
 				!hasSelectableText({ element: activeElement });
 			if (isTextInput && !canUndoRangeEdit && !canSelectAllFromControl) return;
+			if (activeElement && isKeyForFocusedControl({ element: activeElement, key: binding })) return;
 			if (boundAction === "paste-copied") {
 				if (!editor.clipboard.hasEntry()) return;
 				ev.preventDefault();
