@@ -74,7 +74,8 @@ export class AudioManager {
 	}
 
 	private handlePlaybackChange = (): void => {
-		const isPlaying = this.editor.playback.getIsPlaying();
+		// Faster or backwards (the shuttle) plays the picture only.
+		const isPlaying = this.editor.playback.getIsPlaying() && this.editor.playback.getRate() === 1;
 		const volume = this.editor.playback.getOutputVolume();
 
 		if (volume !== this.lastVolume) {
@@ -93,7 +94,7 @@ export class AudioManager {
 	};
 
 	private handleSeek = (): void => {
-		if (this.editor.playback.getIsPlaying() && !this.editor.playback.getIsScrubbing()) {
+		if (this.editor.playback.getIsPlaying() && !this.editor.playback.getIsScrubbing() && this.editor.playback.getRate() === 1) {
 			void this.startPlayback();
 		} else {
 			this.stopPlayback();
@@ -116,7 +117,7 @@ export class AudioManager {
 	private handleMediaChange = (): void => {
 		this.disposeSinks();
 
-		if (this.editor.playback.getIsPlaying() && !this.editor.playback.getIsScrubbing()) {
+		if (this.editor.playback.getIsPlaying() && !this.editor.playback.getIsScrubbing() && this.editor.playback.getRate() === 1) {
 			void this.startPlayback();
 		}
 	};
