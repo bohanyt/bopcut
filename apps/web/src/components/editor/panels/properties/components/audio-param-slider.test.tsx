@@ -88,6 +88,43 @@ describe("volume and fades with the mouse", () => {
 	});
 });
 
+const stored = () => EditorCore.getInstance().scenes.getActiveScene().tracks.audio[0].elements[0].params as Record<string, number>;
+
+describe("committing what the mouse changed", () => {
+	test("a fade typed beyond half the clip is kept at half the clip", async () => {
+		const input = dom.document.querySelector('input[aria-label="Fade in (s)"]') as unknown as HTMLInputElement;
+		await act(async () => { input.focus(); });
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, "value")!.set!.call(input, "10");
+			input.dispatchEvent(new dom.InputEvent("input", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => { input.dispatchEvent(new dom.FocusEvent("focusout", { bubbles: true }) as unknown as Event); });
+		expect(stored().fadeIn).toBe(3);
+	});
+
+	test("dragging the volume slider saves the value on release, as one Undo step", async () => {
+		const thumb = dom.document.querySelector("[role=slider]")!;
+		const root = thumb.closest("[data-orientation]")!.parentElement!.closest("[data-orientation]") ?? thumb.closest("[data-orientation]")!;
+		const track = root as unknown as HTMLElement & Record<string, unknown>;
+		track.getBoundingClientRect = () => ({ left: 0, top: 0, right: 200, bottom: 10, width: 200, height: 10, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+		const captured = new Set<number>();
+		Object.assign(track, {
+			setPointerCapture: (id: number) => captured.add(id),
+			hasPointerCapture: (id: number) => captured.has(id),
+			releasePointerCapture: (id: number) => captured.delete(id),
+		});
+		const pointer = (type: string, clientX: number) => act(async () => {
+			track.dispatchEvent(new dom.PointerEvent(type, { bubbles: true, clientX, clientY: 5, pointerId: 1, button: 0, buttons: type === "pointerup" ? 0 : 1 }) as unknown as Event);
+		});
+		await pointer("pointerdown", 175);
+		await pointer("pointermove", 180);
+		await pointer("pointerup", 180);
+		expect(stored().volume).toBe(12);
+		await act(async () => { EditorCore.getInstance().command.undo(); });
+		expect(stored().volume).toBe(-3);
+	});
+});
+
 test("a relative volume change moves each clip from its own level and stays within the range", () => {
 	const start = new Map([["a", { trackId: "t", volume: -6 }], ["b", { trackId: "t", volume: 18 }], ["c", { trackId: "u", volume: -59 }]]);
 	expect(relativeVolumeUpdates(start, 3).map(({ elementId, patch }) => [elementId, (patch as { params: { volume: number } }).params.volume]))
