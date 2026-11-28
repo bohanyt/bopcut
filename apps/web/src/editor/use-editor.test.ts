@@ -52,6 +52,7 @@ test("public playback getters declare which changes can affect their value", () 
 		getOutputVolume: PLAYBACK_STATE,
 		isMuted: PLAYBACK_STATE,
 		getIsScrubbing: PLAYBACK_STATE,
+		getRate: PLAYBACK_STATE,
 	} as const;
 	const getters = Object.getOwnPropertyNames(PlaybackManager.prototype)
 		.filter((name) => /^(get|is)[A-Z]/.test(name));
@@ -111,6 +112,46 @@ test("a conditional selector follows newly observed time without a value change"
 	playback.seek({ time: mediaTimeFromSeconds({ seconds: 2 }) });
 	expect(values).toEqual([0, 0, second, 0]);
 	stop();
+});
+
+test("a faster or backward speed moves the playhead by that much, and backwards it stops at the start", () => {
+	const { playback } = setup();
+	const raf = Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame");
+	const cancel = Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame");
+	let frame: FrameRequestCallback | undefined;
+	let clock = 0;
+	Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: (callback: FrameRequestCallback) => { frame = callback; return 1; } });
+	Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => { frame = undefined; } });
+	const tick = (seconds: number) => { clock += seconds; frame?.(clock * 1000); };
+	try {
+		playback.setPlaybackClock(() => clock);
+		playback.seek({ time: mediaTimeFromSeconds({ seconds: 10 }) });
+		playback.setRate(2);
+		playback.play();
+		tick(1);
+		expect(playback.getCurrentTime()).toBe(mediaTimeFromSeconds({ seconds: 12 }));
+		// A change while playing continues from where the playhead is.
+		playback.setRate(-4);
+		tick(1);
+		expect(playback.getCurrentTime()).toBe(mediaTimeFromSeconds({ seconds: 8 }));
+		expect(playback.getRate()).toBe(-4);
+		tick(3);
+		expect(playback.getIsPlaying()).toBe(false);
+		expect(Number(playback.getCurrentTime())).toBe(0);
+		// Stopping returns to normal speed, and backwards from the start does not play.
+		expect(playback.getRate()).toBe(1);
+		playback.setRate(-1);
+		playback.play();
+		expect(playback.getIsPlaying()).toBe(false);
+		expect(playback.getRate()).toBe(-1);
+		playback.setRate(9);
+		expect(playback.getRate()).toBe(4);
+	} finally {
+		if (raf) Object.defineProperty(globalThis, "requestAnimationFrame", raf);
+		else Reflect.deleteProperty(globalThis, "requestAnimationFrame");
+		if (cancel) Object.defineProperty(globalThis, "cancelAnimationFrame", cancel);
+		else Reflect.deleteProperty(globalThis, "cancelAnimationFrame");
+	}
 });
 
 test("playback ticks check time selectors and play and pause check state selectors", () => {

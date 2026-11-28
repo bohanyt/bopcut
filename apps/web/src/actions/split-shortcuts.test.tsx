@@ -309,3 +309,36 @@ describe("select beside the playhead", () => {
 		expect(selectedNames().sort()).toEqual(["bg@0", "music@0"]);
 	});
 });
+
+describe("J/K/L shuttle", () => {
+	test("L, L, L plays at 1×, 2× and 4×; K stops at normal speed; J plays backward; Shift+L still steps 1 s", async () => {
+		const raf = Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame");
+		const cancel = Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame");
+		Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: () => 1 });
+		Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => {} });
+		const state = () => [editor.playback.getIsPlaying(), editor.playback.getRate()];
+		try {
+			await pressKey("l", "KeyL");
+			expect(state()).toEqual([true, 1]);
+			await pressKey("l", "KeyL");
+			expect(state()).toEqual([true, 2]);
+			await pressKey("l", "KeyL");
+			expect(state()).toEqual([true, 4]);
+			await pressKey("k", "KeyK");
+			expect(state()).toEqual([false, 1]);
+			await pressKey("j", "KeyJ");
+			expect(state()).toEqual([true, -1]);
+			await pressKey("l", "KeyL");
+			expect(state()).toEqual([true, 1]);
+			await pressKey("k", "KeyK");
+			const before = editor.playback.getCurrentTime();
+			await pressKey("L", "KeyL", { shiftKey: true });
+			expect(editor.playback.getCurrentTime() - before).toBe(t(1));
+		} finally {
+			if (raf) Object.defineProperty(globalThis, "requestAnimationFrame", raf);
+			else Reflect.deleteProperty(globalThis, "requestAnimationFrame");
+			if (cancel) Object.defineProperty(globalThis, "cancelAnimationFrame", cancel);
+			else Reflect.deleteProperty(globalThis, "cancelAnimationFrame");
+		}
+	});
+});

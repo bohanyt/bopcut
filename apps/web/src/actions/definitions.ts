@@ -35,6 +35,18 @@ export const ACTIONS = {
 		description: en["shortcuts.action.stop-playback"],
 		category: "playback",
 	},
+	"shuttle-forward": {
+		description: en["shortcuts.action.shuttle-forward"],
+		category: "playback",
+	},
+	"shuttle-backward": {
+		description: en["shortcuts.action.shuttle-backward"],
+		category: "playback",
+	},
+	"shuttle-stop": {
+		description: en["shortcuts.action.shuttle-stop"],
+		category: "playback",
+	},
 	"seek-forward": {
 		description: en["shortcuts.action.seek-forward"],
 		category: "playback",
@@ -205,9 +217,13 @@ export function isActionWithOptionalArgs(
 
 const ACTION_DEFAULT_SHORTCUTS = [
 	["record-voice-over", ["shift+r"]],
-	["toggle-play", ["space", "k"]],
-	["seek-forward", ["l"]],
-	["seek-backward", ["j"]],
+	["toggle-play", ["space"]],
+	// J/K/L shuttle as in other editors; the 1 s steps move to Shift.
+	["shuttle-backward", ["j"]],
+	["shuttle-stop", ["k"]],
+	["shuttle-forward", ["l"]],
+	["seek-forward", ["shift+l"]],
+	["seek-backward", ["shift+j"]],
 	["frame-step-forward", ["right"]],
 	["frame-step-backward", ["left"]],
 	["jump-forward", ["shift+right"]],

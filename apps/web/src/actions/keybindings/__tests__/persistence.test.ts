@@ -266,3 +266,20 @@ describe("the keyframe key of version 11", () => {
 		expect(migrate({ u: "undo" })).toEqual({ u: "undo", ...ADDED_AFTER_11 });
 	});
 });
+
+describe("the shuttle keys of version 14", () => {
+	const migrate = (keybindings: Record<string, string>): Record<string, string> => Object.fromEntries(
+		decodePersistedKeybindingsState({
+			state: migratePersistedKeybindingsState({ state: { keybindings, isCustomized: true }, fromVersion: 13 }),
+		})?.keybindings ?? [],
+	);
+
+	test("J, K and L become the shuttle and the 1 s steps move to Shift, unless the user changed those keys", () => {
+		expect(migrate({ j: "seek-backward", k: "toggle-play", l: "seek-forward", space: "toggle-play" })).toEqual({
+			j: "shuttle-backward", k: "shuttle-stop", l: "shuttle-forward", "shift+j": "seek-backward", "shift+l": "seek-forward", space: "toggle-play",
+		});
+		expect(migrate({ l: "split", k: "undo", "shift+l": "redo", j: "seek-backward" })).toEqual({
+			l: "split", k: "undo", "shift+l": "redo", j: "shuttle-backward", "shift+j": "seek-backward",
+		});
+	});
+});

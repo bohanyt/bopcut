@@ -7,7 +7,7 @@ import { hasSelectableText, isTypableDOMElement } from "@/utils/browser";
 /** Edits that run once per key press: a held key's repeats would repeat the edit. */
 const ONE_SHOT_ACTIONS: ReadonlySet<string> = new Set([
 	"record-voice-over", "split", "split-selected", "split-left", "split-right", "delete-selected",
-	"duplicate-selected", "paste-copied", "cut-selected", "create-compound", "break-apart-compound",
+	"duplicate-selected", "paste-copied", "cut-selected", "shuttle-forward", "shuttle-backward", "create-compound", "break-apart-compound",
 ]);
 
 /**

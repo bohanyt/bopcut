@@ -35,6 +35,7 @@ import { toggleSelectedKeyframeLanes } from "@/timeline/keyframe-lanes";
 import { isCompoundElement } from "@/timeline/compound";
 import { elementsBesidePlayhead } from "@/timeline/beside-playhead";
 import { toast } from "sonner";
+import { nextShuttleRate, shuttleLabel } from "./shuttle";
 
 export function useEditorActions() {
 	const editor = useEditor();
@@ -91,6 +92,24 @@ export function useEditorActions() {
 		() => {
 			if (editor.voiceOver.isCapturing()) void editor.voiceOver.stop();
 			else editor.playback.toggle();
+		},
+		undefined,
+	);
+
+	const shuttle = (direction: 1 | -1) => {
+		if (editor.voiceOver.isCapturing()) return;
+		const { playback } = editor;
+		playback.setRate(nextShuttleRate({ playing: playback.getIsPlaying(), rate: playback.getRate(), direction }));
+		if (!playback.getIsPlaying()) playback.play();
+		if (playback.getIsPlaying()) toast(shuttleLabel(playback.getRate()), { id: "shuttle-rate", duration: 900 });
+	};
+	useActionHandler("shuttle-forward", () => shuttle(1), undefined);
+	useActionHandler("shuttle-backward", () => shuttle(-1), undefined);
+	useActionHandler(
+		"shuttle-stop",
+		() => {
+			if (editor.voiceOver.isCapturing()) void editor.voiceOver.stop();
+			else editor.playback.pause();
 		},
 		undefined,
 	);

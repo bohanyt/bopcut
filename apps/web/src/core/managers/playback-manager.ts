@@ -14,9 +14,13 @@ import {
 } from "@/wasm";
 
 const wallClock = () => performance.now() / 1000;
+/** The fastest shuttle speed, forwards or backwards. */
+export const MAX_PLAYBACK_RATE = 4;
 
 export class PlaybackManager {
 	private isPlaying = false;
+	/** Playback speed; negative plays backwards (J/K/L shuttle). Back to 1 when playback stops. */
+	private rate = 1;
 	private currentTime: MediaTime = ZERO_MEDIA_TIME;
 	private volume = 1;
 	private muted = false;
@@ -58,7 +62,10 @@ export class PlaybackManager {
 			return;
 		}
 
-		if (this.currentTime >= maxTime) {
+		if (this.rate < 0) {
+			// Backwards there is nothing before the start.
+			if (this.currentTime <= ZERO_MEDIA_TIME) return;
+		} else if (this.currentTime >= maxTime) {
 			if (!restartAtEnd) return;
 			this.setTime(ZERO_MEDIA_TIME);
 		}
@@ -75,7 +82,29 @@ export class PlaybackManager {
 
 	private pausePlayback(): void {
 		this.isPlaying = false;
+		this.rate = 1;
 		this.stopTimer();
+		this.notify();
+	}
+
+	/** The playback speed: 1 is normal, 2 twice as fast, negative backwards. */
+	getRate(): number {
+		recordPlaybackRead(PLAYBACK_STATE);
+		return this.rate;
+	}
+
+	/**
+	 * Sets the playback speed (up to MAX_PLAYBACK_RATE either way; 0 means 1), from where playback is
+	 * now. The sound plays only at 1×.
+	 */
+	setRate(rate: number): void {
+		const next = Math.max(-MAX_PLAYBACK_RATE, Math.min(MAX_PLAYBACK_RATE, rate)) || 1;
+		if (next === this.rate) return;
+		if (this.isPlaying) {
+			this.playbackStartTime = this.getPlaybackTime();
+			this.playbackStartClockTime = this.readClock();
+		}
+		this.rate = next;
 		this.notify();
 	}
 
@@ -155,7 +184,7 @@ export class PlaybackManager {
 	getPlaybackTime(): number {
 		recordPlaybackRead(PLAYBACK_STATE | PLAYBACK_TIME);
 		if (!this.isPlaying) return this.currentTime / TICKS_PER_SECOND;
-		return this.playbackStartTime + (this.readClock() - this.playbackStartClockTime);
+		return this.playbackStartTime + (this.readClock() - this.playbackStartClockTime) * this.rate;
 	}
 
 	setPlaybackClock(readClock = wallClock): { timelineTime: number; clockTime: number } {
@@ -310,7 +339,14 @@ export class PlaybackManager {
 		if (!this.isPlaying) return;
 
 		const fps = this.editor.project.getActiveOrNull()?.settings.fps;
-		const rawTime = mediaTimeFromSeconds({ seconds: this.getPlaybackTime() });
+		const seconds = this.getPlaybackTime();
+		if (seconds <= 0 && this.rate < 0) {
+			// Played backwards to the start: stop there.
+			this.pausePlayback();
+			this.setTime(ZERO_MEDIA_TIME);
+			return;
+		}
+		const rawTime = mediaTimeFromSeconds({ seconds: Math.max(0, seconds) });
 		const maxTime = this.editor.timeline.getTotalDuration();
 
 		if (rawTime >= maxTime) {
