@@ -21,10 +21,40 @@ const LOOKAHEAD_SECONDS = 2;
 const STREAM_AHEAD_SECONDS = 1;
 const BACKGROUND_STREAM_BATCH_SECONDS = 0.25;
 
+/**
+ * Where a decoded buffer of a clip plays on the audio clock, when the timeline runs `speed` times
+ * as fast as the clock (the shuttle; 1 normally): a faster timeline plays the sound faster (and
+ * higher). `rate` is the clip's own speed; times in seconds, `offset` and `duration` in the buffer.
+ * Null when nothing of the buffer is left to play.
+ */
+export function placeBuffer({ anchor, speed, now, clipStart, clipDuration, bufferLocalTime, bufferSeconds, rate }: {
+	anchor: { timelineTime: number; clockTime: number };
+	speed: number;
+	now: number;
+	clipStart: number;
+	clipDuration: number;
+	bufferLocalTime: number;
+	bufferSeconds: number;
+	rate: number;
+}): { startTimestamp: number; startLocalTime: number; offset: number; duration: number; playbackRate: number } | null {
+	const clipTimestamp = anchor.clockTime + (clipStart - anchor.timelineTime) / speed;
+	const startLocalTime = Math.max(0, bufferLocalTime, (now - clipTimestamp) * speed);
+	const endLocalTime = Math.min(clipDuration, bufferLocalTime + bufferSeconds / rate);
+	if (startLocalTime >= endLocalTime) return null;
+	return {
+		startTimestamp: Math.max(now, clipTimestamp + startLocalTime / speed),
+		startLocalTime,
+		offset: (startLocalTime - bufferLocalTime) * rate,
+		duration: (endLocalTime - startLocalTime) * rate,
+		playbackRate: rate * speed,
+	};
+}
+
 export class AudioManager {
 	private audioContext: AudioContext | null = null;
 	private masterGain: GainNode | null = null;
-	private playbackAnchor: { timelineTime: number; clockTime: number } | null = null;
+	/** `speed`: how many timeline seconds pass per second of the audio clock (the shuttle's speed). */
+	private playbackAnchor: { timelineTime: number; clockTime: number; speed: number } | null = null;
 	private nextScheduleTime = Infinity;
 	private backgroundWake: { source: ConstantSourceNode; deadline: number } | null = null;
 	private clips: AudioClipSource[] = [];
@@ -40,6 +70,7 @@ export class AudioManager {
 	private pitchRead = Promise.resolve();
 	private playbackSession: AbortController | null = null;
 	private lastIsPlaying = false;
+	private lastSpeed = 1;
 	private lastVolume = 1;
 	private unsubscribers: Array<() => void> = [];
 	private heardTracks: unknown = null;
@@ -73,9 +104,14 @@ export class AudioManager {
 		}
 	}
 
+	/** Playing forwards: backwards (the shuttle's J) plays the picture only. */
+	private isPlayingForwards(): boolean {
+		return this.editor.playback.getIsPlaying() && this.editor.playback.getRate() > 0;
+	}
+
 	private handlePlaybackChange = (): void => {
-		// Faster or backwards (the shuttle) plays the picture only.
-		const isPlaying = this.editor.playback.getIsPlaying() && this.editor.playback.getRate() === 1;
+		const isPlaying = this.isPlayingForwards();
+		const speed = this.editor.playback.getRate();
 		const volume = this.editor.playback.getOutputVolume();
 
 		if (volume !== this.lastVolume) {
@@ -83,8 +119,10 @@ export class AudioManager {
 			this.updateGain();
 		}
 
-		if (isPlaying !== this.lastIsPlaying) {
+		// A new shuttle speed schedules the sound again at that speed.
+		if (isPlaying !== this.lastIsPlaying || (isPlaying && speed !== this.lastSpeed)) {
 			this.lastIsPlaying = isPlaying;
+			this.lastSpeed = speed;
 			if (isPlaying) {
 				void this.startPlayback();
 			} else {
@@ -94,7 +132,7 @@ export class AudioManager {
 	};
 
 	private handleSeek = (): void => {
-		if (this.editor.playback.getIsPlaying() && !this.editor.playback.getIsScrubbing() && this.editor.playback.getRate() === 1) {
+		if (this.isPlayingForwards() && !this.editor.playback.getIsScrubbing()) {
 			void this.startPlayback();
 		} else {
 			this.stopPlayback();
@@ -117,7 +155,7 @@ export class AudioManager {
 	private handleMediaChange = (): void => {
 		this.disposeSinks();
 
-		if (this.editor.playback.getIsPlaying() && !this.editor.playback.getIsScrubbing() && this.editor.playback.getRate() === 1) {
+		if (this.isPlayingForwards() && !this.editor.playback.getIsScrubbing()) {
 			void this.startPlayback();
 		}
 	};
@@ -173,7 +211,7 @@ export class AudioManager {
 			this.handlePlaybackUpdate();
 		}, { once: true });
 		source.start();
-		source.stop(Math.max(context.currentTime, anchor.clockTime + (deadline - anchor.timelineTime)));
+		source.stop(Math.max(context.currentTime, anchor.clockTime + (deadline - anchor.timelineTime) / anchor.speed));
 	}
 
 	private cancelBackgroundWake(): void {
@@ -239,7 +277,10 @@ export class AudioManager {
 			}
 
 			// Transfer the current unrounded playhead to the audio clock after startup.
-			this.playbackAnchor = this.editor.playback.setPlaybackClock(() => audioContext.currentTime);
+			this.playbackAnchor = {
+				...this.editor.playback.setPlaybackClock(() => audioContext.currentTime),
+				speed: this.editor.playback.getRate() > 0 ? this.editor.playback.getRate() : 1,
+			};
 			if (typeof document !== "undefined") {
 				document.addEventListener("visibilitychange", this.handleVisibilityChange, { signal });
 			}
@@ -270,7 +311,7 @@ export class AudioManager {
 		for (const clip of this.clips) {
 			if (this.activeClipIds.has(clip.id)) continue;
 			if (clip.startTime + clip.duration <= currentTime) continue;
-			const deadline = clip.startTime - LOOKAHEAD_SECONDS;
+			const deadline = clip.startTime - LOOKAHEAD_SECONDS * (this.playbackAnchor?.speed ?? 1);
 			if (deadline > currentTime) {
 				this.nextScheduleTime = Math.min(this.nextScheduleTime, deadline);
 				continue;
@@ -345,7 +386,7 @@ export class AudioManager {
 
 				const bufferLocalTime = (timestamp - clip.trimStart) / rate;
 				if (bufferLocalTime >= clip.duration) break;
-				await this.waitForStream(clip.startTime + bufferLocalTime - STREAM_AHEAD_SECONDS);
+				await this.waitForStream(clip.startTime + bufferLocalTime - STREAM_AHEAD_SECONDS * (this.playbackAnchor?.speed ?? 1));
 				if (signal.aborted) break;
 				this.scheduleBuffer({ clip, buffer, bufferLocalTime, rate });
 			}
@@ -378,7 +419,7 @@ export class AudioManager {
 			});
 			for (let frame = firstFrame; frame < endFrame; frame += sampleRate) {
 				const localTime = frame / sampleRate;
-				await this.waitForStream(clip.startTime + localTime - STREAM_AHEAD_SECONDS);
+				await this.waitForStream(clip.startTime + localTime - STREAM_AHEAD_SECONDS * (this.playbackAnchor?.speed ?? 1));
 				if (signal.aborted) return;
 				const pending = this.pitchRead.then(() => {
 					signal.throwIfAborted();
@@ -417,19 +458,17 @@ export class AudioManager {
 		const anchor = this.playbackAnchor;
 		if (!audioContext || !anchor) return;
 
-		const clipTimestamp = anchor.clockTime + (clip.startTime - anchor.timelineTime);
-		const now = audioContext.currentTime;
-		const startLocalTime = Math.max(0, bufferLocalTime, now - clipTimestamp);
-		const endLocalTime = Math.min(clip.duration, bufferLocalTime + buffer.duration / rate);
-		if (startLocalTime >= endLocalTime) return;
-
-		const startTimestamp = Math.max(now, clipTimestamp + startLocalTime);
-		const offset = (startLocalTime - bufferLocalTime) * rate;
-		const duration = (endLocalTime - startLocalTime) * rate;
+		const placed = placeBuffer({
+			anchor, speed: anchor.speed, now: audioContext.currentTime, clipStart: clip.startTime, clipDuration: clip.duration,
+			bufferLocalTime, bufferSeconds: buffer.duration, rate,
+		});
+		if (!placed) return;
+		const { startTimestamp, startLocalTime, offset, duration, playbackRate } = placed;
+		const endLocalTime = startLocalTime + duration / rate;
 
 		const node = audioContext.createBufferSource();
 		node.buffer = downmixToStereo(buffer);
-		node.playbackRate.value = rate;
+		node.playbackRate.value = playbackRate;
 		const clipGain = audioContext.createGain();
 		clipGain.gain.value = clip.volume;
 		if (hasAnimatedVolume({ element: clip.timelineElement })) {
@@ -440,7 +479,7 @@ export class AudioManager {
 			});
 			clipGain.gain.setValueAtTime(first.gain, startTimestamp);
 			for (const { localTime, gain } of rest) {
-				clipGain.gain.linearRampToValueAtTime(gain, startTimestamp + (localTime - startLocalTime));
+				clipGain.gain.linearRampToValueAtTime(gain, startTimestamp + (localTime - startLocalTime) / anchor.speed);
 			}
 		}
 

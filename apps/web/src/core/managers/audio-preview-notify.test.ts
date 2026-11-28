@@ -79,3 +79,20 @@ test("a discarded preview and an undone edit still reach the sound when the trac
 		disposeSinks.mockRestore();
 	}
 });
+
+test("the shuttle forwards schedules the sound again at its speed; backwards stops it", () => {
+	const { editor } = setup();
+	const start = spyOn(AudioManager.prototype as unknown as { startPlayback: () => Promise<void> }, "startPlayback");
+	const stop = spyOn(AudioManager.prototype as unknown as { stopPlayback: () => void }, "stopPlayback");
+	try {
+		editor.playback.setRate(2);
+		expect(start).toHaveBeenCalledTimes(1);
+		const stopsBefore = stop.mock.calls.length;
+		editor.playback.setRate(-1);
+		expect(start).toHaveBeenCalledTimes(1);
+		expect(stop.mock.calls.length).toBe(stopsBefore + 1);
+	} finally {
+		start.mockRestore();
+		stop.mockRestore();
+	}
+});
