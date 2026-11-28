@@ -12,7 +12,7 @@ import { captionLanguage, getTranscript, type TranscriptRequest } from "../src/r
 import { isHttpUrl, parseTime } from "../src/retrieval/time";
 import { loadEnvLocal } from "./retrieval-cli";
 
-const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check", "voice", "silence-plan"] as const;
+const commands = ["status", "selection", "notes", "export", "frames", "transcript", "transcript-view", "narration-plan", "view", "review", "draft-check", "voice", "silence-plan", "assemble"] as const;
 type Command = typeof commands[number];
 const usage = `Use: bun run agent <${commands.join("|")}> [--project-id ID] [--timeout SECONDS]`;
 const transcriptUsage = "Use: bun run agent transcript <url> [--lang CODE] [--range START-END] [--timeout S] [--project-id ID]";
@@ -41,6 +41,8 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 			...(transcript && { lang: { type: "string" }, range: { type: "string" } }),
 			...(!transcript && command !== "draft-check" && command !== "voice" && { url: { type: "string" } }),
 			...(command === "voice" && { name: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, replace: { type: "boolean" } }),
+			...(command === "assemble" && { script: { type: "string" }, plan: { type: "string" }, voices: { type: "string" }, gap: { type: "string" },
+				start: { type: "string" }, "caption-preset": { type: "string" }, name: { type: "string" }, submit: { type: "boolean" } }),
 			...(render && command !== "view" && { "allow-missing": { type: "boolean" } }),
 			...(command === "view" && { from: { type: "string" }, to: { type: "string" }, rows: { type: "string" }, file: { type: "string" } }),
 			...(command === "review" && { file: { type: "string" }, pictures: { type: "string" } }),
@@ -145,6 +147,25 @@ export function parseArgs(args: string[], minRenderSeconds = minRenderTimeout) {
 		url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
 		throw new Error("Set --url to the local editor origin, for example http://127.0.0.1:3000.");
 	}
+	if (command === "assemble") {
+		const number = (flag: "gap" | "start") => {
+			const value = values[flag];
+			if (value === undefined) return undefined;
+			const parsed = Number(value);
+			if (!Number.isFinite(parsed) || parsed < 0 || parsed > 86400) throw new Error(`Set --${flag} to seconds from 0.`);
+			return parsed;
+		};
+		if (typeof values.script !== "string") {
+			throw new Error("Use assemble --script FILE [--plan FILE] [--voices FOLDER] [--gap S] [--start S] [--caption-preset NAME] [--name NAME] [--submit --project-id ID].");
+		}
+		if (values.submit === true && !projectId) throw new Error("Pass --project-id with --submit.");
+		return { command: "assemble" as const, timeoutMs, input: {
+			script: values.script, gap: number("gap"), start: number("start"),
+			...(typeof values.plan === "string" && { plan: values.plan }), ...(typeof values.voices === "string" && { voices: values.voices }),
+			...(typeof values["caption-preset"] === "string" && { captionPreset: values["caption-preset"] }), ...(typeof values.name === "string" && { name: values.name }),
+			...(values.submit === true && projectId && { submit: { origin: url.origin, projectId } }),
+		} };
+	}
 	if (command === "silence-plan" && !projectId) {
 		throw new Error("Use silence-plan --project-id ID [--min-gap SECONDS] [--pad SECONDS] [--keep-fillers] [--keep-lead] [--tail] [--ignore-media NAME,...].");
 	}
@@ -243,6 +264,14 @@ export async function main(args: string[], minRenderSeconds = minRenderTimeout) 
 			process.removeListener("SIGINT", cancel);
 			process.removeListener("SIGTERM", cancel);
 		}
+	}
+	if (options.command === "assemble") {
+		const webDir = path.resolve(import.meta.dir, "..");
+		loadEnvLocal(path.join(webDir, ".env.local"));
+		const workspace = path.resolve(process.env.AGENT_WORKSPACE ?? path.join(webDir, "..", "..", "workspace"));
+		const { assembleCommand } = await import("../src/agent/assemble-command");
+		return await assembleCommand(options.input as import("../src/agent/assemble-command").AssembleInput, path.resolve(process.env.AGENT_FILES_ROOT ?? workspace), workspace,
+			AbortSignal.timeout(options.timeoutMs));
 	}
 	if (options.command === "voice") {
 		const webDir = path.resolve(import.meta.dir, "..");
