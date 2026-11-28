@@ -260,7 +260,12 @@ function NumberParamField({
 	onCommit: () => void;
 }) {
 	const { timeline } = useEditor();
-	const { min, max, step, displayMultiplier = 1 } = param;
+	const { min, step, displayMultiplier = 1 } = param;
+	const slider = param.slider;
+	// A fade is at most half the clip, whether it is typed, dragged or slid.
+	const max = slider?.halfOfClip && clipSeconds
+		? Math.max(min + step, Math.min(param.max ?? Infinity, (clipSeconds / 2) * displayMultiplier))
+		: param.max;
 	const displayValue = value * displayMultiplier;
 	const clampDisplayValue = (nextDisplayValue: number) =>
 		Math.max(
@@ -297,10 +302,7 @@ function NumberParamField({
 		onCommit();
 	};
 
-	const slider = param.slider;
-	const sliderMax = slider?.halfOfClip && clipSeconds
-		? Math.max(min + step, Math.min(max ?? Infinity, (clipSeconds / 2) * displayMultiplier))
-		: max;
+	const sliderMax = max;
 	const field = (
 		<NumberField
 			icon={param.shortLabel}
@@ -347,10 +349,14 @@ function ParamSlider({ label, min, max, step, value, detent, onSlide, onCommit, 
 }) {
 	const { timeline } = useEditor();
 	const gesture = useRef<PreviewGesture | null>(null);
+	// The panel shows the saved value while a drag previews: the slider keeps its own until release,
+	// so it moves under the pointer and reports the change on release.
+	const [sliding, setSliding] = useState<number | null>(null);
 	const settle = (next: number) => (detent !== undefined && Math.abs(next - detent) <= (max - min) * 0.02 ? detent : next);
 	const end = () => {
 		gesture.current?.finish();
 		gesture.current = null;
+		setSliding(null);
 	};
 	return (
 		<Slider
@@ -358,12 +364,19 @@ function ParamSlider({ label, min, max, step, value, detent, onSlide, onCommit, 
 			min={min}
 			max={max}
 			step={step}
-			value={[Math.max(min, Math.min(max, value))]}
+			value={[Math.max(min, Math.min(max, sliding ?? value))]}
 			onPointerDown={() => {
-				end();
-				gesture.current = timeline.beginPreviewGesture(() => { gesture.current = null; });
+				gesture.current?.finish();
+				gesture.current = timeline.beginPreviewGesture(() => {
+					gesture.current = null;
+					setSliding(null);
+				});
 			}}
-			onValueChange={([next]) => onSlide(settle(next))}
+			onValueChange={([next]) => {
+				const settled = settle(next);
+				setSliding(settled);
+				onSlide(settled);
+			}}
 			onValueCommit={() => {
 				onCommit();
 				end();
